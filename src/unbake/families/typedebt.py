@@ -229,12 +229,13 @@ def parameters(code: str) -> list[dict[str, Any]]:
 
 def param_cast(code: str) -> dict[int, str]:
     """Function parameters declared void* or integer that the body casts to a pointer of a non-primitive type. The
-    subject is the function: its head holds every such parameter on one line, so retyping one of them leaves the row of
-    the others as it was instead of reading as new debt."""
+    subject is the function called, "f()": its head holds every such parameter on one line, so retyping one of them
+    leaves the row of the others as it was instead of reading as new debt, and no bare name lets the row withhold the
+    function's callers."""
     hits: dict[int, str] = {}
     for row in parameters(code):
         if any(c["target"] not in _PRIMITIVE for c in row["casts"]):
-            hits.setdefault(row["line"], row["function"])
+            hits.setdefault(row["line"], row["function"] + "()")
     return hits
 
 

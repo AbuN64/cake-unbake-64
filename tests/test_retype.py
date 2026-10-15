@@ -201,7 +201,18 @@ def test_param_cast_row_is_the_function_so_retyping_one_parameter_adds_no_row():
     # real case: func_8020520C_de(void *source, void *dest) held one row per line; retyping source surfaced dest
     before = "void f(void *source, void *dest) {\n    ((A *)dest)->x = ((Actor *)source)->a;\n}\n"
     after = "void f(Actor *source, void *dest) {\n    ((A *)dest)->x = source->a;\n}\n"
-    assert typedebt.param_cast(before) == typedebt.param_cast(after) == {1: "f"}
+    assert typedebt.param_cast(before) == typedebt.param_cast(after) == {1: "f()"}
+
+
+def test_a_param_cast_row_withholds_its_function_never_its_callers():
+    # real case: subject "f" (431057d) withheld every caller naming f, 1,132 B per version on G 68c8ebdd4
+    from unbake import policy
+    from unbake.contracts import Finding
+
+    code = "void f(void *a) {\n    ((Actor *)a)->x = 1;\n}\nvoid g(void) {\n    f(0);\n}\n"
+    ((line, subject),) = typedebt.param_cast(code).items()
+    row = Finding("source.param-cast", "a parameter is cast: " + subject, path="src/u.c", line=line)
+    assert policy.withheld(code, [row], ["f", "g"]) == {"f": ("source.param-cast",)}
 
 
 def test_excluded_parameters_stay_and_touches_name_every_written_file():
