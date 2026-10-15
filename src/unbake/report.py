@@ -565,8 +565,6 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.versions)]
         ]
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
-        if project.readme_map:
-            blocks.append(f'<img src="{present.map_path(project.readme_map)}">')
         for v in project.versions:
             meta = project.version_files[v].meta
             details = ", ".join(meta[k] for k in ("cartridge_id", "region") if meta.get(k))
@@ -936,7 +934,7 @@ def _fakes_stream(snapshot: Snapshot) -> Json:
     taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}
     modules = _modules(snapshot)
     project = snapshot.config.project
-    version = project.readme_map or project.names_from
+    version = project.names_from
     pieces, rules, subjects = _fake_pieces(snapshot, version)
     weight: Counter[str] = Counter()
     for fn, names in subjects.items():

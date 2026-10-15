@@ -352,7 +352,6 @@ class Project:
     digest: str
     library_dirs: tuple[str, ...] = ()
     version_differences: tuple[Json, ...] = ()
-    readme_map: str | None = None  # the version whose memory map the README progress block shows
 
 
 @dataclass(frozen=True)

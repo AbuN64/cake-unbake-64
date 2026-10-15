@@ -519,16 +519,6 @@ def test_readme_block_exact(snapshot_factory):
     assert report.readme(f"{begin}\nold\n{end}", snapshot, current) == expected
 
 
-def test_readme_shows_one_memory_map_between_the_bars_and_the_tables(snapshot_factory):
-    snapshot, current = _readme_case(snapshot_factory)
-    plain = report.readme("<!-- progress -->\n<!-- /progress -->", snapshot, current)
-    project = replace(snapshot.config.project, readme_map="eu")
-    mapped = replace(snapshot, config=replace(snapshot.config, project=project))
-    bars, tables = plain.split("</pre>\n\n", 1)
-    image = '<img src="docs/memory-map-eu.svg">'
-    assert report.readme(plain, mapped, current) == f"{bars}</pre>\n\n{image}\n\n{tables}"
-
-
 def test_readme_outside_markers_untouched(snapshot_factory):
     snapshot, current = _readme_case(snapshot_factory)
     settings = configuration.load_resource("repo.toml")["readme"]
