@@ -233,8 +233,8 @@ def param_cast(code: str) -> dict[int, str]:
     leaves the row of the others as it was instead of reading as new debt, and no bare name lets the row withhold the
     function's callers."""
     hits: dict[int, str] = {}
-    for row in parameters(code):
-        if any(c["target"] not in _PRIMITIVE for c in row["casts"]):
+    for row in parameters(code):  # an integer parameter's debt is the address-int row of its callers, not this one
+        if row["pointer"] and any(c["target"] not in _PRIMITIVE for c in row["casts"]):
             hits.setdefault(row["line"], row["function"] + "()")
     return hits
 
