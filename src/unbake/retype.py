@@ -759,7 +759,7 @@ def run(config: Config, params: Json) -> Json:
             prove = functools.partial(_prove_halves, config, snapshot, texts, parts, out=out)
             kept, levels = bisect(order, partial_halves(prove))
             rounds.append({"rows": len(refused), "bisect": levels, "kept": len(kept), "of": len(order)})
-            drop = set(order) - kept
+            drop = (set(order) - kept) or drop  # every half proves alone: the union's refusal names its own blame
             bisected = True
         else:
             rounds.append({"rows": len(refused), "dropped": len(drop), "refused": True})
