@@ -379,7 +379,7 @@ def test_abucache_must_be_the_version_this_unbake_requires(monkeypatch):
     with pytest.raises(Refusal) as caught:
         adapters.check_abucache()
     (finding,) = caught.value.findings
-    assert (finding.key, finding.reason) == ("tool.version", "abucache version mismatch: expected 0.3.2, found 0.1.0")
+    assert (finding.key, finding.reason) == ("tool.version", "abucache version mismatch: expected 0.3.3, found 0.1.0")
 
 
 def test_unused_tools_not_resolved(adapter_config, toolchains):

@@ -22,7 +22,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from abucache.store import CacheFull, ContentCache, open_cache
+from abucache.store import CacheFull, ContentCache, everything, open_cache
 
 from unbake import effort, process
 from unbake.contracts import Config, Finding, Json, Refusal, pickled, sha256
@@ -153,11 +153,7 @@ class Packed(ContentCache):
         self._inner.count(kind, hit)
 
     def finish(
-        self,
-        root: Path,
-        identity: str,
-        installed: Callable[[str], bool] = lambda identity: True,
-        keep_commits: int = 20,
+        self, root: Path, identity: str, installed: Callable[[str], bool] = everything, keep_commits: int = 20
     ) -> None:
         self._inner.finish(root, identity, installed, keep_commits)
 

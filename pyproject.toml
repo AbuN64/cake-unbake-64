@@ -11,7 +11,7 @@ license = { file = "LICENSE" }
 classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
 requires-python = ">=3.13"
 dependencies = [
-  "click==8.5.0", "jsonschema==4.26.0", "abucache @ https://github.com/AbuN64/cache-64/releases/download/v0.3.2/abucache-0.3.2-py3-none-any.whl", "psutil==7.2.2", "pyelftools==0.33",
+  "click==8.5.0", "jsonschema==4.26.0", "abucache @ https://github.com/AbuN64/cache-64/releases/download/v0.3.3/abucache-0.3.3-py3-none-any.whl", "psutil==7.2.2", "pyelftools==0.33",
   "tomlkit==0.15.1", "PyYAML==6.0.3", "rabbitizer==1.16.2", "pycparser==3.0",
 ]
 
