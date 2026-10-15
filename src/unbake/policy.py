@@ -367,15 +367,20 @@ def _judge(
     return lines, ""
 
 
-def _version_guards(snapshot: Snapshot, path: str, text: str) -> set[int]:
-    """A documented code guard needs different cart bytes per side and an exact compile in every holder."""
+def _version_guards(snapshot: Snapshot, path: str, text: str, failures: list[Finding] | None = None) -> set[int]:
+    """A documented code guard needs different cart bytes per side and an exact compile in every holder. A difference
+    that does not stand is a finding of the text like any rule's (in `failures`), so a change is judged against what
+    its base text already had; without `failures` it refuses."""
     unit = snapshot.layout.units.get(path)
     allowed: set[int] = set()
     for row in getattr(snapshot.config.project, "version_differences", ()):
         if unit and row["function"] in unit.members:
             lines, reason = _judge(snapshot, path, text, row["function"], row["sides"])
             if reason:
-                raise Refusal(Finding("source.file-version-guard", reason, path=path, unit=row["function"]))
+                failed = Finding("source.file-version-guard", reason, path=path, unit=row["function"])
+                if failures is None:
+                    raise Refusal(failed)
+                failures.append(failed)
             allowed |= lines
     return allowed
 
@@ -516,7 +521,7 @@ def _allowed_guards(snapshot: Snapshot, path: str, text: str) -> set[int]:
     return (
         _symbol_guards(snapshot, text)
         | _data_guards(snapshot, path, text)
-        | _version_guards(snapshot, path, text)
+        | _version_guards(snapshot, path, text, [])  # a difference that does not stand is evaluate's finding
         | _header_guards(snapshot, path, text)
     )
 
@@ -715,10 +720,13 @@ def evaluate(
     only: Collection[str] | None = None,
 ) -> tuple[Finding, ...]:
     with effort.stage("policy.evaluate"):
-        documented = _version_guards(snapshot, path, text)
+        failures: list[Finding] = []
+        documented = _version_guards(snapshot, path, text, failures)
         if any(Path(path).is_relative_to(folder) for folder in getattr(snapshot.config.project, "library_dirs", ())):
             return ()  # vendored source idioms; compile and ROM proof are still mandatory
-        return _findings(snapshot, path, text, view, sdk_group, only, documented)
+        if only is not None and "file-version-guard" not in only:
+            failures.clear()
+        return (*failures, *_findings(snapshot, path, text, view, sdk_group, only, documented))
 
 
 def scope(

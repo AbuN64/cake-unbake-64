@@ -1193,3 +1193,16 @@ def test_a_finding_in_a_placed_helper_withholds_the_helper_not_its_member():
     found = [Finding("source.raw-offset", "raw: x", line=1)]
     assert policy.withheld(text, found, ["head", "helper"]) == {"helper": ("source.raw-offset",)}
     assert policy.withheld(text, found, ["head"]) == {"head": ("source.raw-offset",)}  # inlined: its caller
+
+
+def test_a_documented_difference_that_does_not_stand_is_a_finding_judged_against_the_base_text(snapshot, monkeypatch):
+    reason = "Documented version difference is not exact in every holding version"
+    monkeypatch.setattr(policy, "_judge", lambda s, path, text, fn, sides: (set(), reason))
+    monkeypatch.setattr(policy, "_findings", lambda *a: ())
+    snapshot.layout.units = {PATH: UnitSpec(PATH, "c", "g", ("f",), "t", {})}
+    snapshot.config.project.version_differences = ({"function": "f", "sides": [["a"], ["b"]]},)
+    found = policy.evaluate(snapshot, PATH, "void f(void) {}\n", None, False)
+    assert [(f.key, f.unit) for f in found] == [("source.file-version-guard", "f")]
+    blocking, debt = policy.scope(found, policy.evaluate(snapshot, PATH, "void f(void) { }\n", None, False), {PATH})
+    assert blocking == () and len(debt) == 1  # the base text had it: debt, not this change's refusal
+    assert len(policy.scope((), found, {PATH})[0]) == 1  # a new failure blocks
