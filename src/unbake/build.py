@@ -22,7 +22,7 @@ from typing import Any
 
 import yaml
 
-from unbake import adapters, delta, effort, native, pool, process, recipes, store, symbols, view
+from unbake import adapters, delta, effort, native, pool, present, process, recipes, store, symbols, view
 from unbake import config as configuration
 from unbake.contracts import (
     Config,
@@ -456,7 +456,13 @@ def makefile(snapshot: Snapshot) -> bytes:
                 tool_defaults="\n".join(tools),
                 toolchain_rules="\n".join(chains),
                 units="\n".join(blocks),
-                tree_checks="\n".join(f"\t$(Q)test -s versions/{v}/report.json" for v in project.versions),
+                tree_checks="\n".join(
+                    f"\t$(Q)test -s {path}"
+                    for path in [
+                        *(f"versions/{v}/report.json" for v in project.versions),
+                        *present.paths(project.versions),
+                    ]
+                ),
                 roms=" ".join(f"build/{v}/{project.name}.z64" for v in project.versions),
                 rom_checks="\n".join(checks),
                 rom_rules="\n".join(rom_rules),

@@ -94,6 +94,7 @@ def lane(tmp_path, monkeypatch):
     monkeypatch.setattr(publish.report, "files", Mock(return_value={"README.md": b"readme"}))
     monkeypatch.setattr(publish.report, "progress", Mock(return_value={"versions": {}}))
     monkeypatch.setattr(publish.report, "readme", Mock(side_effect=lambda text, snap, current: text))
+    monkeypatch.setattr(publish.present, "files", Mock(return_value={}))
     monkeypatch.setattr(publish.repo, "files", Mock(return_value={"Makefile": files["Makefile"]}))
     monkeypatch.setattr(publish.store, "work", Mock(side_effect=lambda cfg: nullcontext(work)))
     monkeypatch.setattr(
@@ -1058,6 +1059,17 @@ def test_a_plan_leaves_the_readme_alone_when_no_credit_moves_or_it_renders_it(la
     plan = publish.make_plan("publish", snapshot, writes, (), (), "x")
     assert plan.writes == writes
     publish.report.progress.assert_not_called()
+
+
+def test_a_plan_that_moves_credit_carries_the_presentation_files_that_changed(lane):
+    """The site reads progress.json, the maps and the symbol lines live: a landing commits them with its change."""
+    snapshot = _credit_case(lane)
+    snapshot.overlays["progress.json"] = b"same\n"
+    publish.present.files.return_value = {"progress.json": b"same\n", "docs/memory-map-a.svg": b"<svg/>"}
+    plan = publish.make_plan("publish", snapshot, {"src/f.c": b"new"}, (), (), "x")
+    assert plan.writes == {"src/f.c": b"new", "README.md": b"old readme\n2", "docs/memory-map-a.svg": b"<svg/>"}
+    after, current = publish.present.files.call_args.args
+    assert after.overlays["src/f.c"] == b"new" and current == publish.report.progress.return_value  # one report
 
 
 def test_an_unchanged_block_writes_no_readme(lane):

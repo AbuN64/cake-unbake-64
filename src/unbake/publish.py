@@ -17,6 +17,7 @@ from unbake import (
     ownership,
     policy,
     pool,
+    present,
     recipes,
     repo,
     report,
@@ -104,16 +105,17 @@ def _credits(path: str) -> bool:
 
 
 def progress_block(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> dict[str, bytes]:
-    """The README progress block of the tree a plan leaves, from the report of that tree. Every plan that can move
-    credit carries it (land, fuzzy, move, repair, generate), so the README a lane commits with its change always
-    equals a fresh report: no separate step to remember. {} when the plan writes the README itself, writes nothing
-    that credits or the project has no README."""
+    """The README progress block and the presentation files (progress.json, memory maps, symbol lines) of the tree a
+    plan leaves, from the report of that tree. Every plan that can move credit carries them (land, fuzzy, move,
+    repair, generate), so what a lane commits with its change always equals a fresh report: no separate step to
+    remember. {} when the plan writes the README itself, writes nothing that credits or the project has no README."""
     if "README.md" in writes or not any(map(_credits, writes)) or snapshot.peek("README.md") is None:
         return {}
     after = layout.overlay(snapshot, writes)
     text = after.read("README.md")  # read through the snapshot: the journal refuses a README changed under the plan
-    block = report.readme(text.decode(), after, report.progress(after)).encode()
-    return {} if block == text else {"README.md": block}
+    current = report.progress(after)
+    made = {"README.md": report.readme(text.decode(), after, current).encode(), **present.files(after, current)}
+    return {path: data for path, data in made.items() if data != after.peek(path)}
 
 
 def _stamp_key(job: tuple[Any, ...]) -> str:

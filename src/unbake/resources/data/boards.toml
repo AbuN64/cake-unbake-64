@@ -1,0 +1,23 @@
+# External progress boards. The generated boards workflow runs one job per board, at most once a day and only after
+# progress.json changed since that board last published. To add a board, add a [[board]] row:
+#   kind = "upload"    ci/run POSTs every versions/<v>/report.json to `url` with the repository secret `secret`
+#   kind = "artifact"  the job uploads every versions/<v>/report.json as an Actions artifact named `artifact`
+#                      (the board reads GitHub artifacts; republished monthly so the artifacts never expire)
+# {repo} is owner/name, {version} the version id, {commit} the commit sha.
+schema = 1
+
+[[board]]
+id = "bytematch"
+kind = "upload"
+url = "https://bytematch.dev/api/v1/projects/{repo}/reports?version={version}&commit={commit}"
+secret = "BYTEMATCH_TOKEN"
+
+[[board]]
+id = "recomp"
+kind = "artifact"
+artifact = "{version}_report"
+
+# The starter .recomp.json (recomp.fyi lists a repository that has one): the game is the project title.
+[recomp]
+schema = "https://recomp.fyi/schema/v1.json"
+fields = { system = "N64", type = "decomp" }

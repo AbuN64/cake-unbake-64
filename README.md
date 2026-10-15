@@ -86,6 +86,13 @@ make setup
 make check
 ```
 
+## CI
+
+Setup writes the CI of a project. Every job calls `sh ci/run STAGE`.
+A push checks the tree and the files a site reads, which are `progress.json`, `docs/memory-map-<v>.svg` and `versions/<v>/symbols.json`.
+The boards workflow runs once a day and feeds each board only after `progress.json` changed.
+Upload boards need a repository secret, for example `BYTEMATCH_TOKEN`.
+
 ## Development
 
 Run `bin/dev-setup` once, then `bin/test`, `bin/lint` and `bin/hygiene`.

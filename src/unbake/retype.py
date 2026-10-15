@@ -6,9 +6,9 @@ from __future__ import annotations
 import posixpath
 import re
 import time
-from dataclasses import asdict
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 

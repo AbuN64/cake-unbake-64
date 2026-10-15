@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1096 22" width="1096" height="22"><style>text{font:6px monospace;fill:#6b675c}.h{fill:#c4472d}.q0{fill:#d9d4c7}.q1{fill:#e3e2f2}.q2{fill:#d6d6ef}.q3{fill:#c8c9ec}.q4{fill:#babce8}.q5{fill:#acafe4}.q6{fill:#9ea2df}.q7{fill:#9094d8}.q8{fill:#8186cf}.q9{fill:#7277c4}.q10{fill:#1b1a17}@media (prefers-color-scheme:dark){text{fill:#a8a293}.q0{fill:#4a463d}.q1{fill:#35375a}.q2{fill:#3c3f66}.q3{fill:#444772}.q4{fill:#4d517f}.q5{fill:#575b8c}.q6{fill:#62669a}.q7{fill:#6e72a8}.q8{fill:#7b7fb6}.q9{fill:#888cc4}.q10{fill:#d6d0bd}}</style>
+<g transform="translate(0 0)"><text y="6">00000000</text>
+<rect class="q10" x="328" width="4" height="6"><title>f_exact · 100% · 64 B</title></rect>
+<rect class="q5" x="332" width="3" height="6"><title>f_draft · 50% · 48 B</title></rect>
+<rect class="q0" x="335" width="761" height="6"><title>f_asm · 0% · 16416 B</title></rect>
+<rect class="h" x="328" width="0.5" height="6"/>
+</g>
+<g transform="translate(0 8)"><text y="6">00004000</text>
+<rect class="q0" x="72" width="265" height="6"><title>f_asm · 0% · 16416 B</title></rect>
+</g>
+<g transform="translate(0 16)"><text y="6">00020000</text>
+<rect class="q0" x="72" width="16" height="6"><title>f_late · 0% · 256 B</title></rect>
+<rect class="h" x="72" width="0.5" height="6"/>
+</g>
+</svg>

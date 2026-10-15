@@ -216,9 +216,11 @@ def test_a_symbol_move_writes_every_place_the_name_is_spelled_and_extracts_each_
     assert set(plan.writes) == {
         "symbols.toml", "versions/a/symbol_addrs.txt", "versions/b/symbol_addrs.txt", "versions/a/symbols.ld",
         "versions/b/symbols.ld", "src/f1.c", "include/main/ga.h", "types.toml", "layout.toml", "versions/a/Game.yaml",
-        "versions/b/Game.yaml", "config.toml", "README.md",
+        "versions/b/Game.yaml", "config.toml", "README.md", "progress.json", "docs/memory-map-a.svg",
+        "docs/memory-map-b.svg", "versions/a/symbols.json", "versions/b/symbols.json",
     }  # fmt: skip
     assert " bytes</code>" in text(plan, "README.md")  # the progress block of the moved tree, committed with the move
+    assert '"g1":' in text(plan, "versions/a/symbols.json")  # the site links the new name to its line
     assert "g1]" in text(plan, "versions/a/Game.yaml") and "f1_padding_1" in text(plan, "versions/a/Game.yaml")
     assert 'function = "g1"' in text(plan, "config.toml") and "int g1(void)" in text(plan, "src/f1.c")
     assert '"g1"' in text(plan, "layout.toml") and sorted(seen.extracted) == ["a", "b"]

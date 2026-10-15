@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import shutil
 import uuid
@@ -20,6 +19,7 @@ import yaml
 from unbake import (
     adapters,
     build,
+    ci,
     effort,
     infer,
     journal,
@@ -27,6 +27,7 @@ from unbake import (
     libasm,
     native,
     pool,
+    present,
     process,
     report,
     store,
@@ -142,6 +143,7 @@ def _extras(rules: Json, title: str, versions: Iterable[str]) -> dict[str, bytes
     return {
         "CONTRIBUTING.md": _render("CONTRIBUTING.md.in", title=title, roms=roms),
         "types.toml": _EMPTY_TYPES,
+        ".recomp.json": present.recomp(title),
         **{row["path"]: configuration.template(row["template"]).encode() for row in rules["sdk"]},
     }
 
@@ -275,26 +277,12 @@ def init(params: Json) -> Json:
 def files(snapshot: Snapshot) -> dict[str, bytes]:
     with effort.stage("repo.files"):
         rules, project = configuration.load_resource("repo.toml"), snapshot.config.project
-        pins = {k: f"{r['action']}@{r['sha']} # {r['tag']}" for k, r in rules["github"].items()}
-        version = importlib.metadata.version("unbake")
-        wheel = (
-            f"https://github.com/AbuN64/cake-unbake-64/releases/download/v{version}/unbake-{version}-py3-none-any.whl"
-        )
         wanted = {
             "Makefile": build.makefile(snapshot),
             **report.files(snapshot),
             **{f"versions/{v}/symbols.ld": build.symbols_ld(snapshot, v) for v in project.versions},
             ".gitignore": ("\n".join(rules["ignore"]) + "\n").encode(),
-            ".github/workflows/ci.yml": _render(
-                "ci.yml.in", checkout=pins["checkout"], python=pins["python"], unbake_wheel=wheel
-            ),
-            ".gitlab-ci.yml": _render(
-                "gitlab-ci.yml.in",
-                image=rules["gitlab"]["image"],
-                audit_image=rules["gitlab"]["audit_image"],
-                unbake_wheel=wheel,
-                packages=" ".join(rules["gitlab"]["packages"]),
-            ),
+            **ci.files(project.versions),
         }
         # the manifest lists every generated file; the starter files below are the author's once they exist
         wanted[_MANIFEST] = "".join(f"{p}\n" for p in sorted({*wanted, _MANIFEST})).encode()

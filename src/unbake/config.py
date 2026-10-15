@@ -40,6 +40,7 @@ SCHEMA_OF = {
     "flow.toml": "flow",
     "rom.toml": "rom",
     "repo.toml": "repo",
+    "boards.toml": "boards",
 }
 
 

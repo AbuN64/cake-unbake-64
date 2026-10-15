@@ -558,14 +558,18 @@ def test_files_canonical_and_complete(snapshot_factory, monkeypatch):
     snapshot = snapshot_factory([_member("matched")], units=[_unit("matched")])
     first = report.files(snapshot)
     assert first == report.files(snapshot)
-    assert set(first) == {"README.md", "versions/a/report.json", "versions/b/report.json", report.STAMP}
+    presented = set(report.present.paths(("a", "b")))
+    assert set(first) == {"README.md", "versions/a/report.json", "versions/b/report.json", report.STAMP, *presented}
     current = report.current(snapshot)
+    assert {p: first[p] for p in presented} == report.present.files(snapshot, report.progress(snapshot))
     for v in snapshot.config.project.versions:
         content = first[f"versions/{v}/report.json"]
         document = report.objdiff(snapshot, current, v)
-        assert content == json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        assert json.loads(content) == document
+        assert content == report.dump_objdiff(document)
         assert "stamp" not in document  # objdiff refuses a field it does not know
-    assert json.loads(first[report.STAMP]) == {"tool": report.store.code(), "tree": report.stamp(snapshot)["tree"]}
+    tool = f"unbake {report.unbake.__version__}"  # the release, never an install digest
+    assert json.loads(first[report.STAMP]) == {"tool": tool, "tree": report.stamp(snapshot)["tree"]}
     assert first["README.md"] == report.readme(snapshot.read("README.md").decode(), snapshot, current).encode()
 
 

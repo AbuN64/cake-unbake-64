@@ -9,11 +9,12 @@ from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
-from typing import Any
+from typing import Any, NamedTuple
 
 import rabbitizer
 
-from unbake import adapters, effort, headers, infer, land, layout, libasm, policy, pool, store, versions
+import unbake
+from unbake import adapters, effort, headers, infer, land, layout, libasm, policy, pool, present, store, versions
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Member, Project, Refusal, Snapshot, UnitSpec, digest, sha256
 
@@ -227,6 +228,51 @@ def _broken(
     return frozenset(document.get("failing", ())) if document.get("digest") == snapshot.digest else frozenset()
 
 
+class Credit(NamedTuple):
+    """The credit one member earns in one version: its code and data bytes, the exact code bytes that earn credit
+    (`kept`), whether it is exact and its fuzzy score (1.0 for exact bytes an unclean finding withholds)."""
+
+    name: str
+    member: Member
+    unit: UnitSpec | None
+    segment: str
+    version: str
+    code: int
+    data: int
+    kept: int
+    exact: bool
+    score: float
+
+
+def credits(snapshot: Snapshot) -> tuple[Credit, ...]:
+    """Every (member, holding version) credit row of the inventory, computed once per snapshot: the README, the
+    progress file and the memory map all read these same rows."""
+
+    def build() -> tuple[Credit, ...]:
+        rows = []
+        dirty, broken = policy.unclean(snapshot), _broken(snapshot)
+        for name, member, unit, _matched, segment in _inventory(snapshot):
+            for v in member.holders():
+                built = _version_matched(snapshot.config.project, unit, v)
+                # the bytes of the functions an unclean finding withholds earn none; the member's other functions and
+                # data keep theirs
+                held = policy.withheld_bytes(snapshot, dirty, name, v) if built and member.kind == "function" else 0
+                exact = built and not held
+                placements = [p for p in member.placements if p.version == v]
+                code = sum(p.size for p in placements if p.section == ".text")
+                data = sum(p.size for p in placements if p.section in (".data", ".rodata"))
+                kept = code - held if built else 0  # exact code bytes that earn credit
+                score = 0.0 if exact else snapshot.layout.fuzzy.get(name, {"scores": {}})["scores"].get(v, 0.0)
+                if unit is not None and unit.path in broken and not exact:
+                    score = 0.0  # it does not compile: no credit
+                elif built and not exact:
+                    score = 1.0  # exact bytes in unclean source: fuzzy at most
+                rows.append(Credit(name, member, unit, segment, v, code, data, kept, exact, score))
+        return tuple(rows)
+
+    return effort.memo(("credits", snapshot.digest), build)
+
+
 def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:
     """(per version, per segment, per kind) credit buckets of the inventory, summed in one pass."""
     zero = dict.fromkeys(
@@ -244,40 +290,25 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
         0,
     )
     totals = {v: dict(zero) for v in snapshot.config.project.versions}
-    dirty, broken = policy.unclean(snapshot), _broken(snapshot)
     segments: defaultdict[str, Buckets] = defaultdict(dict)
     kinds: defaultdict[str, Buckets] = defaultdict(dict)
-    for name, member, unit, _matched, segment in _inventory(snapshot):
-        for v in member.holders():
-            built = _version_matched(snapshot.config.project, unit, v)
-            # the bytes of the functions an unclean finding withholds earn none; the member's other functions and data
-            # keep theirs
-            held = policy.withheld_bytes(snapshot, dirty, name, v) if built and member.kind == "function" else 0
-            exact = built and not held
-            placements = [p for p in member.placements if p.version == v]
-            code = sum(p.size for p in placements if p.section == ".text")
-            data = sum(p.size for p in placements if p.section in (".data", ".rodata"))
-            kept = code - held if built else 0  # exact code bytes that earn credit
-            score = 0.0 if exact else snapshot.layout.fuzzy.get(name, {"scores": {}})["scores"].get(v, 0.0)
-            if unit is not None and unit.path in broken and not exact:
-                score = 0.0  # it does not compile: no credit
-            elif built and not exact:
-                score = 1.0  # exact bytes in unclean source: fuzzy at most
-            for bucket in (
-                totals[v],
-                segments[segment].setdefault(v, dict(zero)),
-                kinds[unit.kind if unit else member.state].setdefault(v, dict(zero)),
+    for row in credits(snapshot):
+        for bucket in (
+            totals[row.version],
+            segments[row.segment].setdefault(row.version, dict(zero)),
+            kinds[row.unit.kind if row.unit else row.member.state].setdefault(row.version, dict(zero)),
+        ):
+            function = row.member.kind == "function"
+            for prefix, size, earned in (
+                ("code_", row.code, row.kept),
+                ("data_", row.data, row.data if row.exact else 0),
+                ("functions_", int(function), int(row.exact and function)),
             ):
-                for prefix, size, earned in (
-                    ("code_", code, kept),
-                    ("data_", data, data if exact else 0),
-                    ("functions_", int(member.kind == "function"), int(exact and member.kind == "function")),
-                ):
-                    bucket[prefix + "total"] += size
-                    bucket[prefix + "matched"] += earned
-                bucket["functions_fuzzy"] += int(member.kind == "function" and not exact and score > 0)
-                bucket["code_fuzzy"] += round(score * (code - kept))
-                bucket["data_fuzzy"] += round(score * data)
+                bucket[prefix + "total"] += size
+                bucket[prefix + "matched"] += earned
+            bucket["functions_fuzzy"] += int(function and not row.exact and row.score > 0)
+            bucket["code_fuzzy"] += round(row.score * (row.code - row.kept))
+            bucket["data_fuzzy"] += round(row.score * row.data)
     return totals, segments, kinds
 
 
@@ -549,9 +580,20 @@ _Item = tuple[Snapshot, Json, str, Mapping[str, Sequence[str]], frozenset[str]]
 STAMP = "versions/stamp.json"  # beside the reports: objdiff refuses a report.json field it does not know
 
 
+def _compact(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def dump_objdiff(document: Json) -> bytes:
+    """A report as canonical JSON with one category and one unit per line: a landing changes a few lines of the
+    committed file instead of rewriting one line of megabytes."""
+    rows = {k: ",\n".join(map(_compact, document[k])) for k in ("categories", "units")}
+    rest = _compact({k: v for k, v in document.items() if k not in rows})[1:-1]
+    return f'{{"categories":[\n{rows["categories"]}\n],{rest},"units":[\n{rows["units"]}\n]}}\n'.encode()
+
+
 def _objdiff_job(item: _Item) -> bytes:
-    document = objdiff(*item)
-    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    return dump_objdiff(objdiff(*item))
 
 
 def _objdiff_key(item: _Item) -> str:
@@ -562,11 +604,12 @@ def _objdiff_key(item: _Item) -> str:
 
 
 def stamp(snapshot: Snapshot) -> Json:
-    """What the report.json files are made by and from (versions/stamp.json): the tool's code and the tracked text
-    they read (the map, every unit and header), so a reader tells files a later commit left behind from current ones."""
+    """What the report.json files are made by and from (versions/stamp.json): the tool's release (never the digest of
+    an install, which differs with what else is installed beside it) and the tracked text they read (the map, every
+    unit and header), so a reader tells files a later commit left behind from current ones."""
     paths = sorted({*snapshot.layout.units, *headers.sources(snapshot)})
     tree = digest((snapshot.peek("layout.toml"), [(p, snapshot.peek(p)) for p in paths]))
-    return {"tool": store.code(), "tree": tree}
+    return {"tool": f"unbake {unbake.__version__}", "tree": tree}
 
 
 def stale(snapshot: Snapshot) -> list[str]:
@@ -592,6 +635,7 @@ def files(snapshot: Snapshot) -> dict[str, bytes]:
         result = {f"versions/{v}/report.json": blob for v, blob in zip(ids, blobs, strict=True)}
         result[STAMP] = json.dumps(stamp(snapshot), sort_keys=True).encode() + b"\n"
         result["README.md"] = readme(snapshot.read("README.md").decode(), snapshot, report).encode()
+        result.update(present.files(snapshot, report))
         return result
 
 

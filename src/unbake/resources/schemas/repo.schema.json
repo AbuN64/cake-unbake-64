@@ -54,11 +54,83 @@
       "tag"
      ],
      "additionalProperties": false
+    },
+    "cache_restore": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "minLength": 1
+      },
+      "sha": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{40}$"
+      },
+      "tag": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "action",
+      "sha",
+      "tag"
+     ],
+     "additionalProperties": false
+    },
+    "cache_save": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "minLength": 1
+      },
+      "sha": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{40}$"
+      },
+      "tag": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "action",
+      "sha",
+      "tag"
+     ],
+     "additionalProperties": false
+    },
+    "upload": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "minLength": 1
+      },
+      "sha": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{40}$"
+      },
+      "tag": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "action",
+      "sha",
+      "tag"
+     ],
+     "additionalProperties": false
     }
    },
    "required": [
+    "cache_restore",
+    "cache_save",
     "checkout",
-    "python"
+    "python",
+    "upload"
    ],
    "additionalProperties": false
   },
@@ -79,12 +151,20 @@
     "audit_image": {
      "type": "string",
      "minLength": 1
+    },
+    "board_packages": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
     }
    },
    "required": [
     "image",
     "audit_image",
-    "packages"
+    "packages",
+    "board_packages"
    ],
    "additionalProperties": false
   },

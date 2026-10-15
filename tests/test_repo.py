@@ -299,20 +299,15 @@ def test_files_contents(snapshot, monkeypatch, existing):
     assert result["README.md"] == b"report"
     for v in ("a", "b"):
         assert result[f"versions/{v}/symbols.ld"] == v.encode()
-    ci = result[".github/workflows/ci.yml"].decode()
-    for row in rules["github"].values():
-        assert f"{row['action']}@{row['sha']} # {row['tag']}" in ci
-    assert "\n  audit:\n    name: audit\n" in ci and 'unbake audit --against "$BASE"' in ci
-    assert "releases/download/v" in ci and "pip install https://github.com/" in ci
-    assert "make check" not in ci.split("\n  audit:")[1]
-    assert "report.json" not in ci and "upload" not in ci
-    assert "schedule:" in ci and "\n  push:\n    branches: [main]" in ci
-    assert "github.event_name != 'push'" in ci  # the check job runs on a schedule, never once per push
-    assert '- cron: "0 12 * * *"' in ci and "needs.changed.outputs.recent == '1'" in ci  # daily, only after a change
-    gitlab = result[".gitlab-ci.yml"].decode()
-    assert rules["gitlab"]["image"] in gitlab
-    assert " ".join(rules["gitlab"]["packages"]) in gitlab
-    assert rules["gitlab"]["audit_image"] in gitlab and "unbake audit --against" in gitlab
+    for path, value in repo.ci.files(("a", "b")).items():  # the CI files: one entry point and its thin callers
+        assert result[path] == value
+    assert all(p in result["generated.txt"].decode().splitlines() for p in repo.ci.files(("a", "b")))
+    assert json.loads(result[".recomp.json"]) == {
+        "$schema": "https://recomp.fyi/schema/v1.json",
+        "game": snapshot.config.project.title,
+        "system": "N64",
+        "type": "decomp",
+    }
     for path in preserved:
         assert path not in result
         assert snapshot.read(path) == b"authored"
