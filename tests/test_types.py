@@ -114,6 +114,7 @@ def test_scan_records_the_headers_declarations_as_authored(lane):
             "handler": ("include/h.h", 6, "extern void (*handler)(int a);"),
             "known": ("include/h.h", 7, "extern int known(int a, void *b);"),
             "bare": ("include/h.h", 8, "void bare(void);"),
+            "__asm__": ("include/h.h", 9, '__asm__(".include \\"include/macro.inc\\"\\n");'),  # no declaration
         }
     )
     LANDED["known"] = "s32 known(s32 a, void *b)"
@@ -249,6 +250,7 @@ def test_scan_keeps_authored_rows_the_c_does_not_produce_and_drops_stale_landed_
             "func_asm_only": {"signature": "void func_asm_only(void)", "evidence": "authored"},
             "gone": {"signature": "void gone(void)", "evidence": "landed"},
             "was_declared": {"signature": "void was_declared(void)", "evidence": "declared"},
+            "__asm__": {"signature": '__asm__(".include \\"include/macro.inc\\"\\n")', "evidence": "authored"},
         },
         struct={"Hand": {"declaration": "struct Hand { int a; };", "evidence": "authored"}},
         global_={"gHand": {"declaration": "extern int gHand;", "evidence": "authored"}},

@@ -109,6 +109,9 @@ def scan(snapshot: Snapshot) -> bytes:
         return store.cached(snapshot.config, "types-scan", key, lambda: _scan(snapshot))
 
 
+_ASM = frozenset(("__asm__", "__asm", "asm"))
+
+
 def _scan(snapshot: Snapshot) -> bytes:
     stale = snapshot.read("types.toml")  # read without validation: this scan replaces a file the schema refuses
     schema = int(stale.split(b"=", 1)[1].split(b"\n", 1)[0])
@@ -116,6 +119,8 @@ def _scan(snapshot: Snapshot) -> bytes:
     for name, text in headers.landed(snapshot).items():
         doc["function"][name] = {"signature": text, "evidence": "landed"}
     for name, (_, _, text) in headers.catalog(snapshot).items():
+        if name in _ASM:  # a top-level asm statement (an .include of macros) is no declaration
+            continue
         if re.match(r"(?:typedef|struct|union|enum)\b", text):
             doc["struct"].setdefault(name.rpartition(" ")[2], {"declaration": text, "evidence": "authored"})
         elif re.search(rf"\b{re.escape(name)}\s*\(", text):
@@ -126,7 +131,7 @@ def _scan(snapshot: Snapshot) -> bytes:
     for kind, rows in tomllib.loads(stale.decode()).items():  # a row nothing in the C produces is authored: it stays
         if kind in ("struct", "global", "function"):
             for name, row in rows.items():
-                if row.get("evidence") not in ("landed", "declared"):  # those two are recomputed above and below
+                if row.get("evidence") not in ("landed", "declared") and name not in _ASM:  # those two are recomputed above and below
                     doc[kind].setdefault(name, row)
     known = _KEYWORDS | doc["struct"].keys()
     agreed = {
