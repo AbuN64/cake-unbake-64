@@ -857,10 +857,17 @@ def physical(
         home = {n: old[n].group if n in old and old[n].group in gs else gs[0] for n, gs in listing.items()}
         for group in layout.groups.values():
             landed = {n for n in group.members if n in old and n in members and home[n] == group.name}
-            landed |= {n for n in owned if n.split("/")[1] in landed}  # an owned member follows its owner
+            # an owned member follows its owner; one whose name points at no member (an old unit's name: the row was
+            # cut for a unit, not a function) follows the first member of its old unit, or the map drops its bytes
+            mate = {
+                n: next((m for m in old[n].members if m in landed and m.count("/") != 2), "")
+                for n in owned
+                if n.split("/")[1] not in landed
+            }
+            landed |= {n for n in owned if n.split("/")[1] in landed or mate.get(n)}
             atoms: dict[str, list[str]] = {}
             for n in sorted(landed, key=rank):
-                owner = n.split("/")[1] if n.count("/") == 2 else n
+                owner = (n.split("/")[1] if n.split("/")[1] in landed else mate.get(n, "")) if n.count("/") == 2 else n
                 atoms.setdefault(owner if owner in landed else n, []).append(n)
             for atom in list(atoms.values()):  # a member a file starts at (a proof's evidence) leads its own
                 for n in [n for n in atom[1:] if n in boundaries]:

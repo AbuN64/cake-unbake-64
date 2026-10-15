@@ -253,6 +253,18 @@ def test_physical_owned_adjacent_data_joins_the_module_unit_and_a_far_one_stays_
     }
 
 
+def test_physical_keeps_an_owned_row_named_after_an_old_unit_with_the_function_of_that_unit(scene):
+    # G 3d7afb392: src/func_8023F43C_de_2.c held func_8023FD18_de and rodata/func_8023F43C_de_2/800C87F8 (the row was
+    # cut for the unit, so it names the unit, not a function); the relayout dropped the row from every unit, and 22
+    # units failed "owned .rodata size" in all five versions
+    row = "rodata/grp_2/80000408"
+    snapshot = scene((("fa", "c", RETURN), (row, "data", (1,))), units=(_unit(("fa", row), "src/grp_2.c"),))
+    group = snapshot.layout.groups["grp"]
+    unlisted = replace(snapshot.layout, groups={"grp": replace(group, members=("fa",))})  # no group lists the row
+    result = layout.physical(snapshot, unlisted)
+    assert [u.members for u in result.values()] == [("fa", row)]
+
+
 def test_physical_keeps_an_owned_member_apart_when_another_units_bytes_lie_between_it_and_its_owner(scene):
     entries = (("fa", "c", RETURN), ("rodata/fa/80000408", "data", (1,)), ("blob", "data", (2,)))
     entries += (("rodata/fa/80000410", "data", (3,)),)
