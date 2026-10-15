@@ -1278,10 +1278,6 @@ def _capped(found: Finding) -> Finding:
     return replace(found, reason=cut(found.reason), missing=tuple(cut(m) for m in found.missing))
 
 
-def _said(found: Json) -> str:
-    return json.dumps(found, sort_keys=True, default=str)
-
-
 def run(config: Config, params: Json) -> Json:
     wait_s = config.host.move_wait_s
     with effort.stage("move.run"), store.exclusive(config, "structure", wait=True, wait_s=wait_s) as held:
@@ -1303,9 +1299,10 @@ def run(config: Config, params: Json) -> Json:
         partial = bool(params.get("partial")) or unproved
         files: dict[str, None] = {}
         deleted: dict[str, None] = {}
-        # each round applies one batch of the stream's indexes. A refusal whose finding is this move's alone is
-        # final; a finding several moves share makes them suspects, applied again in halves (only they: the rest
-        # apply as one batch first). A move the plan refuses beside others is tried once alone, after the rest.
+        # each round applies one batch of the stream's indexes. Every move a round's findings blame is refused in that
+        # round, all at once, and the rest apply as one batch next (never halves of the blamed, never one at a time:
+        # the 2026-10-15 fakes move spent rounds 9-21 bisecting one unit's suspects). A move the plan refuses beside
+        # others is tried once alone, after the rest.
         queue: list[list[int]] = [list(range(len(moves)))]
         alone: set[int] = set()
         bounds: list[str] = []  # members a file starts at, found by this command's proofs
@@ -1393,21 +1390,14 @@ def run(config: Config, params: Json) -> Json:
                 landed = landed or not result["refused"]
                 continue
             rows = {r["index"]: r for r in result["refused"]}
-            shared = Counter(_said(f) for r in rows.values() for f in r["findings"])
-            final, suspects = [], []
-            for k, row in rows.items():
+            final = []
+            for k in rows:  # every row the round blames is refused at once: a round never refuses one row at a time
                 if planned and len(ids) > 1 and ids[k] not in alone:
                     alone.add(ids[k])
                     queue.append([ids[k]])
-                elif planned or len(ids) == 1 or any(shared[_said(f)] == 1 for f in row["findings"]):
-                    final.append(k)
                 else:
-                    suspects.append(k)
-            final += suspects if len(suspects) == 1 else []
+                    final.append(k)
             refused += [{**rows[k], "index": ids[k]} for k in final]
-            if len(suspects) > 1:
-                half = len(suspects) // 2
-                queue[:0] = [[ids[k] for k in suspects[:half]], [ids[k] for k in suspects[half:]]]
             rest = [x for k, x in enumerate(ids) if k not in rows]
             chained += bool(rest)
             if rest and chained >= _ROUNDS and not unproved:
@@ -1585,8 +1575,8 @@ def _kept(
 ) -> Json:
     """The old units whose proof failed (a new unit's failure keeps every old unit it came from), why, how many bytes
     each holds and the boundaries that keep each apart in later layouts: its first member and the member after it.
-    When every failing unit is kept already, what fails is what they read: `stuck(units)` names the moves that changed
-    it and those are refused, never the batch's first move."""
+    When every failing unit is kept already, what fails is what they read: `stuck(failing)` names the moves that
+    changed it and those are refused, never the batch's first move."""
     lay = snapshot.layout
     why: dict[str, list[Finding]] = defaultdict(list)
     for path, found in failing.items():
@@ -1602,7 +1592,7 @@ def _kept(
     if not why or set(why) <= set(keep):  # nothing new to keep: the failure is not any unit's
         if stuck is not None and moves and not any(m.op == "relayout" for m in moves):
             found = [_capped(f) for fs in failing.values() for f in fs][:1]
-            rows = [(m, f) for m in stuck([u for u in failing if u]) for f in found]
+            rows = [(m, f) for m in stuck({u: fs for u, fs in failing.items() if u}) for f in found]
             return {**_refusal(moves, snapshot, rows), "unkept": True}
         rows = [(Move(0, "relayout", "", ""), _capped(f)) for found in failing.values() for f in found]
         return {**_refusal([Move(0, "relayout", "", "")], snapshot, rows), "unkept": True}
@@ -1827,16 +1817,21 @@ def _apply(
         if not writes:
             return _result(moves, snapshot)
 
-        def stuck(units: Sequence[str]) -> list[Move]:
-            """Kept units that still fail read a changed header: the moves that changed the headers they reach."""
+        def stuck(failing: Mapping[str, Sequence[Finding]]) -> list[Move]:
+            """Kept units that still fail read a changed header: the moves that changed the changed headers their
+            compiler messages name (the error's file and its include chain), else every changed header they reach."""
             after = layout.overlay(snapshot, writes)
             changed = {p for p, b in writes.items() if p.startswith("include/") and b is not None}
-            hit = {
-                m.index: m
-                for p in sorted(headers._closure(after, units) & changed)
-                for m in _file_moves(snapshot, after, edited, live, p)
-            }
-            return [hit[i] for i in sorted(hit)] or _blamed(edited, live, [after.layout.units.get(u) for u in units])
+            root = str(config.project.root.resolve()) + "/"
+            hit: dict[int, Move] = {}
+            for unit, found in failing.items():
+                reach = headers._closure(after, [unit]) & changed
+                said = "\n".join(t for f in found for t in (f.reason, *f.missing))
+                named = {_VIEWS.sub("", h.removeprefix(root)) for h in _HEADER_AT.findall(said)} & reach
+                for p in sorted(named or reach):
+                    hit.update((m.index, m) for m in _file_moves(snapshot, after, edited, live, p))
+            units = [after.layout.units.get(u) for u in failing]
+            return [hit[i] for i in sorted(hit)] or _blamed(edited, live, units)
 
         with effort.stage("move.generate"):
             try:

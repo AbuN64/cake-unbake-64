@@ -1980,22 +1980,23 @@ def _rounds(monkeypatch: Patch, refuse: Any) -> list[list[str]]:
     return applied
 
 
-def test_partial_bisects_only_the_moves_a_shared_finding_blames_and_lands_the_rest_in_one_round(
+def test_partial_refuses_every_move_a_round_blames_at_once_and_lands_the_rest_the_next_round(
     tmp_path: Path, seen: Any, monkeypatch: Patch
 ) -> None:
-    broken = {"key": "move.not_exact", "unit": "src/u.c", "reason": "size"}
+    # the 2026-10-15 fakes move, rounds 9-21: one kept unit (code_802B7520_5.c) failing again blamed 134 moves; the
+    # old loop bisected them 67, 33, 16, 8, 4, 2, 1 per round on 3-4 cores for 50 minutes
+    broken = {"key": "move.not_exact", "unit": "src/sdk/libgultra/part_800C7F20/code_802B7520_5.c", "reason": "size"}
+    blamed = {f"s{i}" for i in range(1, 12, 2)}
 
-    def refuse(subjects: list[str]) -> Any:  # s1 breaks u.c; every move touching u.c is blamed while s1 is in the batch
-        blamed = {s: [broken] for s in subjects if s in ("s1", "s3", "s5")} if "s1" in subjects else {}
-        return blamed, False
+    def refuse(subjects: list[str]) -> Any:
+        return ({s: [broken] for s in subjects if s in blamed} if blamed & set(subjects) else {}), False
 
     applied = _rounds(monkeypatch, refuse)
-    stdin(monkeypatch, json.dumps([{"op": "symbol", "subject": f"s{i}", "target": f"t{i}"} for i in range(6)]))
+    stdin(monkeypatch, json.dumps([{"op": "symbol", "subject": f"s{i}", "target": f"t{i}"} for i in range(12)]))
     result = move.run(world(tmp_path), {"op": "-", "partial": "1"})
-    assert [r["index"] for r in result["refused"]] == [1] and result["rounds"] == len(applied)
-    # one round for the batch, one for the innocent rest, then halves of the suspects only
-    assert applied == [["s0", "s1", "s2", "s3", "s4", "s5"], ["s0", "s2", "s4"], ["s1"], ["s3", "s5"]]
-    assert sorted(result["files"]) == [f"src/s{i}.c" for i in (0, 2, 3, 4, 5)]
+    assert [r["index"] for r in result["refused"]] == sorted(int(s[1:]) for s in blamed)
+    assert applied == [[f"s{i}" for i in range(12)], [f"s{i}" for i in range(0, 12, 2)]] and result["rounds"] == 2
+    assert sorted(result["files"]) == sorted(f"src/s{i}.c" for i in range(0, 12, 2))
 
 
 def test_partial_retries_alone_a_move_the_plan_refused_beside_others(
@@ -2147,8 +2148,8 @@ def test_kept_units_that_still_fail_refuse_the_moves_that_changed_what_they_read
     failing = {"src/f1.c": [Finding("move.not_exact", "x", unit="src/f1.c", missing=("e" * 90_000,))]}
     asked: list[list[str]] = []
 
-    def stuck(units: list[str]) -> list[Move]:
-        asked.append(units)
+    def stuck(units: dict[str, Any]) -> list[Move]:
+        asked.append(sorted(units))
         return list(moves[1:])
 
     result = move._kept(snapshot, snapshot.layout, failing, ["src/f1.c"], moves, stuck)
