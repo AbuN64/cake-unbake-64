@@ -893,6 +893,30 @@ def _movable(snapshot: Snapshot, rows: list[Json], census: list[Json]) -> list[J
     return rows
 
 
+def _modules(snapshot: Snapshot) -> dict[str, str]:
+    """Per function symbol stem (func_<8 hex>) the module holding it: its own member's, else the member whose bytes
+    hold its address (a helper compiled inside a member), in the version names come from."""
+    version = snapshot.config.project.names_from
+    spans = sorted(
+        (p.vram, p.vram + p.size, member.group)
+        for member in snapshot.layout.members.values()
+        if member.group
+        for p in member.placements
+        if p.version == version and p.section == ".text"
+    )
+    starts = [lo for lo, _, _ in spans]
+    out: dict[str, str] = {}
+    for name, address in snapshot.versions[version].symbols.items():
+        stem = re.match(r"func_([0-9A-Fa-f]{8})", name)
+        at = bisect_right(starts, address) - 1
+        if stem and at >= 0 and address < spans[at][1]:
+            out.setdefault("func_" + stem[1].upper(), spans[at][2])
+    for name, member in snapshot.layout.members.items():
+        if (stem := re.match(r"func_([0-9A-Fa-f]{8})", name)) and member.group:
+            out["func_" + stem[1].upper()] = member.group
+    return out
+
+
 def _fakes_stream(snapshot: Snapshot) -> Json:
     """Write the fold plan of every invented per-function record and every record only a source defines to
     .unbake/fakes.jsonl (input of `unbake move - --partial`) and its census to .unbake/fakes.json: per class the
@@ -910,11 +934,7 @@ def _fakes_stream(snapshot: Snapshot) -> Json:
     wanted = [n for n in laid if fakefold.invented(n) or n in local]
     reached = fakefold.reaches(texts, wanted)
     taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}
-    modules = {
-        m[0]: member.group
-        for name, member in snapshot.layout.members.items()
-        if (m := re.match(r"func_[0-9A-Fa-f]{8}", name)) and member.group
-    }
+    modules = _modules(snapshot)
     project = snapshot.config.project
     version = project.readme_map or project.names_from
     pieces, rules, subjects = _fake_pieces(snapshot, version)

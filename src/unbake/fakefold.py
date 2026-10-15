@@ -517,7 +517,7 @@ def _flow_name(
     ranked = sorted(roles, key=lambda r: (-roles[r], first.index(r) if r in first else len(first)))
     role = next((r for r in ranked if r and not invented(r) and r != "Shared"), "")
     symbols = sorted(m[0] for n in names if (m := re.search(r"func_[0-9A-Fa-f]{8}", n)))
-    module = modules.get(next(iter(symbols), ""), "")
+    module = modules.get("func_" + next(iter(symbols), "func_").removeprefix("func_").upper(), "")
     picks = [_pascal(w) for w, _ in words.most_common(3)]
     stem = _pascal(role) or "Rec"  # a numbered view has no role: the module names it
     picks += [stem + _pascal(module)] if module else []
