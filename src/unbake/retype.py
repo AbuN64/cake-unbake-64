@@ -259,10 +259,10 @@ _RAW = re.compile(
 )
 
 
-def _member_at(layout: Mapping[str, Any], offset: int, kind: str | None) -> str | None:
+def _member_at(record: Mapping[str, Any], offset: int, kind: str | None) -> str | None:
     """The member path (`a.b`) of a laid record at offset: the outermost member starting there, or with `kind` the
     one of that exact type; None when no member starts there (or none of that type)."""
-    for field in layout.get("fields", ()):
+    for field in record.get("fields", ()):
         name = field["name"]
         if not name or field.get("arm"):
             continue
@@ -285,8 +285,8 @@ def raw_offsets(code: str, records: Mapping[str, Mapping[str, Any]]) -> tuple[li
         if known is None or known[1] != 1 or known[0] not in records:
             skipped["base is no typed record pointer"] += 1
             continue
-        layout, offset = records[known[0]], int(m["offset"], 0)
-        member = _member_at(layout, offset, m["type"] if m["deref"] else None)
+        record, offset = records[known[0]], int(m["offset"], 0)
+        member = _member_at(record, offset, m["type"] if m["deref"] else None)
         if member is None:
             skipped["no member of that type starts at the offset"] += 1
             continue

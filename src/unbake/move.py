@@ -1065,7 +1065,7 @@ def _views(config: Config, overlay: Snapshot, units: Sequence[UnitSpec]) -> dict
         return {u.path: v for u, v in zip(units, made, strict=True)}
 
 
-def _newly_unclean(
+def newly_unclean(
     before: Snapshot, after: Snapshot, affected: Collection[str]
 ) -> tuple[list[tuple[str, Finding]], tuple[Finding, ...]]:
     """The affected units holding functions an unclean finding withholds after and not before: their bytes stay exact
@@ -1741,7 +1741,7 @@ def _apply(
         if blocking := [replace(f, key="move.policy") for f in census if f.blocking]:
             rows = [(m, f) for f in blocking for m in _blamed(edited, moves, _policy_units(overlay, f.path))]
             return _refusal(moves, snapshot, rows)
-        newly, unjudged = _newly_unclean(snapshot, overlay, affected) if not unproved else ([], ())
+        newly, unjudged = newly_unclean(snapshot, overlay, affected) if not unproved else ([], ())
         if converge and keep:  # a kept unit's text is unchanged: a rule its new headers fire is census debt
             unjudged = (*unjudged, *(replace(f, blocking=False) for p, f in newly if p in keep))
             newly = [(p, f) for p, f in newly if p not in keep]
@@ -1810,6 +1810,13 @@ def _lay_job(item: tuple[Snapshot, str]) -> Any:
     start, end = _body(statement)
     laid = _probe_layouts(types, {f"struct {tag}": f"struct {tag} {statement[start : end + 1]};"})
     return laid.get(f"struct {tag}", {"conflict": "no layout"}) if isinstance(laid, dict) else {"conflict": laid}
+
+
+def source_records(snapshot: Snapshot) -> set[str]:
+    """The record tags and typedef names only sources declare (no header does): a source's own records."""
+    types = _record_types(snapshot)
+    records, typedefs = headers.type_names(snapshot)
+    return {n for n in [*types.records, *types.typedefs] if n not in records and n not in typedefs}
 
 
 def record_layouts(snapshot: Snapshot) -> tuple[dict[str, Any], dict[str, str]]:

@@ -845,7 +845,6 @@ def _fake_pieces(snapshot: Snapshot, version: str) -> tuple[dict[str, int], dict
     whose fake-type finding withholds each): the census weights, judged on all cores."""
     rules = policy.unclean_rules(snapshot)
     project, broken = snapshot.config.project, _broken(snapshot)
-    starts = policy._function_starts(snapshot, version)
     pieces: dict[str, int] = defaultdict(int)
     paths: set[str] = set()
     for name, member, unit, _, _ in _inventory(snapshot):
@@ -853,13 +852,11 @@ def _fake_pieces(snapshot: Snapshot, version: str) -> tuple[dict[str, int], dict
             continue
         if not _version_matched(project, unit, version) or unit.path in broken:
             continue
-        for place in (p for p in member.placements if p.version == version and p.section == ".text"):
-            cuts = [(place.vram, name), *policy._starts_in(starts, place)]
-            for (low, fn), (high, _) in zip(cuts, [*cuts[1:], (place.vram + place.size, "")], strict=True):
-                if fn in rules:
-                    pieces[fn] += high - low
-                    if "source.fake-type" in rules[fn]:
-                        paths.add(unit.path)
+        for fn, size in policy.pieces(snapshot, name, version):
+            if fn in rules:
+                pieces[fn] += size
+                if "source.fake-type" in rules[fn]:
+                    paths.add(unit.path)
     names: dict[str, set[str]] = defaultdict(set)
     with effort.stage("report.fakes.weights"):
         for found in pool.map(
@@ -884,9 +881,7 @@ def _fakes_stream(snapshot: Snapshot) -> Json:
     with effort.stage("report.fakes.flow"):
         found = pool.map(snapshot.config, "report.fakes.flow", _facts_job, [(snapshot, p) for p in paths])
     edges = fakefold.flow(found, laid, aliases)
-    types = move._record_types(snapshot)
-    records, typedefs = headers.type_names(snapshot)
-    local = {n for n in [*types.records, *types.typedefs] if n not in records and n not in typedefs and n in laid}
+    local = {n for n in move.source_records(snapshot) if n in laid}
     wanted = [n for n in laid if fakefold.invented(n) or n in local]
     reached = fakefold.reaches(texts, wanted)
     taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}

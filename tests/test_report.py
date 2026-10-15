@@ -1179,8 +1179,8 @@ def test_the_objdiff_pool_is_keyed_by_everything_a_version_report_reads(snapshot
     )
     snapshot = snapshot_factory([_member("matched")], units=[_unit("matched")])
     report.files(snapshot)
-    ((name, key, items),) = seen
-    assert name == "report.objdiff" and key is report._objdiff_key
+    ((_, key, items),) = [s for s in seen if s[0] == "report.objdiff"]  # present.files dispatches its own
+    assert key is report._objdiff_key
     one, other = items[0], items[1]
     assert key(one) != key(other) and key(one) == key(one)
     dirty = (*one[:3], {"src/matched.c": ("source.raw-offset",)}, one[4])

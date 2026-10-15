@@ -89,6 +89,7 @@ def test_batch_proves_all_members_and_versions_before_atomic_commit(scene, tmp_p
         ]
 
     monkeypatch.setattr(batch_data.pool, "map", dispatch)
+    monkeypatch.setattr(batch_data.publish, "credit_guard", lambda s, w: None)  # its own test: test_publish
     monkeypatch.setattr(batch_data.policy, "evaluate", lambda *a: ())
     monkeypatch.setattr(batch_data.types, "scan", lambda s: b"types")
     monkeypatch.setattr(batch_data.repo, "files", lambda s: {})

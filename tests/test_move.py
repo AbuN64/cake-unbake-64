@@ -1167,7 +1167,7 @@ def test_a_stream_keeps_the_old_units_of_a_newly_unclean_unit_and_refuses_no_unr
     # round 9 of inv 849e77f0: the unclean check named src/func_8025D928_de_15.c, a unit only the new layout has;
     # nothing mapped it to old units, so the stream refused its first move each round instead of keeping the unit
     calls = []
-    real = move._newly_unclean
+    real = move.newly_unclean
 
     def newly(before: Any, after: Any, affected: Any) -> Any:
         calls.append(sorted(after.layout.units))
@@ -1175,7 +1175,7 @@ def test_a_stream_keeps_the_old_units_of_a_newly_unclean_unit_and_refuses_no_unr
             return real(before, after, affected)
         return [("src/f1.c", Finding("move.unclean", "source.fake-type", path="src/f1.c", unit="src/f1.c"))], ()
 
-    monkeypatch.setattr(move, "_newly_unclean", newly)
+    monkeypatch.setattr(move, "newly_unclean", newly)
     stdin(monkeypatch, json.dumps([{"op": "member", "subject": "f2", "target": "ga"}]))
     result = move.run(world(tmp_path), {"op": "-", "partial": "1"})
     assert result["refused"] == [] and "src/f1.c" in result["kept"] and result["converged"]
@@ -1187,7 +1187,7 @@ def test_a_newly_unclean_old_unit_is_kept_even_when_the_new_unit_at_its_path_hol
     # round 9 of the 06:15 race: src/func_802BA210_de_33.c (old, not kept) fired an unclean rule; the new unit at
     # that path held members whose old units were all kept, so mapping by members alone kept nothing new
     found = Finding("move.unclean", "src/f1.c:4 source.fake-type", path="src/f1.c", unit="src/f1.c")
-    monkeypatch.setattr(move, "_newly_unclean", lambda *a: ([("src/f1.c", found)], ()))
+    monkeypatch.setattr(move, "newly_unclean", lambda *a: ([("src/f1.c", found)], ()))
     real = move.layout.unit_of
     monkeypatch.setattr(move.layout, "unit_of", lambda s, n: real(s, n) if n != "f1" else real(s, "f3"))
     result = move._apply(world(tmp_path), [move.Move(0, "member", "f2", "ga")], False, (), ["src/f3.c"], True)
@@ -1200,7 +1200,7 @@ def test_a_kept_unit_that_turns_unclean_is_debt_and_the_stream_still_lands(
     # round 9 of inv 849e77f0: src/func_8025D928_de_15.c, kept with its module, fired source.param-cast once the
     # headers it reads changed; already kept, nothing new could be kept, so a fake move 0 was refused every round
     found = Finding("move.unclean", "src/f3.c:17 source.param-cast", path="src/f3.c", unit="src/f3.c")
-    monkeypatch.setattr(move, "_newly_unclean", lambda *a: ([("src/f3.c", found)], ()))
+    monkeypatch.setattr(move, "newly_unclean", lambda *a: ([("src/f3.c", found)], ()))
     cfg = world(tmp_path)
     moves = [move.Move(0, "member", "f2", "ga")]
     result = move._apply(cfg, moves, False, (), ["src/f3.c"], True)

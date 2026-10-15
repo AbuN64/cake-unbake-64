@@ -1031,19 +1031,24 @@ def credited(snapshot: Snapshot, path: str, text: str | None = None) -> list[str
     return [*own, *dict.fromkeys(inner)]
 
 
-def withheld_bytes(snapshot: Snapshot, rules: Collection[str], member: str, version: str) -> int:
-    """The .text bytes of a function member in one version that unclean verdicts withhold. The member's bytes split at
-    the address of each function inside them; a piece goes with the function that starts it (the first with the
-    member), so a member keeps the credit of its clean functions when a helper inside it is withheld."""
-    if not rules:
-        return 0
+def pieces(snapshot: Snapshot, member: str, version: str) -> list[tuple[str, int]]:
+    """(function, bytes) of each piece of a function member's .text in one version: its bytes split at the address
+    of each function inside them, a piece going with the function that starts it (the first with the member)."""
     places = [p for p in snapshot.layout.members[member].placements if p.version == version and p.section == ".text"]
-    starts, total = _function_starts(snapshot, version), 0
+    starts, out = _function_starts(snapshot, version), []
     for place in places:
         cuts = [(place.vram, member), *_starts_in(starts, place)]
         for (start, name), (end, _) in zip(cuts, [*cuts[1:], (place.vram + place.size, "")], strict=True):
-            total += end - start if name in rules else 0
-    return total
+            out.append((name, end - start))
+    return out
+
+
+def withheld_bytes(snapshot: Snapshot, rules: Collection[str], member: str, version: str) -> int:
+    """The .text bytes of a function member in one version that unclean verdicts withhold (`pieces`), so a member
+    keeps the credit of its clean functions when a helper inside it is withheld."""
+    if not rules:
+        return 0
+    return sum(size for name, size in pieces(snapshot, member, version) if name in rules)
 
 
 def _starts_in(starts: Sequence[tuple[int, str]], place: Any) -> list[tuple[int, str]]:

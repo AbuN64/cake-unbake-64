@@ -625,7 +625,7 @@ def accept(
 
 def credit_guard(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> None:
     """Refuses landing writes that cost an already credited function its exact credit (an unclean rule now withholds
-    it): the same rule move, fold and relayout apply (move._newly_unclean), so no write path drops credit unseen."""
+    it): the same rule move, fold and relayout apply (move.newly_unclean), so no write path drops credit unseen."""
     from unbake import move  # move reads publish
 
     with effort.stage("publish.credit_guard"):
@@ -634,7 +634,7 @@ def credit_guard(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> None
         affected = {p for p in writes if p in snapshot.layout.units and p in overlay.layout.units}
         if changed:
             affected |= {p for p in headers.consumers(overlay, changed) if p in snapshot.layout.units}
-        losses, _ = move._newly_unclean(snapshot, overlay, sorted(affected))
+        losses, _ = move.newly_unclean(snapshot, overlay, sorted(affected))
         if losses:
             raise Refusal(*(f for _, f in losses))
 

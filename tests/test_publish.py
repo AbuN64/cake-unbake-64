@@ -28,6 +28,7 @@ from unbake.contracts import (
 
 @pytest.fixture
 def lane(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish, "credit_guard", lambda s, w: None)  # judged on its own below
     config = fixture.bare_config(tmp_path, memory=1000)
     unit = UnitSpec("src/f.c", "c", "group", ("f",), "gcc-test", {"add": [], "omit": []})
     group = Group("group", "main", ("f",), "authored", (), False, "src/group.c", "include/main/group.h")
@@ -1094,9 +1095,9 @@ def test_a_landing_that_costs_a_credited_function_its_credit_is_refused(monkeypa
         seen.append(affected)
         return [("src/b.c", Finding("move.unclean", "src/b.c:3 would cost g its exact credit"))], ()
 
-    monkeypatch.setattr(move, "_newly_unclean", losses)
+    monkeypatch.setattr(move, "newly_unclean", losses)
     with pytest.raises(Refusal) as refused:
         publish.credit_guard(snapshot, {"src/a.c": b"x", "include/a.h": b"y", "src/new.c": b"z"})
     assert seen == [["src/a.c", "src/b.c"]] and refused.value.findings[0].key == "move.unclean"
-    monkeypatch.setattr(move, "_newly_unclean", lambda b, a, f: ([], ()))
+    monkeypatch.setattr(move, "newly_unclean", lambda b, a, f: ([], ()))
     publish.credit_guard(snapshot, {"src/a.c": b"x"})
