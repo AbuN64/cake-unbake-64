@@ -137,6 +137,16 @@ def test_authored_group_kept_and_excluded_from_inference(tmp_path: Path) -> None
 
 
 @pytest.mark.usefixtures("toolchains")
+def test_an_authored_group_drops_a_row_that_no_longer_exists_and_the_plan_runs(tmp_path: Path) -> None:
+    # real case: setup's second map pass reads the ROM symbol table, which renamed the data row
+    # src/ragewars_u64_remainder_bitwidth_us_rev1.c; its authored module still listed it and _plan raised KeyError
+    snapshot = chain(tmp_path, [LEAF, LEAF], groups=[module(members=["f0", "renamed_row"])])
+    result = infer.groups(snapshot)
+    assert result[0].name == "mine" and result[0].members == ("f0",)
+    infer.plan(snapshot)  # no KeyError for the vanished name
+
+
+@pytest.mark.usefixtures("toolchains")
 def test_an_sdk_function_between_game_functions_is_cut_into_its_own_module(tmp_path: Path) -> None:
     snapshot = chain(tmp_path, [LEAF, LEAF, LEAF])
     assert names(infer.groups(snapshot, frozenset({"f1"}))) == [("f0",), ("f1",), ("f2",)]

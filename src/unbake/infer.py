@@ -407,7 +407,13 @@ def groups(snapshot: Snapshot, identified: Collection[str] | None = None) -> tup
     version holders, padded object boundaries, the layout cap) and always at a toolchain change between two landed
     units and at an sdk edge, so no module holds sdk and game code together."""
     with effort.stage("infer.groups"):
-        kept = [g for g in snapshot.layout.groups.values() if g.evidence in {"authored", "proven"}]
+        # a kept module keeps the rows that still exist: a name the symbol table renamed or removed leaves its list
+        members = snapshot.layout.members
+        kept = [
+            replace(g, members=tuple(n for n in g.members if n in members))
+            for g in snapshot.layout.groups.values()
+            if g.evidence in {"authored", "proven"}
+        ]
         excluded = {n for g in kept for n in g.members}
         functions = [m for m in snapshot.layout.members.values() if m.kind == "function"]
         cap = _cap()
