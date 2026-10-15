@@ -104,7 +104,36 @@ def test_plan_refuses_ties_and_taken_names():
         "U_func_80100020_de": lay(2, (0, 1, "u8", "w")),
     }
     reached = {n: {"member": Counter({"*u": 1})} for n in ("U_func_80100010_de", "U_func_80100020_de")}
-    rows, census = fakefold.plan(layouts, {}, reached, {*layouts, "UU"})
+    rows, census = fakefold.plan(layouts, {}, reached, {*layouts, "UU", "U"})
     assert {r["subject"]: r["target"] for r in rows} == {"T_func_80100000_de": "A"}
     reasons = {c["record"]: c["reason"] for c in census}
     assert "no declarator names the group" in reasons["U_func_80100010_de"]
+
+
+@pytest.mark.parametrize(
+    ("tops", "role", "size", "pick"),
+    [
+        (["ALSynth4C", "ALSynth"], "ALSynth", 32, "ALSynth"),  # the role names it
+        (["Shared_PakMenu", "MenuRecAt24"], "Menu", 40, "MenuRecAt24"),  # the role starts only one
+        (["Big", "Same"], "Item", 8, "Same"),  # no role evidence: the one of the same size
+        (["Same", "Twin"], "Item", 8, ""),  # still a tie: no fold
+    ],
+)
+def test_chosen_breaks_ties(tops, role, size, pick):
+    real = {
+        "ALSynth4C": {"size": 76},
+        "ALSynth": {"size": 76},
+        "Shared_PakMenu": {"size": 40},
+        "MenuRecAt24": {"size": 40},
+        "Big": {"size": 16},
+        "Same": {"size": 8},
+        "Twin": {"size": 8},
+    }
+    assert fakefold._chosen(tops, role, size, real) == pick
+
+
+def test_group_named_from_shared_role():
+    layouts = {f"Holder_func_8010000{i}_de": lay(8, (4, 4, "s32", f"v{i}")) for i in range(3)}
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts))
+    assert {r["target"] for r in rows} == {"Holder"} and len(rows) == 3
+    assert all(c["class"] == "b" and "role Holder" in c["reason"] for c in census)

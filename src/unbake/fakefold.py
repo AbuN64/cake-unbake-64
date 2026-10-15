@@ -103,6 +103,22 @@ def fits(mine: Mapping[str, Any], theirs: Mapping[str, Any]) -> int:
     return hits
 
 
+def _chosen(tops: list[str], role: str, size: Any, real: Mapping[str, Mapping[str, Any]]) -> str:
+    """The one real record of equally fitting `tops`: the only one, else the one the invented name's role prefix
+    names (`ALSynth_func_..` -> ALSynth) or starts (Menu -> MenuRecAt24), else the one of the same size; else none."""
+    if len(tops) == 1:
+        return tops[0]
+    prefixed = [t for t in tops if role and t.startswith(role)]
+    for pool in ([t for t in tops if t == role], prefixed):
+        if len(pool) == 1:
+            return pool[0]
+    for pool in (prefixed, tops):
+        exact = [t for t in pool if real[t].get("size") == size]
+        if len(exact) == 1:
+            return exact[0]
+    return ""
+
+
 def plan(
     layouts: Mapping[str, Mapping[str, Any]],
     aliases: Mapping[str, str],
@@ -141,9 +157,8 @@ def plan(
         best = max((s for s, _ in scored), default=-1)
         named = sum(1 for o, s, k, n in _fields(lay) if not _pad(n, k))
         tops = sorted(n2 for s, n2 in scored if s == best and best > 0)
-        exact = [n2 for n2 in tops if real[n2].get("size") == lay.get("size")]
-        if best > 0 and best == named and (len(tops) == 1 or len(exact) == 1):
-            pick = tops[0] if len(tops) == 1 else exact[0]
+        pick = _chosen(tops, re.split(r"_?func_", name)[0], lay.get("size"), real)
+        if best > 0 and best == named and pick:
             target[name] = pick
             why[name] = ("a", f"its {named} members fit {pick}")
             continue
@@ -176,6 +191,7 @@ def plan(
                         words[d] += count
         role = next((p for p, _ in prefix.most_common() if p and not invented(p) and p != "Shared"), "")
         names = [_pascal(role) + _pascal(w) for w, _ in words.most_common(3)]
+        names += [role] if len(prefix) == 1 else []  # every record of the group plays this one role
         pick = next((n for n in names if n and n not in taken and not invented(n)), "")
         if not pick:
             for n in group:
@@ -184,7 +200,8 @@ def plan(
         taken.add(pick)
         for n in group:
             target[n] = pick
-            why[n] = ("b", f"one of {len(group)} same-layout records reached as {words.most_common(1)[0][0]}")
+            via = f"reached as {words.most_common(1)[0][0]}" if pick != role else f"all in role {role}"
+            why[n] = ("b", f"one of {len(group)} same-layout records {via}")
     for name in fakes:
         alias = own(name)
         if alias != name and invented(alias):
