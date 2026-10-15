@@ -53,3 +53,13 @@ def test_report_names_who_won_each_register_the_target_gives_to_another() -> Non
     assert s7["candidate"]["priority"] == pytest.approx(0.1584, abs=1e-4)
     assert s7["candidate"]["priority"] > s7["target"]["priority"]
     assert s7["flip"] == alloc.flip(51, 1756, alloc.priority(16, 404))
+
+
+def test_report_names_a_minority_swap_and_a_register_the_candidate_leaves_free() -> None:
+    # 153 aligned sites agree on $s4; one site of the target has $s6, a register no pseudo of f holds (was empty)
+    rows = alloc.report("f", GREG, LREG, ASM, {"$s4": Counter({"$s4": 153, "$s6": 1})})
+    assert len(rows) == 1 and rows[0]["votes"] == 1 and rows[0]["register"] == "$s6"
+    assert (rows[0]["candidate"]["name"], rows[0]["candidate"]["pseudo"]) == ("free", None)
+    assert (rows[0]["target"]["name"], rows[0]["flip"]) == ("fmt", None)
+    votes = {"$s0": Counter({"$s0": 40, "$s1": 2}), "$s1": Counter({"$s0": 2, "$s1": 30})}
+    assert alloc.report("f", GREG, LREG, ASM, votes) == []  # neither register is held by a pseudo of f

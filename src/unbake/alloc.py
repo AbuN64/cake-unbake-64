@@ -50,6 +50,8 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
             winner.setdefault(placed[pseudo], pseudo)
 
     def who(reg: int) -> Json:
+        if reg not in winner:  # no pseudo of the candidate's global allocation holds it: free, or local only
+            return {"register": _SHOWN[reg], "pseudo": None, "refs": 0, "length": 0, "name": "free", "priority": 0.0}
         refs, span = stats.get(winner[reg], (0, 1))
         return {
             "register": _SHOWN[reg],
@@ -60,14 +62,19 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
             "priority": round(priority(refs, span), 4),
         }
 
+    # every pair the aligned operands disagree on, the minority too: one swapped site among a hundred agreeing ones
+    # is still the difference the diff shows; the most voted pairs first
+    pairs = sorted(
+        ((count, have, want) for have, counted in votes.items() for want, count in counted.items() if want != have),
+        key=lambda t: (-t[0], t[1], t[2]),
+    )
     rows: list[Json] = []
-    for have, counted in sorted(votes.items()):
-        want, count = counted.most_common(1)[0]
+    for count, have, want in pairs:
         a, b = HARD.get(have), HARD.get(want)
-        if a is None or b is None or a == b or a not in winner or b not in winner:
+        if a is None or b is None or (a not in winner and b not in winner):
             continue
         ours, theirs = who(b), who(a)  # the target keeps in b the pseudo the candidate has in a
-        beaten = theirs["priority"] < ours["priority"]
+        beaten = ours["pseudo"] is not None and theirs["pseudo"] is not None and theirs["priority"] < ours["priority"]
         rows.append(
             {
                 "register": ours["register"],
