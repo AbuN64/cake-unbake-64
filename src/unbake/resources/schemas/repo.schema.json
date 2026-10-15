@@ -212,12 +212,17 @@
     "bar": {
      "type": "integer",
      "minimum": 1
+    },
+    "map_width": {
+     "type": "integer",
+     "minimum": 1
     }
    },
    "required": [
     "begin",
     "end",
-    "bar"
+    "bar",
+    "map_width"
    ],
    "additionalProperties": false
   },

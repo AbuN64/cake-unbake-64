@@ -72,6 +72,11 @@
      "minLength": 1,
      "description": "the version whose memory map the README progress block shows"
     },
+    "readme_map_link": {
+     "type": "string",
+     "minLength": 1,
+     "description": "the page the README memory map links to, at the anchor of the version's lower-cased cartridge id"
+    },
     "library_dirs": {
      "type": "array",
      "uniqueItems": true,

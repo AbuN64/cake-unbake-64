@@ -358,6 +358,7 @@ def load_project(root: Path, reader: Callable[[str], bytes] | None = None) -> Pr
         library_dirs=tuple(info.get("library_dirs", ())),
         version_differences=tuple(info.get("version_differences", ())),
         readme_map=info.get("readme_map"),
+        readme_map_link=info.get("readme_map_link"),
     )
 
 

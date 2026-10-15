@@ -250,6 +250,13 @@ def test_project_readme_map_is_optional(tmp_path: Path, toolchains: dict[str, An
     assert configuration.load_project(config.parent).readme_map == expected
 
 
+def test_project_readme_map_link_is_read(tmp_path: Path, toolchains: dict[str, Any]) -> None:
+    config = fixture.config(tmp_path).project.root / "config.toml"
+    line = 'readme_map = "b"\nreadme_map_link = "https://site.example/#game-"'
+    config.write_text(config.read_text().replace("[project]\n", f"[project]\n{line}\n", 1))
+    assert configuration.load_project(config.parent).readme_map_link == "https://site.example/#game-"
+
+
 def test_project_readme_map_must_name_a_version(tmp_path: Path, toolchains: dict[str, Any]) -> None:
     config = fixture.config(tmp_path).project.root / "config.toml"
     config.write_text(config.read_text().replace("[project]\n", '[project]\nreadme_map = "zz"\n', 1))

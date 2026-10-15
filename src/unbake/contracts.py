@@ -353,6 +353,9 @@ class Project:
     library_dirs: tuple[str, ...] = ()
     version_differences: tuple[Json, ...] = ()
     readme_map: str | None = None  # the version whose memory map the README progress block shows
+    readme_map_link: str | None = (
+        None  # the image links to this page at the anchor of the version's lower-cased cartridge id
+    )
 
 
 @dataclass(frozen=True)

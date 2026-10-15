@@ -519,14 +519,25 @@ def test_readme_block_exact(snapshot_factory):
     assert report.readme(f"{begin}\nold\n{end}", snapshot, current) == expected
 
 
-def test_readme_shows_one_memory_map_between_the_bars_and_the_tables(snapshot_factory):
+@pytest.mark.parametrize(
+    ("version", "link", "href"),
+    [
+        ("eu", None, None),
+        ("us", "https://site.example/attic/tool/", "https://site.example/attic/tool/#nus-nrwe-0"),  # cartridge id
+        ("eu", "https://site.example/attic/tool/", "https://site.example/attic/tool/"),  # no cartridge id: the page
+    ],
+)
+def test_readme_shows_one_sized_memory_map_between_the_bars_and_the_tables_linked_to_its_rom(
+    snapshot_factory, version, link, href
+):
     snapshot, current = _readme_case(snapshot_factory)
     plain = report.readme("<!-- progress -->\n<!-- /progress -->", snapshot, current)
-    project = replace(snapshot.config.project, readme_map="eu")
+    project = replace(snapshot.config.project, readme_map=version, readme_map_link=link)
     mapped = replace(snapshot, config=replace(snapshot.config, project=project))
     bars, tables = plain.split("</pre>\n\n", 1)
-    image = '<img src="docs/memory-map-eu.svg">'
-    assert report.readme(plain, mapped, current) == f"{bars}</pre>\n\n{image}\n\n{tables}"
+    image = f'<img src="docs/memory-map-{version}.svg" width="720">'
+    shown = f'<a href="{href}">{image}</a>' if href else image
+    assert report.readme(plain, mapped, current) == f"{bars}</pre>\n\n{shown}\n\n{tables}"
 
 
 def test_readme_outside_markers_untouched(snapshot_factory):
