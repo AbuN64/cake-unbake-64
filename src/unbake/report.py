@@ -868,6 +868,31 @@ def _fake_pieces(snapshot: Snapshot, version: str) -> tuple[dict[str, int], dict
     return dict(pieces), {fn: set(r) for fn, r in rules.items()}, dict(names)
 
 
+def _movable(snapshot: Snapshot, rows: list[Json], census: list[Json]) -> list[Json]:
+    """The rows `unbake move` accepts, by move's own map edit (one layout rule: the plan is what move takes). A row
+    the edit refuses leaves the plan with move's reason in the census (class d), and the rest are edited again until
+    none is refused, so a row that followed a refused one is judged as it will be applied."""
+    from unbake import move
+    from unbake.contracts import Move
+
+    why = {r["record"]: n for n, r in enumerate(census)}
+    with effort.stage("report.fakes.movable"):
+        while rows:
+            bad = move.edit(snapshot, [Move(i, r["op"], r["subject"], r["target"]) for i, r in enumerate(rows)]).bad
+            if not bad:
+                break
+            gone = {m.index: f for m, f in bad}
+            for index, finding in gone.items():
+                at = why.get(rows[index]["subject"])
+                if at is not None:
+                    census[at] = {
+                        **census[at],
+                        **{"class": "d", "target": None, "reason": f"move refuses it: {finding.reason}"},
+                    }
+            rows = [r for i, r in enumerate(rows) if i not in gone]
+    return rows
+
+
 def _fakes_stream(snapshot: Snapshot) -> Json:
     """Write the fold plan of every invented per-function record and every record only a source defines to
     .unbake/fakes.jsonl (input of `unbake move - --partial`) and its census to .unbake/fakes.json: per class the
@@ -898,6 +923,7 @@ def _fakes_stream(snapshot: Snapshot) -> Json:
         for name in names:
             weight[name] += pieces.get(fn, 0)
     rows, census = fakefold.plan(laid, aliases, reached, taken, weight, edges, local, modules)
+    rows = _movable(snapshot, rows, census)
     root = snapshot.config.project.root
     store.write(
         root / ".unbake/fakes.jsonl",

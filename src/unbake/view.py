@@ -438,15 +438,30 @@ def active_lines(view: SourceView, path: str) -> dict[int, str]:
 
 
 def diagnostic(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, text: str) -> str:
-    """Map physical view lines and out-of-file coordinates; valid source coordinates stay source coordinates."""
+    """Map physical view lines and out-of-file coordinates; valid source coordinates stay source coordinates. Each
+    marker, file length and the view's line map are worked out once per call: a compiler log names the same few
+    files thousands of times."""
+    root = snapshot.config.project.root.resolve()
+    paths: dict[str, str] = {}
+    lengths: dict[str, int | None] = {}
+    origins: list[dict[int, tuple[str, int]]] = []
 
     def fix(match: re.Match[str]) -> str:
-        path, _ = _path(match[1], snapshot.config.project.root.resolve(), None)
-        line, raw = int(match[2]), None if path.endswith(".i") else snapshot.peek(path)
-        if not path.endswith((".i", ".h")) or (raw is not None and line <= len(raw.splitlines())):
+        if match[1] not in paths:
+            paths[match[1]] = _path(match[1], root, None)[0]
+        path, line = paths[match[1]], int(match[2])
+        if path not in lengths:
+            raw = None if path.endswith(".i") else snapshot.peek(path)
+            lengths[path] = None if raw is None else raw.count(b"\n") + (not raw.endswith(b"\n") and bool(raw))
+        size = lengths[path]
+        if not path.endswith((".i", ".h")) or (size is not None and line <= size):
             return f"{path}:{line}"
-        source = get(snapshot, unit, version, recipe)
-        path, line = next(((p, n) for output, p, n in source.lines if output == line), (path, line))
+        if not origins:
+            source = get(snapshot, unit, version, recipe)
+            origins.append({})
+            for output, p, n in source.lines:
+                origins[0].setdefault(output, (p, n))
+        path, line = origins[0].get(line, (path, line))
         return f"{path}:{line}"
 
     return re.sub(r"([\w./-]+):(\d+)", fix, text)

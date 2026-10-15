@@ -1276,3 +1276,24 @@ def test_a_member_keeps_the_exact_bytes_of_its_clean_functions_when_a_helper_ins
     assert (result["code_matched"], result["code_fuzzy"], result["functions_matched"]) == (28, 4, 1)
     (big,) = [u for u in report.objdiff(snapshot, current, "a")["units"] if u["name"] == "big"]
     assert big["measures"]["matched_code"] == "12" and not big["metadata"]["complete"]
+
+
+def test_the_fake_plan_keeps_only_rows_move_accepts_and_says_why_for_the_rest(monkeypatch):
+    # real case: RW-FAKEFOLD-RUN round 1 refused 117 of 519 rows as move.type_layout (fits() and move disagreed)
+    from types import SimpleNamespace as NS
+
+    from unbake import move
+
+    rows = [{"op": "type", "subject": s, "target": "Real"} for s in ("A_func_80000000", "B_func_80000010")]
+    census = [{"record": r["subject"], "class": "a", "target": "Real", "reason": "fits"} for r in rows]
+    calls = []
+
+    def edit(snapshot, moves):
+        calls.append([m.subject for m in moves])
+        bad = [(m, Finding("move.type_layout", "differ in pointee")) for m in moves if m.subject.startswith("A")]
+        return NS(bad=bad)
+
+    monkeypatch.setattr(move, "edit", edit)
+    kept = report._movable(None, rows, census)
+    assert [r["subject"] for r in kept] == ["B_func_80000010"] and len(calls) == 2
+    assert census[0]["class"] == "d" and "differ in pointee" in census[0]["reason"] and census[1]["class"] == "a"
