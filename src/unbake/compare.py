@@ -245,12 +245,18 @@ def _gaps_of(snapshot: Snapshot, units: Sequence[UnitSpec], proofs: Sequence[Pro
 
 
 def _standing(
-    snapshot: Snapshot, primary: UnitSpec, found: Sequence[Finding], proofs: Sequence[Proof], overrides: Json
+    snapshot: Snapshot,
+    primary: UnitSpec,
+    found: Sequence[Finding],
+    proofs: Sequence[Proof],
+    overrides: Json,
+    everyone: bool = False,
 ) -> tuple[tuple[Finding, ...], set[tuple[str, str]]]:
     """A change set gates its other units on no regression: a member HEAD already measures inexact in a version, which
     the change leaves no worse there, is a standing gap of HEAD and not this change's (it lands as it stands); the
-    primary must be exact. Returns the gaps that block and the (member, version) pairs that stand."""
-    heads = {f.unit: layout.unit_of(snapshot, f.unit) for f in found if f.unit not in primary.members}
+    primary must be exact, unless `everyone` (a change that alters no code intent, such as a retype) gates it the same
+    way. Returns the gaps that block and the (member, version) pairs that stand."""
+    heads = {f.unit: layout.unit_of(snapshot, f.unit) for f in found if everyone or f.unit not in primary.members}
     paths = sorted({u.path for u in heads.values() if u is not None})
     if not paths:
         return tuple(found), set()
@@ -536,7 +542,8 @@ def _prove(
             everyone = measure_units(bound, [*units, *(bound.layout.units[p] for p in proved["consumers"])], overrides)
             found_here = _regressions(snapshot, proved["consumers"], everyone, overrides)
         proofs = tuple(p for p in everyone if p.unit in proved["changed"])
-        found, standing = _standing(snapshot, unit, _gaps_of(bound, units, proofs), proofs, overrides)
+        alike = bool(params.get("no_regression"))
+        found, standing = _standing(snapshot, unit, _gaps_of(bound, units, proofs), proofs, overrides, alike)
         proofs = tuple(p for p in proofs if (p.member, p.version) not in standing)
         found += found_here
     else:
@@ -613,6 +620,54 @@ def _source_rules(snapshot: Snapshot, done: Json) -> tuple[Finding, ...]:
         return ()
     rules = policy.fresh(snapshot, unit.path, policy.evaluate(tree, unit.path, text.decode(), None, sdk), sdk)
     return tuple(f for f in rules if f.blocking and f not in done["found"])
+
+
+def prove_groups(
+    config: Config, snapshot: Snapshot, groups: Sequence[Sequence[Path]], params: Json
+) -> list[tuple[Finding, ...]]:
+    """Per alternative change set (each a primary and its PATH=FILE extras, each judged alone against the same tree)
+    the findings that would refuse it, proving nothing into the queue: every set's units and consumers measured in ONE
+    dispatch on the pool, gated as admission gates them (`_standing`, `_regressions`, the source rules)."""
+    overrides = _overrides(params)
+    chunk_params = {**params, "function": None, "bulk": True}
+    prepared: list[Any] = []
+    for group in groups:
+        try:
+            prepared.append(_prepare(snapshot, group, chunk_params))
+        except Refusal as refusal:
+            prepared.append(refusal)
+    live = [n for n, p in enumerate(prepared) if not isinstance(p, Refusal)]
+    derived = ownership.derive_pairs(
+        [(prepared[n][2], prepared[n][1]) for n in live],
+        recipe=[recipes.resolve(config, prepared[n][1], overrides) for n in live],
+    )
+    sets: dict[int, Any] = {}
+    pairs: list[tuple[Snapshot, UnitSpec]] = []
+    for n, (bound, unit) in zip(live, derived, strict=True):
+        extras = prepared[n][0]
+        proved = _proof_set(snapshot, bound, unit, extras, True)
+        units = [unit if p == unit.path else bound.layout.units[p] for p in proved["changed"]]
+        everyone = [*units, *(bound.layout.units[p] for p in proved["consumers"])]
+        sets[n] = (bound, unit, units, proved, len(pairs), len(everyone))
+        pairs += [(bound, u) for u in everyone]
+    measured = measure_bound(config, pairs, overrides) if pairs else []
+    out: list[tuple[Finding, ...]] = []
+    for n, done in enumerate(prepared):
+        if isinstance(done, Refusal):
+            out.append(tuple(done.findings))
+            continue
+        bound, unit, units, proved, at, count = sets[n]
+        everyone_ = tuple(p for group in measured[at : at + count] for p in group)
+        proofs = tuple(p for p in everyone_ if p.unit in proved["changed"])
+        found, standing = _standing(
+            snapshot, unit, _gaps_of(bound, units, proofs), proofs, overrides, bool(params.get("no_regression"))
+        )
+        found += _regressions(snapshot, proved["consumers"], everyone_, overrides)
+        kept = [p for p in proofs if (p.member, p.version) not in standing]
+        if not kept:
+            found += (Finding("land.not_exact", reason=f"{unit.path} has no proof that stands", unit=unit.path),)
+        out.append(found + _source_rules(snapshot, {"tree": bound, "unit": unit, "found": found}))
+    return out
 
 
 def _enter(

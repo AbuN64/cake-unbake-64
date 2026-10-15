@@ -193,7 +193,7 @@ def parameters(code: str) -> list[dict[str, Any]]:
         for index, param in enumerate(head[2].split(",")):
             span = (at, at + len(param))
             at += len(param) + 1
-            match = re.fullmatch(r"\s*((?:\w+\s+)*)(\w+)(\s*\*)?\s*(\w+)\s*", param)
+            match = re.fullmatch(r"\s*((?:\w+\s+)*?)(\w+)(?:\s*(\*)\s*|\s+)(\w+)\s*", param)
             if not match:
                 continue
             words = set(match[1].split()) | {match[2]}
@@ -246,11 +246,25 @@ _ADDRESS_INT = re.compile(
 )
 
 
+def _holders(code: str) -> list[tuple[int, int, str]]:
+    """(body start, body end, name) of every function definition of the code."""
+    spans = []
+    for head in re.finditer(r"^[ \t]*[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*\{", code, re.M):
+        start, stop = _body(code, head.end() - 1)
+        spans.append((start, stop, head[1]))
+    return spans
+
+
 def address_int(code: str) -> dict[int, str]:
     """An address taken and cast to an integer type (the null-base offsetof idiom is no address): the callee or field
-    is mistyped, or a ROM or segment symbol should be an array used without the address-of."""
+    is mistyped, or a ROM or segment symbol should be an array used without the address-of. Inside a function the
+    subject is the function, "f()" with the cast type: a retype that respells the operand (`(s32)&((T *)a)->f` ->
+    `(s32)&a->f`) is the same row, never new debt."""
     line = _line(code)
+    holders = _holders(code) if _ADDRESS_INT.search(code) else []
     hits: dict[int, str] = {}
     for m in _ADDRESS_INT.finditer(code):
-        hits.setdefault(line(m.start()), f"({' '.join(m[1].split())})&{m[2]}")
+        holder = next((name for start, stop, name in holders if start <= m.start() < stop), "")
+        cast = " ".join(m[1].split())
+        hits.setdefault(line(m.start()), f"({cast})&{holder}()" if holder else f"({cast})&{m[2]}")
     return hits

@@ -1257,3 +1257,49 @@ def test_a_change_set_lets_another_unit_keep_a_gap_head_already_has_and_blocks_n
     blocking, standing = compare._standing(None, primary, gaps, after, {})
     assert [g.unit for g in blocking] == ["h", "f"]  # h was exact at HEAD, f is the primary
     assert standing == {("g", "eu")}
+
+
+def test_a_retype_gates_its_primary_on_no_regression_too(monkeypatch):
+    # real case: func_8021B468_de (eu: unresolved D_auto_800E0D24 at HEAD) sank every retype group it sat in
+    NS = SimpleNamespace
+    primary = NS(members=("f", "g"), path="src/f.c")
+    monkeypatch.setattr(compare.layout, "unit_of", lambda s, m: primary)
+    head = (fixture.proof("src/f.c", "g", "eu", False, missing=("unresolved",), score=0.0),)
+    monkeypatch.setattr(compare, "_baseline", lambda s, paths, o: head)
+    after = (
+        fixture.proof("src/f.c", "g", "eu", False, missing=("unresolved",), score=0.0),
+        fixture.proof("src/f.c", "f", "eu", False, missing=("bytes",)),
+    )
+    gaps = [Finding("land.not_exact", "x", unit=n, versions=("eu",), missing=("m",)) for n in ("g", "f")]
+    assert [g.unit for g in compare._standing(None, primary, gaps, after, {})[0]] == ["g", "f"]
+    blocking, standing = compare._standing(None, primary, gaps, after, {}, everyone=True)
+    assert [g.unit for g in blocking] == ["f"] and standing == {("g", "eu")}  # f was exact at HEAD: it regressed
+
+
+def test_prove_groups_measures_every_alternative_in_one_dispatch(monkeypatch):
+    NS = SimpleNamespace
+    units = {"src/a.c": NS(path="src/a.c", members=("a",)), "src/b.c": NS(path="src/b.c", members=("b",))}
+    held = NS(holders=lambda: ("eu",))
+    bound = NS(layout=NS(units=units, members={"a": held, "b": held}))
+    monkeypatch.setattr(compare, "_prepare", lambda s, g, p: ({}, units[str(g[0])], bound, []))
+    monkeypatch.setattr(compare.ownership, "derive_pairs", lambda pairs, recipe: list(pairs))
+    monkeypatch.setattr(compare.recipes, "resolve", lambda c, u, o: None)
+    monkeypatch.setattr(
+        compare, "_proof_set", lambda s, b, u, e, strict: {"changed": [u.path], "consumers": [], "proving": True}
+    )
+    calls = []
+
+    def measure(config, pairs, overrides):
+        calls.append(len(pairs))
+        exact = {"src/a.c": True}
+        return [
+            (fixture.proof(u.path, u.members[0], "eu", u.path in exact, () if u.path in exact else ("bytes",)),)
+            for _, u in pairs
+        ]
+
+    monkeypatch.setattr(compare, "measure_bound", measure)
+    monkeypatch.setattr(compare, "_baseline", lambda s, paths, o: ())
+    monkeypatch.setattr(compare.layout, "unit_of", lambda s, m: units[f"src/{m}.c"])
+    monkeypatch.setattr(compare, "_source_rules", lambda s, done: ())
+    found = compare.prove_groups(None, NS(), [[Path("src/a.c")], [Path("src/b.c")]], {})
+    assert calls == [2] and found[0] == () and [f.unit for f in found[1]] == ["b"]

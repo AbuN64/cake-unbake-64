@@ -295,3 +295,93 @@ def test_a_refusal_naming_only_a_member_blames_the_retypes_of_its_unit_file():
     rows = [{"path": "", "unit": "", "reason": "func_8021B468_de does not match the ROM in every holding version"}]
     owners = {"func_8021B468_de": "src/func_802192C0_de_4.c"}
     assert retype.blamed(rows, touches, owners.get) == {("cb", 1)}
+
+
+def test_bisect_keeps_every_half_that_proves_and_halves_refused_ones_down_to_one():
+    # real case: rt2 on G b13b9696d dropped 1-3 retypes per 50 s round for 63 rounds; a bisection proves halves
+    bad = {("c", 0), ("f", 0)}
+    calls = []
+
+    def prove(halves):
+        calls.append(len(halves))
+        return [not (set(h) & bad) for h in halves]
+
+    keys = [(n, 0) for n in "abcdefgh"]
+    kept, levels = retype.bisect(keys, prove)
+    assert kept == set(keys) - bad
+    assert calls == [2, 4, 4]  # one call per level: every half of a level proved in one dispatch
+    assert [lv["left"] for lv in levels] == [8, 4, 2]
+
+
+def test_compose_writes_any_subset_of_one_plan_as_planning_it_alone_would():
+    files = texts()
+    whole = run(files)
+    for key in whole["touches"]:
+        alone = retype.compose(files, whole["parts"], [key])
+        other = run_excluding(files, set(whole["touches"]) - {key})
+        assert alone == other["writes"]
+
+
+def test_an_integer_parameter_fed_only_addresses_is_retyped_and_the_callers_lose_their_casts():
+    # real case: address-int, `(s32)&p->f` passed to an s32 parameter the callee only casts to one pointer type
+    files = {
+        "include/common/actor.h": TYPE,
+        "include/span/code.h": '#include "common/actor.h"\nextern void put(s32 arg0);\n',
+        "src/put.c": '#include "span/code.h"\nvoid put(s32 arg0) {\n    *(f32 *)arg0 = 1.0f;\n}\n',
+        "src/call.c": '#include "span/code.h"\nvoid call(Actor *a) {\n    put((s32)&a->model);\n    put(0);\n}\n',
+    }
+    result = run(files)
+    assert result["retyped"] == 1
+    assert "void put(f32 *arg0)" in result["writes"]["src/put.c"] and "*arg0 = 1.0f" in result["writes"]["src/put.c"]
+    assert "put(&a->model);" in result["writes"]["src/call.c"]
+    assert "extern void put(f32 *arg0);" in result["writes"]["include/span/code.h"]
+
+
+def test_an_integer_parameter_a_caller_feeds_a_plain_integer_stays():
+    files = {
+        "include/span/code.h": "extern void put(s32 arg0);\n",
+        "src/put.c": '#include "span/code.h"\nvoid put(s32 arg0) {\n    *(f32 *)arg0 = 1.0f;\n}\n',
+        "src/call.c": '#include "span/code.h"\nvoid call(s32 n) {\n    put(n);\n}\n',
+    }
+    result = run(files)
+    assert result["retyped"] == 0 and result["skipped"] == {"caller passes an integer": 1}
+
+
+def test_a_respelled_address_int_row_is_the_same_row():
+    # real case: rt1 dropped 4 retypes whose `(s32)&((T *)a)->f` became `(s32)&a->f`, read as new debt
+    before = "void f(void *a) {\n    g((s32)&((Actor *)a)->x);\n}\n"
+    after = "void f(Actor *a) {\n    g((s32)&a->x);\n}\n"
+    assert typedebt.address_int(before) == typedebt.address_int(after) == {2: "(s32)&f()"}
+    assert typedebt.address_int("s32 table[] = {(s32)&D_80001000};\n") == {1: "(s32)&D_80001000"}
+
+
+@pytest.mark.parametrize(
+    ("site", "edit"),
+    [
+        ("*(s32 *)((u8 *)p + 4) = 1;", "p->b = 1;"),
+        ("g((char *)p + 0x8);", "g((char *)&p->v);"),
+        ("g((u8 *)(p) + 0xA);", "g((u8 *)&p->v.y);"),
+        ("*(s16 *)((u8 *)p + 4) = 1;", None),  # no s16 member at 4: a type pun is never written
+        ("g((u8 *)q + 4);", None),  # q is no typed record pointer
+    ],
+)
+def test_raw_offsets_off_a_typed_record_pointer_become_its_members(site, edit):
+    v = {"offset": 8, "width": 4, "type": "Vec", "name": "v", "fields": []}
+    v["fields"] = [
+        {"offset": 0, "width": 2, "type": "s16", "name": "x"},
+        {"offset": 2, "width": 2, "type": "s16", "name": "y"},
+    ]
+    rec = {
+        "size": 12,
+        "fields": [
+            {"offset": 0, "width": 4, "type": "s32", "name": "a"},
+            {"offset": 4, "width": 4, "type": "s32", "name": "b"},
+            v,
+        ],
+    }
+    code = "void f(Rec *p, void *q) {\n    " + site + "\n}\n"
+    found, _ = retype.raw_offsets(code, {"Rec": rec})
+    out = code
+    for first, last, new in sorted(found, reverse=True):
+        out = out[:first] + new + out[last:]
+    assert (out.splitlines()[1].strip() if found else None) == edit

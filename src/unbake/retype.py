@@ -3,6 +3,7 @@ type, the casts go, and the definition, every declaration and the callers follow
 
 from __future__ import annotations
 
+import functools
 import posixpath
 import re
 import time
@@ -79,11 +80,25 @@ def _identifier(code: str, name: str, at: int) -> tuple[str, int] | None:
     return found
 
 
+_ADDRESS = re.compile(r"\(\s*((?:\w+\s+)*\w+)\s*\)\s*(?=&(?!&))")  # an address cast to an integer: (s32)&p->f
+
+
+def _address(text: str) -> int:
+    """The length of the integer cast in front of an address argument (`(s32)&p->f`), with its leading space; 0 when
+    the argument is no address cast to an integer."""
+    lead = len(text) - len(text.lstrip())
+    cast = _ADDRESS.match(text, lead)
+    return cast.end() if cast and set(cast[1].split()) <= _INTEGER else 0
+
+
 def _argument(code: str, text: str, at: int, target: str) -> str:
-    """How a call's argument meets a parameter of pointer type to target: ok, integer, pointer or unknown."""
+    """How a call's argument meets a parameter of pointer type to target: ok, address (an address cast to an
+    integer, whose cast goes), integer, pointer or unknown."""
     arg = text.strip()
     if re.fullmatch(r"0+|NULL|\(\s*void\s*\*\s*\)\s*0", arg):
         return "ok"
+    if _address(text):
+        return "address"
     if re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*", arg):
         return "integer"
     cast = re.match(r"\(\s*((?:\w+\s+)*\w+)\s*(\*+)?\s*\)\s*\S", arg)
@@ -238,18 +253,63 @@ def _depth(code: str, at: int) -> int:
     return code.count("{", 0, at) - code.count("}", 0, at)
 
 
+_RAW = re.compile(
+    r"(?P<deref>\*\s*\(\s*(?:struct\s+)?(?P<type>\w+)\s*\*\s*\)\s*\(\s*)?\(\s*(?P<byte>(?:unsigned\s+)?(?:u8|s8|char))\s*\*\s*\)"
+    r"\s*(?P<open>\()?\s*(?P<base>[A-Za-z_]\w*)\s*(?(open)\))\s*\+\s*(?P<offset>0[xX][0-9A-Fa-f]+|\d+)(?(deref)\s*\))"
+)
+
+
+def _member_at(layout: Mapping[str, Any], offset: int, kind: str | None) -> str | None:
+    """The member path (`a.b`) of a laid record at offset: the outermost member starting there, or with `kind` the
+    one of that exact type; None when no member starts there (or none of that type)."""
+    for field in layout.get("fields", ()):
+        name = field["name"]
+        if not name or field.get("arm"):
+            continue
+        if field["offset"] == offset and (kind is None or field["type"] == kind):
+            return str(name)
+        if field["offset"] <= offset < field["offset"] + field["width"] and field.get("fields"):
+            inner = _member_at({"fields": field["fields"]}, offset - field["offset"], kind)
+            return f"{name}.{inner}" if inner else None
+    return None
+
+
+def raw_offsets(code: str, records: Mapping[str, Mapping[str, Any]]) -> tuple[list[tuple[int, int, str]], Counter[str]]:
+    """The edits that spell each raw byte offset off a typed record pointer as its member: `*(T *)((u8 *)p + k)` is
+    `p->m` when the record holds a member of type T at k, `(u8 *)p + k` is `(u8 *)&p->m` when a member starts at k.
+    Skipped sites are counted by reason."""
+    edits: list[tuple[int, int, str]] = []
+    skipped: Counter[str] = Counter()
+    for m in _RAW.finditer(code):
+        known = _identifier(code, m["base"], m.start())
+        if known is None or known[1] != 1 or known[0] not in records:
+            skipped["base is no typed record pointer"] += 1
+            continue
+        layout, offset = records[known[0]], int(m["offset"], 0)
+        member = _member_at(layout, offset, m["type"] if m["deref"] else None)
+        if member is None:
+            skipped["no member of that type starts at the offset"] += 1
+            continue
+        if m["deref"]:
+            edits.append((m.start(), m.end(), f"{m['base']}->{member}"))
+        else:
+            edits.append((m.start(), m.end(), f"({m['byte']} *)&{m['base']}->{member}"))
+    return edits, skipped
+
+
 def plan(
     texts: Mapping[str, str],
     declared: Mapping[str, str],
     reaches: Callable[[str, str], bool],
     exclude: Collection[tuple[str, int]] = (),
+    records: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The writes that retype every eligible parameter, with the debt counted before and after and each skipped
     parameter under its reason. texts maps every source and header path to its text, declared maps each type name
     to the header declaring it, and reaches says whether one file includes another. `exclude` names the (function,
     parameter index) pairs not to retype; `touches` gives per retyped pair the files its writes reach."""
     with effort.stage("retype.scopes"):
-        codes = {p: policy.scopes(t)["code"] for p, t in texts.items()}
+        codes = {p: _code(t) for p, t in texts.items()}
     units = [p for p in codes if p.startswith("src/") and p.endswith(".c")]
     landed = [p for p in units if not p.startswith("src/fuzzy/")]
     rows: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
@@ -268,6 +328,9 @@ def plan(
     for function, entries in rows.items():
         for path, row in entries:
             targets = {c["target"] for c in row["casts"] if c["target"] not in typedebt._PRIMITIVE}
+            address = not targets and not row["pointer"] and bool(row["casts"])
+            if address:  # an integer every use casts to a pointer: an address, if every caller passes one
+                targets = {c["target"] for c in row["casts"]}
             if not targets:
                 continue
             label = (function, row["name"])
@@ -304,6 +367,7 @@ def plan(
                 "row": row,
                 "spelled": next(iter(spellings)),
                 "passed": passed,
+                "address": address,
             }
     callees = {c for item in wanted.values() for c, _ in item["passed"]}
     with effort.stage("retype.sites"):
@@ -320,10 +384,7 @@ def plan(
             skip(bad, function, item["row"]["name"])
             del wanted[(function, index)]
             break
-    edits: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
-    includes: dict[str, set[str]] = defaultdict(set)
     added: set[tuple[str, str]] = set()  # the include edges this plan already adds
-    forwards: dict[tuple[str, str], int] = {}  # per header and tag the earliest prototype that needs its declaration
 
     def linked(start: str, goal: str, used: frozenset[tuple[str, str]] = frozenset()) -> bool:
         """Whether start includes goal once the planned includes are in: a planned edge joins two reaches."""
@@ -336,6 +397,7 @@ def plan(
 
     retyped = 0
     touches: dict[tuple[str, int], list[str]] = {}
+    parts: dict[tuple[str, int], dict[str, Any]] = {}
     for (function, index), item in sorted(wanted.items()):
         path, row, spelled = item["path"], item["row"], item["spelled"]
         label = (function, row["name"])
@@ -347,6 +409,7 @@ def plan(
         needs: set[str] = set()
         declares: dict[str, int] = {}
         failure = ""
+        calls = 0
         for site in sites.get(function, ()):
             where, (begin, end) = site["path"], site["args"]
             if site["kind"] == "definition":
@@ -397,10 +460,22 @@ def plan(
             else:
                 args = _split(codes[where][begin:end])
                 if index < len(args):
-                    verdict = _argument(codes[where], args[index][1], site["at"], target)
-                    if verdict in ("integer", "pointer"):
+                    offset, old = args[index]
+                    verdict = _argument(codes[where], old, site["at"], target)
+                    if verdict == "address":  # (s32)&p->f passes the address itself once the parameter is a pointer
+                        cut = _address(old)
+                        plan_edits.append(
+                            (where, begin + offset, begin + offset + cut, old[: len(old) - len(old.lstrip())])
+                        )
+                        calls += 1
+                    elif verdict in ("integer", "pointer"):
                         failure = f"caller passes {'an integer' if verdict == 'integer' else 'another pointer type'}"
                         break
+                    elif item["address"] and verdict != "ok":
+                        failure = "caller passes no address"
+                        break
+        if not failure and item["address"] and not calls:
+            failure = "no caller passes an address"
         if failure:
             skip(failure, *label)
             continue
@@ -425,7 +500,7 @@ def plan(
         )
         needs.discard(path)
         extra: set[tuple[str, str]] = set()
-        for where in sorted(needs):
+        for where in sorted(needs if target not in typedebt._PRIMITIVE else ()):  # a primitive needs no header
             if owner is None:
                 failure = "type is not declared in a header"
             elif where != owner and not linked(where, owner):
@@ -440,11 +515,83 @@ def plan(
             continue
         retyped += 1
         touches[(function, index)] = sorted({e[0] for e in plan_edits} | {w for w, _ in extra} | set(declares))
-        for where, first, last, new in plan_edits:
+        parts[(function, index)] = {
+            "edits": plan_edits,
+            "includes": [(where, owner or "") for where, _ in extra],
+            "declares": [(where, tag, line) for where, line in declares.items()],
+        }
+    for path in landed if records else ():  # raw byte offsets off typed record pointers: one retype per function
+        found, why = raw_offsets(codes[path], records or {})
+        for reason, count in why.items():
+            skipped[reason] += count
+        for number, holder in enumerate(_holders_of(codes[path], found)):
+            key = (holder, -1 - number)
+            if key in exclude:
+                skipped["its files would carry new debt"] += 1
+                continue
+            mine = [(path, a, b, new) for a, b, new in found if _holders_of(codes[path], [(a, b, new)])[0] == holder]
+            retyped += 1
+            touches[key] = [path]
+            parts[key] = {"edits": mine, "includes": [], "declares": []}
+    writes = compose(texts, parts, parts)
+    with effort.stage("retype.count"):
+        before = sum(_cast_rows(codes[p]) for p in landed)
+        after = sum(_cast_rows(_code(writes[p])) if p in writes else _cast_rows(codes[p]) for p in landed)
+    return {
+        "writes": writes,
+        "touches": touches,
+        "parts": parts,
+        "retyped": retyped,
+        "param_cast": {"before": before, "after": after},
+        "skipped": dict(skipped),
+        "examples": {r: sorted(v)[:5] for r, v in reasons.items()},
+    }
+
+
+def _holders_of(code: str, edits: Sequence[tuple[int, int, str]]) -> list[str]:
+    """The function each edit sits in, in order of first appearance ("" for file scope)."""
+    heads = [
+        (m.start(), m[1]) for m in re.finditer(r"^[ \t]*[A-Za-z_][\w \t\*]*?\b(\w+)\s*\([^;{]*\)\s*\{", code, re.M)
+    ]
+    out: list[str] = []
+    for at, _, _ in edits:
+        holder = next((name for start, name in reversed(heads) if start <= at), "")
+        if holder not in out:
+            out.append(holder)
+    return out
+
+
+_CODES: dict[str, str] = {}  # text -> its code with comments and strings blanked: a run plans the same texts often
+_ROWS: dict[str, int] = {}
+
+
+def _code(text: str) -> str:
+    if text not in _CODES:
+        _CODES[text] = policy.scopes(text)["code"]
+    return _CODES[text]
+
+
+def _cast_rows(code: str) -> int:
+    if code not in _ROWS:
+        _ROWS[code] = len(typedebt.param_cast(code))
+    return _ROWS[code]
+
+
+def compose(
+    texts: Mapping[str, str], parts: Mapping[tuple[str, int], Mapping[str, Any]], keys: Collection[tuple[str, int]]
+) -> dict[str, str]:
+    """The file writes of the planned retypes `keys` alone: their edits, the includes they add and the tag
+    declarations they need, so any subset of one plan is written without planning again."""
+    edits: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+    includes: dict[str, set[str]] = defaultdict(set)
+    forwards: dict[tuple[str, str], int] = {}  # per header and tag the earliest prototype that needs its declaration
+    for key in keys:
+        part = parts[key]
+        for where, first, last, new in part["edits"]:
             edits[where].append((first, last, new))
-        for where, _ in extra:
-            includes[where].add(owner or "")
-        for where, line in declares.items():
+        for where, owner in part["includes"]:
+            includes[where].add(owner)
+        for where, tag, line in part["declares"]:
             forwards[(where, tag)] = min(forwards.get((where, tag), line), line)
     for (where, tag), line in sorted(forwards.items()):
         edits[where].append((line, line, f"struct {tag};\n"))
@@ -452,7 +599,7 @@ def plan(
     for path, spans in edits.items():
         text = texts[path]
         taken = -1
-        for first, last, new in sorted(spans, reverse=True):
+        for first, last, new in sorted(set(spans), reverse=True):
             if last > taken >= 0:
                 continue
             text = text[:first] + new + text[last:]
@@ -460,17 +607,7 @@ def plan(
         writes[path] = text
     for path, owners in includes.items():
         writes[path] = headers.included(writes.get(path, texts[path]), [o.removeprefix("include/") for o in owners])
-    with effort.stage("retype.count"):
-        before = sum(len(typedebt.param_cast(codes[p])) for p in landed)
-        after = sum(len(typedebt.param_cast(policy.scopes(writes.get(p, texts[p]))["code"])) for p in landed)
-    return {
-        "writes": writes,
-        "touches": touches,
-        "retyped": retyped,
-        "param_cast": {"before": before, "after": after},
-        "skipped": dict(skipped),
-        "examples": {r: sorted(v)[:5] for r, v in reasons.items()},
-    }
+    return writes
 
 
 def _debt_job(item: tuple[Snapshot, Snapshot, str]) -> tuple[tuple[Finding, ...], tuple[Finding, ...]]:
@@ -532,10 +669,42 @@ def blamed(
     return {key for key, files in touches.items() if named & set(files)}
 
 
+def bisect(
+    keys: Sequence[tuple[str, int]], prove: Callable[[list[list[tuple[str, int]]]], list[bool]]
+) -> tuple[set[tuple[str, int]], list[Json]]:
+    """The retypes of a refused group that land: the group is halved, every half of one level is proved in ONE call
+    (on the pool, all cores), each half that proves is kept, and each refused half is halved again down to one retype.
+    Nothing persists between levels but the kept set; each level is logged with what it proved."""
+    kept: set[tuple[str, int]] = set()
+    levels: list[Json] = []
+    refused = [list(keys)]
+    while True:
+        halves = [
+            part for group in refused if len(group) > 1 for part in (group[: len(group) // 2], group[len(group) // 2 :])
+        ]
+        if not halves:
+            break
+        start = time.monotonic()
+        verdicts = prove(halves)
+        kept.update(k for half, ok in zip(halves, verdicts, strict=True) if ok for k in half)
+        refused = [half for half, ok in zip(halves, verdicts, strict=True) if not ok]
+        levels.append(
+            {
+                "level": len(levels) + 1,
+                "halves": len(halves),
+                "kept": sum(verdicts),
+                "left": sum(map(len, refused)),
+                "seconds": round(time.monotonic() - start, 1),
+            }
+        )
+    return kept, levels
+
+
 def run(config: Config, params: Json) -> Json:
-    """Plan the retype over the live tree, read-only; with submit, prove every affected unit in all versions. A
-    retype whose files carry a new blocking row, or that a refused submission names, is dropped and the rest planned
-    and submitted again, so the run converges on what lands."""
+    """Plan the retype over the live tree, read-only; with submit, prove every affected unit in all versions, gated on
+    no regression against HEAD (a retype alters no code intent). A retype whose files carry a new blocking row is
+    dropped; a refused group is bisected (`bisect`) to the retypes that prove, and those are planned and submitted
+    as one group, so the run converges on what lands."""
     start = time.monotonic()
     out = Path(params.get("out") or Path("/tmp") / ("unbake-retype-" + digest(str(config.project.root))[:16]))
     out = out.resolve()
@@ -551,17 +720,21 @@ def run(config: Config, params: Json) -> Json:
         unit = layout.unit_of(snapshot, name) if name in snapshot.layout.members else None
         return unit.path if unit is not None else None
 
+    from unbake import move  # move reads compare, which this module's callers load first
+
+    with effort.stage("retype.records"):
+        records = move.record_layouts(snapshot)[0]
+
+    def planner(skip: Collection[tuple[str, int]]) -> dict[str, Any]:
+        return plan(texts, declared, reaches, skip, records)
+
     exclude: set[tuple[str, int]] = set()
     rounds: list[Json] = []
-    submissions, drain = None, None
+    submissions, drain, bisected = None, None, False
     while True:
-        result, judged = converge(
-            lambda skip: plan(texts, declared, reaches, skip),
-            lambda writes: new_debt(config, snapshot, writes),
-            exclude,
-        )
+        result, judged = converge(planner, lambda writes: new_debt(config, snapshot, writes), exclude)
         rounds += judged
-        writes, touches = result.pop("writes"), result.pop("touches")
+        writes, touches, parts = result.pop("writes"), result.pop("touches"), result.pop("parts")
         sources = sorted(p for p in writes if p.endswith(".c"))
         if sources:
             for path, text in writes.items():
@@ -573,10 +746,20 @@ def run(config: Config, params: Json) -> Json:
             refused = [] if drain else [f for row in submissions["submissions"] for f in row.get("findings", ())]
         except Refusal as refusal:
             refused = [asdict(f) for f in refusal.findings]
-            if not blamed(refused, touches, owner):
+            if not blamed(refused, touches, owner) and bisected:
                 raise
+        if not refused:
+            break
         drop = blamed(refused, touches, owner)
-        rounds.append({"rows": len(refused), "dropped": len(drop), "refused": bool(refused)})
+        if not bisected:  # one bisection over the whole group: every half that proves is kept
+            order = sorted(touches, key=lambda k: (touches[k], k))  # retypes sharing files stay in one half
+            prove = functools.partial(_prove_halves, config, snapshot, texts, parts, out=out)
+            kept, levels = bisect(order, partial_halves(prove))
+            rounds.append({"rows": len(refused), "bisect": levels, "kept": len(kept), "of": len(order)})
+            drop = set(order) - kept
+            bisected = True
+        else:
+            rounds.append({"rows": len(refused), "dropped": len(drop), "refused": True})
         if not drop:
             break
         exclude |= drop
@@ -594,6 +777,39 @@ def run(config: Config, params: Json) -> Json:
         else None,
         "seconds": round(time.monotonic() - start, 1),
     }
+
+
+def partial_halves(prove: Callable[..., list[bool]]) -> Callable[[list[list[tuple[str, int]]]], list[bool]]:
+    """The half prover `bisect` takes, bound to its tree."""
+    return lambda halves: prove(halves=halves)
+
+
+def _prove_halves(
+    config: Config,
+    snapshot: Snapshot,
+    texts: Mapping[str, str],
+    parts: Mapping[tuple[str, int], Mapping[str, Any]],
+    halves: Sequence[Sequence[tuple[str, int]]],
+    out: Path,
+) -> list[bool]:
+    """Whether each half, written alone over HEAD (`compose`, no new plan), proves: every half's change set in ONE
+    compare dispatch on the pool, gated on no regression."""
+    groups: list[list[Path]] = []
+    for n, half in enumerate(halves):
+        writes = compose(texts, parts, half)
+        sources = sorted(p for p in writes if p.endswith(".c"))
+        if not sources:
+            groups.append([])
+            continue
+        base = out / ".bisect" / str(n)
+        for path, text in writes.items():
+            store.write(base / path, text.encode())
+        groups.append([base / sources[0], *(Path(p + "=" + str(base / p)) for p in sorted(writes) if p != sources[0])])
+    live = [g for g in groups if g]
+    params = {"no_regression": True, "toolchain": None, "flag": (), "omit_flag": (), "function": None}
+    with effort.stage("retype.bisect"):
+        found = iter(compare.prove_groups(config, snapshot, live, params) if live else [])
+        return [bool(g) and not next(found) for g in groups]
 
 
 def _submit(
@@ -616,6 +832,7 @@ def _submit(
             "omit_flag": (),
             "withhold": False,
             "note": "retype parameters to the struct their casts name",
+            "no_regression": True,
             "batch_data": None,
             "prove_extras": True,
         },

@@ -240,28 +240,42 @@ def test_plan_takes_hand_written_assembly_as_library_assembly_whatever_its_instr
     assert writes["a.yaml"] == b"split:a|osAdd:c"
 
 
-def test_plan_writes_nothing_for_a_module_another_module_splits_and_says_so(case):
+def test_a_module_another_module_splits_becomes_one_file_per_contiguous_run(case):
+    # real case: libasm_80200610 interleaved with other modules' code was refused as library-asm.scattered
     snapshot = case({"osGetSR": GET_SR, "osMid": LEAF_C, "osCache": CACHE_LOOP})
     members = dict(snapshot.layout.members)
     members["osMid"] = replace(members["osMid"], group="other")
     groups = {"g": replace(snapshot.layout.groups["g"], members=("osGetSR", "osCache"))}
     snapshot = replace(snapshot, layout=replace(snapshot.layout, members=members, groups=groups))
     writes, findings = libasm.plan(snapshot)
-    assert writes == {} and {(f.key, f.unit) for f in findings} == {
-        ("library-asm.scattered", "osGetSR"),
-        ("library-asm.scattered", "osCache"),
-    }
+    assert findings == ()
+    assert writes["src/libultra/g.s"].decode() == libasm.render("osGetSR", GET_SR, 0x80001000, {})
+    assert writes["src/libultra/osCache.s"].decode() == libasm.render("osCache", CACHE_LOOP, 0x80001010, {})
+    assert writes["layout.toml"] == b"map:src/libultra/g.s,src/libultra/osCache.s"
+
+
+def test_a_module_whose_routines_different_versions_hold_gets_one_file_per_version_run(case):
+    # real case: libasm_80200400 holds func_80200400_de/_eu/_us, each held by one version: library-asm.version-split
+    snapshot = case({"osA": GET_SR, "osB": CACHE_LOOP})
+    members = dict(snapshot.layout.members)
+    for name, version in (("osA", "a"), ("osB", "b")):
+        places = tuple(p for p in members[name].placements if p.version == version)
+        members[name] = replace(members[name], placements=places)
+    snapshot = replace(snapshot, layout=replace(snapshot.layout, members=members))
+    writes, findings = libasm.plan(snapshot)
+    assert findings == ()
+    assert sorted(writes) == ["a.yaml", "b.yaml", "layout.toml", "src/libultra/g.s", "src/libultra/osB.s"]
+    assert writes["a.yaml"] == b"split:a|osA:c" and writes["b.yaml"] == b"split:b|osB:c"
+
+
+def test_a_run_ends_at_a_routine_that_cannot_be_rendered(case):
+    snapshot = case({"osA": GET_SR, "osJump": JUMP_OUT, "osB": CACHE_LOOP})
+    writes, findings = libasm.plan(snapshot)
+    assert [f.key for f in findings] == ["library-asm.unnamed-target"]
+    assert sorted(p for p in writes if p.endswith(".s")) == ["src/libultra/g.s", "src/libultra/osB.s"]
 
 
 def test_plan_labels_are_local_to_each_routine_so_one_module_assembles(case):
     text = libasm.plan(case({"osA": CACHE_LOOP, "osB": CACHE_LOOP}))[0]["src/libultra/g.s"].decode()
     labels = [line for line in text.splitlines() if line.startswith(".L")]
     assert labels == [".LosA_008:", ".LosB_008:"]
-
-
-def test_plan_writes_nothing_for_a_module_whose_routines_different_versions_hold(case):
-    snapshot = case({"osGetSR": GET_SR, "osCache": CACHE_LOOP})
-    members = dict(snapshot.layout.members)
-    members["osCache"] = replace(members["osCache"], placements=members["osCache"].placements[:1])
-    writes, findings = libasm.plan(replace(snapshot, layout=replace(snapshot.layout, members=members)))
-    assert writes == {} and {f.key for f in findings} == {"library-asm.version-split"}

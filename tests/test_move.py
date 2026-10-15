@@ -2067,3 +2067,16 @@ def test_a_type_move_blames_only_the_units_that_spell_the_type_not_every_include
     snapshot = layout.capture(cfg)
     users = move._type_users(snapshot, "Old")
     assert "f1" in users and "f2" not in users and "f3" not in users
+
+
+def test_a_relocate_cycle_refusal_blames_the_moves_that_merge_its_header_not_the_stream():
+    # queue 2026-10-15 07:15 (RELAYOUT4): one move.cycle bisected an 8,156-move stream for 30 min
+    from types import SimpleNamespace as NS
+
+    from unbake.contracts import Move
+
+    groups = {"a": NS(name="a", header="include/a.h"), "b": NS(name="b", header="include/b.h")}
+    edited = NS(layout=NS(groups=groups), touched={0: {"a"}, 1: {"b"}, 2: {"b"}})
+    moves = [Move(0, "module", "a", "x"), Move(1, "module", "b", "y"), Move(2, "member", "f", "b")]
+    assert move._cycle_moves(edited, moves, "include/a.h") == [moves[0]]
+    assert move._cycle_moves(edited, moves, "include/none.h") == moves

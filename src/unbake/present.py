@@ -10,7 +10,7 @@ from contextlib import suppress
 from xml.sax.saxutils import escape
 
 from unbake import config as configuration
-from unbake import effort, process, report
+from unbake import effort, pool, process, report
 from unbake.contracts import Json, Refusal, Snapshot
 
 PROGRESS = "progress.json"
@@ -206,10 +206,16 @@ def files(snapshot: Snapshot, current: Json) -> dict[str, bytes]:
     """Every presentation file of the tree, from the report rows the README shows."""
     with effort.stage("present.files"):
         out = {PROGRESS: progress(snapshot, current)}
-        for v in snapshot.config.project.versions:
-            out[map_path(v)] = memory_map(snapshot, v)
-            out[symbols_path(v)] = symbols(snapshot, v)
+        jobs = [(snapshot, v, kind) for v in snapshot.config.project.versions for kind in ("map", "symbols")]
+        made = pool.map(snapshot.config, "present.files", _file_job, jobs)  # every version's files on all cores
+        for (_, v, kind), blob in zip(jobs, made, strict=True):
+            out[map_path(v) if kind == "map" else symbols_path(v)] = blob
         return out
+
+
+def _file_job(item: tuple[Snapshot, str, str]) -> bytes:
+    snapshot, version, kind = item
+    return memory_map(snapshot, version) if kind == "map" else symbols(snapshot, version)
 
 
 def recomp(title: str) -> bytes:

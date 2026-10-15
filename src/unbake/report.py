@@ -821,32 +821,114 @@ def map_command(config: Config, params: Json) -> Json:
         return result
 
 
+def _facts_job(item: tuple[Snapshot, str]) -> Json:
+    snapshot, path = item
+    from unbake import fakefold
+
+    return fakefold.facts(policy.scopes(snapshot.read(path).decode(errors="replace"))["code"])
+
+
+def _weights_job(item: tuple[Snapshot, str]) -> dict[str, list[str]]:
+    """Per fake-type subject (an invented record name) of one unit the functions its finding withholds."""
+    snapshot, path = item
+    text = snapshot.read(path).decode(errors="replace")
+    functions = policy.credited(snapshot, path, text)
+    out: dict[str, list[str]] = {}
+    for finding in policy.evaluate(snapshot, path, text, None, False, ["fake-type"]):
+        name = finding.reason.rpartition(": ")[2]
+        out.setdefault(name, []).extend(policy.withheld(text, [finding], functions))
+    return out
+
+
+def _fake_pieces(snapshot: Snapshot, version: str) -> tuple[dict[str, int], dict[str, set[str]], dict[str, set[str]]]:
+    """(bytes of each exact function piece unclean rules withhold in `version`, the rules of each, the invented names
+    whose fake-type finding withholds each): the census weights, judged on all cores."""
+    rules = policy.unclean_rules(snapshot)
+    project, broken = snapshot.config.project, _broken(snapshot)
+    starts = policy._function_starts(snapshot, version)
+    pieces: dict[str, int] = defaultdict(int)
+    paths: set[str] = set()
+    for name, member, unit, _, _ in _inventory(snapshot):
+        if member.kind != "function" or version not in member.holders() or unit is None:
+            continue
+        if not _version_matched(project, unit, version) or unit.path in broken:
+            continue
+        for place in (p for p in member.placements if p.version == version and p.section == ".text"):
+            cuts = [(place.vram, name), *policy._starts_in(starts, place)]
+            for (low, fn), (high, _) in zip(cuts, [*cuts[1:], (place.vram + place.size, "")], strict=True):
+                if fn in rules:
+                    pieces[fn] += high - low
+                    if "source.fake-type" in rules[fn]:
+                        paths.add(unit.path)
+    names: dict[str, set[str]] = defaultdict(set)
+    with effort.stage("report.fakes.weights"):
+        for found in pool.map(
+            snapshot.config, "report.fakes.weights", _weights_job, [(snapshot, p) for p in sorted(paths)]
+        ):
+            for name, fns in found.items():
+                for fn in fns:
+                    names[fn].add(name)
+    return dict(pieces), {fn: set(r) for fn, r in rules.items()}, dict(names)
+
+
 def _fakes_stream(snapshot: Snapshot) -> Json:
-    """Write the fold plan of every invented per-function record to .unbake/fakes.jsonl (input of `unbake move -
-    --partial`) and its census to .unbake/fakes.json; the count of records per class and of rows."""
+    """Write the fold plan of every invented per-function record and every record only a source defines to
+    .unbake/fakes.jsonl (input of `unbake move - --partial`) and its census to .unbake/fakes.json: per class the
+    records and the withheld bytes (in the README version) of the pieces whose worst fake subject is in that class,
+    and the ceiling of fake-only pieces fully planned. Every pass runs on the pool."""
     from unbake import fakefold, move
 
     laid, aliases = move.record_layouts(snapshot)
-    texts = {
-        p: snapshot.read(p).decode(errors="replace")
-        for p in [*headers.sources(snapshot), *headers.sources(snapshot, "src", ".c")]
-    }
-    reached = fakefold.reaches(texts, [n for n in laid if fakefold.invented(n)])
+    paths = [*headers.sources(snapshot), *headers.sources(snapshot, "src", ".c")]
+    texts = {p: snapshot.read(p).decode(errors="replace") for p in paths}
+    with effort.stage("report.fakes.flow"):
+        found = pool.map(snapshot.config, "report.fakes.flow", _facts_job, [(snapshot, p) for p in paths])
+    edges = fakefold.flow(found, laid, aliases)
+    types = move._record_types(snapshot)
+    records, typedefs = headers.type_names(snapshot)
+    local = {n for n in [*types.records, *types.typedefs] if n not in records and n not in typedefs and n in laid}
+    wanted = [n for n in laid if fakefold.invented(n) or n in local]
+    reached = fakefold.reaches(texts, wanted)
     taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}
-    rows, census = fakefold.plan(laid, aliases, reached, taken)
+    modules = {
+        m[0]: member.group
+        for name, member in snapshot.layout.members.items()
+        if (m := re.match(r"func_[0-9A-Fa-f]{8}", name)) and member.group
+    }
+    project = snapshot.config.project
+    version = project.readme_map or project.names_from
+    pieces, rules, subjects = _fake_pieces(snapshot, version)
+    weight: Counter[str] = Counter()
+    for fn, names in subjects.items():
+        for name in names:
+            weight[name] += pieces.get(fn, 0)
+    rows, census = fakefold.plan(laid, aliases, reached, taken, weight, edges, local, modules)
     root = snapshot.config.project.root
     store.write(
         root / ".unbake/fakes.jsonl",
         "".join(json.dumps(r, sort_keys=True) + "\n" for r in [{"layout": snapshot.layout.digest}, *rows]).encode(),
     )
     store.write(root / ".unbake/fakes.json", json.dumps(census, indent=1, sort_keys=True).encode())
-    classes = Counter(r["class"] for r in census)
+    cls_of = {r["record"]: r["class"] for r in census}
+    rank = {"a": 0, "b": 1, "c": 2, "e": 3, "d": 4}
+    classes: dict[str, dict[str, int]] = {}
+    for row in census:
+        classes.setdefault(row["class"], {"names": 0, "bytes": 0})["names"] += 1
+    ceiling = 0
+    for fn, names in subjects.items():
+        worst = max((cls_of.get(n, "d") for n in names), key=lambda c: rank.get(c, 4), default="d")
+        classes.setdefault(worst, {"names": 0, "bytes": 0})["bytes"] += pieces.get(fn, 0)
+        if worst != "d" and rules.get(fn, set()) == {"source.fake-type"}:
+            ceiling += pieces.get(fn, 0)
     reasons = Counter(re.sub(r"\d+", "N", r["reason"]) for r in census if r["class"] == "d")
     return {
         "path": ".unbake/fakes.jsonl",
         "census": ".unbake/fakes.json",
         "rows": len(rows),
+        "version": version,
+        "edges": len(edges),
         "classes": dict(sorted(classes.items())),
+        "ceiling": ceiling,
         "unplanned": dict(reasons.most_common(8)),
     }
 

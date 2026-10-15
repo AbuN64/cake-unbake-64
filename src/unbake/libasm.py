@@ -4,6 +4,7 @@ game assembly."""
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -140,25 +141,63 @@ def _finding(key: str, member: str, path: str) -> Finding:
     )
 
 
-def _scattered(snapshot: Snapshot, group: str, names: Sequence[str]) -> bool:
-    """Whether another module's code lies between the routines in some version: one `.s` links one contiguous run."""
+def _runs(snapshot: Snapshot, names: Sequence[str]) -> list[list[str]]:
+    """The routines of one module split into the runs one `.s` each can link: routines held by the same versions,
+    in ROM order, with nothing else (another module's code, or a routine of the module that other versions hold)
+    between neighbours in any version that holds them, and in the same order everywhere."""
     members = snapshot.layout.members
-    for version in {v for n in names for v in members[n].holders()}:
-        runs = [p for n in names for p in members[n].placements if p.version == version and p.section == ".text"]
-        low, high = min(p.rom_start for p in runs), max(p.rom_end for p in runs)
-        if any(
-            m.group != group and p.version == version and p.section == ".text" and low <= p.rom_start < high
-            for m in members.values()
-            for p in m.placements
-        ):
-            return True
-    return False
+    starts: dict[str, list[int]] = {}
+
+    def text(name: str, version: str) -> Any:
+        return next((p for p in members[name].placements if p.version == version and p.section == ".text"), None)
+
+    def between(version: str, low: int, high: int) -> bool:
+        if version not in starts:
+            starts[version] = sorted(
+                p.rom_start
+                for m in members.values()
+                for p in m.placements
+                if p.version == version and p.section == ".text"
+            )
+        found = starts[version]
+        return bisect_left(found, high) > bisect_left(found, low)
+
+    by_holders: dict[tuple[str, ...], list[str]] = {}
+    for name in names:
+        by_holders.setdefault(members[name].holders(), []).append(name)
+    runs: list[list[str]] = []
+    for held, group in by_holders.items():
+        first = held[0]
+        group = sorted(group, key=lambda n: text(n, first).rom_start if text(n, first) else 0)
+        run: list[str] = []
+        for name in group:
+            if run:
+                joined = True
+                for version in held:
+                    a, b = text(run[-1], version), text(name, version)
+                    if a is None or b is None or b.rom_start != a.rom_end or between(version, a.rom_end, b.rom_start):
+                        joined = False
+                        break
+                if not joined:
+                    runs.append(run)
+                    run = []
+            run.append(name)
+        if run:
+            runs.append(run)
+
+    def where(run: list[str]) -> tuple[str, int]:  # the run's first version and its ROM start there: module order
+        held = members[run[0]].holders()
+        place = text(run[0], held[0])
+        return held[0], place.rom_start if place else 0
+
+    return sorted(runs, key=lambda r: (where(r)[1], where(r)[0]))
 
 
 def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ...]]:
     """The writes that turn each unlanded foreign or hand-written (splat `hasm`) assembly function into library
-    assembly, one `.s` per module at the module's own path: its split rows turned to compiled and its unit in the
-    layout map; and the findings for the functions that cannot be."""
+    assembly: one `.s` per run of the module (`_runs`: routines the same versions hold, contiguous in ROM), the first
+    at the module's own path, the others named by their first routine; its split rows turned to compiled and its
+    units in the layout map; and the findings for the functions that cannot be."""
     project = snapshot.config.project
     with effort.stage("libasm.plan"):
         compiled, assembly, _ = layout._kinds()
@@ -185,26 +224,28 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
             if not config.library(project, path):
                 findings += [_finding("library-asm.unplaced", n, source) for n in names]
                 continue
-            if len({members[n].holders() for n in names}) > 1:  # one `.s` is assembled whole in every version
-                findings += [_finding("library-asm.version-split", n, source) for n in names]
-                continue
-            if _scattered(snapshot, group, names):
-                findings += [_finding("library-asm.scattered", n, source) for n in names]
-                continue
-            done = []
-            for name in names:
-                text = _text(snapshot, name)
-                if isinstance(text, Finding):
-                    findings.append(replace(text, path=source))
-                    continue
-                done.append(name)
-                writes[path] = (writes.get(path) or b"") + text.encode()
-                for holder in members[name].holders():
-                    split = snapshot.versions[holder].split
-                    current = writes.get(split) or snapshot.read(split)
-                    writes[split] = layout.edit_split(current, name, state=compiled, types=frozenset({assembly, _HAND}))
-            if done:
-                units[path] = UnitSpec(path, assembly, group, tuple(done), project.toolchain, {"add": [], "omit": []})
+            pieces: list[list[tuple[str, str]]] = []
+            for run in _runs(snapshot, names):  # a routine that cannot be rendered ends its run's file there
+                pieces.append([])
+                for name in run:
+                    text = _text(snapshot, name)
+                    if isinstance(text, Finding):
+                        findings.append(replace(text, path=source))
+                        pieces.append([])
+                        continue
+                    pieces[-1].append((name, text))
+            for number, piece in enumerate(p for p in pieces if p):  # the module's own path first, then by routine
+                target = path if number == 0 else str(Path(source).with_name(piece[0][0] + ".s"))
+                writes[target] = "".join(text for _, text in piece).encode()
+                for name, _ in piece:
+                    for holder in members[name].holders():
+                        split = snapshot.versions[holder].split
+                        current = writes.get(split) or snapshot.read(split)
+                        writes[split] = layout.edit_split(
+                            current, name, state=compiled, types=frozenset({assembly, _HAND})
+                        )
+                done = tuple(name for name, _ in piece)
+                units[target] = UnitSpec(target, assembly, group, done, project.toolchain, {"add": [], "omit": []})
         if writes:
             writes["layout.toml"] = layout.dump_map(replace(snapshot.layout, units=units))
         return writes, tuple(findings)

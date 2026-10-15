@@ -137,3 +137,81 @@ def test_group_named_from_shared_role():
     rows, census = fakefold.plan(layouts, {}, {}, set(layouts))
     assert {r["target"] for r in rows} == {"Holder"} and len(rows) == 3
     assert all(c["class"] == "b" and "role Holder" in c["reason"] for c in census)
+
+
+A = "Brain_func_80212D78_de"
+B = "Brain_func_80213000_de"
+
+
+def flowed(texts, layouts, aliases=None):
+    from unbake import policy
+
+    found = [fakefold.facts(policy.scopes(t)["code"]) for t in texts]
+    return fakefold.flow(found, layouts, aliases or {})
+
+
+def test_two_functions_passing_one_pointer_join_their_records():
+    layouts = {A: lay(8, (0, 4, "s32", "hp")), B: lay(8, (4, 4, "f32", "speed")), "Real": REAL}
+    caller = f"void f({A} *self) {{\n    g(0, self);\n}}\n"
+    callee = f"void g(s32 n, {B} *brain) {{\n    brain->speed = 1.0f;\n}}\n"
+    assert flowed([caller, callee], layouts) == [(A, B)]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["{b} *q = p;", "{a} *q;\n    q = p->link;", "{b} *q = make();"],
+    ids=["variable", "member load", "return value"],
+)
+def test_assignments_join_records(line):
+    layouts = {A: lay(8, (0, 4, f"{B} *", "link")), B: lay(4, (0, 4, "s32", "x"))}
+    text = f"{A} *make(void);\nvoid f({A} *p) {{\n    " + line.format(a=A, b=B) + "\n}\n"
+    assert flowed([text], layouts) == [(A, B)]
+
+
+def test_a_flow_component_without_a_real_record_gets_one_shared_record_named_from_evidence():
+    layouts = {A: lay(8, (0, 4, "s32", "hp")), B: lay(8, (0, 4, "s32", "hp"), (4, 4, "f32", "speed"))}
+    reached = {A: {"local": Counter({"*brain": 2})}, B: {"local": Counter({"*brain": 1})}}
+    rows, census = fakefold.plan(layouts, {}, reached, set(layouts), edges=[(A, B)])
+    assert rows == [{"op": "type", "subject": B, "target": "Brain"}, {"op": "type", "subject": A, "target": "Brain"}]
+    assert {r["class"] for r in census} == {"e"} and census[0]["component"] == census[1]["component"]
+
+
+def test_naming_falls_back_to_the_role_and_the_module_of_the_lowest_function():
+    layouts = {A: lay(8, (0, 4, "s32", "hp")), B: lay(8, (4, 4, "f32", "speed"))}
+    reached = {A: {"local": Counter({"*arg0": 1})}, B: {"local": Counter({"*temp": 1})}}
+    rows, _ = fakefold.plan(layouts, {}, reached, set(layouts), edges=[(A, B)], modules={"func_80212D78": "code_80212"})
+    assert {r["target"] for r in rows} == {"BrainCode80212"}
+
+
+def test_a_component_holding_a_real_record_folds_into_it_and_a_conflict_refuses_it():
+    layouts = {A: lay(8, (0, 4, "s32", "count")), B: lay(8, (4, 4, "void *", "next")), "Real": REAL}
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts), edges=[(A, B), (B, "Real")])
+    assert {r["subject"]: r["target"] for r in rows} == {A: "Real", B: "Real"}
+    clash = {**layouts, B: lay(8, (0, 2, "s16", "half"))}
+    rows, census = fakefold.plan(clash, {}, {}, set(clash), edges=[(A, B), (B, "Real")])
+    assert B not in {r["subject"] for r in rows} and "refused" in next(r for r in census if r["record"] == B)["reason"]
+
+
+def test_a_member_conflict_in_a_component_with_no_real_record_refuses_it():
+    layouts = {A: lay(8, (0, 4, "s32", "hp")), B: lay(8, (0, 4, "f32", "speed"))}
+    reached = {A: {"local": Counter({"*brain": 1})}}
+    rows, census = fakefold.plan(layouts, {}, reached, set(layouts), edges=[(A, B)])
+    assert rows == [] and all("conflict" in r["reason"] for r in census)
+
+
+def test_a_fit_tie_is_broken_by_flow():
+    two = {"RealA": lay(8, (0, 4, "s32", "x"), (4, 4, "s32", "y")), "RealB": lay(8, (0, 4, "s32", "x"))}
+    layouts = {A: lay(4, (0, 4, "s32", "x")), **two}
+    _, census = fakefold.plan(layouts, {}, {}, set(layouts))
+    assert census[0]["class"] == "d"
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts), edges=[(A, "RealA")])
+    assert rows == [{"op": "type", "subject": A, "target": "RealA"}] and census[0]["class"] == "e"
+
+
+def test_a_source_record_folds_into_the_header_record_its_flow_reaches_and_never_gets_a_new_name():
+    layouts = {"Local": lay(4, (0, 4, "s32", "count")), "Real": REAL}
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts), local={"Local"})
+    assert rows == [{"op": "type", "subject": "Local", "target": "Real"}] and census[0]["local"]
+    lone = {"Local": lay(4, (0, 4, "f32", "speed")), "Other": lay(4, (0, 4, "f32", "speed"))}
+    rows, census = fakefold.plan(lone, {}, {}, set(lone), edges=[("Local", "Other")], local={"Local", "Other"})
+    assert rows == [] and {r["class"] for r in census} == {"d"}

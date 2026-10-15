@@ -852,9 +852,11 @@ def _moves_for(edited: Edited, moves: Sequence[Move], unit: UnitSpec | None, eve
     return hit or (list(moves) if every else [])
 
 
-def _touching_path(moves: Sequence[Move], path: str) -> list[Move]:
-    """The moves that name the path; every move when the finding names none of them."""
-    return [m for m in moves if path and path in (m.subject, m.target)] or list(moves)
+def _cycle_moves(edited: Edited, moves: Sequence[Move], path: str) -> list[Move]:
+    """The moves a relocate refusal at `path` blames: those naming it, else those whose modules' header it is (the
+    moves that merge it and so close the cycle), and only when none can be told every move."""
+    named = [m for m in moves if path and path in (m.subject, m.target)]
+    return named or (_header_moves(edited, moves, path, path) if path else []) or list(moves)
 
 
 def _header_moves(edited: Edited, moves: Sequence[Move], old: str, new: str) -> list[Move]:
@@ -1080,14 +1082,16 @@ def _newly_unclean(
 def _unclean_losses(before: Snapshot, after: Snapshot, affected: Collection[str]) -> list[tuple[str, Finding]]:
     mine = {p: after.layout.units[p] for p in affected if p in after.layout.units}
     members = {n for u in mine.values() for n in u.members}
-    was = policy.unclean_rules(before, {p for p, u in before.layout.units.items() if members & set(u.members)})
+    olds = {p for p, u in before.layout.units.items() if members & set(u.members)}
+    was = policy.unclean_rules(before, olds)
+    credited = {n for p in olds for n in policy.credited(before, p)}  # a function new to the tree had no credit
     now = policy.unclean_rules(after, set(mine))
     ids = configuration.load_resource("rules.toml").get("unclean", ())
     found: list[tuple[str, Finding]] = []
     for path in sorted(mine):
         text = after.read(path).decode()
         functions = policy.credited(after, path, text)
-        lost = [n for n in functions if n in now and n not in was]
+        lost = [n for n in functions if n in now and n not in was and n in credited]
         if not lost:
             continue
         hits = policy.evaluate(after, path, text, None, False, ids)
@@ -1522,7 +1526,7 @@ def _apply(
             with effort.stage("move.relocate"):
                 header_texts, relocated, stay = headers.relocate(snapshot, edited.events, failed)
         except Refusal as refusal:
-            rows = [(m, f) for f in refusal.findings for m in _touching_path(moves, f.path)]
+            rows = [(m, f) for f in refusal.findings for m in _cycle_moves(edited, moves, f.path)]
             return _refusal(moves, snapshot, rows)
         for source, target, reasons in failed or ():  # unproved: every merge that refuses, found in one pass
             for f in reasons:
@@ -1780,32 +1784,52 @@ def _apply(
         )
 
 
+def _record_types(snapshot: Snapshot) -> _Types:
+    """The batch type names of the headers with every record and typedef the sources declare (fuzzy ones too), once
+    per process and tree state."""
+
+    def build() -> _Types:
+        types = _Types(snapshot)
+        for path in headers.sources(snapshot, "src", ".c"):
+            for key, _, statement in headers._declared(snapshot.read(path).decode(errors="replace")):
+                kind, _, tag = key.partition(" ")
+                if tag and kind in ("struct", "union"):
+                    types.records.setdefault(tag, statement)
+                elif re.match(r"typedef\b", statement):
+                    types.typedefs.setdefault(key, statement)
+        return types
+
+    return effort.memo(("move.record_types", snapshot.digest), build)
+
+
+def _lay_job(item: tuple[Snapshot, str]) -> Any:
+    """One record's laid layout, or {"conflict": why}."""
+    snapshot, tag = item
+    types = _record_types(snapshot)
+    statement = types.records[tag]
+    start, end = _body(statement)
+    laid = _probe_layouts(types, {f"struct {tag}": f"struct {tag} {statement[start : end + 1]};"})
+    return laid.get(f"struct {tag}", {"conflict": "no layout"}) if isinstance(laid, dict) else {"conflict": laid}
+
+
 def record_layouts(snapshot: Snapshot) -> tuple[dict[str, Any], dict[str, str]]:
     """(per record tag and typedef name its laid layout, per typedef name the tag it names) of every record the
-    headers and landed sources declare."""
-    types = _Types(snapshot)
-    for path in headers.sources(snapshot, "src", ".c"):
-        for key, _, statement in headers._declared(snapshot.read(path).decode(errors="replace")):
-            kind, _, tag = key.partition(" ")
-            if tag and kind in ("struct", "union"):
-                types.records.setdefault(tag, statement)
-            elif re.match(r"typedef\b", statement):
-                types.typedefs.setdefault(key, statement)
+    headers and sources declare, each record laid on the pool (all cores)."""
+    types = _record_types(snapshot)
     aliases: dict[str, str] = {}
     for name in types.typedefs:
         found = re.fullmatch(r"typedef (?:struct|union) (\w+) (\w+) ?;", types.typedefs[name])
         named = types.tag(name) or (found[1] if found and found[2] == name else None)
         if named and named != name:
             aliases[name] = named
-    out: dict[str, Any] = {}
-    for tag, statement in types.records.items():
-        if not re.match(r"(?:typedef\s+)?struct\b", statement) or "{" not in statement:
-            continue
-        start, end = _body(statement)
-        laid = _probe_layouts(types, {f"struct {tag}": f"struct {tag} {statement[start : end + 1]};"})
-        out[tag] = (
-            laid.get(f"struct {tag}", {"conflict": "no layout"}) if isinstance(laid, dict) else {"conflict": laid}
-        )
+    tags = [
+        tag
+        for tag, statement in types.records.items()
+        if re.match(r"(?:typedef\s+)?struct\b", statement) and "{" in statement
+    ]
+    with effort.stage("move.record_layouts"):
+        laid = pool.map(snapshot.config, "move.record_layouts", _lay_job, [(snapshot, t) for t in tags])
+    out: dict[str, Any] = dict(zip(tags, laid, strict=True))
     for name, tag in aliases.items():
         if tag in out and name not in out:
             out[name] = out[tag]

@@ -6,14 +6,21 @@ b  several invented records share one layout: fold them into one shared record n
    reach them (dispatch-group rule).
 c  one data symbol is all that reaches it: rename it to the symbol's owner-local record (Data<addr>[Ptr] or
    Data<PascalWords>[Ptr], the recipe's scheme), or fold into that record when it exists.
+e  flow: the pointer flows (call argument to parameter, assignment, member load, return value) between it and
+   other records. A flow component holding exactly one real (or Data*) record folds every invented record into it
+   when each fits it; a component with none gets ONE shared record named from evidence (the most common declarator
+   word reaching it, else the role prefix with the module of its lowest function). A member conflict or several real
+   records refuse the whole component. Records a source defines (fuzzy local records) take part as well: they fold
+   into a real header record their flow or layout gives them.
 d  none of these: no row, the reason is reported.
 """
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from unbake.contracts import Json
@@ -71,6 +78,150 @@ def reaches(texts: Mapping[str, str], names: Iterable[str]) -> dict[str, dict[st
     return found
 
 
+_KEYWORDS = frozenset({"return", "else", "case", "goto", "do", "if", "while", "for", "switch", "sizeof", "typedef"})
+_TYPED = r"(?:const\s+|volatile\s+|register\s+|static\s+)*(?:struct\s+|union\s+)?([A-Za-z_]\w*)\s*\*\s*(?:const\s+)?"
+_HEAD = re.compile(
+    r"^[ \t]*(?:static\s+|inline\s+|extern\s+)*(?:const\s+)?(?:struct\s+|union\s+)?(\w+)\s*(\**)\s*\b(\w+)\s*"
+    r"\(([^()]*)\)\s*([{;])",
+    re.M,
+)
+_LOCAL = re.compile(rf"(?:^|[;{{}}])\s*{_TYPED}([A-Za-z_]\w*)\s*(?=[;=,\[])")
+_ASSIGN = re.compile(r"(?<![=!<>+\-*/&|^%.>])\b([A-Za-z_]\w*)\s*=(?!=)\s*([^;]+);")
+
+
+def _param_types(text: str) -> list[str | None]:
+    """The record word of each parameter declared as one pointer to it, else None."""
+    out: list[str | None] = []
+    for param in text.split(","):
+        m = re.fullmatch(rf"\s*{_TYPED}(\w+)?\s*", param)
+        out.append(m[1] if m and m[1] not in ("void", "char") else None)
+    return out
+
+
+def facts(code: str) -> Json:
+    """The flow facts of one comment-free source or header text: per function defined or declared its parameter and
+    return record words, and per definition the (callee, argument index, record word) of each pointer variable passed
+    and the (record word, kind, what) of each assignment to one: from another variable ("var", word), a member load
+    ("member", base word, member) or a call ("call", callee)."""
+    from unbake import retype  # the call-site parser is retype's
+
+    functions: dict[str, dict[str, Any]] = {}
+    for head in _HEAD.finditer(code):
+        ret, stars, name, params, end = head[1], head[2], head[3], head[4], head[5]
+        if name in _KEYWORDS or ret in _KEYWORDS:
+            continue
+        row = functions.setdefault(name, {"params": _param_types(params), "returns": None, "calls": [], "assigns": []})
+        if len(stars) == 1 and ret not in ("void", "char"):
+            row["returns"] = ret
+        if end != "{" or row["calls"] or row["assigns"]:
+            continue
+        depth, close = 0, len(code)
+        for index in range(head.end() - 1, len(code)):
+            depth += (code[index] == "{") - (code[index] == "}")
+            if depth == 0:
+                close = index
+                break
+        body = code[head.end() - 1 : close]
+        declared = [re.search(r"(\w+)\s*$", p) for p in params.split(",")]
+        names: dict[str, str] = {m[1]: w for m, w in zip(declared, row["params"], strict=True) if m and w}
+        names.update({m[2]: m[1] for m in _LOCAL.finditer(body) if m[1] not in _KEYWORDS})
+        if not names:
+            continue
+        for call in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", body):
+            if call[1] in _KEYWORDS:
+                continue
+            last = retype._balanced(body, call.end() - 1)
+            if last < 0:
+                continue
+            for index, (_, arg) in enumerate(retype._split(body[call.end() : last])):
+                if arg.strip() in names:
+                    row["calls"].append([call[1], index, names[arg.strip()]])
+        assigns = [(m[1], m[2]) for m in _ASSIGN.finditer(body)]
+        assigns += [
+            (m[2], init[1]) for m in _LOCAL.finditer(body) if (init := re.match(r"\s*=\s*([^;]+);", body[m.end() :]))
+        ]
+        for target, value in assigns:
+            word, rhs = names.get(target), value.strip()
+            if not word:
+                continue
+            if rhs in names:
+                row["assigns"].append([word, "var", names[rhs]])
+            elif (load := re.fullmatch(r"(\w+)\s*->\s*(\w+)", rhs)) and load[1] in names:
+                row["assigns"].append([word, "member", names[load[1]], load[2]])
+            elif called := re.fullmatch(r"(\w+)\s*\(.*\)", rhs, re.S):
+                row["assigns"].append([word, "call", called[1]])
+    return functions
+
+
+def flow(
+    found: Iterable[Json], layouts: Mapping[str, Mapping[str, Any]], aliases: Mapping[str, str]
+) -> list[tuple[str, str]]:
+    """The flow edges between record names (each as the record it names) that the facts of every file give, only
+    where at least one side is invented or defined in a source: two real records never join by flow."""
+
+    def own(name: str) -> str:
+        return aliases.get(name, name)
+
+    params: dict[str, list[str | None]] = {}
+    returns: dict[str, str] = {}
+    for functions in found:
+        for name, row in functions.items():
+            if row["calls"] or row["assigns"] or name not in params:  # a definition outweighs a prototype
+                params[name] = row["params"]
+            if row["returns"]:
+                returns.setdefault(name, row["returns"])
+    edges: set[tuple[str, str]] = set()
+
+    def join(first: str | None, second: str | None) -> None:
+        if not (first and second):
+            return
+        a, b = own(first), own(second)
+        if a != b and a in layouts and b in layouts:
+            edges.add((min(a, b), max(a, b)))
+
+    for functions in found:
+        for row in functions.values():
+            for callee, index, word in row["calls"]:
+                taken = params.get(callee) or []
+                join(word, taken[index] if index < len(taken) else None)
+            for word, kind, *what in row["assigns"]:
+                if kind == "var":
+                    join(word, what[0])
+                elif kind == "call":
+                    join(word, returns.get(what[0]))
+                else:
+                    member = next(
+                        (f for f in layouts.get(own(what[0]), {}).get("fields", ()) if f["name"] == what[1]), None
+                    )
+                    pointee = re.fullmatch(r"(?:struct\s+|union\s+)?(\w+)\s*\*", member["type"]) if member else None
+                    join(word, pointee[1] if pointee else None)
+    return sorted(edges)
+
+
+def _members(lays: Iterable[Mapping[str, Any]]) -> tuple[list[tuple[int, int, str, str]], str]:
+    """The union of the named members of laid records, and the conflict that refuses it ("" when none): two members
+    at one offset must agree in width and type (a `void *` takes any pointer), and members never overlap."""
+    rows: dict[int, tuple[int, str, str]] = {}
+    for lay in lays:
+        for offset, size, kind, name in _fields(lay):
+            if _pad(name, kind):
+                continue
+            seen = rows.get(offset)
+            if seen is None:
+                rows[offset] = (size, kind, name)
+            elif seen[0] != size or (
+                seen[1] != kind and not ("*" in kind and "*" in seen[1] and "void *" in (kind, seen[1]))
+            ):
+                return [], f"offset 0x{offset:X}: {seen[1]} {seen[2]} and {kind} {name}"
+            elif seen[1] == "void *" and kind != seen[1]:
+                rows[offset] = (size, kind, seen[2])
+    ordered = sorted(rows.items())
+    for (a, (sa, ka, na)), (b, (_, kb, nb)) in itertools.pairwise(ordered):
+        if a + sa > b:
+            return [], f"offset 0x{a:X} {ka} {na} overlaps 0x{b:X} {kb} {nb}"
+    return [(o, s, k, n) for o, (s, k, n) in ordered], ""
+
+
 def _fields(layout: Mapping[str, Any]) -> list[tuple[int, int, str, str]]:
     return [(f["offset"], f["width"], f["type"], f["name"]) for f in layout.get("fields", ())]
 
@@ -125,14 +276,20 @@ def plan(
     reached: Mapping[str, Mapping[str, Counter[str]]],
     taken: Iterable[str],
     weight: Mapping[str, int] | None = None,
+    edges: Iterable[tuple[str, str]] = (),
+    local: Iterable[str] = (),
+    modules: Mapping[str, str] | None = None,
 ) -> tuple[list[Json], list[Json]]:
     """(move rows, census rows). `layouts` holds every record by name (laid, or {"conflict": why}); `aliases` maps a
     typedef name to the record it names; `reached` is `reaches()`; `taken` every name in use; `weight` the bytes each
-    invented name withholds. Rows fold records first, then the typedef aliases of each into its record's new name."""
+    invented name withholds; `edges` the flow edges (`flow`); `local` the records only sources define (they fold
+    into header records, by layout or flow); `modules` the module of each function symbol. Rows fold records first,
+    then the typedef aliases of each into its record's new name."""
     weight = weight or {}
     taken = set(taken)
-    fakes = sorted(n for n in layouts if invented(n))
-    real = {n: lay for n, lay in layouts.items() if not invented(n) and "fields" in lay}
+    local = set(local) - {n for n in layouts if invented(n)}
+    fakes = sorted(n for n in layouts if invented(n) or n in local)
+    real = {n: lay for n, lay in layouts.items() if not invented(n) and n not in local and "fields" in lay}
     target: dict[str, str] = {}
     census: list[Json] = []
     why: dict[str, tuple[str, str]] = {}
@@ -161,6 +318,9 @@ def plan(
         if best > 0 and best == named and pick:
             target[name] = pick
             why[name] = ("a", f"its {named} members fit {pick}")
+            continue
+        if name in local:  # a source's own record moves only into a header record (flow below)
+            why[name] = ("d", "a source record no header record fits")
             continue
         holders = {d.lstrip("*"): d.startswith("*") for d in reached.get(name, {}).get("data", Counter())}
         members = reached.get(name, {}).get("member", Counter())
@@ -202,19 +362,144 @@ def plan(
             target[n] = pick
             via = f"reached as {words.most_common(1)[0][0]}" if pick != role else f"all in role {role}"
             why[n] = ("b", f"one of {len(group)} same-layout records {via}")
+    seeds, components = _flow_classes(layouts, real, local, edges, target, why, own, reached, taken, modules or {})
     for name in fakes:
         alias = own(name)
-        if alias != name and invented(alias):
+        if alias != name and (invented(alias) or alias in local):
             why[name] = why.get(alias, ("d", f"an alias of {alias}, which is not a record"))
             if alias in target:
                 target[name] = target[alias]
+            if alias in components:
+                components[name] = components[alias]
     rows: list[Json] = [
         {"op": "type", "subject": name, "target": target[name]}
-        for name in sorted(target, key=lambda n: (own(n) != n, n))
+        for name in sorted(target, key=lambda n: (own(n) != n, n not in seeds, n))
     ]
     for name in fakes:
         cls, reason = why[name]
         census.append(
-            {"record": name, "class": cls, "target": target.get(name), "bytes": weight.get(name, 0), "reason": reason}
+            {
+                "record": name,
+                "class": cls,
+                "target": target.get(name),
+                "bytes": weight.get(name, 0),
+                "reason": reason,
+                "component": components.get(name),
+                "local": name in local,
+            }
         )
     return rows, census
+
+
+def _flow_classes(
+    layouts: Mapping[str, Mapping[str, Any]],
+    real: Mapping[str, Mapping[str, Any]],
+    local: set[str],
+    edges: Iterable[tuple[str, str]],
+    target: dict[str, str],
+    why: dict[str, tuple[str, str]],
+    own: Callable[[str], str],
+    reached: Mapping[str, Mapping[str, Counter[str]]],
+    taken: set[str],
+    modules: Mapping[str, str],
+) -> tuple[set[str], dict[str, int]]:
+    """Class e: union-find over the flow edges, each name standing as the record it already folds into. Moves the d
+    records of each component (in `target` and `why`); returns the seeds a new shared record is renamed from and the
+    component id of every name in one."""
+    parent: dict[str, str] = {}
+
+    def node(name: str) -> str:
+        return target.get(own(name), own(name))
+
+    def root(name: str) -> str:
+        parent.setdefault(name, name)
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    for a, b in edges:
+        a, b = node(a), node(b)
+        if (a in real) and (b in real):
+            continue  # two real records never join
+        parent[root(a)] = root(b)
+    groups: dict[str, list[str]] = defaultdict(list)
+    for name in list(parent):
+        groups[root(name)].append(name)
+    seeds: set[str] = set()
+    components: dict[str, int] = {}
+    for number, names in enumerate(sorted(sorted(g) for g in groups.values())):
+        open_ = [n for n in names if why.get(n, ("", ""))[0] == "d" and "fields" in layouts.get(n, {})]
+        open_ = [n for n in open_ if own(n) == n]
+        if not open_:
+            continue
+        for n in names:
+            components[n] = number
+        reals = sorted({n for n in names if n in real})
+        lays = [layouts[n] for n in open_]
+        if len(reals) > 1:
+            for n in open_:
+                why[n] = ("d", f"its flow joins {len(reals)} real records: {', '.join(reals[:3])}")
+            continue
+        if reals:
+            home = reals[0]
+            _, conflict = _members([*lays, real[home]])
+            bad = next((n for n in open_ if fits(layouts[n], real[home]) < 0), "")
+            if conflict or bad:
+                reason = conflict or f"{bad} does not fit {home}"
+                for n in open_:
+                    why[n] = ("d", f"flow component into {home} refused: {reason}")
+                continue
+            for n in open_:
+                target[n] = home
+                why[n] = ("e", f"its pointer flows into {home} ({len(names)} records)")
+            continue
+        fakes = [n for n in open_ if n not in local]
+        if not fakes:
+            for n in open_:
+                why[n] = ("d", "a flow component of source records with no header record")
+            continue
+        _, conflict = _members(lays)
+        if conflict:
+            for n in open_:
+                why[n] = ("d", f"flow component member conflict at {conflict}")
+            continue
+        pick = _flow_name(open_, reached, taken, modules)
+        if not pick:
+            for n in open_:
+                why[n] = ("d", "a flow component no evidence names")
+            continue
+        taken.add(pick)
+        seed = max(fakes, key=lambda n: (sum(1 for f in _fields(layouts[n]) if not _pad(f[3], f[2])), n))
+        seeds.add(seed)
+        for n in open_:
+            target[n] = pick
+            why[n] = ("e", f"one shared record of a flow component of {len(open_)} records")
+    return seeds, components
+
+
+def _flow_name(
+    names: Sequence[str], reached: Mapping[str, Mapping[str, Counter[str]]], taken: set[str], modules: Mapping[str, str]
+) -> str:
+    """The evidence name of a flow component: its most common declarator word, else the role prefix of its invented
+    names with the module of its lowest function; never a function symbol, a Data* name or a name in use."""
+    words: Counter[str] = Counter()
+    for n in names:
+        for kind in ("member", "data", "local"):
+            for d, count in reached.get(n, {}).get(kind, Counter()).items():
+                d = d.lstrip("*")
+                if (
+                    not _PLACE.match(d)
+                    and not re.search(r"^(?:D_|temp|var|sp|arg|func_|ptr|phi|unused)", d)
+                    and len(d) > 2
+                ):
+                    words[d] += count
+    roles = Counter(re.split(r"_?func_", n)[0] for n in names if invented(n))
+    role = next((r for r, _ in roles.most_common() if r and not invented(r) and r != "Shared"), "")
+    symbols = sorted(m[0] for n in names if (m := re.search(r"func_[0-9A-Fa-f]{8}", n)))
+    module = modules.get(next(iter(symbols), ""), "")
+    picks = [_pascal(w) for w, _ in words.most_common(3)]
+    picks += [_pascal(role) + _pascal(module)] if role and module else []
+    return str(
+        next((p for p in picks if p and p not in taken and not invented(p) and not p.startswith(("Data", "Func"))), "")
+    )

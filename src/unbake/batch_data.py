@@ -178,6 +178,7 @@ def run(config: Config, params: Json) -> Json:
         plan = publish.make_plan(
             "publish", snapshot, writes, tuple(u.path for u in units), debt, f"publish {len(units)} data members"
         )
+        publish.credit_guard(snapshot, plan.writes)
         files = journal.apply(config, plan, snapshot)
         landed, submissions = [], []
         for row in rows:

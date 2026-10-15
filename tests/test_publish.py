@@ -1076,3 +1076,27 @@ def test_an_unchanged_block_writes_no_readme(lane):
     snapshot = lane["snapshot"]  # the default readme mock renders the text it is given
     assert publish.make_plan("move", snapshot, {"src/f.c": b"new"}, (), (), "x").writes == {"src/f.c": b"new"}
     publish.report.progress.assert_called_once()
+
+
+def test_a_landing_that_costs_a_credited_function_its_credit_is_refused(monkeypatch):
+    # queue 2026-10-14 22:26: the credit-drop guard covered move/fold/relayout only; land writes bypassed it
+    from types import SimpleNamespace as NS
+
+    from unbake import move
+
+    snapshot = NS(layout=NS(units={"src/a.c": 1, "src/b.c": 2}), peek=lambda p: b"old")
+    overlay = NS(layout=NS(units={"src/a.c": 1, "src/b.c": 2, "src/new.c": 3}))
+    monkeypatch.setattr(publish.layout, "overlay", lambda s, w: overlay)
+    monkeypatch.setattr(publish.headers, "consumers", lambda s, changed: ["src/b.c", "src/new.c"])
+    seen = []
+
+    def losses(before, after, affected):
+        seen.append(affected)
+        return [("src/b.c", Finding("move.unclean", "src/b.c:3 would cost g its exact credit"))], ()
+
+    monkeypatch.setattr(move, "_newly_unclean", losses)
+    with pytest.raises(Refusal) as refused:
+        publish.credit_guard(snapshot, {"src/a.c": b"x", "include/a.h": b"y", "src/new.c": b"z"})
+    assert seen == [["src/a.c", "src/b.c"]] and refused.value.findings[0].key == "move.unclean"
+    monkeypatch.setattr(move, "_newly_unclean", lambda b, a, f: ([], ()))
+    publish.credit_guard(snapshot, {"src/a.c": b"x"})
