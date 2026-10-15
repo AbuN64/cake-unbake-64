@@ -318,11 +318,16 @@ REASON_CHARS = 2000  # a finding's reason in the stage log; a compile error quot
 
 
 def _logged(record: StageRecord) -> Json:
-    """The stage-log row of a record: each finding's reason cut to its head (the command's result keeps it whole)."""
+    """The stage-log row of a record: each finding's reason and missing lines cut to their head (the command's result
+    keeps them whole)."""
+
+    def cut(text: str) -> str:
+        return text if len(text) <= REASON_CHARS else text[:REASON_CHARS] + f" ... ({len(text)} chars)"
+
     row = asdict(record)
     for finding in row["findings"]:
-        if len(finding["reason"]) > REASON_CHARS:
-            finding["reason"] = finding["reason"][:REASON_CHARS] + f" ... ({len(finding['reason'])} chars)"
+        finding["reason"] = cut(finding["reason"])
+        finding["missing"] = [cut(m) for m in finding.get("missing", ())]
     return row
 
 

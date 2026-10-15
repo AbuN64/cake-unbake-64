@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -30,7 +31,7 @@ from unbake import (
 )
 from unbake import config as configuration
 from unbake import types as typedb
-from unbake.contracts import Claim, Config, Finding, Group, Json, LayoutMap, Move, Refusal, Snapshot, UnitSpec
+from unbake.contracts import Claim, Config, Finding, Group, Json, LayoutMap, Move, Refusal, Snapshot, UnitSpec, digest
 
 _ROUNDS = 5  # partial applies a batch at most this many times
 _REAPPLY = 1  # proof-found boundaries re-apply a batch at most this many times per command: work lands early
@@ -869,6 +870,71 @@ def _header_moves(edited: Edited, moves: Sequence[Move], old: str, new: str) -> 
     return [m for m in moves if edited.touched.get(m.index, set()) & groups]
 
 
+def _file_moves(before: Snapshot, after: Snapshot, edited: Edited, moves: Sequence[Move], path: str) -> list[Move]:
+    """The moves that changed one file: those whose subject or target the lines it changed spell (a type or symbol
+    move rewrites the lines naming it), else those naming it or a module bound to it, and only when none can be told
+    every move."""
+    old = set((before.peek(path) or b"").decode(errors="replace").splitlines())
+    new = set((after.peek(path) or b"").decode(errors="replace").splitlines())
+    words = symbols.tokens("\n".join(old ^ new))
+    spelled = [m for m in moves if {m.subject, m.target} & words]
+    return spelled or _header_moves(edited, moves, path, path) or list(moves)
+
+
+_HEADER_AT = re.compile(r"([\w./+-]+\.h):\d+")
+_VIEWS = re.compile(r"^(?:.*/)?build/views/[0-9a-f]+/")
+_SAID = 1500  # chars of a compiler message a finding keeps: the head names the error and the include chain
+
+
+def _probed(snapshot: Snapshot, paths: Sequence[str]) -> dict[str, list[str]]:
+    """Per header its first error lines compiled alone (unbake headers --probe: an include of it and nothing else,
+    with the flags of the project's first C unit outside the libraries), in one dispatch; [] when it compiles."""
+    library = tuple(f.rstrip("/") + "/" for f in snapshot.config.project.library_dirs)
+    units = [
+        u
+        for _, u in sorted(snapshot.layout.units.items())
+        if {"preprocess", "compile"} <= set(configuration.kind(u.kind)["phases"]) and not u.path.startswith(library)
+    ]
+    if not units or not paths:
+        return {}
+    probes = {h: f"src/.probe/{digest(h)[:16]}.c" for h in paths}
+    texts = {p: f'#include "{h.removeprefix("include/")}"\n'.encode() for h, p in probes.items()}
+    overlay = layout.overlay(snapshot, texts)
+    recipe = recipes.resolve(snapshot.config, units[0], units[0].options)
+    version = next(iter(snapshot.config.project.versions))
+    items = [(overlay, replace(units[0], path=probes[h]), version, h, recipe) for h in paths]
+    rows = pool.map(snapshot.config, "move.headers", headers._probe_job, items)
+    return {
+        h: (list(r["first"]) or ["the header does not compile alone"]) if r["errors"] else []
+        for h, r in zip(paths, rows, strict=True)
+    }
+
+
+def _broken_headers(before: Snapshot, after: Snapshot, changed: Sequence[str]) -> dict[str, Finding]:
+    """Per changed header that no longer compiles alone, why: each changed header is compiled once on its own, never
+    in every includer's proof. One that failed alone before the change too is not the change's (its includers are
+    proved as usual); one that fails only because a broken changed header it includes does is that header's."""
+    now = {h: e for h, e in _probed(after, changed).items() if e}
+    was = _probed(before, [h for h in now if before.peek(h) is not None])
+    now = {h: e for h, e in now.items() if not was.get(h)}
+    root = str(after.config.project.root.resolve()) + "/"
+    out: dict[str, Finding] = {}
+    for path, errors in sorted(now.items()):
+        named = {_VIEWS.sub("", h.removeprefix(root)) for h in _HEADER_AT.findall("\n".join(errors))} & now.keys()
+        if named and path not in named:
+            continue  # the header it includes is the broken one
+        said = "; ".join(errors)
+        said = said[:_SAID] + (f" ... ({len(said)} chars)" if len(said) > _SAID else "")
+        out[path] = Finding(
+            "move.header",
+            f"{path} does not compile alone: {said}",
+            path=path,
+            unit=path,
+            action="the moves that change it are refused; its includers are not proved",
+        )
+    return out
+
+
 def _claims(claims: Sequence[Any]) -> set[tuple[str, str, int, int]]:
     """The ROM ranges the units claim, adjacent ranges of one section joined."""
     rows: defaultdict[tuple[str, str], list[list[int]]] = defaultdict(list)
@@ -1158,6 +1224,7 @@ def _result(moves: Sequence[Move], snapshot: Snapshot, after: Snapshot | None = 
 
 def _refusal(moves: Sequence[Move], snapshot: Snapshot, rows: Sequence[tuple[Move, Finding]]) -> Json:
     by: defaultdict[int, list[Finding]] = defaultdict(list)
+    rows = [(move, _capped(found)) for move, found in rows]
     for move, found in rows:
         by[move.index].append(found)
     refused = [
@@ -1201,6 +1268,16 @@ def _subjects(refused: Sequence[Json]) -> list[Json]:
 _CONTENT_KEYED = ("declarations", "words", "spelled", "typed")  # memo kinds keyed by content: valid in any round
 
 
+def _capped(found: Finding) -> Finding:
+    """A finding with its reason and each missing line cut to their head: a compile error quoting whole headers is
+    100 KB, and a round can fail thousands of units."""
+
+    def cut(text: str) -> str:
+        return text if len(text) <= _SAID else text[:_SAID] + f" ... ({len(text)} chars)"
+
+    return replace(found, reason=cut(found.reason), missing=tuple(cut(m) for m in found.missing))
+
+
 def _said(found: Json) -> str:
     return json.dumps(found, sort_keys=True, default=str)
 
@@ -1238,8 +1315,46 @@ def run(config: Config, params: Json) -> Json:
         # a batch met again with the same boundaries and kept units would apply the same, so it is refused instead
         reapplied, seen = 0, set()
         per_unit = partial or any(m.op == "relayout" for m in moves)  # a stream fails per unit; one move all or nothing
-        (config.project.root / ".unbake/move/rounds.jsonl").unlink(missing_ok=True)  # this command's rounds only
+        # every round's outcome is journalled as it ends: a killed or crashed command resumes after its last round,
+        # with its landed files, kept units, boundaries and refusals, and proves none of them again
+        stream = digest(([(m.op, m.subject, m.target) for m in moves], partial, unproved))
+        saved = _resumed(config, stream)
+        if saved is None:
+            (config.project.root / ".unbake/move/rounds.jsonl").unlink(missing_ok=True)  # this command's rounds only
+        else:
+            queue, refused, kept, size, bounds = (
+                saved["queue"],
+                saved["refused"],
+                saved["kept"],
+                saved["size"],
+                saved["bounds"],
+            )
+            alone, seen = set(saved["alone"]), {(tuple(a), b, c) for a, b, c in saved["seen"]}
+            rounds, chained, reapplied, landed = saved["rounds"], saved["chained"], saved["reapplied"], saved["landed"]
+            files, deleted = dict.fromkeys(saved["files"]), dict.fromkeys(saved["deleted"])
+            said = f"{len(kept)} units kept, {len(refused)} moves refused, {sum(map(len, queue))} moves left"
+            effort.say(f"unbake: move resumes after round {rounds}: {said}")
+        result: Json = _result(moves, layout.capture(config))
         while queue:
+            _journal(
+                config,
+                stream,
+                {
+                    "queue": queue,
+                    "refused": refused,
+                    "kept": kept,
+                    "size": size,
+                    "bounds": bounds,
+                    "alone": sorted(alone),
+                    "seen": sorted(seen),
+                    "rounds": rounds,
+                    "chained": chained,
+                    "reapplied": reapplied,
+                    "landed": landed,
+                    "files": list(files),
+                    "deleted": list(deleted),
+                },
+            )
             ids = queue.pop(0)
             state = (tuple(ids), len(bounds), len(kept))
             if state in seen:
@@ -1322,7 +1437,51 @@ def run(config: Config, params: Json) -> Json:
             store.write(config.project.root / ".unbake/move/census.json", json.dumps(census, indent=1).encode())
         if any(m.op == "relayout" for m in original) or partial:
             result["converged"] = True  # what is left is the work list, not a failure
+        (config.project.root / _RESUME).unlink(missing_ok=True)  # done: a later run starts afresh
         return result
+
+
+_RESUME = ".unbake/move/resume.json"
+
+
+def _tree(config: Config, files: Collection[str]) -> str:
+    """What a resumed move needs unchanged: the layout, every source and header as it stands (path, size, mtime) and
+    the bytes of the files it wrote so far. A round killed after its write left a tree no journal names: it starts
+    afresh."""
+    root = config.project.root
+    stats = []
+    for place in ("src", "include"):
+        for folder, _, names in os.walk(root / place):
+            for name in names:
+                st = os.stat(f"{folder}/{name}")
+                stats.append((f"{folder}/{name}", st.st_size, st.st_mtime_ns))
+    return digest(
+        (
+            layout.capture(config).layout.digest,
+            sorted(stats),
+            [(p, (root / p).read_bytes() if (root / p).is_file() else None) for p in sorted(files)],
+        )
+    )
+
+
+def _journal(config: Config, stream: str, state: Json) -> None:
+    """The move's state after its last round, written atomically before the next one starts."""
+    path = config.project.root / _RESUME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tree = _tree(config, state["files"])
+    store.write(path, json.dumps({"stream": stream, "tree": tree, **state}, default=str).encode())
+
+
+def _resumed(config: Config, stream: str) -> Json | None:
+    """The journalled state of the same stream on the same tree, else None (a different stream, or a tree changed
+    since: the move starts afresh)."""
+    try:
+        state = json.loads((config.project.root / _RESUME).read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or state.get("stream") != stream:
+        return None
+    return state if state.get("tree") == _tree(config, state.get("files", ())) else None
 
 
 def _log_round(config: Config, round_: int, kept: Mapping[str, list[Json]], refused: Sequence[Json]) -> None:
@@ -1416,9 +1575,18 @@ def _keep_together(snapshot: Snapshot, final: Any, why: dict[str, list[Finding]]
                     todo.append(unit.path)
 
 
-def _kept(snapshot: Snapshot, final: Any, failing: Mapping[str, list[Finding]], keep: Collection[str]) -> Json:
+def _kept(
+    snapshot: Snapshot,
+    final: Any,
+    failing: Mapping[str, list[Finding]],
+    keep: Collection[str],
+    moves: Sequence[Move] = (),
+    stuck: Any = None,
+) -> Json:
     """The old units whose proof failed (a new unit's failure keeps every old unit it came from), why, how many bytes
-    each holds and the boundaries that keep each apart in later layouts: its first member and the member after it."""
+    each holds and the boundaries that keep each apart in later layouts: its first member and the member after it.
+    When every failing unit is kept already, what fails is what they read: `stuck(units)` names the moves that changed
+    it and those are refused, never the batch's first move."""
     lay = snapshot.layout
     why: dict[str, list[Finding]] = defaultdict(list)
     for path, found in failing.items():
@@ -1432,7 +1600,11 @@ def _kept(snapshot: Snapshot, final: Any, failing: Mapping[str, list[Finding]], 
             why[old] += found
     _keep_together(snapshot, final, why)
     if not why or set(why) <= set(keep):  # nothing new to keep: the failure is not any unit's
-        rows = [(Move(0, "relayout", "", ""), f) for found in failing.values() for f in found]
+        if stuck is not None and moves and not any(m.op == "relayout" for m in moves):
+            found = [_capped(f) for fs in failing.values() for f in fs][:1]
+            rows = [(m, f) for m in stuck([u for u in failing if u]) for f in found]
+            return {**_refusal(moves, snapshot, rows), "unkept": True}
+        rows = [(Move(0, "relayout", "", ""), _capped(f)) for found in failing.values() for f in found]
         return {**_refusal([Move(0, "relayout", "", "")], snapshot, rows), "unkept": True}
     bounds: set[str] = set()
     for old in why:
@@ -1451,7 +1623,7 @@ def _kept(snapshot: Snapshot, final: Any, failing: Mapping[str, list[Finding]], 
         for old in why
     }
     return {
-        "keep": {old: [asdict(f) for f in found] for old, found in sorted(why.items())},
+        "keep": {old: [asdict(_capped(f)) for f in found] for old, found in sorted(why.items())},
         "boundaries": sorted(bounds),
         "bytes": size,
     }
@@ -1548,11 +1720,13 @@ def _apply(
                 blame(clash[k], list(by.values()))
         files: dict[str, str | None] = {**header_texts, **{p: b.decode() for p, b in units.items()}}
         files.update({p: None for p in snapshot.layout.units.keys() - final.units.keys()})
-        files.update(_shape(snapshot, files, edited))
-        writes = {
-            **edited.writes,
-            **headers.respell(snapshot, files, relocated, stay, {**edited.types, **edited.renames}, edited.folded),
-        }
+        with effort.stage("move.shape"):
+            files.update(_shape(snapshot, files, edited))
+        with effort.stage("move.respell"):
+            spelled = headers.respell(
+                snapshot, files, relocated, stay, {**edited.types, **edited.renames}, edited.folded
+            )
+        writes = {**edited.writes, **spelled}
         for old, new in edited.renames.items():  # a fuzzy source is named after its member
             path = snapshot.layout.fuzzy.get(old, {}).get("path")
             if path and (target := final.fuzzy[new]["path"]) != path:
@@ -1570,9 +1744,8 @@ def _apply(
             )
             # every unit's view is made once, together, from the overlay of the moves; a fold that then changes a file
             # a later view read makes that view again
-            headers.warm(
-                overlay
-            )  # the workers fork holding the indexes; a later wave's overlay derives its own from them
+            with effort.stage("move.warm"):  # the workers fork holding the indexes; a later wave's overlay derives
+                headers.warm(overlay)  # its own from them
             # the parent keeps each view's key and reads, never its text: the fold's worker loads that from the store
             views: dict[str, Any] = _views(config, overlay, [final.units[p] for p in order])
             touched: set[str] = set()
@@ -1653,6 +1826,18 @@ def _apply(
         writes = {p: b for p, b in writes.items() if snapshot.peek(p) != b}
         if not writes:
             return _result(moves, snapshot)
+
+        def stuck(units: Sequence[str]) -> list[Move]:
+            """Kept units that still fail read a changed header: the moves that changed the headers they reach."""
+            after = layout.overlay(snapshot, writes)
+            changed = {p for p, b in writes.items() if p.startswith("include/") and b is not None}
+            hit = {
+                m.index: m
+                for p in sorted(headers._closure(after, units) & changed)
+                for m in _file_moves(snapshot, after, edited, live, p)
+            }
+            return [hit[i] for i in sorted(hit)] or _blamed(edited, live, [after.layout.units.get(u) for u in units])
+
         with effort.stage("move.generate"):
             try:
                 generated = repo.files(layout.overlay(snapshot, writes))
@@ -1660,7 +1845,7 @@ def _apply(
                 if converge and all(f.unit for f in refusal.findings):
                     for f in refusal.findings:
                         failing[f.unit].append(f)
-                    return _kept(snapshot, final, failing, keep)
+                    return _kept(snapshot, final, failing, keep, moves, stuck)
                 rows = [
                     (m, f)
                     for f in refusal.findings
@@ -1670,6 +1855,12 @@ def _apply(
         writes.update({p: b for p, b in generated.items() if snapshot.peek(p) != b})
         overlay = layout.overlay(snapshot, writes)
         changed = [p for p, b in writes.items() if p.startswith("include/") and b is not None]
+        if changed and not unproved and not any(m.op == "relayout" for m in moves):
+            with effort.stage("move.headers"):  # a broken header is found once, never in each includer's proof
+                broken = _broken_headers(snapshot, overlay, changed)
+            if broken:
+                rows = [(m, f) for p, f in broken.items() for m in _file_moves(snapshot, overlay, edited, live, p)]
+                return _refusal(moves, snapshot, rows)
         with effort.stage("move.readers"):
             readers = _readers(snapshot, overlay, changed)
         affected = sorted({*(p for p in writes if p in overlay.layout.units), *readers})
@@ -1694,7 +1885,7 @@ def _apply(
                 if holder := layout.unit_of(overlay, g.unit):
                     failing[holder.path].append(replace(g, key="move.not_exact", unit=holder.path))
             if failing:
-                return _kept(snapshot, final, failing, keep)
+                return _kept(snapshot, final, failing, keep, moves, stuck)
             refused = []
         if refused and found:
             return {**_refusal(moves, snapshot, refused), "boundaries": sorted(found)}
@@ -1710,7 +1901,7 @@ def _apply(
             if converge:
                 for u in losing:
                     failing[u.path if u else ""].append(lost)
-                return _kept(snapshot, final, failing, keep)
+                return _kept(snapshot, final, failing, keep, moves, stuck)
             refused = [(m, lost) for m in _blamed(edited, moves, losing)]
         if refused:
             return _refusal(moves, snapshot, refused)
@@ -1737,7 +1928,7 @@ def _apply(
             for f in blocking:
                 for u in _policy_units(overlay, f.path):
                     failing[u.path if u else ""].append(f)
-            return _kept(snapshot, final, failing, keep)
+            return _kept(snapshot, final, failing, keep, moves, stuck)
         if blocking := [replace(f, key="move.policy") for f in census if f.blocking]:
             rows = [(m, f) for f in blocking for m in _blamed(edited, moves, _policy_units(overlay, f.path))]
             return _refusal(moves, snapshot, rows)
@@ -1751,7 +1942,7 @@ def _apply(
                 olds = {u.path for n in (unit.members if unit else ()) if (u := layout.unit_of(snapshot, n))}
                 for old in olds | ({path} if path in snapshot.layout.units or not olds else set()):
                     failing[old].append(f)
-            return _kept(snapshot, final, failing, keep)
+            return _kept(snapshot, final, failing, keep, moves, stuck)
         if newly:
             rows = [(m, f) for path, f in newly for m in _blamed(edited, moves, [overlay.layout.units.get(path)])]
             return _refusal(moves, snapshot, rows)

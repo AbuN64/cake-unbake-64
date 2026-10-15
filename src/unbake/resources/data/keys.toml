@@ -474,6 +474,10 @@ sentence = "a header does not compile alone"
 owner = "move"
 sentence = "a header merge meets two different definitions of one name"
 
+[key."move.header"]
+owner = "move"
+sentence = "a header the move changed no longer compiles alone"
+
 [key."move.not_exact"]
 owner = "move"
 sentence = "a unit the move rewrote is not byte-identical in every version it is built in"

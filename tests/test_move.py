@@ -142,6 +142,15 @@ def seen(monkeypatch: Patch, toolchains: Any) -> SimpleNamespace:
     monkeypatch.setattr(move.view, "get", lambda *a, **k: (w.views.append(a[1].path), _view())[1])
     monkeypatch.setattr(move.view, "stored", lambda config, unit, version, key: _view())  # a view get kept
     monkeypatch.setattr(move.recipes, "resolve", lambda *a: None)
+    w.probed, w.broken = [], lambda snapshot, header: []  # a header compiled alone: its error lines
+
+    def probe(item: Any) -> dict[str, Any]:
+        snapshot, _, _, header, _ = item
+        w.probed.append(header)
+        first = w.broken(snapshot, header)
+        return {"header": header, "errors": len(first), "first": first}
+
+    monkeypatch.setattr(move.headers, "_probe_job", probe)
     return w
 
 
@@ -2080,3 +2089,131 @@ def test_a_relocate_cycle_refusal_blames_the_moves_that_merge_its_header_not_the
     moves = [Move(0, "module", "a", "x"), Move(1, "module", "b", "y"), Move(2, "member", "f", "b")]
     assert move._cycle_moves(edited, moves, "include/a.h") == [moves[0]]
     assert move._cycle_moves(edited, moves, "include/none.h") == moves
+
+
+# ------------------------------------------------------------------ fast, converging rounds (2026-10-15 fakes move)
+
+
+def _renamed_in(snapshot: Any, header: str, name: str) -> bool:
+    return name.encode() in (snapshot.peek(header) or b"")
+
+
+def test_a_header_that_no_longer_compiles_alone_refuses_the_moves_that_changed_it_and_proves_no_includer(
+    tmp_path: Path, seen: Any, monkeypatch: Patch
+) -> None:
+    # the 2026-10-15 fakes move: one broken shared header failed ~13,000 includer proofs in round 1 (1.2 GB of log)
+    seen.broken = lambda s, h: [f"{h}:3: parse error before `g1'"] if _renamed_in(s, h, "g1") else []
+    cfg = world(tmp_path)
+    splat_rows(cfg)
+    stdin(monkeypatch, json.dumps([{"op": "symbol", "subject": f"f{i}", "target": f"g{i}"} for i in (1, 2)]))
+    result = move.run(cfg, {"op": "-", "partial": "1"})
+    (row,) = result["refused"]
+    assert row["move"]["subject"] == "f1" and row["findings"][0]["key"] == "move.header"
+    assert row["findings"][0]["path"] == "include/main/ga.h" and "parse error" in row["findings"][0]["reason"]
+    # round 1 compiled each changed header once and proved nothing; round 2 landed f2 and proved only its units
+    assert result["rounds"] == 2 and len(seen.measured) == 1 and len(seen.plans) == 1
+    assert seen.probed.count("include/main/ga.h") == 2 and "src/f1.c" not in seen.measured[0]  # after, then before
+
+
+def test_a_header_that_failed_alone_before_the_move_too_is_left_to_the_includer_proofs(
+    tmp_path: Path, seen: Any, monkeypatch: Patch
+) -> None:
+    seen.broken = lambda s, h: [f"{h}:1: storage size of `weaponModel' isn't known"]  # broken on both sides
+    cfg = world(tmp_path)
+    splat_rows(cfg)
+    result = go(cfg, "symbol", "f1", "g1")
+    assert result["refused"] == [] and len(seen.plans) == 1 and seen.measured
+
+
+def test_a_header_failing_only_through_a_broken_changed_header_it_includes_blames_that_header(
+    tmp_path: Path, seen: Any, monkeypatch: Patch
+) -> None:
+    cfg = world(tmp_path)
+    before = layout.capture(cfg)
+    after = layout.overlay(before, {"include/main/ga.h": b"bad;\n", "include/main/gb.h": b'#include "main/ga.h"\n'})
+    error = "build/views/0123456789abcdef/include/main/ga.h:1: parse error"
+    seen.broken = lambda s, h: [error] if s.peek("include/main/ga.h") == b"bad;\n" else []
+    broken = move._broken_headers(before, after, ["include/main/ga.h", "include/main/gb.h"])
+    assert list(broken) == ["include/main/ga.h"] and error in broken["include/main/ga.h"].reason
+
+
+def test_kept_units_that_still_fail_refuse_the_moves_that_changed_what_they_read_never_the_first_move(
+    tmp_path: Path, seen: Any
+) -> None:
+    # the 2026-10-15 fakes move: rounds 2 and 3 (7 and 24 min) each refused the stream's first move, unrelated to
+    # the kept unit src/code_802BAC64.c that failed again on the headers it reads
+    snapshot = layout.capture(world(tmp_path))
+    moves = (Move(0, "symbol", "f2", "g2"), Move(1, "symbol", "f3", "g3"))
+    failing = {"src/f1.c": [Finding("move.not_exact", "x", unit="src/f1.c", missing=("e" * 90_000,))]}
+    asked: list[list[str]] = []
+
+    def stuck(units: list[str]) -> list[Move]:
+        asked.append(units)
+        return list(moves[1:])
+
+    result = move._kept(snapshot, snapshot.layout, failing, ["src/f1.c"], moves, stuck)
+    assert asked == [["src/f1.c"]] and result["unkept"] and [r["index"] for r in result["refused"]] == [1]
+    assert len(result["refused"][0]["findings"][0]["missing"][0]) < move._SAID + 30  # capped, never 90 KB
+
+
+def test_a_files_changed_lines_blame_the_moves_they_spell() -> None:
+    before = SimpleNamespace(peek=lambda p: b"#include <x.h>\nvoid Old(Thing *t);\nint keep;\n")
+    after = SimpleNamespace(peek=lambda p: b"#include <x.h>\nvoid New(Thing *t);\nint keep;\n")
+    moves = [Move(0, "type", "Other", "Else"), Move(1, "symbol", "Old", "New"), Move(2, "type", "keep", "k")]
+    edited = SimpleNamespace(layout=SimpleNamespace(groups={}), touched={})
+    assert move._file_moves(before, after, edited, moves, "include/a.h") == [moves[1]]  # type: ignore[arg-type]
+
+
+def _cascade(monkeypatch: Patch, stop_at: int = 0) -> list[list[str]]:
+    """_apply replaced by the unit-by-unit cascade of the cutover trace; raises KeyboardInterrupt on call `stop_at`."""
+    order, calls = ["src/u1.c", "src/u2.c", "src/u3.c"], []
+
+    def apply(config: Any, moves: Any, unproved: bool = False, boundaries: Any = (), keep: Any = (), *_: Any) -> Any:
+        calls.append(sorted(keep))
+        if len(calls) == stop_at:
+            raise KeyboardInterrupt  # the command is killed mid-round
+        if failing := [u for u in order if u not in keep][:1]:
+            found = {"key": "move.not_exact", "reason": "size", "unit": failing[0]}
+            return {"keep": {failing[0]: [found]}, "bytes": {failing[0]: 8}, "boundaries": []}
+        return {"refused": [], "moves": len(moves), "message": "x", "files": ["src/a.c"], "deleted": []}
+
+    monkeypatch.setattr(move, "_apply", apply)
+    return calls
+
+
+def test_a_killed_move_resumes_after_its_last_round_and_proves_no_kept_unit_again(
+    tmp_path: Path, seen: Any, monkeypatch: Patch
+) -> None:
+    cfg = world(tmp_path)
+    stream = json.dumps([{"op": "member", "subject": f"f{i}", "target": "ga"} for i in (2, 3)])
+    calls = _cascade(monkeypatch, stop_at=3)
+    stdin(monkeypatch, stream)
+    with pytest.raises(KeyboardInterrupt):
+        move.run(cfg, {"op": "-", "partial": "1"})
+    assert calls == [[], ["src/u1.c"], ["src/u1.c", "src/u2.c"]]
+    calls = _cascade(monkeypatch)
+    stdin(monkeypatch, stream)
+    result = move.run(cfg, {"op": "-", "partial": "1"})
+    # the rerun starts where the killed one was: both kept units held, round numbers go on, nothing found twice
+    assert calls == [["src/u1.c", "src/u2.c"], ["src/u1.c", "src/u2.c", "src/u3.c"]] and result["rounds"] == 4
+    assert sorted(result["kept"]) == ["src/u1.c", "src/u2.c", "src/u3.c"] and result["files"] == ["src/a.c"]
+    assert not (cfg.project.root / move._RESUME).exists()  # done: the next move starts afresh
+
+
+def test_another_stream_or_a_changed_tree_starts_afresh(tmp_path: Path, seen: Any, monkeypatch: Patch) -> None:
+    cfg = world(tmp_path)
+
+    def killed(subject: str, stop_at: int = 0) -> list[list[str]]:
+        calls = _cascade(monkeypatch, stop_at)
+        stdin(monkeypatch, json.dumps([{"op": "member", "subject": subject, "target": "ga"}]))
+        if stop_at:
+            with pytest.raises(KeyboardInterrupt):
+                move.run(cfg, {"op": "-", "partial": "1"})
+        else:
+            move.run(cfg, {"op": "-", "partial": "1"})
+        return calls
+
+    assert killed("f2", stop_at=2) == [[], ["src/u1.c"]]  # journalled with u1 kept
+    assert killed("f3", stop_at=2) == [[], ["src/u1.c"]]  # another stream: found u1 afresh
+    (cfg.project.root / "src/f9.c").write_text("int f9;\n")  # the tree moved under the journal
+    assert killed("f3")[0] == []

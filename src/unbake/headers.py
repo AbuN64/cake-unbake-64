@@ -2917,6 +2917,13 @@ def _typedefs(text: str) -> list[tuple[int, int, str]]:
     return rows
 
 
+@lru_cache(maxsize=8192)
+def _typedef_spellings(text: str) -> frozenset[str]:
+    """The typedef spellings one included file makes, parsed once per text: a respell walks the same headers for
+    every file it dedupes (859 files read 111,879 headers, 212 s, in the 2026-10-15 fakes move)."""
+    return frozenset(spelled for _, _, spelled in _typedefs(text))
+
+
 def _inherited(read: Callable[[str], str | None], path: str, text: str) -> set[str]:
     """The typedef spellings of every file `text` includes by a quoted name, directly or through others."""
     found: set[str] = set()
@@ -2930,7 +2937,7 @@ def _inherited(read: Callable[[str], str | None], path: str, text: str) -> set[s
                 content = read(target) if target not in visited else None
                 if content is not None:
                     visited.add(target)
-                    found.update(spelled for _, _, spelled in _typedefs(content))
+                    found.update(_typedef_spellings(content))
                     pending.append((target, content))
     return found
 

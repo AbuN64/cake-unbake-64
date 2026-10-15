@@ -449,9 +449,11 @@ def test_the_stage_log_keeps_the_head_of_a_long_finding_and_the_record_keeps_it_
     with effort.command("check", []):
         monkeypatch.setattr(effort, "_sink", sink)
         with pytest.raises(Refusal), effort.stage("native.objects"):
-            raise Refusal(Finding("compile.error", reason))
+            raise Refusal(Finding("compile.error", reason, missing=(f"version de: {reason}",)))
     row = next(json.loads(line) for line in sink.read_text().splitlines() if "native.objects" in line)
     logged = row["findings"][0]["reason"]
     assert logged.startswith("error: x") and len(logged) < effort.REASON_CHARS + 40 and "50007 chars" in logged
+    (missing,) = row["findings"][0]["missing"]  # a proof gap carries the compiler's output in its missing lines
+    assert missing.startswith("version de: error: x") and "50019 chars" in missing
     kept = next(r for r in effort.closed() if r.path[-1] == "native.objects")
     assert kept.findings[0].reason == reason
