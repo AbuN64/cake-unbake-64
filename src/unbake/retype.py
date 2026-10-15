@@ -516,14 +516,19 @@ def converge(
         exclude |= drop
 
 
-def blamed(findings: Sequence[Json], touches: Mapping[tuple[str, int], Sequence[str]]) -> set[tuple[str, int]]:
+def blamed(
+    findings: Sequence[Json],
+    touches: Mapping[tuple[str, int], Sequence[str]],
+    owner: Callable[[str], str | None] = lambda name: None,
+) -> set[tuple[str, int]]:
     """The retypes a refusal names: those whose writes reach a file a finding sits in, is about, or names as the
-    file that breaks it ("src/a.c breaks src/b.c: ...")."""
+    file that breaks it ("src/a.c breaks src/b.c: ..."), or the file of a member it names ("func_X does not match")."""
     written = {p for files in touches.values() for p in files}
     named: set[str] = set()
     for f in findings:
         named |= {f.get("path", ""), f.get("unit", "")}
         named |= {p for p in re.findall(r"[\w./-]+\.[ch]\b", f.get("reason", "")) if p in written}
+        named |= {path for word in re.findall(r"\w+", f.get("reason", "")) if (path := owner(word))}
     return {key for key, files in touches.items() if named & set(files)}
 
 
@@ -541,6 +546,11 @@ def run(config: Config, params: Json) -> Json:
     texts = {p: snapshot.read(p).decode(errors="replace") for p in paths}
     declared = {name: row[0] for name, row in headers.catalog(snapshot).items() if row[0].endswith(".h")}
     reaches = _reaches(texts)
+
+    def owner(name: str) -> str | None:  # the unit file of a member a refusal names
+        unit = layout.unit_of(snapshot, name) if name in snapshot.layout.members else None
+        return unit.path if unit is not None else None
+
     exclude: set[tuple[str, int]] = set()
     rounds: list[Json] = []
     submissions, drain = None, None
@@ -563,9 +573,9 @@ def run(config: Config, params: Json) -> Json:
             refused = [] if drain else [f for row in submissions["submissions"] for f in row.get("findings", ())]
         except Refusal as refusal:
             refused = [asdict(f) for f in refusal.findings]
-            if not blamed(refused, touches):
+            if not blamed(refused, touches, owner):
                 raise
-        drop = blamed(refused, touches)
+        drop = blamed(refused, touches, owner)
         rounds.append({"rows": len(refused), "dropped": len(drop), "refused": bool(refused)})
         if not drop:
             break

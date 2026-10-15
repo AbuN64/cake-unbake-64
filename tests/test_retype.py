@@ -286,3 +286,12 @@ def test_a_refusal_blames_the_retypes_whose_written_file_breaks_a_dependent():
     ]
     assert retype.blamed(rows, touches) == {("filter", 0)}
     assert retype.blamed([{"path": "include/span/code.h", "unit": "", "reason": "x"}], touches) == {("fetch", 0)}
+
+
+def test_a_refusal_naming_only_a_member_blames_the_retypes_of_its_unit_file():
+    # real case: rt2 on G b13b9696d ended on "func_8021B468_de does not match the ROM in every holding version"
+    # (no path, no unit) in src/func_802192C0_de_4.c, a file a retype wrote
+    touches = {("cb", 1): ["src/func_802192C0_de_4.c"], ("fetch", 0): ["src/fetch.c"]}
+    rows = [{"path": "", "unit": "", "reason": "func_8021B468_de does not match the ROM in every holding version"}]
+    owners = {"func_8021B468_de": "src/func_802192C0_de_4.c"}
+    assert retype.blamed(rows, touches, owners.get) == {("cb", 1)}
