@@ -195,3 +195,68 @@ def test_parameter_casts_counted_by_the_debt_rule():
     assert len(typedebt.param_cast(texts()["src/touch.c"])) == 1
     after = run(texts())["writes"]["src/touch.c"]
     assert typedebt.param_cast(after) == {}
+
+
+def test_param_cast_row_is_the_function_so_retyping_one_parameter_adds_no_row():
+    # real case: func_8020520C_de(void *source, void *dest) held one row per line; retyping source surfaced dest
+    before = "void f(void *source, void *dest) {\n    ((A *)dest)->x = ((Actor *)source)->a;\n}\n"
+    after = "void f(Actor *source, void *dest) {\n    ((A *)dest)->x = source->a;\n}\n"
+    assert typedebt.param_cast(before) == typedebt.param_cast(after) == {1: "f"}
+
+
+def test_excluded_parameters_stay_and_touches_name_every_written_file():
+    result = run(texts())
+    assert result["touches"] == {
+        ("fetch", 0): ["include/span/code.h", "src/fetch.c"],
+        ("touch", 0): ["include/span/code.h", "src/touch.c"],
+    }
+    kept = run_excluding(texts(), {("fetch", 0)})
+    assert kept["retyped"] == 1 and kept["skipped"] == {"its files would carry new debt": 1}
+    assert "src/fetch.c" not in kept["writes"] and "fetch(void *arg0)" in kept["writes"]["include/span/code.h"]
+
+
+def run_excluding(files: dict[str, str], exclude: set) -> dict:
+    return retype.plan(
+        files, {"Actor": "include/common/actor.h"}, lambda a, b: a == b or a == "include/span/code.h", exclude
+    )
+
+
+def test_an_invented_tag_is_never_declared_into_a_file_that_never_named_it():
+    # real case: struct Brain_func_80212D78_eu_x; forward-declared into .c files added 13 fake-type rows
+    owner = "typedef struct Brain_func_802_de { int a; } Brain_func_802_de;\n"
+    files = {
+        "include/common/brain.h": owner,
+        "src/use.c": "extern int think(void *arg0);\n",
+        "src/think.c": '#include "common/brain.h"\nint think(void *arg0) {\n'
+        "    return ((Brain_func_802_de *)arg0)->a;\n}\n",
+    }
+    result = retype.plan(files, {"Brain_func_802_de": "include/common/brain.h"}, retype._reaches(files))
+    assert result["retyped"] == 0 and result["skipped"] == {"declaration would name an invented type": 1}
+
+
+def test_a_cast_around_the_cast_parameter_keeps_no_parentheses():
+    # real case: ((Shared_ControlView *)((Player *)arg0)->profile) became (Shared_ControlView *)(arg0)->profile
+    files = texts(
+        src__view_c="int view(void *arg0) {\n"
+        "    return ((View *)((Actor *)arg0)->model)->a + (s32)((Actor *)arg0)->a;\n}\n"
+    )
+    body = run(files)["writes"]["src/view.c"]
+    assert "return ((View *)arg0->model)->a + (s32)arg0->a;" in body
+
+
+def test_converge_drops_only_the_retypes_whose_files_carry_a_new_row():
+    from unbake.contracts import Finding
+
+    calls = []
+
+    def planner(skip):
+        calls.append(set(skip))
+        return run_excluding(texts(), skip)
+
+    def judge(writes):  # src/fetch.c gains a row while it is written
+        return [Finding("source.fake-type", "x", path="src/fetch.c")] if "src/fetch.c" in writes else []
+
+    result, rounds = retype.converge(planner, judge, set())
+    assert calls == [set(), {("fetch", 0)}]
+    assert result["retyped"] == 1 and "src/touch.c" in result["writes"]
+    assert [r["dropped"] for r in rounds] == [1, 0]

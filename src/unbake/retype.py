@@ -7,17 +7,20 @@ import posixpath
 import re
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
-from unbake import compare, effort, headers, land, layout, policy, store
-from unbake.contracts import Config, Finding, Json, Refusal, digest
+from unbake import compare, effort, headers, land, layout, policy, pool, store
+from unbake.contracts import Config, Finding, Json, Refusal, Snapshot, digest
 from unbake.families import typedebt
 
 _KEYWORDS = frozenset(["return", "else", "case", "goto", "do", "if", "while", "for", "switch", "sizeof", "typedef"])
 _PREFIX = re.compile(r"\s*(?:[A-Za-z_]\w*[\s*]+)+")
 _DECLARATION = r"(?P<type>(?:\b(?:const|volatile|struct|union|unsigned|signed|register)\s+)*[A-Za-z_]\w*)"
+_QUALIFIED = r"\(\s*(?:(?:const|volatile|struct|union|unsigned|signed)\s+)*"
+_PRIMITIVES = "|".join(sorted(typedebt._PRIMITIVE))
+_CAST_BEFORE = rf"{_QUALIFIED}(?:\w+\s*\*+|(?:{_PRIMITIVES}))\s*\)\s*$"  # a pointer or primitive cast's type
 _INTEGER = typedebt._INTEGER | {"float", "f32", "double", "f64", "bool"}
 
 
@@ -234,10 +237,16 @@ def _depth(code: str, at: int) -> int:
     return code.count("{", 0, at) - code.count("}", 0, at)
 
 
-def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callable[[str, str], bool]) -> dict[str, Any]:
+def plan(
+    texts: Mapping[str, str],
+    declared: Mapping[str, str],
+    reaches: Callable[[str, str], bool],
+    exclude: Collection[tuple[str, int]] = (),
+) -> dict[str, Any]:
     """The writes that retype every eligible parameter, with the debt counted before and after and each skipped
     parameter under its reason. texts maps every source and header path to its text, declared maps each type name
-    to the header declaring it, and reaches says whether one file includes another."""
+    to the header declaring it, and reaches says whether one file includes another. `exclude` names the (function,
+    parameter index) pairs not to retype; `touches` gives per retyped pair the files its writes reach."""
     with effort.stage("retype.scopes"):
         codes = {p: policy.scopes(t)["code"] for p, t in texts.items()}
     units = [p for p in codes if p.startswith("src/") and p.endswith(".c")]
@@ -285,6 +294,9 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
             if any(c["open"] and not re.match(r"\s*\)", codes[path][c["span"][1] :]) for c in row["casts"]):
                 skip("cast operand is more than the parameter", *label)
                 continue
+            if (function, row["index"]) in exclude:
+                skip("its files would carry new debt", *label)
+                continue
             spellings = {c["spelled"] for c in chosen}
             wanted[(function, row["index"])] = {
                 "path": path,
@@ -322,6 +334,7 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
         )
 
     retyped = 0
+    touches: dict[tuple[str, int], list[str]] = {}
     for (function, index), item in sorted(wanted.items()):
         path, row, spelled = item["path"], item["row"], item["spelled"]
         label = (function, row["name"])
@@ -354,6 +367,11 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
                 # a file-scope declaration that cannot see the type names its tag, declared just before: an include
                 # would add an edge to the include graph (a cycle, or another header's conflicting declarations)
                 tagged = blind and bool(tag) and _depth(codes[where], site["at"]) == 0
+                if typedebt.fake_name(target if not tagged else tag) and not re.search(
+                    rf"\b{re.escape(tag if tagged else target)}\b", codes[where]
+                ):  # an invented record name spreads to a file that never named it: new debt
+                    failure = "declaration would name an invented type"
+                    break
                 if blind and not tagged and where == owner:
                     failure = "declaration comes before its type"
                     break
@@ -393,7 +411,10 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
             outer = len(code[:first].rstrip())
             if (
                 code[:first].rstrip().endswith("(")
-                and not re.search(r"[)\]]\s*$|\b(?!(?:return|else|case)\b)\w+\s*$", code[: outer - 1])
+                and (
+                    not re.search(r"[)\]]\s*$|\b(?!(?:return|else|case)\b)\w+\s*$", code[: outer - 1])
+                    or re.search(_CAST_BEFORE, code[: outer - 1])  # (U *)((T *)p)->f is (U *)p->f
+                )
                 and (close := re.match(r"\s*\)(?=\s*(?:->|\[|\.))", code[last:]))
             ):  # ((T *)p)->f is p->f
                 first, last = outer - 1, last + close.end()
@@ -417,6 +438,7 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
             skip(failure, *label)
             continue
         retyped += 1
+        touches[(function, index)] = sorted({e[0] for e in plan_edits} | {w for w, _ in extra} | set(declares))
         for where, first, last, new in plan_edits:
             edits[where].append((first, last, new))
         for where, _ in extra:
@@ -442,6 +464,7 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
         after = sum(len(typedebt.param_cast(policy.scopes(writes.get(p, texts[p]))["code"])) for p in landed)
     return {
         "writes": writes,
+        "touches": touches,
         "retyped": retyped,
         "param_cast": {"before": before, "after": after},
         "skipped": dict(skipped),
@@ -449,8 +472,53 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
     }
 
 
+def _debt_job(item: tuple[Snapshot, Snapshot, str]) -> tuple[tuple[Finding, ...], tuple[Finding, ...]]:
+    """The policy findings of one written file before and after the write (publish judges the same pair)."""
+    snapshot, overlay, path = item
+    unit = overlay.layout.units.get(path)
+    sdk = bool(unit and overlay.layout.groups[unit.group].sdk)
+    old, new = snapshot.peek(path), overlay.peek(path)
+    before = policy.evaluate(snapshot, path, old.decode(), None, sdk) if old is not None else ()
+    after = policy.evaluate(overlay, path, new.decode(), None, sdk) if new is not None else ()
+    return tuple(before), tuple(after)
+
+
+def new_debt(config: Config, snapshot: Snapshot, writes: Mapping[str, str]) -> tuple[Finding, ...]:
+    """The blocking rows the writes add, judged as a submission of them would judge them, on all cores."""
+    if not writes:
+        return ()
+    overlay = layout.overlay(snapshot, {p: t.encode() for p, t in writes.items()})
+    jobs = [(snapshot, overlay, p) for p in sorted(writes)]
+    with effort.stage("retype.debt"):
+        judged = pool.map(config, "retype.debt", _debt_job, jobs)
+    before = [f for b, _ in judged for f in b]
+    after = [f for _, a in judged for f in a]
+    return policy.scope(before, after, writes)[0]
+
+
+def converge(
+    planner: Callable[[set[tuple[str, int]]], dict[str, Any]],
+    judge: Callable[[Mapping[str, str]], Collection[Finding]],
+    exclude: set[tuple[str, int]],
+) -> tuple[dict[str, Any], list[Json]]:
+    """Plan, judge the writes, and drop every retype whose writes reach a file with a blocking row, until the rest
+    carries none: one row then costs only the retypes that touch its file, never the whole group."""
+    rounds: list[Json] = []
+    while True:
+        result = planner(exclude)
+        rows = judge(result["writes"])
+        bad = {f.path for f in rows}
+        drop = {key for key, paths in result["touches"].items() if bad & set(paths)}
+        rounds.append({"rows": len(rows), "dropped": len(drop), "paths": sorted(bad)[:20]})
+        if not rows or not drop:
+            return result, rounds
+        exclude |= drop
+
+
 def run(config: Config, params: Json) -> Json:
-    """Plan the retype over the live tree, read-only; with submit, prove every affected unit in all versions."""
+    """Plan the retype over the live tree, read-only; with submit, prove every affected unit in all versions. A
+    retype whose files carry a new blocking row, or that a refused submission names, is dropped and the rest planned
+    and submitted again, so the run converges on what lands."""
     start = time.monotonic()
     out = Path(params.get("out") or Path("/tmp") / ("unbake-retype-" + digest(str(config.project.root))[:16]))
     out = out.resolve()
@@ -460,40 +528,39 @@ def run(config: Config, params: Json) -> Json:
     paths = [*headers.sources(snapshot, "src", ".c"), *headers.sources(snapshot)]
     texts = {p: snapshot.read(p).decode(errors="replace") for p in paths}
     declared = {name: row[0] for name, row in headers.catalog(snapshot).items() if row[0].endswith(".h")}
-    result = plan(texts, declared, _reaches(texts))
-    writes = result.pop("writes")
+    reaches = _reaches(texts)
+    exclude: set[tuple[str, int]] = set()
+    rounds: list[Json] = []
     submissions, drain = None, None
-    sources = sorted(p for p in writes if p.endswith(".c"))
-    if sources:
-        for path, text in writes.items():
-            store.write(out / path, text.encode())
-    if params.get("submit") and sources:
-        pinned = {p: digest(snapshot.read(p)) for p in writes}
-        if any(digest((config.project.root / p).read_bytes()) != pin for p, pin in pinned.items()):
-            raise Refusal(Finding("journal.changed", "Retype input changed during analysis."))
-        primary = sources[0]
-        group = [out / primary, *(Path(p + "=" + str(out / p)) for p in sorted(writes) if p != primary)]
-        submissions = compare.submit_command(
-            config,
-            {
-                "files": group,
-                "bulk": True,
-                "function": None,
-                "toolchain": None,
-                "flag": (),
-                "omit_flag": (),
-                "withhold": False,
-                "note": "retype parameters to the struct their casts name",
-                "batch_data": None,
-                "prove_extras": True,
-            },
+    while True:
+        result, judged = converge(
+            lambda skip: plan(texts, declared, reaches, skip),
+            lambda writes: new_debt(config, snapshot, writes),
+            exclude,
         )
-        admitted = [row["id"] for row in submissions["submissions"] if row["id"] and row["exact"]]
-        drain = [land.drain(config, identity) for identity in admitted]
+        rounds += judged
+        writes, touches = result.pop("writes"), result.pop("touches")
+        sources = sorted(p for p in writes if p.endswith(".c"))
+        if sources:
+            for path, text in writes.items():
+                store.write(out / path, text.encode())
+        if not (params.get("submit") and sources):
+            break
+        try:
+            submissions, drain = _submit(config, snapshot, writes, sources, out)
+            break
+        except Refusal as refusal:
+            named = {f.path for f in refusal.findings} | {f.unit for f in refusal.findings}
+            drop = {key for key, files in touches.items() if named & set(files)}
+            rounds.append({"rows": len(refusal.findings), "dropped": len(drop), "refused": True})
+            if not drop:
+                raise
+            exclude |= drop
     return {
         **result,
         "files": sorted(writes),
         "out": str(out),
+        "rounds": rounds,
         "submissions": submissions,
         "drain": {
             "landed": [r for d in drain or () for r in d.get("landed", ())],
@@ -503,3 +570,31 @@ def run(config: Config, params: Json) -> Json:
         else None,
         "seconds": round(time.monotonic() - start, 1),
     }
+
+
+def _submit(
+    config: Config, snapshot: Snapshot, writes: Mapping[str, str], sources: list[str], out: Path
+) -> tuple[Json, list[Json]]:
+    """Prove and land the writes as one atomic group."""
+    pinned = {p: digest(snapshot.read(p)) for p in writes}
+    if any(digest((config.project.root / p).read_bytes()) != pin for p, pin in pinned.items()):
+        raise Refusal(Finding("journal.changed", "Retype input changed during analysis."))
+    primary = sources[0]
+    group = [out / primary, *(Path(p + "=" + str(out / p)) for p in sorted(writes) if p != primary)]
+    submissions = compare.submit_command(
+        config,
+        {
+            "files": group,
+            "bulk": True,
+            "function": None,
+            "toolchain": None,
+            "flag": (),
+            "omit_flag": (),
+            "withhold": False,
+            "note": "retype parameters to the struct their casts name",
+            "batch_data": None,
+            "prove_extras": True,
+        },
+    )
+    admitted = [row["id"] for row in submissions["submissions"] if row["id"] and row["exact"]]
+    return submissions, [land.drain(config, identity) for identity in admitted]

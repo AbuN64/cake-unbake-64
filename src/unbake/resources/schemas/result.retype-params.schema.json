@@ -9,10 +9,11 @@
   "examples": {"type": "object"},
   "files": {"type": "array", "items": {"type": "string"}},
   "out": {"type": "string"},
+  "rounds": {"type": "array", "items": {"type": "object"}},
   "submissions": {"type": ["object", "null"]},
   "drain": {"type": ["object", "null"]},
   "seconds": {"type": "number", "minimum": 0}
  },
- "required": ["retyped", "param_cast", "skipped", "examples", "files", "out", "submissions", "drain", "seconds"],
+ "required": ["retyped", "param_cast", "skipped", "examples", "files", "out", "rounds", "submissions", "drain", "seconds"],
  "additionalProperties": false
 }
