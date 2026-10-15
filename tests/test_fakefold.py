@@ -251,3 +251,11 @@ def test_components_of_one_role_in_one_module_and_numbered_views_still_get_names
         b: "ActorCode8021280212E00",
         v: "RecCode80212",
     }
+
+
+def test_a_component_takes_the_module_of_its_lowest_function_with_a_known_module():
+    # real case: component 169 (census 13:20): Shape_func_8020D364_de_2 has no module, Shape_func_80267D70_de_2 has one
+    a, b = "Shape_func_8020D364_de_2", "Shape_func_80267D70_de_2"
+    layouts = {a: lay(4, (0, 4, "s32", "x")), b: lay(4, (0, 4, "s32", "x"), (4, 4, "f32", "y"))}
+    rows, _ = fakefold.plan(layouts, {}, {}, set(layouts), edges=[(a, b)], modules={"func_80267D70": "code_802661FC"})
+    assert {r["target"] for r in rows} == {"ShapeCode802661FC"}
