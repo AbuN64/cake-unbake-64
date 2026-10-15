@@ -140,6 +140,21 @@ def _finding(key: str, member: str, path: str) -> Finding:
     )
 
 
+def _scattered(snapshot: Snapshot, group: str, names: Sequence[str]) -> bool:
+    """Whether another module's code lies between the routines in some version: one `.s` links one contiguous run."""
+    members = snapshot.layout.members
+    for version in {v for n in names for v in members[n].holders()}:
+        runs = [p for n in names for p in members[n].placements if p.version == version and p.section == ".text"]
+        low, high = min(p.rom_start for p in runs), max(p.rom_end for p in runs)
+        if any(
+            m.group != group and p.version == version and p.section == ".text" and low <= p.rom_start < high
+            for m in members.values()
+            for p in m.placements
+        ):
+            return True
+    return False
+
+
 def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ...]]:
     """The writes that turn each unlanded foreign or hand-written (splat `hasm`) assembly function into library
     assembly, one `.s` per module at the module's own path: its split rows turned to compiled and its unit in the
@@ -169,6 +184,9 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
                 continue
             if not config.library(project, path):
                 findings += [_finding("library-asm.unplaced", n, source) for n in names]
+                continue
+            if _scattered(snapshot, group, names):
+                findings += [_finding("library-asm.scattered", n, source) for n in names]
                 continue
             done = []
             for name in names:

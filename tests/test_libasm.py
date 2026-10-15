@@ -238,3 +238,16 @@ def test_plan_takes_hand_written_assembly_as_library_assembly_whatever_its_instr
     writes, findings = libasm.plan(case({"osAdd": LEAF_C}, state="hasm"))
     assert sorted(writes) == ["a.yaml", "b.yaml", "layout.toml", "src/libultra/g.s"] and findings == ()
     assert writes["a.yaml"] == b"split:a|osAdd:c"
+
+
+def test_plan_writes_nothing_for_a_module_another_module_splits_and_says_so(case):
+    snapshot = case({"osGetSR": GET_SR, "osMid": LEAF_C, "osCache": CACHE_LOOP})
+    members = dict(snapshot.layout.members)
+    members["osMid"] = replace(members["osMid"], group="other")
+    groups = {"g": replace(snapshot.layout.groups["g"], members=("osGetSR", "osCache"))}
+    snapshot = replace(snapshot, layout=replace(snapshot.layout, members=members, groups=groups))
+    writes, findings = libasm.plan(snapshot)
+    assert writes == {} and {(f.key, f.unit) for f in findings} == {
+        ("library-asm.scattered", "osGetSR"),
+        ("library-asm.scattered", "osCache"),
+    }

@@ -194,6 +194,10 @@ sentence = "splat failed"
 owner = "policy"
 sentence = "a module mixes compiler output with code the toolchain never emits, so no library assembly is generated"
 
+[key."library-asm.scattered"]
+owner = "policy"
+sentence = "another module's code lies between this module's library routines, so no library assembly is generated"
+
 [key."library-asm.unnamed-target"]
 owner = "policy"
 sentence = "code the toolchain never emits jumps to an address with no symbol, so no library assembly is generated"
