@@ -239,3 +239,15 @@ def test_traced_d_cases_from_the_rw_census():
     assert got[lone] == "ALFxAudio802B5000"  # its own component, named by role and module
     assert got[actor] == "Real" and got[other] == "Mover"  # each takes the real record its own pointer reaches
     assert got[g1] == got[g2] == "PakPak80300000"  # an unnamed group is one component named by role and module
+
+
+def test_components_of_one_role_in_one_module_and_numbered_views_still_get_names():
+    a, b, v = "Actor_func_80212D78_de", "Actor_func_80212E00_de", "func_80212F00_de_S3"
+    layouts = {a: lay(4, (0, 4, "s32", "hp")), b: lay(4, (0, 4, "f32", "speed")), v: lay(4, (0, 2, "u16", "x"))}
+    modules = {"func_80212D78": "code_80212", "func_80212E00": "code_80212", "func_80212F00": "code_80212"}
+    rows, _ = fakefold.plan(layouts, {}, {}, set(layouts), modules=modules)
+    assert {r["subject"]: r["target"] for r in rows} == {
+        a: "ActorCode80212",
+        b: "ActorCode8021280212E00",
+        v: "RecCode80212",
+    }

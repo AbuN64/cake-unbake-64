@@ -519,7 +519,10 @@ def _flow_name(
     symbols = sorted(m[0] for n in names if (m := re.search(r"func_[0-9A-Fa-f]{8}", n)))
     module = modules.get(next(iter(symbols), ""), "")
     picks = [_pascal(w) for w, _ in words.most_common(3)]
-    picks += [_pascal(role) + _pascal(module)] if role and module else []
+    stem = _pascal(role) or "Rec"  # a numbered view has no role: the module names it
+    picks += [stem + _pascal(module)] if module else []
+    if module and lowest:  # several components of one role in one module: the lowest function's address
+        picks.append(stem + _pascal(module) + lowest[0][0].removeprefix("func_").upper())
     return str(
         next((p for p in picks if p and p not in taken and not invented(p) and not p.startswith(("Data", "Func"))), "")
     )
