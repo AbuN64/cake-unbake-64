@@ -298,6 +298,7 @@ def plan(
         return aliases.get(name, name)
 
     shapes: dict[tuple[Any, ...], list[str]] = defaultdict(list)
+    joined: list[tuple[str, str]] = []
     for name in fakes:
         lay = layouts[name]
         alias = own(name)
@@ -356,12 +357,14 @@ def plan(
         if not pick:
             for n in group:
                 why[n] = ("d", f"shares its layout with {len(group) - 1} more, but no declarator names the group")
+            joined += list(itertools.pairwise(group))  # one flow component: named there by role and module
             continue
         taken.add(pick)
         for n in group:
             target[n] = pick
             via = f"reached as {words.most_common(1)[0][0]}" if pick != role else f"all in role {role}"
             why[n] = ("b", f"one of {len(group)} same-layout records {via}")
+    edges = [*edges, *joined]
     seeds, components = _flow_classes(layouts, real, local, edges, target, why, own, reached, taken, modules or {})
     for name in fakes:
         alias = own(name)
@@ -418,11 +421,17 @@ def _flow_classes(
             name = parent[name]
         return name
 
+    near: dict[str, set[str]] = defaultdict(set)  # each record's direct flow neighbours
     for a, b in edges:
         a, b = node(a), node(b)
         if (a in real) and (b in real):
             continue  # two real records never join
+        near[a].add(b)
+        near[b].add(a)
         parent[root(a)] = root(b)
+    for name, (cls, reason) in why.items():  # an invented record no flow reaches is a component of its own
+        if cls == "d" and name not in local and reason.endswith("no real record fits") and own(name) == name:
+            root(name)
     groups: dict[str, list[str]] = defaultdict(list)
     for name in list(parent):
         groups[root(name)].append(name)
@@ -437,9 +446,15 @@ def _flow_classes(
             components[n] = number
         reals = sorted({n for n in names if n in real})
         lays = [layouts[n] for n in open_]
-        if len(reals) > 1:
+        if len(reals) > 1:  # each record takes the one real record its own pointer flows into and fits whole
             for n in open_:
-                why[n] = ("d", f"its flow joins {len(reals)} real records: {', '.join(reals[:3])}")
+                named = sum(1 for f in _fields(layouts[n]) if not _pad(f[3], f[2]))
+                fit = [r for r in sorted(near[n] & set(reals)) if fits(layouts[n], real[r]) == named]
+                if len(fit) == 1:
+                    target[n] = fit[0]
+                    why[n] = ("e", f"its pointer flows into {fit[0]}, which it fits")
+                else:
+                    why[n] = ("d", f"its flow joins {len(reals)} real records: {', '.join(reals[:3])}")
             continue
         if reals:
             home = reals[0]
@@ -467,7 +482,7 @@ def _flow_classes(
         pick = _flow_name(open_, reached, taken, modules)
         if not pick:
             for n in open_:
-                why[n] = ("d", "a flow component no evidence names")
+                why[n] = ("d", f"{why[n][1]}; no evidence names its flow component")
             continue
         taken.add(pick)
         seed = max(fakes, key=lambda n: (sum(1 for f in _fields(layouts[n]) if not _pad(f[3], f[2])), n))
@@ -475,6 +490,8 @@ def _flow_classes(
         for n in open_:
             target[n] = pick
             why[n] = ("e", f"one shared record of a flow component of {len(open_)} records")
+        if len(open_) == 1:
+            why[open_[0]] = ("e", "its own flow component: an evidence-named record")
     return seeds, components
 
 
@@ -494,8 +511,11 @@ def _flow_name(
                     and len(d) > 2
                 ):
                     words[d] += count
+    lowest = sorted((m[0], n) for n in names if invented(n) and (m := re.search(r"func_[0-9A-Fa-f]{8}", n)))
     roles = Counter(re.split(r"_?func_", n)[0] for n in names if invented(n))
-    role = next((r for r, _ in roles.most_common() if r and not invented(r) and r != "Shared"), "")
+    first = [re.split(r"_?func_", n)[0] for _, n in lowest]  # a tie goes to the role of the lowest function
+    ranked = sorted(roles, key=lambda r: (-roles[r], first.index(r) if r in first else len(first)))
+    role = next((r for r in ranked if r and not invented(r) and r != "Shared"), "")
     symbols = sorted(m[0] for n in names if (m := re.search(r"func_[0-9A-Fa-f]{8}", n)))
     module = modules.get(next(iter(symbols), ""), "")
     picks = [_pascal(w) for w, _ in words.most_common(3)]

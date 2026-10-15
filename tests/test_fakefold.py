@@ -215,3 +215,27 @@ def test_a_source_record_folds_into_the_header_record_its_flow_reaches_and_never
     lone = {"Local": lay(4, (0, 4, "f32", "speed")), "Other": lay(4, (0, 4, "f32", "speed"))}
     rows, census = fakefold.plan(lone, {}, {}, set(lone), edges=[("Local", "Other")], local={"Local", "Other"})
     assert rows == [] and {r["class"] for r in census} == {"d"}
+
+
+def test_traced_d_cases_from_the_rw_census():
+    # real cases (census 13:00, G d66a9347a): ALFx_func_802B5B94_de (476 B) reached by nothing and fitting nothing;
+    # Actor_func_80214624_de (924 B) in a flow component joining 24 real records; an unnamed same-layout group
+    lone = "ALFx_func_802B5B94_de"
+    actor, other = "Actor_func_80214624_de", "Actor_func_80299999_de"
+    g1, g2 = "Pak_func_80300000_de", "Kap_func_80300100_de"  # two roles: the group gets no role name
+    layouts = {
+        lone: lay(8, (0, 4, "s32", "delay"), (4, 4, "f32", "gain")),
+        actor: lay(8, (0, 4, "s32", "count")),
+        other: lay(8, (4, 4, "f32", "speed")),
+        "Real": REAL,
+        "Mover": lay(12, (4, 4, "f32", "speed")),
+        g1: lay(6, (0, 2, "s16", "a")),
+        g2: lay(6, (0, 2, "s16", "b")),
+    }
+    modules = {"func_802B5B94": "audio_802B5000", "func_80300000": "pak_80300000"}
+    edges = [(actor, "Real"), (actor, other), (other, "Mover")]
+    rows, _ = fakefold.plan(layouts, {}, {}, set(layouts), edges=edges, modules=modules)
+    got = {r["subject"]: r["target"] for r in rows}
+    assert got[lone] == "ALFxAudio802B5000"  # its own component, named by role and module
+    assert got[actor] == "Real" and got[other] == "Mover"  # each takes the real record its own pointer reaches
+    assert got[g1] == got[g2] == "PakPak80300000"  # an unnamed group is one component named by role and module
