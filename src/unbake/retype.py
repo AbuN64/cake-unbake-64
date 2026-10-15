@@ -6,8 +6,9 @@ from __future__ import annotations
 import posixpath
 import re
 import time
+from dataclasses import asdict
 from collections import Counter, defaultdict
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -515,6 +516,17 @@ def converge(
         exclude |= drop
 
 
+def blamed(findings: Sequence[Json], touches: Mapping[tuple[str, int], Sequence[str]]) -> set[tuple[str, int]]:
+    """The retypes a refusal names: those whose writes reach a file a finding sits in, is about, or names as the
+    file that breaks it ("src/a.c breaks src/b.c: ...")."""
+    written = {p for files in touches.values() for p in files}
+    named: set[str] = set()
+    for f in findings:
+        named |= {f.get("path", ""), f.get("unit", "")}
+        named |= {p for p in re.findall(r"[\w./-]+\.[ch]\b", f.get("reason", "")) if p in written}
+    return {key for key, files in touches.items() if named & set(files)}
+
+
 def run(config: Config, params: Json) -> Json:
     """Plan the retype over the live tree, read-only; with submit, prove every affected unit in all versions. A
     retype whose files carry a new blocking row, or that a refused submission names, is dropped and the rest planned
@@ -548,14 +560,16 @@ def run(config: Config, params: Json) -> Json:
             break
         try:
             submissions, drain = _submit(config, snapshot, writes, sources, out)
-            break
+            refused = [] if drain else [f for row in submissions["submissions"] for f in row.get("findings", ())]
         except Refusal as refusal:
-            named = {f.path for f in refusal.findings} | {f.unit for f in refusal.findings}
-            drop = {key for key, files in touches.items() if named & set(files)}
-            rounds.append({"rows": len(refusal.findings), "dropped": len(drop), "refused": True})
-            if not drop:
+            refused = [asdict(f) for f in refusal.findings]
+            if not blamed(refused, touches):
                 raise
-            exclude |= drop
+        drop = blamed(refused, touches)
+        rounds.append({"rows": len(refused), "dropped": len(drop), "refused": bool(refused)})
+        if not drop:
+            break
+        exclude |= drop
     return {
         **result,
         "files": sorted(writes),

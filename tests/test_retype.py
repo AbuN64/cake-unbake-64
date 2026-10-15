@@ -260,3 +260,18 @@ def test_converge_drops_only_the_retypes_whose_files_carry_a_new_row():
     assert calls == [set(), {("fetch", 0)}]
     assert result["retyped"] == 1 and "src/touch.c" in result["writes"]
     assert [r["dropped"] for r in rounds] == [1, 0]
+
+
+def test_a_refusal_blames_the_retypes_whose_written_file_breaks_a_dependent():
+    # real case: retype-params on G b13b9696d refused by 58 land.breaks_dependent rows, each on an unwritten unit,
+    # naming the written breaker only in its reason ("src/code_802BAC64.c breaks src/func_802192C0_de_6.c: ...")
+    touches = {("filter", 0): ["src/code_802BAC64.c"], ("fetch", 0): ["include/span/code.h", "src/fetch.c"]}
+    rows = [
+        {
+            "path": "src/func_802192C0_de_6.c",
+            "unit": "func_8021C9D8_de",
+            "reason": "src/code_802BAC64.c breaks src/func_802192C0_de_6.c: version de: compile.error",
+        }
+    ]
+    assert retype.blamed(rows, touches) == {("filter", 0)}
+    assert retype.blamed([{"path": "include/span/code.h", "unit": "", "reason": "x"}], touches) == {("fetch", 0)}
