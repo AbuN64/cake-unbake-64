@@ -9,6 +9,11 @@ A matching decompilation of *${title}* for the Nintendo 64.
 ${begin}
 ${end}
 
+## Dependencies
+
+<!-- dependencies -->
+<!-- /dependencies -->
+
 ## Development & Contributions
 
 For build steps and contributions see [CONTRIBUTING.md](CONTRIBUTING.md).

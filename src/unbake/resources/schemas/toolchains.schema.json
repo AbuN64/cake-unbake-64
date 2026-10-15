@@ -104,6 +104,10 @@
       "type": "string",
       "minLength": 1
      },
+     "title": {
+      "type": "string",
+      "minLength": 1
+     },
      "pins": {
       "type": "object",
       "additionalProperties": {
@@ -130,6 +134,10 @@
           "type": "string",
           "minLength": 1
          }
+        },
+        "strip": {
+         "type": "integer",
+         "minimum": 0
         }
        },
        "required": [

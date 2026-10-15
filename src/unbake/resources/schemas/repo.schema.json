@@ -183,6 +183,29 @@
        "default": {
         "type": "string",
         "minLength": 1
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1
+       },
+       "binary": {
+        "type": "string",
+        "minLength": 1
+       },
+       "download": {
+        "type": "object",
+        "properties": {
+         "url": {"type": "string", "minLength": 1},
+         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+         "files": {"type": "array", "items": {"type": "string", "minLength": 1}},
+         "strip": {"type": "integer", "minimum": 0}
+        },
+        "required": ["url", "sha256", "files"],
+        "additionalProperties": false
+       },
+       "pins": {
+        "type": "object",
+        "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
        }
       },
       "required": [
@@ -216,13 +239,23 @@
     "map_width": {
      "type": "integer",
      "minimum": 1
+    },
+    "dependencies_begin": {
+     "type": "string",
+     "minLength": 1
+    },
+    "dependencies_end": {
+     "type": "string",
+     "minLength": 1
     }
    },
    "required": [
     "begin",
     "end",
     "bar",
-    "map_width"
+    "map_width",
+    "dependencies_begin",
+    "dependencies_end"
    ],
    "additionalProperties": false
   },

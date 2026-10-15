@@ -12,7 +12,7 @@ import tarfile
 import time
 import urllib.request
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from importlib import metadata
 from itertools import pairwise
@@ -254,6 +254,7 @@ def _rule(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[str, str, l
         dependencies.append("$(wildcard " + " ".join(missing) + " include/*.h include/*/*.h)")
     if "compile" in phases:
         dependencies.append(f"$(TOOLCHAIN_{key})")
+    dependencies.extend(tool_stamps(" ".join(commands)))
     text = Template(configuration.template("unit.mk.in")).substitute(
         unit=unit.path,
         version=version,
@@ -394,12 +395,19 @@ def makefile(snapshot: Snapshot) -> bytes:
     with effort.stage("build.makefile"):
         cfg, project = snapshot.config, snapshot.config.project
         rows = configuration.toolchains()
+        used = sorted({u.toolchain for u in snapshot.layout.units.values()} | {project.toolchain})
+        pinned = fetched(used)
         tools = [
-            f"ifneq ($(filter default undefined,$(origin {var})),)\n{var} := {row['default']}\nendif"
+            f"ifneq ($(filter default undefined,$(origin {var})),)\n{var} := "
+            + (f"tools/{row['host']}/{row['binary']}" if var in pinned else str(row["default"]))
+            + "\nendif"
             for var, row in sorted(_REPO["make"]["tools"].items())
         ]  # make's own CPP and AS beat a ?= line
         blocks, chains, rom_rules, checks = [], [], [], []
-        for id in sorted({u.toolchain for u in snapshot.layout.units.values()} | {project.toolchain}):
+        for var in sorted(pinned):  # a pinned tool the project's toolchains run is fetched like a compiler
+            row = _REPO["make"]["tools"][var]
+            chains.append(_fetch_rule(f"tools/{row['host']}", row["download"], row["pins"]))
+        for id in used:
             key, row = id.replace("-", "_").replace(".", "_"), rows[id]
             n = len(row["downloads"])
             if n > 1:
@@ -412,19 +420,7 @@ def makefile(snapshot: Snapshot) -> bytes:
             tools.append(f"AS_{key} ?= tools/{id}/{row['as']}" if "as" in row else f"AS_{key} ?= $(AS)")
             tools.append(f"TOOLCHAIN_{key} ?= tools/{id}/.stamp" if n else f"TOOLCHAIN_{key} ?=")
             if n:
-                download = row["downloads"][0]
-                chains.append(
-                    Template(configuration.template("toolchain.mk.in")).substitute(
-                        stamp=f"tools/{id}/.stamp",
-                        dir=f"tools/{id}",
-                        url=download["url"],
-                        archive=f"tools/{id}.tar.gz",
-                        sha256=download["sha256"],
-                        files=" ".join(download["files"]),
-                        stamp_name=".stamp",
-                        pins=" ".join(f"'{sha}  {file}'" for file, sha in sorted(row["pins"].items())),
-                    )
-                )
+                chains.append(_fetch_rule(f"tools/{id}", row["downloads"][0], row["pins"]))
         units = sorted(snapshot.layout.units.values(), key=lambda u: u.path)
         blocks = delta.map(  # a landing renders the rules of the units it changed; the others keep theirs
             cfg,
@@ -471,6 +467,41 @@ def makefile(snapshot: Snapshot) -> bytes:
         )
 
 
+def fetched(toolchains: Sequence[str]) -> set[str]:
+    """The make variables of the pinned tools (a download in repo.toml) that a command of these toolchains runs: the
+    Makefile fetches each into tools/<host>/ like a compiler, and no machine path (local.mk) names it."""
+    rows = configuration.toolchains()
+    return {
+        var
+        for var, row in _REPO["make"]["tools"].items()
+        if "download" in row and any(f"{{{row['host']}}}" in str(rows[id]) for id in toolchains)
+    }
+
+
+def _fetch_rule(folder: str, download: Json, pins: Mapping[str, str]) -> str:
+    """The rule that fetches one pinned archive into `folder`, checks it and every pinned file, and stamps it."""
+    strip = f"--strip-components={download['strip']} " if download.get("strip") else ""
+    return Template(configuration.template("toolchain.mk.in")).substitute(
+        stamp=f"{folder}/.stamp",
+        dir=folder,
+        url=download["url"],
+        archive=f"{folder}.tar.gz",
+        sha256=download["sha256"],
+        files=strip + " ".join(download["files"]),
+        stamp_name=".stamp",
+        pins=" ".join(f"'{sha}  {file}'" for file, sha in sorted(pins.items())),
+    )
+
+
+def tool_stamps(commands: str) -> list[str]:
+    """The fetch stamps of the pinned tools a unit's commands run."""
+    return [
+        f"tools/{row['host']}/.stamp"
+        for var, row in sorted(_REPO["make"]["tools"].items())
+        if "download" in row and f"$({var})" in commands
+    ]
+
+
 def local_mk(config: Config) -> bytes:
     with effort.stage("build.local_mk"):
         assignments = [
@@ -478,6 +509,7 @@ def local_mk(config: Config) -> bytes:
             *(
                 f"{var} := {config.host.tools.get(row['host'], '')}"
                 for var, row in sorted(_REPO["make"]["tools"].items())
+                if "download" not in row  # a pinned tool is the Makefile's own fetch, never a machine path
             ),
         ]
         for id, row in sorted(configuration.toolchains().items()):

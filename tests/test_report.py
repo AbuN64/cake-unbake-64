@@ -540,6 +540,29 @@ def test_readme_shows_one_sized_memory_map_between_the_bars_and_the_tables_linke
     assert report.readme(plain, mapped, current) == f"{bars}</pre>\n\n{shown}\n\n{tables}"
 
 
+def test_readme_dependencies_are_the_pins_the_makefile_fetches(snapshot_factory):
+    snapshot, current = _readme_case(snapshot_factory)
+    snapshot = replace(
+        snapshot, config=replace(snapshot.config, project=replace(snapshot.config.project, toolchain="gcc-2.8.1-sn64"))
+    )
+    text = (
+        "<!-- progress -->\n<!-- /progress -->\n## Dependencies\n<!-- dependencies -->\nold\n<!-- /dependencies -->\n"
+    )
+    rendered = report.readme(text, snapshot, current)
+    table = rendered.split("<!-- dependencies -->\n")[1].split("\n<!-- /dependencies -->")[0].splitlines()
+    gcc = configuration.toolchains()["gcc-2.8.1-sn64"]["downloads"][0]
+    tool = configuration.load_resource("repo.toml")["make"]["tools"]["N64LINK"]["download"]
+    assert (
+        table[2]
+        == f"| GCC 2.8.1 (SN64) | compiles C (`gcc-2.8.1-sn64`) | [linux.tar.gz]({gcc['url']}) sha256 `{gcc['sha256'][:12]}` |"
+    )
+    assert table[3].startswith(
+        "| n64link (SN ASN64-compatible assembler and linker) | assembles and links every unit |"
+    )
+    assert tool["url"] in table[3] and len(table) == 4  # the units of this case use no other toolchain
+    assert report.readme(rendered, snapshot, current) == rendered
+
+
 def test_readme_outside_markers_untouched(snapshot_factory):
     snapshot, current = _readme_case(snapshot_factory)
     settings = configuration.load_resource("repo.toml")["readme"]

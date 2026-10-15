@@ -194,6 +194,31 @@ def test_asm_unit_uses_gnu_assembler_var(build_snapshot, kind):
         assert "'$(AS)' -EB" not in text
 
 
+@pytest.mark.parametrize("toolchain", ["gcc-test", "ido-7.1"])
+def test_a_pinned_tool_is_fetched_into_tools_and_only_its_users_wait_for_it(build_snapshot, toolchains, toolchain):
+    gcc = toolchains["toolchain"]["gcc-test"]  # gcc output assembles with n64link, as the gcc toolchains do
+    gcc.update(
+        emits_asm=True, as_host="mips_as", assemble=["{n64link}", "asn64", "--as", "{as}", "{source}", "-o", "{out}"]
+    )
+    unit = replace(_unit(build_snapshot), path="src/group.c", kind="c", toolchain=toolchain)
+    snapshot = _with_unit(build_snapshot, unit)
+    snapshot = replace(
+        snapshot, config=replace(snapshot.config, project=replace(snapshot.config.project, toolchain=toolchain))
+    )
+    text = build.makefile(snapshot).decode()
+    row = configuration.load_resource("repo.toml")["make"]["tools"]["N64LINK"]
+    if toolchain == "ido-7.1":  # no command of the project runs it: nothing fetches it
+        assert "tools/n64link" not in text and "N64LINK := n64link\n" in text
+        return
+    assert "N64LINK := tools/n64link/n64link\n" in text and "tools/n64link/.stamp:\n" in text
+    rule = text[text.index("tools/n64link/.stamp:\n") :].splitlines()[1]
+    assert row["download"]["url"] in rule and f"echo '{row['download']['sha256']}  tools/n64link.tar.gz'" in rule
+    assert "-C tools/n64link --strip-components=1 n64link-v0.2.0-linux-x86_64/n64link " in rule
+    assert f"'{row['pins']['n64link']}  n64link'" in rule
+    deps = next(line for line in text.splitlines() if " &: " in line)
+    assert "tools/n64link/.stamp" in deps
+
+
 def test_makefile_tree_and_rom_checks(build_snapshot):
     text = build.makefile(build_snapshot).decode()
     assert "ifeq ($(CHECK),tree)" in text
@@ -309,8 +334,9 @@ def test_local_mk_host_paths(build_snapshot, toolchains):
     cfg = build_snapshot.config
     text = build.local_mk(cfg).decode()
     tools = configuration.load_resource("repo.toml")["make"]["tools"]
-    for var, row in tools.items():
-        assert f"{var} := {cfg.host.tools[row['host']]}" in text
+    for var, row in tools.items():  # a pinned tool is never a machine path: the Makefile fetches it
+        assert (f"{var} := {cfg.host.tools[row['host']]}" in text) == ("download" not in row)
+        assert ("download" not in row) or f"{var} :=" not in text
     for id, row in toolchains["toolchain"].items():
         key = id.replace("-", "_").replace(".", "_")
         assert f"CC_{key} := {cfg.host.toolchain_root / id / row['cc']}" in text

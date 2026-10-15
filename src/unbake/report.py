@@ -581,7 +581,36 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
             header += f" SHA256 `{snapshot.versions[v].rom_sha256}` |"
             rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
             blocks.append(header + "\n|---|\n| <pre><code>" + "</code><br><code>".join(rows) + "</code></pre> |")
-        return text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
+        text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
+        first, last = settings["dependencies_begin"], settings["dependencies_end"]
+        if text.count(first) == 1 and text.count(last) == 1 and text.index(first) < text.index(last):
+            table = "\n".join(dependencies(snapshot))
+            text = text[: text.index(first) + len(first)] + "\n" + table + "\n" + text[text.index(last) :]
+        return text
+
+
+def dependencies(snapshot: Snapshot) -> list[str]:
+    """The README table of the pinned build tools, from the pins the generated Makefile fetches: each row names the
+    tool by its own identity and links the exact archive by its sha256 (where it is hosted shows only in the URL)."""
+    project = snapshot.config.project
+    rows = configuration.toolchains()
+    used = sorted({u.toolchain for u in snapshot.layout.units.values()} | {project.toolchain})
+    lines = ["| Tool | Used for | Pinned archive |", "|---|---|---|"]
+    for id in used:
+        for download in rows[id]["downloads"][:1]:
+            title = rows[id].get("title", id)
+            lines.append(f"| {title} | compiles C (`{id}`) | {_archive(download)} |")
+    for row in configuration.load_resource("repo.toml")["make"]["tools"].values():
+        if "download" in row and any(f"{{{row['host']}}}" in str(rows[id]) for id in used):
+            lines.append(
+                f"| {row.get('title', row['host'])} | assembles and links every unit | {_archive(row['download'])} |"
+            )
+    return lines
+
+
+def _archive(download: Mapping[str, Any]) -> str:
+    name = str(download["url"]).rsplit("/", 1)[-1]
+    return f"[{name}]({download['url']}) sha256 `{str(download['sha256'])[:12]}`"
 
 
 _Item = tuple[Snapshot, Json, str, Mapping[str, Sequence[str]], frozenset[str]]
