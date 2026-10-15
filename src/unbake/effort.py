@@ -284,7 +284,9 @@ def _budget(record: StageRecord, leaf: bool, shipped: bool = False) -> StageReco
     # a job's stage repeats once per job by design; a dispatch repeats when a later phase needs the earlier results
     if slow and record.kind != "own" and not shipped:
         # a gather is the same stage only when it ran the same dispatches: a later phase needs the earlier results
-        key = (*record.path, *_dispatched.get(record.span, ()))
+        # the kind keeps a gather's key (its path, then the names of its dispatches) apart from the key of the
+        # dispatch record itself, whose path is the gather's path then the same name
+        key = (record.kind, *record.path, *_dispatched.get(record.span, ()))
         if key in _seen:
             found.append(("repeated", "serial_seconds", "closed twice in one command"))
         _seen.add(key)

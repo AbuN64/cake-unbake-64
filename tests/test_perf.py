@@ -107,6 +107,14 @@ def test_two_slow_dispatches_of_different_work_are_not_repeated_but_the_same_dis
     assert [[f.key for f in r.findings] for r in keys] == [[], [], ["budget.repeated"]]
 
 
+def test_a_gather_is_not_the_repeat_of_its_own_dispatch_record(cfg):
+    # the dispatch record's path is the gather's path then its name: the gather's key once read the same
+    effort._dispatched["g"] = ("policy.unclean.keys",)
+    pool = {"kind": "pool", "path": ("report", "pool.map", "policy.unclean.keys"), "wall_seconds": 5.0, "cores": 3.0}
+    gather = {"path": ("report", "pool.map"), "span": "g", "wall_seconds": 5.0, "cores": 3.0}
+    assert [[f.key for f in r.findings] for r in _budgeted(cfg, pool, gather)] == [[], []]
+
+
 def test_process_refuses_make_without_jobs(tmp_path):
     tool = "make"
     executable = tmp_path / tool
