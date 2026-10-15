@@ -67,6 +67,11 @@
       }
      }
     },
+    "readme_map": {
+     "type": "string",
+     "minLength": 1,
+     "description": "the version whose memory map the README progress block shows"
+    },
     "library_dirs": {
      "type": "array",
      "uniqueItems": true,

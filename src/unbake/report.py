@@ -565,6 +565,8 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.versions)]
         ]
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
+        if project.readme_map:
+            blocks.append(f'<img src="{present.map_path(project.readme_map)}">')
         for v in project.versions:
             meta = project.version_files[v].meta
             details = ", ".join(meta[k] for k in ("cartridge_id", "region") if meta.get(k))

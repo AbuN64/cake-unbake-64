@@ -317,6 +317,8 @@ def load_project(root: Path, reader: Callable[[str], bytes] | None = None) -> Pr
     bad = partial(_bad, "project", origins=origins)
     if info["names_from"] not in versions:
         problems.append(bad("project.names_from", f"{info['names_from']} is not in project.versions"))
+    if info.get("readme_map", info["names_from"]) not in versions:
+        problems.append(bad("project.readme_map", f"{info['readme_map']} is not in project.versions"))
     if set(table) != set(versions):
         problems.append(bad("version", f"[version] keys {sorted(table)} differ from versions"))
     extra = sorted(set(document["resident"]) - set(versions))
@@ -355,6 +357,7 @@ def load_project(root: Path, reader: Callable[[str], bytes] | None = None) -> Pr
         digest=digest(document),
         library_dirs=tuple(info.get("library_dirs", ())),
         version_differences=tuple(info.get("version_differences", ())),
+        readme_map=info.get("readme_map"),
     )
 
 

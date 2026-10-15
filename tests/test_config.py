@@ -241,3 +241,19 @@ def test_host_auto_workers_size_from_capacity_and_load(
     extra = {"resources.cap": cap} if cap else {}
     loaded = _auto_host(tmp_path, monkeypatch, cpus, "max", 128 << 30, **extra)
     assert (loaded.cores, loaded.workers) == (cpus, workers)
+
+
+@pytest.mark.parametrize(("line", "expected"), [("", None), ('readme_map = "b"', "b")])
+def test_project_readme_map_is_optional(tmp_path: Path, toolchains: dict[str, Any], line: str, expected: Any) -> None:
+    config = fixture.config(tmp_path).project.root / "config.toml"
+    config.write_text(config.read_text().replace("[project]\n", f"[project]\n{line}\n", 1))
+    assert configuration.load_project(config.parent).readme_map == expected
+
+
+def test_project_readme_map_must_name_a_version(tmp_path: Path, toolchains: dict[str, Any]) -> None:
+    config = fixture.config(tmp_path).project.root / "config.toml"
+    config.write_text(config.read_text().replace("[project]\n", '[project]\nreadme_map = "zz"\n', 1))
+    refusal = _refusal(configuration.load_project, config.parent)
+    assert [(f.key, f.path.split(":")[-1], f.reason) for f in refusal.findings] == [
+        ("config.file", "project.readme_map", "zz is not in project.versions")
+    ]
