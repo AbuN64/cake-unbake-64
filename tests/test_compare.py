@@ -1305,3 +1305,36 @@ def test_prove_groups_measures_every_alternative_in_one_dispatch(monkeypatch):
     monkeypatch.setattr(compare, "_source_rules", lambda s, done: ())
     found = compare.prove_groups(None, NS(), [[Path("src/a.c")], [Path("src/b.c")]], {})
     assert calls == [2] and found[0] == () and [f.unit for f in found[1]] == ["b"]
+
+
+@pytest.mark.parametrize(
+    ("name", "fuzzy"),
+    [
+        ("func_80201AD0_de.c", {"func_80201AD0_de": {"path": "src/fuzzy/func_80201ACC_de.c"}}),  # the draft's name
+        ("func_80201AD0_de.c", {}),  # the file is named after the member and defines one function
+    ],
+)
+def test_bind_spells_a_draft_copy_defining_an_older_address_name_as_its_member(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, fuzzy: dict
+) -> None:
+    u = unit("func_80201AD0_de", path="src/a.c")
+    s = snap(cfg, {"func_80201AD0_de": member("func_80201AD0_de")}, (u,))
+    s = replace(s, layout=replace(s.layout, fuzzy=fuzzy))
+    file = tmp_path / name
+    file.write_bytes(b"void *func_80201ACC_de(void) { return func_80201ACC_de; }\n")
+    writes: list[Any] = []
+    monkeypatch.setattr(compare.layout, "overlay", lambda snapshot, w: writes.append(w) or snapshot)
+    monkeypatch.setattr(compare.layout, "source_unit", lambda *a: None)
+    notes: list[str] = []
+    assert compare.bind(s, file, None, notes)[0] == u
+    assert notes == ["func_80201ACC_de->func_80201AD0_de"]
+    assert writes[0]["src/a.c"] == b"void *func_80201AD0_de(void) { return func_80201AD0_de; }\n"
+
+
+def test_bind_still_refuses_a_source_of_unrelated_names(cfg: Config, tmp_path: Path) -> None:
+    s = snap(cfg, {"f": member("f")})
+    file = tmp_path / "other.c"
+    file.write_bytes(b"int g(void) { return 0; }\nint h(void) { return 1; }\n")
+    with pytest.raises(Refusal) as error:
+        compare.bind(s, file, None)
+    assert "defines g, h" in error.value.findings[0].reason

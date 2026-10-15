@@ -27,6 +27,7 @@ from unbake import (
     recipes,
     sched,
     store,
+    symbols,
     symptoms,
     versions,
     view,
@@ -300,8 +301,9 @@ def bind(
             )
         )
     content, rewritten = moved.rewrite(snapshot, file.read_bytes(), rel or "")
+    content, renamed = _member_name(snapshot, file, content)
     if notes is not None:
-        notes.extend(rewritten)
+        notes.extend([*rewritten, *renamed])
     named = [n for n in (*headers.defined(content), *headers.variables(content)) if n in snapshot.layout.members]
     if not named and function is None:
         raise Refusal(
@@ -339,6 +341,23 @@ def bind(
         units[rel] = unit
         writes.update({rel: content, "layout.toml": layout.dump_map(replace(snapshot.layout, units=units))})
     return unit, layout.overlay(snapshot, writes)
+
+
+def _member_name(snapshot: Snapshot, file: Path, content: bytes) -> tuple[bytes, list[str]]:
+    """A candidate copied from a fuzzy draft defines the draft's name, which can be an older boundary's address name
+    (the draft src/fuzzy/func_X.c of member func_Y defines func_X): with no member defined, the one function named like
+    a draft's file, else the only function of a file named after a member, is spelled as that member (`old->new`)."""
+    defined = headers.defined(content)
+    if any(n in snapshot.layout.members for n in defined):
+        return content, []
+    drafts = {Path(str(r.get("path", ""))).stem: m for m, r in snapshot.layout.fuzzy.items()}
+    pairs = [(n, drafts[n]) for n in defined if drafts.get(n, n) != n and drafts[n] in snapshot.layout.members]
+    if not pairs and file.stem in snapshot.layout.members and len(defined) == 1:
+        pairs = [(defined[0], file.stem)]
+    if not pairs:
+        return content, []
+    old, new = pairs[0]
+    return symbols.rewrite(content.decode(errors="replace"), old, new).encode(), [f"{old}->{new}"]
 
 
 def _extra(snapshot: Snapshot, spec: Path) -> tuple[str, bytes]:
