@@ -1,0 +1,6 @@
+# fuzzy.min_gain: a fuzzy landing must raise the member's minimum holder score by this much.
+schema = 1
+
+[fuzzy]
+min_gain = 0.01
+chunk = 150  # fuzzy submissions admitted or landed under one capture and plan: memory stays bounded

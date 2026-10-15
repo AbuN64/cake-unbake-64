@@ -1,0 +1,14 @@
+# ${title} decompilation
+
+A matching decompilation of *${title}* for the Nintendo 64.
+
+> **This repository contains no game content.** You must supply a legally acquired cartridge dump.
+
+## Progress
+
+${begin}
+${end}
+
+## Development & Contributions
+
+For build steps and contributions see [CONTRIBUTING.md](CONTRIBUTING.md).

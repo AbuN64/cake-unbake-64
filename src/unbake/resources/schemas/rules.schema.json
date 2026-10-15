@@ -1,0 +1,151 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:rules",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "unclean": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "rule": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "scope": {
+      "enum": [
+       "code",
+       "directives",
+       "comments"
+      ]
+     },
+     "waivable": {
+      "type": "boolean"
+     },
+     "files": {
+      "enum": [
+       "source",
+       "all"
+      ]
+     },
+     "needs": {
+      "const": "snapshot"
+     },
+     "sentence": {
+      "type": "string",
+      "minLength": 1
+     },
+     "regex": {
+      "type": "string",
+      "minLength": 1
+     },
+     "exclude": {
+      "type": "string",
+      "minLength": 1
+     },
+     "check": {
+      "enum": [
+       "volatile",
+       "empty-loop",
+       "shared-declarations",
+       "fake-type",
+       "pad-view",
+       "placeholder-record",
+       "duplicate-record",
+       "param-cast",
+       "address-int",
+       "raw-gfx",
+       "address-literal"
+      ]
+     }
+    },
+    "required": [
+     "id",
+     "scope",
+     "waivable",
+     "sentence"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "hardware": {
+   "type": "object",
+   "properties": {
+    "macros": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "types": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "address_ranges": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "start": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "end": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [
+       "start",
+       "end"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "macros",
+    "types",
+    "address_ranges"
+   ],
+   "additionalProperties": false
+  },
+  "gfx": {
+   "type": "object",
+   "properties": {
+    "opcodes": {
+     "type": "array",
+     "items": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+     }
+    }
+   },
+   "required": [
+    "opcodes"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "schema",
+  "rule",
+  "hardware",
+  "gfx"
+ ],
+ "additionalProperties": false
+}

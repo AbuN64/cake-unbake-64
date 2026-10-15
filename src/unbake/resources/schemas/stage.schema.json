@@ -1,0 +1,286 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:stage",
+ "type": "object",
+ "properties": {
+  "invocation": {
+   "type": "string",
+   "minLength": 1
+  },
+  "span": {
+   "type": "string",
+   "minLength": 1
+  },
+  "parent": {
+   "oneOf": [
+    {
+     "type": "null"
+    },
+    {
+     "type": "string",
+     "minLength": 1
+    }
+   ]
+  },
+  "path": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "kind": {
+   "enum": [
+    "command",
+    "stage",
+    "pool",
+    "job",
+    "native",
+    "own"
+   ]
+  },
+  "status": {
+   "enum": [
+    "ok",
+    "refused",
+    "failed",
+    "interrupted"
+   ]
+  },
+  "execution": {
+   "enum": [
+    "serial",
+    "parallel"
+   ]
+  },
+  "start_ns": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "wall_seconds": {
+   "type": "number"
+  },
+  "parent_cpu_seconds": {
+   "type": "number"
+  },
+  "worker_cpu_seconds": {
+   "type": "number"
+  },
+  "native_cpu_seconds": {
+   "type": "number"
+  },
+  "cores": {
+   "type": "number"
+  },
+  "items": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "jobs": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "workers_used": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "workers_admitted": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "parent_rss_peak_bytes": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "worker_rss_peak_bytes": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "memory_limits": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1
+     },
+     "file": {
+      "type": "string",
+      "minLength": 1
+     },
+     "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "key",
+     "file",
+     "sha256",
+     "note"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "memory_limit_values": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  },
+  "cache": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "array",
+    "items": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "wait_seconds": {
+   "type": "number",
+   "minimum": 0
+  },
+  "findings": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1
+     },
+     "reason": {
+      "type": "string",
+      "minLength": 1
+     },
+     "path": {
+      "type": "string"
+     },
+     "line": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "unit": {
+      "type": "string"
+     },
+     "versions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "origin": {
+      "oneOf": [
+       {
+        "type": "null"
+       },
+       {
+        "type": "object",
+        "properties": {
+         "key": {
+          "type": "string",
+          "minLength": 1
+         },
+         "file": {
+          "type": "string",
+          "minLength": 1
+         },
+         "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+         },
+         "note": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "key",
+         "file",
+         "sha256",
+         "note"
+        ],
+        "additionalProperties": false
+       }
+      ]
+     },
+     "blocking": {
+      "type": "boolean"
+     },
+     "action": {
+      "type": "string"
+     },
+     "symptoms": {
+      "type": "object",
+      "additionalProperties": {}
+     }
+    },
+    "required": [
+     "key",
+     "reason",
+     "path",
+     "line",
+     "unit",
+     "versions",
+     "missing",
+     "origin",
+     "blocking",
+     "action",
+     "symptoms"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "dispatch_seconds": {
+   "type": "number",
+   "minimum": 0
+  },
+  "busy_seconds": {
+   "type": "number",
+   "minimum": 0
+  }
+ },
+ "required": [
+  "invocation",
+  "span",
+  "parent",
+  "path",
+  "kind",
+  "status",
+  "execution",
+  "start_ns",
+  "wall_seconds",
+  "parent_cpu_seconds",
+  "worker_cpu_seconds",
+  "native_cpu_seconds",
+  "cores",
+  "items",
+  "jobs",
+  "workers_used",
+  "workers_admitted",
+  "parent_rss_peak_bytes",
+  "worker_rss_peak_bytes",
+  "memory_limits",
+  "memory_limit_values",
+  "cache",
+  "findings",
+  "wait_seconds",
+  "dispatch_seconds",
+  "busy_seconds"
+ ],
+ "additionalProperties": false
+}

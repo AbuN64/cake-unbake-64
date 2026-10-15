@@ -1,0 +1,35 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:move",
+ "type": "array",
+ "items": {
+  "type": "object",
+  "properties": {
+   "op": {
+    "enum": [
+     "symbol",
+     "type",
+     "member",
+     "module",
+     "source",
+     "header",
+     "file"
+    ]
+   },
+   "subject": {
+    "type": "string",
+    "minLength": 1
+   },
+   "target": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "required": [
+   "op",
+   "subject",
+   "target"
+  ],
+  "additionalProperties": false
+ }
+}

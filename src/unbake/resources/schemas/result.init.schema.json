@@ -1,0 +1,53 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.init",
+ "type": "object",
+ "properties": {
+  "dir": {
+   "type": "string",
+   "minLength": 1
+  },
+  "created": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "versions": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "fields": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "similarity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    },
+    "required": [
+     "sha1",
+     "fields",
+     "similarity"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "dir",
+  "created",
+  "versions"
+ ],
+ "additionalProperties": false
+}

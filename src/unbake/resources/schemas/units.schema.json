@@ -1,0 +1,102 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:units",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "kind": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "phases": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "credit": {
+      "enum": [
+       "code",
+       "data"
+      ]
+     },
+     "suffix": {
+      "type": "string",
+      "minLength": 1
+     },
+     "decompiled": {
+      "type": "boolean"
+     },
+     "cacheable": {
+      "type": "boolean"
+     },
+     "uncacheable": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "phases",
+     "credit",
+     "suffix",
+     "decompiled",
+     "cacheable"
+    ],
+    "additionalProperties": false,
+    "if": {
+     "properties": {
+      "cacheable": {
+       "const": false
+      }
+     }
+    },
+    "then": {
+     "required": [
+      "uncacheable"
+     ]
+    }
+   }
+  },
+  "section": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "types": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "inputs": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "zero": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "types",
+     "inputs",
+     "zero"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "kind",
+  "section"
+ ],
+ "additionalProperties": false
+}

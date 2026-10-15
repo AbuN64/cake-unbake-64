@@ -1,0 +1,39 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:symbols",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "symbol": {
+   "type": "object",
+   "propertyNames": {
+    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "enum": [
+       "function",
+       "data"
+      ]
+     }
+    },
+    "required": [
+     "kind"
+    ],
+    "additionalProperties": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "symbol"
+ ],
+ "additionalProperties": false
+}

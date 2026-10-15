@@ -1,0 +1,244 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:submission",
+ "type": "object",
+ "properties": {
+  "id": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "operation": {
+   "enum": [
+    "publish",
+    "fuzzy"
+   ]
+  },
+  "member": {
+   "type": "string",
+   "minLength": 1
+  },
+  "function": {
+   "oneOf": [
+    {
+     "type": "null"
+    },
+    {
+     "type": "string",
+     "minLength": 1
+    }
+   ]
+  },
+  "source": {
+   "type": "string"
+  },
+  "source_sha256": {
+   "type": "string"
+  },
+  "overrides": {
+   "type": "object",
+   "properties": {
+    "toolchain": {
+     "type": "string",
+     "minLength": 1
+    },
+    "add": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "omit": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    }
+   },
+   "required": [
+    "add",
+    "omit"
+   ],
+   "additionalProperties": false
+  },
+  "base": {
+   "type": "string",
+   "minLength": 1
+  },
+  "proofs": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "unit": {
+      "type": "string",
+      "minLength": 1
+     },
+     "member": {
+      "type": "string",
+      "minLength": 1
+     },
+     "version": {
+      "type": "string",
+      "minLength": 1
+     },
+     "recipe": {
+      "type": "string"
+     },
+     "source_sha256": {
+      "type": "string"
+     },
+     "object_sha256": {
+      "type": "string"
+     },
+     "built_sha256": {
+      "type": "string"
+     },
+     "target_sha256": {
+      "type": "string"
+     },
+     "exact": {
+      "type": "boolean"
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "symptoms": {
+      "type": "object",
+      "properties": {
+       "size_delta_bytes": {
+        "type": "integer"
+       },
+       "bytes_differ": {
+        "type": "boolean"
+       },
+       "unproved": {
+        "type": "boolean"
+       },
+       "no_measurement": {
+        "type": "boolean"
+       },
+       "compile_failed": {
+        "type": "boolean"
+       },
+       "unresolved": {
+        "type": "boolean"
+       },
+       "repeated_deleted_runs": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "register_dominant": {
+        "type": "boolean"
+       },
+       "float_register_differences": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "frame_delta_bytes": {
+        "type": "integer"
+       },
+       "sp_offset_only": {
+        "type": "boolean"
+       },
+       "literal_immediates_off_four": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "missing_struct_member": {
+        "type": "boolean"
+       },
+       "plateau_probes": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "score": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       }
+      },
+      "required": [],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "unit",
+     "member",
+     "version",
+     "recipe",
+     "source_sha256",
+     "object_sha256",
+     "built_sha256",
+     "target_sha256",
+     "exact",
+     "missing",
+     "score",
+     "symptoms"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "origin": {
+   "enum": [
+    "submit",
+    "compare",
+    "check"
+   ]
+  },
+  "note": {
+   "type": "string"
+  },
+  "invocation": {
+   "type": "string",
+   "minLength": 1
+  },
+  "extras": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "refusal": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "withheld": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  }
+ },
+ "required": [
+  "id",
+  "operation",
+  "member",
+  "function",
+  "source",
+  "source_sha256",
+  "overrides",
+  "base",
+  "proofs",
+  "origin",
+  "note",
+  "invocation",
+  "extras",
+  "withheld"
+ ],
+ "additionalProperties": false
+}

@@ -1,0 +1,33 @@
+# ${title}: matching build.
+# make check        builds every version ROM from the committed sources and verifies its SHA-1.
+# make check CHECK=tree  verifies only the committed progress reports (no ROMs needed).
+# Tool commands default to conventional names; put local paths in local.mk.
+SHELL := /bin/sh
+.SUFFIXES:
+.DELETE_ON_ERROR:
+.SECONDARY:
+Q = $$(if $$(filter 1,$$(V)),,@)
+NAME := ${name}
+VERSIONS := ${versions}
+CHECK ?= rom
+-include local.mk
+ifneq ($$(JOBS),)
+ifeq ($$(filter -j% --jobserver%,$$(MAKEFLAGS)),)
+MAKEFLAGS += -j$$(JOBS)
+endif
+endif
+${tool_defaults}
+.PHONY: all check
+all: check
+ifeq ($$(CHECK),tree)
+check:
+${tree_checks}
+else ifeq ($$(CHECK),rom)
+check: ${roms}
+${rom_checks}
+else
+$$(error CHECK must be rom or tree)
+endif
+${toolchain_rules}
+${units}
+${rom_rules}

@@ -1,0 +1,44 @@
+name: CI
+on:  # main runs at most once a day, and only after a change
+  schedule:
+    - cron: "0 12 * * *"
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  changed:
+    runs-on: ubuntu-latest
+    outputs:
+      recent: $${{ steps.age.outputs.recent }}
+    steps:
+      - uses: ${checkout}
+      - id: age
+        run: echo "recent=$$(( $$(date +%s) - $$(git log -1 --format=%ct) < 86400 ))" >> "$$GITHUB_OUTPUT"
+  check:
+    needs: changed
+    if: github.event_name != 'push' && (github.event_name != 'schedule' || needs.changed.outputs.recent == '1')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${checkout}
+      - run: make check CHECK=tree
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${checkout}
+        with:
+          fetch-depth: 0
+      - uses: ${python}
+        with:
+          python-version: "3.13"
+      - run: pip install ${unbake_wheel}
+      - env:
+          BEFORE: $${{ github.event.before }}
+          BASE_REF: $${{ github.base_ref }}
+        run: |
+          if [ "$$GITHUB_EVENT_NAME" = pull_request ]; then BASE="origin/$$BASE_REF"; else BASE="$$BEFORE"; fi
+          case "$$BASE" in *0000000000000000000000000000000000000000) BASE=4b825dc642cb6eb9a060e54bf8d69288fbee4904;; esac
+          unbake audit --against "$$BASE"

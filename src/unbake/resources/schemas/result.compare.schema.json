@@ -1,0 +1,466 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.compare",
+ "type": "object",
+ "properties": {
+  "unit": {
+   "type": "string",
+   "minLength": 1
+  },
+  "members": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "exact": {
+   "type": "boolean"
+  },
+  "score": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "number",
+    "minimum": 0,
+    "maximum": 1
+   }
+  },
+  "proofs": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "unit": {
+      "type": "string",
+      "minLength": 1
+     },
+     "member": {
+      "type": "string",
+      "minLength": 1
+     },
+     "version": {
+      "type": "string",
+      "minLength": 1
+     },
+     "recipe": {
+      "type": "string"
+     },
+     "source_sha256": {
+      "type": "string"
+     },
+     "object_sha256": {
+      "type": "string"
+     },
+     "built_sha256": {
+      "type": "string"
+     },
+     "target_sha256": {
+      "type": "string"
+     },
+     "exact": {
+      "type": "boolean"
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "symptoms": {
+      "type": "object",
+      "properties": {
+       "size_delta_bytes": {
+        "type": "integer"
+       },
+       "bytes_differ": {
+        "type": "boolean"
+       },
+       "unproved": {
+        "type": "boolean"
+       },
+       "no_measurement": {
+        "type": "boolean"
+       },
+       "compile_failed": {
+        "type": "boolean"
+       },
+       "unresolved": {
+        "type": "boolean"
+       },
+       "repeated_deleted_runs": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "register_dominant": {
+        "type": "boolean"
+       },
+       "float_register_differences": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "frame_delta_bytes": {
+        "type": "integer"
+       },
+       "sp_offset_only": {
+        "type": "boolean"
+       },
+       "literal_immediates_off_four": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "missing_struct_member": {
+        "type": "boolean"
+       },
+       "plateau_probes": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "score": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       }
+      },
+      "required": [],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "unit",
+     "member",
+     "version",
+     "recipe",
+     "source_sha256",
+     "object_sha256",
+     "built_sha256",
+     "target_sha256",
+     "exact",
+     "missing",
+     "score",
+     "symptoms"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "gaps": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1
+     },
+     "reason": {
+      "type": "string",
+      "minLength": 1
+     },
+     "path": {
+      "type": "string"
+     },
+     "line": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "unit": {
+      "type": "string"
+     },
+     "versions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "origin": {
+      "oneOf": [
+       {
+        "type": "null"
+       },
+       {
+        "type": "object",
+        "properties": {
+         "key": {
+          "type": "string",
+          "minLength": 1
+         },
+         "file": {
+          "type": "string",
+          "minLength": 1
+         },
+         "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+         },
+         "note": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "key",
+         "file",
+         "sha256",
+         "note"
+        ],
+        "additionalProperties": false
+       }
+      ]
+     },
+     "blocking": {
+      "type": "boolean"
+     },
+     "action": {
+      "type": "string"
+     },
+     "symptoms": {
+      "type": "object",
+      "additionalProperties": {}
+     }
+    },
+    "required": [
+     "key",
+     "reason",
+     "path",
+     "line",
+     "unit",
+     "versions",
+     "missing",
+     "origin",
+     "blocking",
+     "action",
+     "symptoms"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "submitted": {
+   "oneOf": [
+    {
+     "type": "null"
+    },
+    {
+     "type": "string",
+     "minLength": 1
+    }
+   ]
+  },
+  "consumers": {
+   "type": "object",
+   "properties": {"count": {"type": "integer", "minimum": 0}, "wall": {"type": "number", "minimum": 0}},
+   "required": ["count", "wall"],
+   "additionalProperties": false
+  },
+  "rewritten": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "drain": {
+   "oneOf": [
+    {
+     "type": "null"
+    },
+    {
+     "type": "object",
+     "properties": {
+      "running": {
+       "type": "boolean"
+      },
+      "landed": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string",
+          "minLength": 1
+         },
+         "member": {
+          "type": "string",
+          "minLength": 1
+         },
+         "operation": {
+          "type": "string",
+          "minLength": 1
+         },
+         "files": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "minLength": 1
+          }
+         },
+         "message": {
+          "type": "string",
+          "minLength": 1
+         }
+        },
+        "required": [
+         "id",
+         "member",
+         "operation",
+         "files",
+         "message"
+        ],
+        "additionalProperties": false
+       }
+      },
+      "refused": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string",
+          "minLength": 1
+         },
+         "member": {
+          "type": "string",
+          "minLength": 1
+         },
+         "findings": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "key": {
+             "type": "string",
+             "minLength": 1
+            },
+            "reason": {
+             "type": "string",
+             "minLength": 1
+            },
+            "path": {
+             "type": "string"
+            },
+            "line": {
+             "type": "integer",
+             "minimum": 0
+            },
+            "unit": {
+             "type": "string"
+            },
+            "versions": {
+             "type": "array",
+             "items": {
+              "type": "string",
+              "minLength": 1
+             }
+            },
+            "missing": {
+             "type": "array",
+             "items": {
+              "type": "string",
+              "minLength": 1
+             }
+            },
+            "origin": {
+             "oneOf": [
+              {
+               "type": "null"
+              },
+              {
+               "type": "object",
+               "properties": {
+                "key": {
+                 "type": "string",
+                 "minLength": 1
+                },
+                "file": {
+                 "type": "string",
+                 "minLength": 1
+                },
+                "sha256": {
+                 "type": "string",
+                 "pattern": "^[0-9a-f]{64}$"
+                },
+                "note": {
+                 "type": "string"
+                }
+               },
+               "required": [
+                "key",
+                "file",
+                "sha256",
+                "note"
+               ],
+               "additionalProperties": false
+              }
+             ]
+            },
+            "blocking": {
+             "type": "boolean"
+            },
+            "action": {
+             "type": "string"
+            },
+            "symptoms": {
+             "type": "object",
+             "additionalProperties": {}
+            }
+           },
+           "required": [
+            "key",
+            "reason",
+            "path",
+            "line",
+            "unit",
+            "versions",
+            "missing",
+            "origin",
+            "blocking",
+            "action",
+            "symptoms"
+           ],
+           "additionalProperties": false
+          }
+         }
+        },
+        "required": [
+         "id",
+         "member",
+         "findings"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "required": [
+      "running",
+      "landed",
+      "refused"
+     ],
+     "additionalProperties": false
+    }
+   ]
+  }
+ },
+ "required": [
+  "unit",
+  "members",
+  "exact",
+  "score",
+  "proofs",
+  "gaps",
+  "submitted",
+  "consumers",
+  "rewritten",
+  "drain"
+ ],
+ "additionalProperties": false
+}

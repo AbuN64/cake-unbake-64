@@ -1,0 +1,148 @@
+# The whole command surface. cli.py builds click commands from this table and calls `handler` (module.function)
+# with (config, params) -- init gets (params) only. Option names map to params keys with "-" replaced by "_".
+# Global options --host (or UNBAKE_HOST) and --project (default: the working directory) are added by cli.py to
+# every command; init gets only --host. Every successful result validates against schemas/result.<command>.schema.json
+# (report --next against result.next).
+schema = 2
+
+[command.init]
+configured = false
+help = "Create a project from one or more ROMs of the same game and an explicit toolchain."
+handler = "repo.init"
+params = [
+  { name = "dir", kind = "argument", type = "path", required = true, multiple = false, help = "new empty project directory" },
+  { name = "rom", kind = "option", type = "str", required = true, multiple = true, help = "VERSION=PATH, once per version" },
+  { name = "names-from", kind = "option", type = "str", required = true, multiple = false, help = "version whose symbol names are canonical" },
+  { name = "toolchain", kind = "option", type = "str", required = true, multiple = false, help = "toolchain id from toolchains.toml" },
+  { name = "name", kind = "option", type = "str", required = true, multiple = false, help = "short project name (file stem)" },
+  { name = "title", kind = "option", type = "str", required = true, multiple = false, help = "game title" },
+]
+
+[command.setup]
+help = "Install toolchains, extract every version, prove the extracted assembly, map the program, render repository files; the files are written uncommitted."
+handler = "repo.setup"
+params = []
+
+[command.compare]
+help = "Measure a source against every version that holds its item; exact submits it for landing."
+handler = "compare.run"
+params = [
+  { name = "file", kind = "argument", type = "path", required = true, multiple = false, help = "C source" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member the file implements when its name does not say" },
+  { name = "toolchain", kind = "option", type = "str", required = false, multiple = false, help = "override the unit toolchain" },
+  { name = "flag", kind = "option", type = "str", required = false, multiple = true, help = "add one compiler option" },
+  { name = "omit-flag", kind = "option", type = "str", required = false, multiple = true, help = "remove one compiler option (with its operand)" },
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "new directory for artifacts" },
+  { name = "note", kind = "option", type = "str", required = false, multiple = false, help = "a free-text note recorded with the submission" },
+  { name = "withhold", kind = "flag", type = "str", required = false, multiple = false, help = "land the versions that are byte-exact and withhold the others; with none exact it measures as without the flag" },
+]
+
+[command.score]
+help = "Score one candidate source in one version and write nothing: no journal, no inbox, no landing; shows the instruction diff."
+handler = "compare.score_command"
+params = [
+  { name = "file", kind = "argument", type = "path", required = false, multiple = false, help = "C source (omit with --variants)" },
+  { name = "extras", kind = "argument", type = "path", required = false, multiple = true, help = "change-set files as submit takes them: PATH=FILE overlays the project file PATH (a header) with FILE for this score only" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member the file implements when its name does not say" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version to score, default the names-from version when it holds the item" },
+  { name = "toolchain", kind = "option", type = "str", required = false, multiple = false, help = "override the unit toolchain" },
+  { name = "flag", kind = "option", type = "str", required = false, multiple = true, help = "add one compiler option" },
+  { name = "omit-flag", kind = "option", type = "str", required = false, multiple = true, help = "remove one compiler option (with its operand)" },
+  { name = "lines", kind = "option", type = "int", required = false, multiple = false, help = "instruction diff lines to show, default 80" },
+  { name = "short", kind = "flag", type = "str", required = false, multiple = false, help = "print only the verdict, the first difference and the diff lines as JSON: no stage tree or proofs (a few hundred bytes)" },
+  { name = "variants", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {file, overlays}: score every candidate in this one process, all cores, stdout JSON per variant" },
+  { name = "alloc", kind = "flag", type = "str", required = false, multiple = false, help = "compile once more with the register allocation dumps and name, per register the target fills differently, the pseudo that won it, its priority and what would flip it, and per moved load or store the scheduler's priority, dependencies and tie" },
+]
+
+[command.submit]
+help = "Admit sources and put exact (or improved fuzzy) candidates in the landing inbox; landing starts if idle."
+handler = "compare.submit_command"
+params = [
+  { name = "files", kind = "argument", type = "path", required = false, multiple = true, help = "C sources, then change-set files: PATH=FILE replaces the project file PATH (a header) with FILE" },
+  { name = "batch-data", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {member, file}: prove extracted data together and publish atomically" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member, only with exactly one file" },
+  { name = "bulk", kind = "flag", type = "str", required = false, multiple = false, help = "each source, with the PATH=FILE change-set files that follow it, is one candidate (member from the source name): admit all groups independently, a refusal blocks no other group, then run land once" },
+  { name = "toolchain", kind = "option", type = "str", required = false, multiple = false, help = "override the unit toolchain for every candidate" },
+  { name = "flag", kind = "option", type = "str", required = false, multiple = true, help = "add one compiler option to every candidate" },
+  { name = "omit-flag", kind = "option", type = "str", required = false, multiple = true, help = "remove one compiler option (with its operand) from every candidate" },
+  { name = "withhold", kind = "flag", type = "str", required = false, multiple = false, help = "land the versions that are byte-exact and withhold the others; with none exact it measures as without the flag" },
+  { name = "note", kind = "option", type = "str", required = false, multiple = false, help = "a free-text note recorded with the submission" },
+]
+
+[command.land]
+help = "Land every inbox submission in order, writing each; returns at once if a landing is already running."
+handler = "land.land_command"
+params = []
+
+[command.check]
+help = "Census source rules over the whole project, or only the given units (and the units that read a given header)."
+handler = "land.check_command"
+params = [
+  { name = "staged", kind = "flag", type = "str", required = false, multiple = false, help = "check only staged C/header text against HEAD; refuse new policy findings without builds" },
+  { name = "paths", kind = "argument", type = "str", required = false, multiple = true, help = "limit the check (and --staged) to these project paths" },
+  { name = "strict", kind = "flag", type = "str", required = false, multiple = false, help = "exit 1 when any debt exists" },
+  { name = "repair", kind = "flag", type = "str", required = false, multiple = false, help = "first write the working tree so every header declaration of a name is its owner's alone (never commits)" },
+]
+
+[command.audit]
+configured = false
+help = "Refuse source rule rows the working tree adds over REV; no ROMs or host needed."
+handler = "policy.audit_command"
+params = [
+  { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the working tree is compared with" },
+]
+
+[command.move]
+help = "Apply one move (OP SUBJECT TARGET) or, with -, JSON moves from stdin, as one proved change; byte-identical in every version or nothing is written."
+handler = "move.run"
+params = [
+  { name = "op", kind = "argument", type = "str", required = true, multiple = false, help = "symbol, type, member, module, source, header or file; - reads JSON moves from stdin; relayout (alone) sets the units to the ones the groups lay out, once before moves" },
+  { name = "subject", kind = "argument", type = "str", required = false, multiple = false, help = "what moves (absent with -)" },
+  { name = "target", kind = "argument", type = "str", required = false, multiple = false, help = "where it goes (absent with -)" },
+  { name = "partial", kind = "flag", type = "str", required = false, multiple = false, help = "drop each refused move and apply the rest: a refusal several moves share is retried in halves, a move the plan refuses beside others is retried alone" },
+  { name = "unproved", kind = "flag", type = "str", required = false, multiple = false, help = "write the moves without proof, claims or policy gates (views and folds run); each refused move is dropped with what depends on it and the rest applied" },
+]
+
+[command.headers]
+help = "Compile every header under include/ alone, preprocessed like a unit of each version: the header oracle without make; exit 1 when one fails."
+handler = "headers.probe_command"
+params = [
+  { name = "probe", kind = "flag", type = "str", required = false, multiple = false, help = "compile each header alone and report per header and version the error count and the first three errors" },
+  { name = "versions", kind = "option", type = "str", required = false, multiple = false, help = "all, or comma-separated version ids (default: the first version)" },
+]
+
+[command.map]
+help = "Write the layout map with its objective evidence to .unbake/map.json; writes nothing tracked."
+handler = "report.map_command"
+params = [
+  { name = "moves", kind = "flag", type = "str", required = false, multiple = false, help = "also write .unbake/moves.jsonl: the full move stream (input of `unbake move -`) that places modules in src/game/<segment>/<subsystem> and src/sdk/<library>" },
+]
+
+[command.report]
+help = "Progress per version, kind and segment; or the ordered work list."
+handler = "report.run"
+params = [
+  { name = "next", kind = "flag", type = "str", required = false, multiple = false, help = "print the ordered work list instead" },
+  { name = "count", kind = "option", type = "int", required = false, multiple = false, help = "work items to list (with --next)" },
+  { name = "shard", kind = "option", type = "str", required = false, multiple = false, help = "I/K: only items whose stable hash mod K is I" },
+  { name = "segment", kind = "option", type = "str", required = false, multiple = false, help = "only items of this segment" },
+]
+
+[command.recover-structs]
+help = "Recover shared record identities across landed sources and assembly; report conflicts and optionally bulk submit complete families."
+handler = "recovery.run"
+params = [
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "analysis cache and candidate directory outside the live project" },
+  { name = "family", kind = "option", type = "str", required = false, multiple = true, help = "family id or identity from a preceding census; repeat to select families" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = true, help = "only families with a cast in this function; repeat for more" },
+  { name = "exclude", kind = "option", type = "str", required = false, multiple = true, help = "project-relative path that must not be rewritten; evidence is still read" },
+  { name = "submit", kind = "flag", type = "str", required = false, multiple = false, help = "score all affected sources and header consumers, bulk submit exact families, then use existing land" },
+]
+
+[command.retype-params]
+help = "Retype void pointer and integer parameters that every use casts to one struct pointer: drop the casts, rewrite the definition, declarations and callers, and optionally submit all of it as one group."
+handler = "retype.run"
+params = [
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "candidate directory outside the live project" },
+  { name = "submit", kind = "flag", type = "str", required = false, multiple = false, help = "prove every affected unit in all versions as one atomic group, then land it" },
+]

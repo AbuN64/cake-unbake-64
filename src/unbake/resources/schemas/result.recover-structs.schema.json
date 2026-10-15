@@ -1,0 +1,18 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.recover-structs",
+ "type": "object",
+ "properties": {
+  "census": {"type": "object"},
+  "families": {"type": "array", "items": {"type": "object"}},
+  "candidates": {"type": "array", "items": {"type": "object"}},
+  "identities": {"type": "array", "items": {"type": "object"}},
+  "submissions": {"type": ["object", "null"]},
+  "drain": {"type": "object"},
+  "before": {"type": "object"},
+  "after": {"type": ["object", "null"]},
+  "wall_seconds": {"type": "number", "minimum": 0}
+ },
+ "required": ["census", "families", "candidates", "identities", "submissions", "drain", "before", "after", "wall_seconds"],
+ "additionalProperties": false
+}

@@ -1,0 +1,213 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:toolchains",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "toolchain": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "family": {
+      "enum": [
+       "gcc",
+       "ido"
+      ]
+     },
+     "cc": {
+      "type": "string",
+      "minLength": 1
+     },
+     "as": {
+      "type": "string",
+      "minLength": 1
+     },
+     "as_host": {
+      "enum": [
+       "mips_as"
+      ]
+     },
+     "cflags": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "supported_options": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "splat": {
+      "type": "string",
+      "minLength": 1
+     },
+     "emits_asm": {
+      "type": "boolean"
+     },
+     "preserves_padding": {
+      "type": "boolean"
+     },
+     "never_emits": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "fpu_control_with": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "error_pattern": {
+      "type": "string",
+      "minLength": 1
+     },
+     "paired": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "preprocessor_options": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "small_data": {
+      "type": "array",
+      "items": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "isa": {
+      "type": "array",
+      "items": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "decompme": {
+      "type": "string",
+      "minLength": 1
+     },
+     "pins": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      }
+     },
+     "downloads": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "minLength": 1
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "files": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "minLength": 1
+         }
+        }
+       },
+       "required": [
+        "url",
+        "sha256",
+        "files"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "preprocess": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "compile": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "assemble": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "refused_warnings": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     }
+    },
+    "required": [
+     "family",
+     "cc",
+     "cflags",
+     "supported_options",
+     "splat",
+     "emits_asm",
+     "preserves_padding",
+     "never_emits",
+     "fpu_control_with",
+     "paired",
+     "preprocessor_options",
+     "small_data",
+     "isa",
+     "pins",
+     "downloads",
+     "preprocess",
+     "compile",
+     "refused_warnings"
+    ],
+    "additionalProperties": false,
+    "oneOf": [
+     {
+      "required": [
+       "as"
+      ]
+     },
+     {
+      "required": [
+       "as_host"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "toolchain"
+ ],
+ "additionalProperties": false
+}

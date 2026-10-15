@@ -1,0 +1,243 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.setup",
+ "type": "object",
+ "properties": {
+  "toolchains": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "extracted": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "proof": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "members": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "exact": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "bytes": {
+      "type": "integer",
+      "minimum": 0
+     }
+    },
+    "required": [
+     "members",
+     "exact",
+     "bytes"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "groups": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "segments": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  },
+  "types": {
+   "type": "object",
+   "properties": {
+    "functions": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "globals": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "structs": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "required": [
+    "functions",
+    "globals",
+    "structs"
+   ],
+   "additionalProperties": false
+  },
+  "boundary": {
+   "type": "object",
+   "properties": {
+    "prelude": {
+     "type": "object",
+     "properties": {
+      "proposed": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "applied": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "withheld": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "required": [
+      "proposed",
+      "applied",
+      "withheld"
+     ],
+     "additionalProperties": false
+    },
+    "split": {
+     "type": "object",
+     "properties": {
+      "proposed": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "applied": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "withheld": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "required": [
+      "proposed",
+      "applied",
+      "withheld"
+     ],
+     "additionalProperties": false
+    },
+    "merge": {
+     "type": "object",
+     "properties": {
+      "proposed": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "applied": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "withheld": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "required": [
+      "proposed",
+      "applied",
+      "withheld"
+     ],
+     "additionalProperties": false
+    }
+   },
+   "required": [
+    "prelude",
+    "split",
+    "merge"
+   ],
+   "additionalProperties": false
+  },
+  "messages": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "files": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "make": {
+   "type": "object",
+   "properties": {
+    "exit": {
+     "type": "integer"
+    },
+    "versions": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    }
+   },
+   "required": [
+    "exit",
+    "versions"
+   ],
+   "additionalProperties": false
+  },
+  "joined": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "units": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "built": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "withheld": {
+      "type": "integer",
+      "minimum": 0
+     }
+    },
+    "required": [
+     "built",
+     "withheld"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "debt": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  }
+ },
+ "required": [
+  "toolchains",
+  "extracted",
+  "proof",
+  "groups",
+  "segments",
+  "types",
+  "boundary",
+  "joined",
+  "messages",
+  "files",
+  "make",
+  "units",
+  "debt"
+ ],
+ "additionalProperties": false
+}

@@ -1,0 +1,154 @@
+schema = 1
+
+[toolchain."ido-7.1"]
+family = "ido"
+cc = "cc"
+as = "as1"
+cflags = ["-c", "-G0", "-non_shared", "-mips2", "-O2"]
+supported_options = ["-O1", "-O2", "-O3"]
+splat = "IDO"
+emits_asm = false
+preserves_padding = false
+never_emits = ["mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr"]
+fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
+error_pattern = '^cfe: Warning 605: (.+?): (\d+): #\s*error\b([^\n]*)'
+refused_warnings = ["Illegal conversion between pointer and integer", "Incompatible pointer type", "Pointer/integer type mismatch"]
+paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
+preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
+small_data = [0, 1, 2, 3, 4, 8]
+isa = [2, 3]
+decompme = "ido7.1"
+preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
+compile = ["{cc}", "-Wab,-r4300_mul", "{codegen}", "-c", "{source}", "-o", "{out}"]
+
+[toolchain."ido-7.1".pins]
+"NCC" = "d886205c468987e49d1b294cc01c3d6bc886a879f4babb2f5035728d1df6029b"
+"acpp" = "fad6d749179e4c037ebdca99687fed6d759d37ab070a419a3362daabd9e82d79"
+"as0" = "6734d45b9b92de4766dda32b9da88148e5445f3c1a7ea4862b2cd3dec9991b9c"
+"as1" = "52160d61a732d209eed15e0ce6736eee23118e1c34ca5b9ec61474fe1a4011e3"
+"cc" = "d886205c468987e49d1b294cc01c3d6bc886a879f4babb2f5035728d1df6029b"
+"cfe" = "c264f0c1f3ece0d15c2cd2ff73fff20381e98ed09f630c8087e24010e2a5ce1a"
+"edgcpfe" = "a2505f76d1e225fc6173459214ba5a200ae45dbbfd58c68930570dadaa853806"
+"err.english.cc" = "1baa78a42fe732318b907b39e54ba602d7733b179995ba25f02a800d73638fea"
+"ugen" = "a8bcc5d4dad3b67428cde0dac6002c1e1ef3f98ea69746ff05300cdab913d227"
+"ujoin" = "208bc5c76b64774ec2cfb29780f78cb3a4ecfbb143a74ca2c6c776a9f2c23e95"
+"uld" = "c3386ae712ae203e1aafb0a1f042f098a2a5e4c8336b213329c525dd4ec43036"
+"umerge" = "c2700570d04abd42634e567573d5a6ca983c27bb85ca965c845eb3b9cc6a3761"
+"uopt" = "b21294d653fa414ba97413dc2e17c17bb417f7699166b330ed00a6a3723f03a5"
+"upas" = "bfac232de2073a72e93d2836eea2c41e52f99252f973af4f94bc675088929495"
+"usplit" = "83f0f4d50162e4f70503c2589cb3290b8ea252fa072ce7684e659dc061a0208e"
+
+[[toolchain."ido-7.1".downloads]]
+url = "https://github.com/decompals/ido-static-recomp/releases/download/v1.2/ido-7.1-recomp-linux.tar.gz"
+sha256 = "0d411696e178fcca34c31c3bf02011b928d7fd9c1fa7f8bf45070e0781b58e15"
+files = ["NCC", "acpp", "as0", "as1", "cc", "cfe", "edgcpfe", "err.english.cc", "ugen", "ujoin", "uld", "umerge", "uopt", "upas", "usplit"]
+
+[toolchain."ido-5.3"]
+family = "ido"
+cc = "cc"
+as = "as1"
+cflags = ["-c", "-G0", "-non_shared", "-mips2", "-O2"]
+supported_options = ["-O1", "-O2", "-O3"]
+splat = "IDO"
+emits_asm = false
+preserves_padding = false
+never_emits = ["mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr"]
+fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
+error_pattern = '^cfe: Warning 605: (.+?): (\d+): #\s*error\b([^\n]*)'
+refused_warnings = ["Illegal conversion between pointer and integer", "Incompatible pointer type", "Pointer/integer type mismatch"]
+paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
+preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
+small_data = [0, 1, 2, 3, 4, 8]
+isa = [2, 3]
+decompme = "ido5.3"
+preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
+compile = ["{cc}", "-Wab,-r4300_mul", "{codegen}", "-c", "{source}", "-o", "{out}"]
+
+[toolchain."ido-5.3".pins]
+"acpp" = "7bfdf2f79010eb95bd47e165036cac04a69e5f1290fde11736e5f6934f3e9189"
+"as0" = "72670d53952459fe5ac463e8844182cf4df9f6ccf469826c82ca858fdd665564"
+"as1" = "39c9750c189df37d4df0f33e5eddec9d4e743cbecad0326af3dda437826dc695"
+"c++filt" = "60791cf1d07ba780a4e8aa25d53c741d4b7d5427f891f7287b1bed0b6ba3e665"
+"cc" = "76d796c9591c9f5504949f85b29c32a6039a663791afe2f36f34ca18425b64d0"
+"cfe" = "7033dfb267f39a6e5381c0769f4fc46bbde193cfec771314429d8367ace898f2"
+"copt" = "e62a2a7276d2f9fa7f5daac25e01abe92cf4765173391cb0b616434c9c8122b3"
+"crt1.o" = "95bd24880e95e102bbdf2a1cfa2e10d391cb57784a42db19afd609c0904aee28"
+"crtn.o" = "62197e97a5e56e21c6a4e76ffe9f634cf90b47046ebe4841086108101ce496eb"
+"err.english.cc" = "6f2d777730f0a70328bb932c116c1c195da765cb9bbdee8c6d3eaf7d6ad77e78"
+"ld" = "266c5a22192ce532a6dcdb7127c1da72faa37e7e71d44677ab91d723b8ed2113"
+"libc.so" = "803f8b127194a79d92c5caea62fd39097be16d3fcd9870b4470123cebd5d27fe"
+"libc.so.1" = "803f8b127194a79d92c5caea62fd39097be16d3fcd9870b4470123cebd5d27fe"
+"libexc.so" = "b59bf75bcbff1526ad4e3b2b49b313788a6e4c97df5b69b4bc2ddbd6726c5864"
+"libgen.so" = "bb66dea1242000f648e890252cbe47037310559cc0ecda8ed212c0e545bf8063"
+"libm.so" = "8acc66c2d1315b90f38a280fe04a26d0e61b5ca377976ed5d7f88bb064bd2e35"
+"strip" = "bf39eca7d4357b699d59077078c657c5af428b0e57d5dd7835c3d0f915e801bf"
+"ugen" = "1734564701d39db213d6fe9c8f2cff16b82b28939fb1418348de479b41b7ac72"
+"ujoin" = "34a6fff6e693f8c9505777d2860b4795fe97a01e89ce8616f4a5b624b11c451d"
+"uld" = "bc85b7963ac978af5a8c5902d1c3b868c01b09839c4f7e5c36a77960cbf61744"
+"umerge" = "96ea21c084f4d4765562cd030ba2c9f314f5aefdd180b82d22e1ab5126fca913"
+"uopt" = "4e11956bdce9cac4c2934320cb29c55d1f3d3a0281ee594fafa5ebec88df4dd5"
+"upas" = "7fa9be3c14bfe854bb539312af5f4f40c29b975996bdd6868f489f82fb427d5b"
+"usplit" = "f539dced35b1cfb8385a1431d7a7e0bc5a3223ea4c8347c884a9de850d89ab3b"
+
+[[toolchain."ido-5.3".downloads]]
+url = "https://github.com/decompals/ido-static-recomp/releases/download/v1.2/ido-5.3-recomp-linux.tar.gz"
+sha256 = "ab5c741561f80913d58c8b074771f23941a3edd312505a8ebed6d1dfeb65e506"
+files = ["acpp", "as0", "as1", "c++filt", "cc", "cfe", "copt", "crt1.o", "crtn.o", "err.english.cc", "ld", "libc.so", "libc.so.1", "libexc.so", "libgen.so", "libm.so", "strip", "ugen", "ujoin", "uld", "umerge", "uopt", "upas", "usplit"]
+
+[toolchain."gcc-2.7.2-kmc"]
+family = "gcc"
+cc = "cc1"
+as_host = "mips_as"
+cflags = ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2"]
+supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks"]
+splat = "KMC"
+emits_asm = true
+preserves_padding = true
+never_emits = ["mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr"]
+fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
+refused_warnings = ["makes pointer from integer without a cast", "makes integer from pointer without a cast", "from incompatible pointer type"]
+paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
+preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
+small_data = [0, 1, 2, 3, 4, 8]
+isa = [2, 3]
+decompme = "gcc2.7.2kmc"
+preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
+compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
+assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+
+[toolchain."gcc-2.7.2-kmc".pins]
+"cc1" = "c4976e94ebf81d0ab1336f631fb752fbe6e0e0810e90a24da11e6ed1d5223b8a"
+
+[[toolchain."gcc-2.7.2-kmc".downloads]]
+url = "https://github.com/decompals/mips-gcc-2.7.2/releases/download/main/gcc-2.7.2-linux.tar.gz"
+sha256 = "ff3e299c1d952c0a5cb39f7790a208d0c547cf93986eb5607f820c935cedc288"
+files = ["cc1"]
+
+[toolchain."gcc-2.8.1-sn64"]
+family = "gcc"
+cc = "cc1"
+as_host = "mips_as"
+cflags = ["-G0", "-mips3", "-O2", "-mgas", "-meb", "-mcpu=VR4300", "-mhard-float", "-mgp32", "-mfp64", "-mno-fix4300"]
+supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks"]
+splat = "SN64"
+emits_asm = true
+preserves_padding = true
+never_emits = ["mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr"]
+fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
+refused_warnings = ["makes pointer from integer without a cast", "makes integer from pointer without a cast", "from incompatible pointer type"]
+paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
+preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
+small_data = [0, 1, 2, 3, 4, 8]
+isa = [2, 3]
+decompme = "gcc2.8.1sn"
+preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
+compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
+assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+
+[toolchain."gcc-2.8.1-sn64".pins]
+"cc1" = "d1ddfe21dfa61840a83f833c8bd45ed7e2f606c3d9c351d2ec732fb6e4f97c89"
+
+[[toolchain."gcc-2.8.1-sn64".downloads]]
+url = "https://github.com/pmret/gcc-papermario/releases/download/master/linux.tar.gz"
+sha256 = "1156cf0d6a88a64c20e2a10fc9445d99cb9a38518f432b1669528dfa82ebb45f"
+files = ["cc1"]

@@ -1,0 +1,2 @@
+${stamp}:
+	$$(Q)mkdir -p ${dir} && curl -fsSL ${url} -o ${archive} && echo '${sha256}  ${archive}' | sha256sum -c - >/dev/null && tar -xzf ${archive} -C ${dir} ${files} && rm -f ${archive} && cd ${dir} && printf '%s\n' ${pins} | sha256sum -c - >/dev/null && touch ${stamp_name}

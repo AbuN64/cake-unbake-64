@@ -1,0 +1,245 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:repo",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "github": {
+   "type": "object",
+   "properties": {
+    "checkout": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "minLength": 1
+      },
+      "sha": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{40}$"
+      },
+      "tag": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "action",
+      "sha",
+      "tag"
+     ],
+     "additionalProperties": false
+    },
+    "python": {
+     "type": "object",
+     "properties": {
+      "action": {
+       "type": "string",
+       "minLength": 1
+      },
+      "sha": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{40}$"
+      },
+      "tag": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "action",
+      "sha",
+      "tag"
+     ],
+     "additionalProperties": false
+    }
+   },
+   "required": [
+    "checkout",
+    "python"
+   ],
+   "additionalProperties": false
+  },
+  "gitlab": {
+   "type": "object",
+   "properties": {
+    "image": {
+     "type": "string",
+     "minLength": 1
+    },
+    "packages": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "audit_image": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "required": [
+    "image",
+    "audit_image",
+    "packages"
+   ],
+   "additionalProperties": false
+  },
+  "make": {
+   "type": "object",
+   "properties": {
+    "tools": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "host": {
+        "type": "string",
+        "minLength": 1
+       },
+       "default": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "required": [
+       "host",
+       "default"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "tools"
+   ],
+   "additionalProperties": false
+  },
+  "readme": {
+   "type": "object",
+   "properties": {
+    "begin": {
+     "type": "string",
+     "minLength": 1
+    },
+    "end": {
+     "type": "string",
+     "minLength": 1
+    },
+    "bar": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "required": [
+    "begin",
+    "end",
+    "bar"
+   ],
+   "additionalProperties": false
+  },
+  "ignore": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "splat": {
+   "type": "object",
+   "properties": {
+    "options": {
+     "type": "object",
+     "additionalProperties": {
+      "type": [
+       "string",
+       "boolean"
+      ],
+      "minLength": 1
+     }
+    }
+   },
+   "required": [
+    "options"
+   ],
+   "additionalProperties": false
+  },
+  "sdk": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "template": {
+      "type": "string",
+      "minLength": 1
+     },
+     "path": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "template",
+     "path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "layout": {
+   "type": "object",
+   "properties": {
+    "subsystem_header": {
+     "type": "string",
+     "minLength": 1
+    },
+    "library_header": {
+     "type": "string",
+     "minLength": 1
+    },
+    "subsystem_source": {
+     "type": "string",
+     "minLength": 1
+    },
+    "library_source": {
+     "type": "string",
+     "minLength": 1
+    },
+    "shared_headers": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "module_cap": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "required": [
+    "subsystem_header",
+    "library_header",
+    "shared_headers",
+    "subsystem_source",
+    "library_source",
+    "module_cap"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "schema",
+  "github",
+  "gitlab",
+  "make",
+  "readme",
+  "ignore",
+  "splat",
+  "sdk",
+  "layout"
+ ],
+ "additionalProperties": false
+}

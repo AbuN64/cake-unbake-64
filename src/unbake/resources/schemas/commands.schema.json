@@ -1,0 +1,85 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:commands",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 2
+  },
+  "command": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "help": {
+      "type": "string",
+      "minLength": 1
+     },
+     "handler": {
+      "type": "string",
+      "minLength": 1
+     },
+     "params": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1
+        },
+        "kind": {
+         "enum": [
+          "argument",
+          "option",
+          "flag"
+         ]
+        },
+        "type": {
+         "enum": [
+          "str",
+          "path",
+          "int"
+         ]
+        },
+        "required": {
+         "type": "boolean"
+        },
+        "multiple": {
+         "type": "boolean"
+        },
+        "help": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "required": [
+        "name",
+        "kind",
+        "type",
+        "required",
+        "multiple",
+        "help"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "configured": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "help",
+     "handler",
+     "params"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "command"
+ ],
+ "additionalProperties": false
+}

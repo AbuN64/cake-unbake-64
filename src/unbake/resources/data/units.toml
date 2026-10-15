@@ -1,0 +1,53 @@
+# Unit kinds. native.py walks `phases` in order; report credits bytes to `credit` when `decompiled`
+# (hand-written asm units build from source but are not decompiled). `suffix` is the source extension.
+# `cacheable`: the steps after the last preprocess phase are keyed by the bytes that phase yields. A kind whose inputs
+# no phase expands (assembler includes, incbin) is `cacheable = false` and says why in `uncacheable`.
+schema = 1
+
+[kind.c]
+phases = ["preprocess", "compile", "assemble", "link"]
+credit = "code"
+suffix = ".c"
+decompiled = true
+cacheable = true
+
+[kind.asm]
+phases = ["assemble", "link"]
+credit = "code"
+suffix = ".s"
+decompiled = false
+cacheable = false
+uncacheable = "no phase expands the assembler includes, so the build inputs are not all declared"
+
+[kind.data]
+phases = ["preprocess", "compile", "assemble", "link"]
+credit = "data"
+suffix = ".c"
+decompiled = true
+cacheable = true
+
+[kind.resource]
+phases = ["armips"]
+credit = "data"
+suffix = ".s"
+decompiled = true
+cacheable = false
+uncacheable = "armips reads files the source names (incbin and includes) that no phase declares"
+
+# Splat vocabulary and linker input aliases: one section authority.
+[section.text]
+types = ["asm", "c", "hasm", ".text"]
+inputs = [".text", ".text.*"]
+zero = false
+[section.rodata]
+types = ["rodata", ".rodata", "rdata", ".rdata"]
+inputs = [".rodata", ".rodata.*", ".rdata", ".rdata.*"]
+zero = false
+[section.data]
+types = ["data", ".data", "sdata", ".sdata", "bin", "resource"]
+inputs = [".data", ".data.*", ".sdata", ".sdata.*", ".resource"]
+zero = false
+[section.bss]
+types = ["bss", ".bss", "sbss", ".sbss"]
+inputs = [".bss", ".bss.*", ".sbss", ".sbss.*", "COMMON"]
+zero = true

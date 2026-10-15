@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Developer script (not a verb, not shipped): rebuilds src/unbake/resources/data/sdk/catalog.json.
+
+usage: bin/sdk-catalog WORKDIR [GCC_SRC_DIR]
+  WORKDIR      scratch directory outside this repo; the public libultra reimplementation is cloned into it
+  GCC_SRC_DIR  optional directory holding libgcc2.c and longlong.h of a GCC release (libgcc functions come from it)
+
+Every supported libultra version and compiler is built with the compilers of the unbake toolchain pins (gcc-2.7.2-kmc
+cc1, ido-5.3 as the reimplementation names it); the catalog keeps names, hashes and relocation-masked words only.
+"""
+
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import zlib
+from collections import defaultdict
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+import rabbitizer  # noqa: E402
+
+from unbake import infer  # noqa: E402
+
+REPOSITORY = "https://github.com/decompals/ultralib"
+VERSIONS = ("I", "J", "K", "L")
+TARGETS = {"libgultra_rom": "gcc", "libgultra": "gcc", "libultra_rom": "ido", "libultra": "ido"}
+MATH = {"sinf", "cosf", "sqrtf", "libm_vals"}
+MIN_WORDS, SHORT_WORDS = 4, 8
+LIBGCC = [
+    "muldi3",
+    "divdi3",
+    "moddi3",
+    "udivdi3",
+    "umoddi3",
+    "udivmoddi4",
+    "lshrdi3",
+    "ashldi3",
+    "ashrdi3",
+    "negdi2",
+    "cmpdi2",
+    "ucmpdi2",
+    "ffsdi2",
+    "fixunsdfdi",
+    "fixdfdi",
+    "fixunssfdi",
+    "fixsfdi",
+    "floatdidf",
+    "floatdisf",
+]
+STUBS = {
+    "tconfig.h": "#define inhibit_libc\n#define WORDS_BIG_ENDIAN 1\n#define BITS_PER_UNIT 8\n"
+    "#define LONG_DOUBLE_TYPE_SIZE 64\n#define SUPPORTS_WEAK 0\nextern void abort (void);\n",
+    "defaults.h": "",
+    "machmode.h": "",
+    "stddef.h": "typedef unsigned int size_t;\n",
+    "limits.h": "#define INT_MAX 2147483647\n#define LONG_MAX 2147483647\n#define ULONG_MAX 4294967295U\n",
+}
+
+
+def run(
+    argv: list[str | Path], cwd: Path | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+
+
+def elf_functions(blob: bytes) -> list[tuple[str, bytes]]:
+    """Function symbols of one big-endian 32-bit ELF object: public names preferred at an offset, ends by size or next."""
+    (shoff,) = struct.unpack(">I", blob[32:36])
+    shentsize, shnum, shstrndx = struct.unpack(">HHH", blob[46:52])
+    sections = [
+        struct.unpack(">IIIIIIIIII", blob[shoff + i * shentsize : shoff + (i + 1) * shentsize]) for i in range(shnum)
+    ]
+    names = sections[shstrndx]
+
+    def label(offset: int, table: tuple[int, ...]) -> str:
+        start = table[4] + offset
+        return blob[start : blob.index(b"\0", start)].decode("latin-1")
+
+    text = next((i for i, s in enumerate(sections) if label(s[0], names) == ".text"), None)
+    symtab = next((s for s in sections if s[1] == 2), None)
+    if text is None or symtab is None:
+        return []
+    strtab = sections[symtab[6]]
+    code_base, code_size = sections[text][4], sections[text][5]
+    found: defaultdict[int, list[tuple[str, int, int, int]]] = defaultdict(list)
+    for i in range(symtab[5] // 16):
+        name_at, value, size, info, _, shndx = struct.unpack(
+            ">IIIBBH", blob[symtab[4] + i * 16 : symtab[4] + i * 16 + 16]
+        )
+        name, kind, bind = label(name_at, strtab), info & 15, info >> 4
+        if shndx != text or not name or name.startswith(("$", ".")) or name == "gcc2_compiled." or kind == 3:
+            continue
+        if bind == 0 and kind != 2:  # a local label is no function
+            continue
+        found[value].append((name, size, bind, kind))
+    starts = sorted(found)
+    result = []
+    for at, offset in enumerate(starts):
+        pick = sorted(found[offset], key=lambda c: (c[0].startswith("_"), c[2] == 2, -c[1], c[0]))[0]
+        end = offset + pick[1] if pick[1] else (starts[at + 1] if at + 1 < len(starts) else code_size)
+        end = min(end, starts[at + 1] if at + 1 < len(starts) else code_size)
+        result.append((pick[0], blob[code_base + offset : code_base + end]))
+    return result
+
+
+def signature(code: bytes) -> dict[str, object] | None:
+    words = [
+        (w, rabbitizer.Instruction(w, vram=0)) for w in struct.unpack(f">{len(code) // 4}I", code[: len(code) // 4 * 4])
+    ]
+    if len(words) < MIN_WORDS:
+        return None
+    masked = infer.masked_code(words)
+    if len(words) >= SHORT_WORDS:
+        return {"size": len(masked), "crc_head": zlib.crc32(masked[:8]), "crc_body": zlib.crc32(masked)}
+    keep = [int.from_bytes(infer.masked_code([(0xFFFFFFFF, ins)]), "big") for _, ins in words]
+    return {
+        "words": [f"{w & k:08x}" for (w, _), k in zip(words, keep, strict=True)],
+        "masks": [f"{~k & 0xFFFFFFFF:08x}" for k in keep],
+    }
+
+
+def library_of(stem: str, compiler: str) -> str:
+    return "libm" if stem in MATH else ("libgultra" if compiler == "gcc" else "libultra")
+
+
+def build_ultralib(work: Path, skipped: list[str]) -> Path:
+    tree = work / "ultralib"
+    if not tree.exists():
+        done = run(["git", "clone", "--depth", "1", REPOSITORY, str(tree)])
+        if done.returncode:
+            sys.exit(f"cannot clone {REPOSITORY}: {done.stderr}")
+    if not (tree / "tools/gcc/gcc").exists() or not (tree / "tools/ido/cc").exists():
+        run(["make", "-C", "tools"], cwd=tree)
+    return tree
+
+
+def objects(tree: Path, version: str, target: str) -> list[Path]:
+    done = run(["make", "-j12", "COMPARE=0", f"VERSION={version}", f"TARGET={target}"], cwd=tree)
+    out = tree / "build" / version / target / "src"
+    if not (tree / "build" / version / target / f"{target}.a").exists():
+        raise RuntimeError(f"{target} {version} did not build: {done.stderr[-400:]}")
+    return sorted(out.rglob("*.o"))
+
+
+def libgcc_objects(tree: Path, source: Path, work: Path) -> list[Path]:
+    include = work / "libgcc-include"
+    include.mkdir(parents=True, exist_ok=True)
+    for name, text in STUBS.items():
+        (include / name).write_text(text)
+    for name in ("longlong.h", "libgcc2.c"):  # the source directory is searched first, so its own headers go with it
+        shutil.copy(source / name, include / name)
+    out = work / "libgcc-obj"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir()
+    built = []
+    for fn in LIBGCC:
+        target = out / f"{fn}.o"
+        done = run(
+            [
+                tree / "tools/gcc/gcc",
+                "-w",
+                "-nostdinc",
+                "-c",
+                "-G",
+                "0",
+                "-mgp32",
+                "-mfp32",
+                "-mips3",
+                "-O2",
+                f"-DL_{fn}",
+                "-I",
+                include,
+                include / "libgcc2.c",
+                "-o",
+                target,
+            ],
+            env={**os.environ, "COMPILER_PATH": str(tree / "tools/gcc"), "VR4300MUL": "ON"},
+        )
+        if target.exists():
+            built.append(target)
+        else:
+            print(f"libgcc {fn}: {done.stderr.strip().splitlines()[-1:]}", file=sys.stderr)
+    return built
+
+
+def main(argv: list[str]) -> int:
+    work = Path(argv[0]).resolve()
+    if ROOT in work.parents or work == ROOT:
+        sys.exit("the work directory must be outside this repository")
+    work.mkdir(parents=True, exist_ok=True)
+    skipped: list[str] = []
+    tree = build_ultralib(work, skipped)
+    rows: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    tiny = 0
+
+    def add(name: str, module: str, library: str, code: bytes, version: str) -> None:
+        nonlocal tiny
+        sig = signature(code)
+        if sig is None:
+            tiny += 1
+            return
+        key = (name, module, library, json.dumps(sig, sort_keys=True))
+        row = rows.setdefault(key, {"name": name, "module": module, "library": library, "versions": [], **sig})
+        if version not in row["versions"]:  # type: ignore[operator]
+            row["versions"].append(version)  # type: ignore[union-attr]
+
+    for compiler, tool in (("gcc", "tools/gcc/gcc"), ("ido", "tools/ido/cc")):
+        if not (tree / tool).exists():
+            skipped.append(f"{compiler}: toolchain missing")
+    for version in VERSIONS:
+        for target, compiler in TARGETS.items():
+            if not (tree / ("tools/gcc/gcc" if compiler == "gcc" else "tools/ido/cc")).exists():
+                continue
+            try:
+                built = objects(tree, version, target)
+            except RuntimeError as error:
+                skipped.append(str(error))
+                continue
+            for path in built:
+                for name, code in elf_functions(path.read_bytes()):
+                    add(name, path.stem, library_of(path.stem, compiler), code, f"2.0{version}")
+    if len(argv) > 1:
+        for path in libgcc_objects(tree, Path(argv[1]), work):
+            for name, code in elf_functions(path.read_bytes()):
+                add(name, path.stem, "libgcc", code, "gcc-2.7.2-kmc")
+    else:
+        skipped.append("libgcc: no GCC_SRC_DIR given")
+    signatures = sorted(
+        rows.values(),
+        key=lambda r: (str(r["library"]), str(r["module"]), str(r["name"]), json.dumps(r, sort_keys=True)),
+    )
+    for row in signatures:
+        row["versions"] = sorted(row["versions"])  # type: ignore[arg-type]
+    target = ROOT / "src/unbake/resources/data/sdk/catalog.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {"source": "matching libultra rebuild and libgcc2 DI routines", "signatures": signatures},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    print(f"{len(signatures)} rows, {tiny} functions under {MIN_WORDS} words left out, {target.stat().st_size} bytes")
+    for line in skipped:
+        print(f"skipped: {line}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

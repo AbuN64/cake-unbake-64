@@ -1,0 +1,212 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:host",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 2
+  },
+  "resources": {
+   "type": "object",
+   "properties": {
+    "cores": {
+     "oneOf": [
+      {
+       "type": "integer",
+       "minimum": 1
+      },
+      {
+       "const": "auto"
+      }
+     ]
+    },
+    "workers": {
+     "oneOf": [
+      {
+       "type": "integer",
+       "minimum": 1
+      },
+      {
+       "const": "auto"
+      }
+     ]
+    },
+    "cap": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "maximum": 1
+    },
+    "memory_parent_bytes": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "memory_worker_bytes": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "move_wait_s": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    }
+   },
+   "required": [
+    "cores",
+    "workers",
+    "memory_parent_bytes",
+    "memory_worker_bytes"
+   ],
+   "additionalProperties": false
+  },
+  "cache": {
+   "type": "object",
+   "properties": {
+    "dir": {
+     "type": "string",
+     "minLength": 1
+    },
+    "max_bytes": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "keep_commits": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "required": [
+    "dir",
+    "max_bytes"
+   ],
+   "additionalProperties": false
+  },
+  "toolchains": {
+   "type": "object",
+   "properties": {
+    "root": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "required": [
+    "root"
+   ],
+   "additionalProperties": false
+  },
+  "tools": {
+   "type": "object",
+   "properties": {
+    "git": {
+     "type": "string",
+     "minLength": 1
+    },
+    "make": {
+     "type": "string",
+     "minLength": 1
+    },
+    "cpp": {
+     "type": "string",
+     "minLength": 1
+    },
+    "mips_as": {
+     "type": "string",
+     "minLength": 1
+    },
+    "mips_ld": {
+     "type": "string",
+     "minLength": 1
+    },
+    "mips_objcopy": {
+     "type": "string",
+     "minLength": 1
+    },
+    "mips_objdump": {
+     "type": "string",
+     "minLength": 1
+    },
+    "n64link": {
+     "type": "string",
+     "minLength": 1
+    },
+    "splat": {
+     "type": "string",
+     "minLength": 1
+    },
+    "armips": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "required": [
+    "git",
+    "make",
+    "splat"
+   ],
+   "additionalProperties": false
+  },
+  "sdk": {
+   "type": "object",
+   "properties": {
+    "catalog": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "required": [
+    "catalog"
+   ],
+   "additionalProperties": false
+  },
+  "budgets": {
+   "type": "object",
+   "properties": {
+    "serial_seconds": {
+     "type": "number"
+    },
+    "serial_cores": {
+     "type": "number"
+    },
+    "pool_fill": {
+     "type": "number"
+    },
+    "pool_fanout": {
+     "type": "number"
+    }
+   },
+   "required": [
+    "serial_seconds",
+    "serial_cores",
+    "pool_fill",
+    "pool_fanout"
+   ],
+   "additionalProperties": false
+  },
+  "publish": {
+   "type": "object",
+   "properties": {
+    "author_name": {
+     "type": "string",
+     "minLength": 1
+    },
+    "author_email": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "required": [
+    "author_name",
+    "author_email"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "schema",
+  "resources",
+  "cache",
+  "toolchains",
+  "tools",
+  "budgets",
+  "publish"
+ ],
+ "additionalProperties": false
+}

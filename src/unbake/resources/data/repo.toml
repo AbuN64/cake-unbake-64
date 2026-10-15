@@ -1,0 +1,95 @@
+# Generated game-repository files (repo.py). Action and image pins are full digests.
+schema = 1
+ignore = ["/asm/", "/build/", "/roms/", "/tools/", "/.unbake/", "/local.mk", "*.z64", "*.n64", "*.v64"]
+
+# splat options init writes into each versions/<version>/<name>.yaml (placeholders {version} {name} {rom}).
+[splat.options]
+base_path = "../.."
+target_path = "{rom}"
+basename = "{name}"
+asm_path = "asm/{version}"
+src_path = "src"
+build_path = "build/{version}"
+asset_path = "asm/{version}/assets"
+symbol_addrs_path = "versions/{version}/symbol_addrs.txt"
+ld_script_path = "build/{version}/{name}.ld"
+generated_asm_macros_directory = "asm/{version}/include"
+undefined_funcs_auto_path = "build/{version}/undefined_funcs_auto.txt"
+undefined_syms_auto_path = "build/{version}/undefined_syms_auto.txt"
+# splat names what no symbol file names with its own spelling, so a table name never means a second address
+symbol_name_format = "auto_$VRAM"
+symbol_name_format_no_rom = "auto_$VRAM"
+# splat must never write C files: it would overwrite the tracked sources
+create_c_files = false
+
+[github.checkout]
+action = "actions/checkout"
+sha = "11d5960a326750d5838078e36cf38b85af677262"
+tag = "v4.4.0"
+
+[github.python]
+action = "actions/setup-python"
+sha = "a26af69be951a213d495a4c3e4e4022e16d87065"
+tag = "v5.6.0"
+
+[gitlab]
+image = "python:3.11-slim@sha256:0dd364ba7e10242f07755449e3a3d0e35f9efd987952737b90def6709ab0c5ce"
+packages = ["make"]
+audit_image = "python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f"
+
+# Make variable -> host tool key (local.mk value) and the conventional command the committed Makefile falls back to.
+[make.tools.CPP]
+host = "cpp"
+default = "cpp"
+[make.tools.AS]
+host = "mips_as"
+default = "mips-linux-gnu-as"
+[make.tools.LD]
+host = "mips_ld"
+default = "mips-linux-gnu-ld"
+[make.tools.OBJCOPY]
+host = "mips_objcopy"
+default = "mips-linux-gnu-objcopy"
+[make.tools.N64LINK]
+host = "n64link"
+default = "n64link"
+[make.tools.ARMIPS]
+host = "armips"
+default = "armips"
+
+# Where a module's public header may live (move.header check) and where its sources sit (Group.subsystem, Group.library).
+[layout]
+subsystem_header = "include/game/{subsystem}.h"
+library_header = "include/sdk/{library}.h"
+shared_headers = ["include/types.h", "include/game/common.h"]
+subsystem_source = "src/game/{subsystem}"
+library_source = "src/sdk/{library}"
+module_cap = 32  # most functions an inferred module holds
+
+[readme]
+begin = "<!-- progress -->"
+end = "<!-- /progress -->"
+bar = 20
+
+[[sdk]]
+template = "sdk/gfx.h"
+path = "include/shared/gfx.h"
+[[sdk]]
+template = "sdk/n64sdk.h"
+path = "include/shared/n64sdk.h"
+[[sdk]]
+template = "sdk/gbi.h"
+path = "include/shared/gbi.h"
+[[sdk]]
+template = "sdk/abi.h"
+path = "include/shared/abi.h"
+[[sdk]]
+template = "sdk/acmd.h"
+path = "include/shared/acmd.h"
+[[sdk]]
+template = "sdk/audio_callbacks.h"
+path = "include/shared/audio_callbacks.h"
+
+[[sdk]]
+path = "tools/splat_ext/resource.py"
+template = "splat/resource.py"

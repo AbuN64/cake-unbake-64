@@ -1,0 +1,36 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:ledger",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 2
+  },
+  "kind": {
+   "enum": [
+    "receipt",
+    "refusal",
+    "drain"
+   ]
+  },
+  "invocation": {
+   "type": "string",
+   "minLength": 1
+  },
+  "time": {
+   "type": "string",
+   "minLength": 1
+  },
+  "body": {
+   "type": "object"
+  }
+ },
+ "required": [
+  "schema",
+  "kind",
+  "invocation",
+  "time",
+  "body"
+ ],
+ "additionalProperties": false
+}

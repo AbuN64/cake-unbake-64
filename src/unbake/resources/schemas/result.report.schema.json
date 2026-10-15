@@ -1,0 +1,383 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.report",
+ "type": "object",
+ "properties": {
+  "commit": {
+   "type": "string",
+   "minLength": 1
+  },
+  "versions": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "code_total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "code_matched": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "data_total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "data_matched": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "functions_total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "functions_matched": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "fuzzy_bytes": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "functions_fuzzy": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "code_fuzzy": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "data_fuzzy": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "code_percent": {
+      "type": "number"
+     },
+     "data_percent": {
+      "type": "number"
+     },
+     "fuzzy_percent": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "code_total",
+     "code_matched",
+     "data_total",
+     "data_matched",
+     "functions_total",
+     "functions_matched",
+     "fuzzy_bytes",
+     "functions_fuzzy",
+     "code_fuzzy",
+     "data_fuzzy",
+     "code_percent",
+     "data_percent",
+     "fuzzy_percent"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "segments": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "object",
+     "properties": {
+      "code_total": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_matched": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "data_total": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "data_matched": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_total": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_matched": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "fuzzy_bytes": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "data_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_percent": {
+       "type": "number"
+      },
+      "data_percent": {
+       "type": "number"
+      },
+      "fuzzy_percent": {
+       "type": "number"
+      }
+     },
+     "required": [
+      "code_total",
+      "code_matched",
+      "data_total",
+      "data_matched",
+      "functions_total",
+      "functions_matched",
+      "fuzzy_bytes",
+      "functions_fuzzy",
+      "code_fuzzy",
+      "data_fuzzy",
+      "code_percent",
+      "data_percent",
+      "fuzzy_percent"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  "kinds": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "object",
+     "properties": {
+      "code_total": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_matched": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "data_total": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "data_matched": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_total": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_matched": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "fuzzy_bytes": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "data_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_percent": {
+       "type": "number"
+      },
+      "data_percent": {
+       "type": "number"
+      },
+      "fuzzy_percent": {
+       "type": "number"
+      }
+     },
+     "required": [
+      "code_total",
+      "code_matched",
+      "data_total",
+      "data_matched",
+      "functions_total",
+      "functions_matched",
+      "fuzzy_bytes",
+      "functions_fuzzy",
+      "code_fuzzy",
+      "data_fuzzy",
+      "code_percent",
+      "data_percent",
+      "fuzzy_percent"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  "debt": {
+   "oneOf": [
+    {
+     "type": "object",
+     "properties": {
+      "stale": {
+       "const": true
+      },
+      "action": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "stale",
+      "action"
+     ],
+     "additionalProperties": false
+    },
+    {
+     "type": "object",
+     "properties": {
+      "commit": {
+       "type": "string",
+       "minLength": 1
+      },
+      "counts": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+       }
+      }
+     },
+     "required": [
+      "commit",
+      "counts"
+     ],
+     "additionalProperties": false
+    }
+   ]
+  },
+  "boundary": {
+   "type": "object",
+   "properties": {
+    "prelude": {
+     "type": "object",
+     "properties": {
+      "proposed": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "applied": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "withheld": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "required": [
+      "proposed",
+      "applied",
+      "withheld"
+     ],
+     "additionalProperties": false
+    },
+    "split": {
+     "type": "object",
+     "properties": {
+      "proposed": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "applied": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "withheld": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "required": [
+      "proposed",
+      "applied",
+      "withheld"
+     ],
+     "additionalProperties": false
+    },
+    "merge": {
+     "type": "object",
+     "properties": {
+      "proposed": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "applied": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "withheld": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "required": [
+      "proposed",
+      "applied",
+      "withheld"
+     ],
+     "additionalProperties": false
+    }
+   },
+   "required": [
+    "prelude",
+    "split",
+    "merge"
+   ],
+   "additionalProperties": false
+  },
+  "pending_boundary": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "inbox": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "stale": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  }
+ },
+ "required": [
+  "commit",
+  "versions",
+  "segments",
+  "kinds",
+  "debt",
+  "boundary",
+  "pending_boundary",
+  "inbox"
+ ],
+ "additionalProperties": false
+}

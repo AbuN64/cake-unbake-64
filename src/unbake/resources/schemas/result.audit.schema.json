@@ -1,0 +1,38 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.audit",
+ "type": "object",
+ "properties": {
+  "against": {
+   "type": "string",
+   "minLength": 1
+  },
+  "paths": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "counts_before": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  },
+  "counts_after": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  }
+ },
+ "required": [
+  "against",
+  "paths",
+  "counts_before",
+  "counts_after"
+ ],
+ "additionalProperties": false
+}

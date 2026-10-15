@@ -1,0 +1,36 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:keys",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "key": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "owner": {
+      "type": "string",
+      "minLength": 1
+     },
+     "sentence": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "owner",
+     "sentence"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "key"
+ ],
+ "additionalProperties": false
+}

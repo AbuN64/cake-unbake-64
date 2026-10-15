@@ -1,0 +1,49 @@
+# ROM identity checks for init. The first word must be z64 order; other orders are refused by name.
+# Fields with equal = true must match the names_from ROM; the rest are reported. Similarity is the share of
+# relocation-masked code windows of the names_from ROM found in each other ROM.
+schema = 1
+
+[order]
+z64 = 0x80371240
+refuse = [ { word = 0x37804012, name = "v64 (byte-swapped)" }, { word = 0x40123780, name = "n64 (little-endian words)" } ]
+
+[[field]]
+name = "game_code"
+offset = 0x3B
+size = 3
+equal = true
+encoding = "ascii"
+
+[[field]]
+name = "region"
+offset = 0x3E
+size = 1
+equal = false
+encoding = "ascii"
+
+[[field]]
+name = "revision"
+offset = 0x3F
+size = 1
+equal = false
+encoding = "hex"
+
+[[field]]
+name = "entrypoint"
+offset = 0x08
+size = 4
+equal = false
+encoding = "hex"
+
+[[field]]
+name = "title"
+offset = 0x20
+size = 20
+equal = false
+encoding = "ascii"
+
+[similarity]
+start = 0x1000
+length = 0x100000
+window = 32
+min = 0.5

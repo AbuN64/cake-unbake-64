@@ -1,0 +1,21 @@
+name: CI
+on:
+  push:
+    branches: [main, trunk]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make git binutils-mips-linux-gnu
+      - run: pip install git+https://github.com/AbuN64/cache-64@v0.3.2
+      - run: pip install -e '.[dev]'
+      - run: ruff check src tests
+      - run: pytest -q -n auto

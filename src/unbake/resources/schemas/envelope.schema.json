@@ -1,0 +1,132 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:envelope",
+ "type": "object",
+ "properties": {
+  "ok": {
+   "type": "boolean"
+  },
+  "invocation": {
+   "type": "string",
+   "minLength": 1
+  },
+  "result": {
+   "type": [
+    "object",
+    "null"
+   ]
+  },
+  "findings": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1
+     },
+     "reason": {
+      "type": "string",
+      "minLength": 1
+     },
+     "path": {
+      "type": "string"
+     },
+     "line": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "unit": {
+      "type": "string"
+     },
+     "versions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "missing": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "origin": {
+      "oneOf": [
+       {
+        "type": "null"
+       },
+       {
+        "type": "object",
+        "properties": {
+         "key": {
+          "type": "string",
+          "minLength": 1
+         },
+         "file": {
+          "type": "string",
+          "minLength": 1
+         },
+         "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+         },
+         "note": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "key",
+         "file",
+         "sha256",
+         "note"
+        ],
+        "additionalProperties": false
+       }
+      ]
+     },
+     "blocking": {
+      "type": "boolean"
+     },
+     "action": {
+      "type": "string"
+     },
+     "symptoms": {
+      "type": "object",
+      "additionalProperties": {}
+     }
+    },
+    "required": [
+     "key",
+     "reason",
+     "path",
+     "line",
+     "unit",
+     "versions",
+     "missing",
+     "origin",
+     "blocking",
+     "action",
+     "symptoms"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "stages": {
+   "type": [
+    "object",
+    "null"
+   ]
+  }
+ },
+ "required": [
+  "ok",
+  "invocation",
+  "result",
+  "findings",
+  "stages"
+ ],
+ "additionalProperties": false
+}

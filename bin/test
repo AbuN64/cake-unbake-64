@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+[[ -x .venv/bin/python ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
+export PYTHONPATH=src
+lock="${XDG_RUNTIME_DIR:-$PWD/.test-tmp}/abu-tests.lock"
+if [[ -z "${ABU_TESTS_LOCKED:-}" ]]; then mkdir -p "$(dirname "$lock")"; ABU_TESTS_LOCKED=1 exec flock "$lock" "$PWD/bin/$(basename "$0")" "$@"; fi
+total_mb=$(awk '/^MemTotal/{print int($2/1024)}' /proc/meminfo)
+if [[ -r /sys/fs/cgroup/memory.stat ]]; then
+    free_mb=$(( total_mb - $(awk '/^anon /{print int($2/1048576)}' /sys/fs/cgroup/memory.stat) ))
+else
+    free_mb=$(awk '/^MemAvailable/{print int($2/1024)}' /proc/meminfo)
+fi
+# Each test process may use at most 4 GB: a runaway test fails with MemoryError instead of exhausting the host.
+ulimit -v 4194304
+workers=$(( (free_mb - 4096) / 4096 )); cores=$(nproc)
+(( workers > cores )) && workers=$cores; [[ -n "${UNBAKE_CORES:-}" ]] && (( workers > UNBAKE_CORES )) && workers=$UNBAKE_CORES; (( workers < 1 )) && workers=1
+# The workers come out of the one host core budget (the same slots unbake itself divides), at most the memory allows.
+exec .venv/bin/python -m unbake.pool --work "$workers" -- .venv/bin/python -m pytest -q -n '{j}' --basetemp="$PWD/.test-tmp" "$@"

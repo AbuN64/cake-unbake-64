@@ -1,0 +1,26 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.headers",
+ "type": "object",
+ "properties": {
+  "headers": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "header": {"type": "string", "minLength": 1},
+     "version": {"type": "string", "minLength": 1},
+     "errors": {"type": "integer", "minimum": 0},
+     "first": {"type": "array", "items": {"type": "string"}, "maxItems": 3}
+    },
+    "required": ["header", "version", "errors", "first"],
+    "additionalProperties": false
+   }
+  },
+  "failing": {"type": "integer", "minimum": 0},
+  "refused": {"type": "array", "items": {"type": "object"}},
+  "message": {"type": "string"}
+ },
+ "required": ["headers", "failing", "refused", "message"],
+ "additionalProperties": false
+}

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+[[ -x .venv/bin/python ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
+export PYTHONPATH=src
+status=0
+rg -n -i --glob '!hygiene' --glob '!**/__pycache__/**' \
+    --glob '!*.pyc' --glob '!*.egg-info/**' \
+    '\b(claude|openai|chatgpt|codex)\b|/(home|mnt|Users|opt|tmp)/' \
+    src tests bin README.md pyproject.toml || status=$?
+if [[ "$status" -eq 0 ]]; then
+    exit 1
+fi
+if [[ "$status" -ne 1 ]]; then
+    exit "$status"
+fi

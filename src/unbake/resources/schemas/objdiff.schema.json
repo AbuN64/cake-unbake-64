@@ -1,0 +1,345 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:objdiff",
+ "type": "object",
+ "properties": {
+  "version": {
+   "const": 2
+  },
+  "measures": {
+   "type": "object",
+   "properties": {
+    "fuzzy_match_percent": {
+     "type": "number"
+    },
+    "total_code": {
+     "type": "string",
+     "minLength": 1
+    },
+    "matched_code": {
+     "type": "string",
+     "minLength": 1
+    },
+    "matched_code_percent": {
+     "type": "number"
+    },
+    "complete_code": {
+     "type": "string",
+     "minLength": 1
+    },
+    "complete_code_percent": {
+     "type": "number"
+    },
+    "total_data": {
+     "type": "string",
+     "minLength": 1
+    },
+    "matched_data": {
+     "type": "string",
+     "minLength": 1
+    },
+    "matched_data_percent": {
+     "type": "number"
+    },
+    "complete_data": {
+     "type": "string",
+     "minLength": 1
+    },
+    "complete_data_percent": {
+     "type": "number"
+    },
+    "total_functions": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "matched_functions": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "matched_functions_percent": {
+     "type": "number"
+    },
+    "total_units": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "complete_units": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  },
+  "units": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "measures": {
+      "type": "object",
+      "properties": {
+       "fuzzy_match_percent": {
+        "type": "number"
+       },
+       "total_code": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_code": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_code_percent": {
+        "type": "number"
+       },
+       "complete_code": {
+        "type": "string",
+        "minLength": 1
+       },
+       "complete_code_percent": {
+        "type": "number"
+       },
+       "total_data": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_data": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_data_percent": {
+        "type": "number"
+       },
+       "complete_data": {
+        "type": "string",
+        "minLength": 1
+       },
+       "complete_data_percent": {
+        "type": "number"
+       },
+       "total_functions": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "matched_functions": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "matched_functions_percent": {
+        "type": "number"
+       },
+       "total_units": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "complete_units": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [],
+      "additionalProperties": false
+     },
+     "sections": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1
+        },
+        "size": {
+         "type": "string",
+         "minLength": 1
+        },
+        "fuzzy_match_percent": {
+         "type": "number"
+        },
+        "metadata": {
+         "type": "object",
+         "properties": {},
+         "required": [],
+         "additionalProperties": false
+        }
+       },
+       "required": [
+        "name",
+        "size",
+        "fuzzy_match_percent",
+        "metadata"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "functions": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1
+        },
+        "size": {
+         "type": "string",
+         "minLength": 1
+        },
+        "address": {
+         "type": "string",
+         "minLength": 1
+        },
+        "fuzzy_match_percent": {
+         "type": "number"
+        },
+        "metadata": {
+         "type": "object",
+         "properties": {},
+         "required": [],
+         "additionalProperties": false
+        }
+       },
+       "required": [
+        "name",
+        "size",
+        "metadata"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "metadata": {
+      "type": "object",
+      "properties": {
+       "complete": {
+        "type": "boolean"
+       },
+       "progress_categories": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "source_path": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "required": [
+       "complete",
+       "progress_categories"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "name",
+     "measures",
+     "sections",
+     "functions",
+     "metadata"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "categories": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "measures": {
+      "type": "object",
+      "properties": {
+       "fuzzy_match_percent": {
+        "type": "number"
+       },
+       "total_code": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_code": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_code_percent": {
+        "type": "number"
+       },
+       "complete_code": {
+        "type": "string",
+        "minLength": 1
+       },
+       "complete_code_percent": {
+        "type": "number"
+       },
+       "total_data": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_data": {
+        "type": "string",
+        "minLength": 1
+       },
+       "matched_data_percent": {
+        "type": "number"
+       },
+       "complete_data": {
+        "type": "string",
+        "minLength": 1
+       },
+       "complete_data_percent": {
+        "type": "number"
+       },
+       "total_functions": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "matched_functions": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "matched_functions_percent": {
+        "type": "number"
+       },
+       "total_units": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "complete_units": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "id",
+     "name",
+     "measures"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "measures",
+  "units",
+  "categories",
+  "version"
+ ],
+ "additionalProperties": false
+}

@@ -1,0 +1,381 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:map",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "digest": {
+   "type": "string",
+   "minLength": 1
+  },
+  "versions": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "names_from": {
+   "type": "string",
+   "minLength": 1
+  },
+  "segments": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "versions": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "array",
+       "items": {
+        "type": "integer"
+       },
+       "minItems": 3,
+       "maxItems": 3
+      }
+     }
+    },
+    "required": [
+     "name",
+     "versions"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "modules": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "segment": {
+      "type": "string",
+      "minLength": 1
+     },
+     "source": {
+      "type": "string",
+      "minLength": 1
+     },
+     "header": {
+      "type": "string",
+      "minLength": 1
+     },
+     "evidence": {
+      "enum": [
+       "authored",
+       "proven",
+       "inferred"
+      ]
+     },
+     "sdk": {
+      "type": "boolean"
+     },
+     "members": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "subsystem": {
+      "type": "string"
+     },
+     "library": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "segment",
+     "source",
+     "header",
+     "evidence",
+     "sdk",
+     "members",
+     "subsystem",
+     "library"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "units": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "minLength": 1
+     },
+     "kind": {
+      "type": "string",
+      "minLength": 1
+     },
+     "module": {
+      "type": "string",
+      "minLength": 1
+     },
+     "members": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "toolchain": {
+      "type": "string",
+      "minLength": 1
+     },
+     "options": {
+      "type": "object"
+     },
+     "withheld": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     }
+    },
+    "required": [
+     "path",
+     "kind",
+     "module",
+     "members",
+     "toolchain",
+     "options",
+     "withheld"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "members": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "kind": {
+      "type": "string",
+      "minLength": 1
+     },
+     "state": {
+      "type": "string",
+      "minLength": 1
+     },
+     "module": {
+      "type": "string"
+     },
+     "unit": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "fuzzy": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "sdk": {
+      "type": "boolean"
+     },
+     "padded": {
+      "type": "boolean"
+     },
+     "placements": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "version": {
+         "type": "string",
+         "minLength": 1
+        },
+        "section": {
+         "type": "string",
+         "minLength": 1
+        },
+        "rom_start": {
+         "type": "integer"
+        },
+        "rom_end": {
+         "type": "integer"
+        },
+        "vram": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "version",
+        "section",
+        "rom_start",
+        "rom_end",
+        "vram"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "calls": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "loads": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "strings": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "segment": {
+      "type": "string"
+     },
+     "sdk_name": {
+      "type": "string"
+     },
+     "sdk_module": {
+      "type": "string"
+     },
+     "sdk_library": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "kind",
+     "state",
+     "module",
+     "unit",
+     "fuzzy",
+     "sdk",
+     "padded",
+     "placements",
+     "calls",
+     "loads",
+     "strings",
+     "segment",
+     "sdk_name"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "headers": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "minLength": 1
+     },
+     "modules": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "declares": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "includes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "included_by": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     }
+    },
+    "required": [
+     "path",
+     "modules",
+     "declares",
+     "includes",
+     "included_by"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "counts": {
+   "type": "object",
+   "properties": {
+    "src_c": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "include_h": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "units": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "modules": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "members": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "required": [
+    "src_c",
+    "include_h",
+    "units",
+    "modules",
+    "members"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "schema",
+  "digest",
+  "versions",
+  "names_from",
+  "segments",
+  "modules",
+  "units",
+  "members",
+  "headers",
+  "counts"
+ ],
+ "additionalProperties": false
+}

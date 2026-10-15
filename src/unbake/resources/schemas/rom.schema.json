@@ -1,0 +1,118 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:rom",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "order": {
+   "type": "object",
+   "properties": {
+    "z64": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "refuse": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "word": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "name": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "required": [
+       "word",
+       "name"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "z64",
+    "refuse"
+   ],
+   "additionalProperties": false
+  },
+  "field": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "size": {
+      "type": "integer",
+      "minimum": 1
+     },
+     "equal": {
+      "type": "boolean"
+     },
+     "encoding": {
+      "enum": [
+       "ascii",
+       "hex"
+      ]
+     }
+    },
+    "required": [
+     "name",
+     "offset",
+     "size",
+     "equal",
+     "encoding"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "similarity": {
+   "type": "object",
+   "properties": {
+    "start": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "length": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "window": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "min": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 1
+    }
+   },
+   "required": [
+    "start",
+    "length",
+    "window",
+    "min"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "schema",
+  "order",
+  "field",
+  "similarity"
+ ],
+ "additionalProperties": false
+}

@@ -1,0 +1,63 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.check",
+ "type": "object",
+ "properties": {
+  "commit": {
+   "type": "string",
+   "minLength": 1
+  },
+  "repaired": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "counts": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  },
+  "withholding": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  },
+  "findings": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "at": {
+      "type": "string"
+     },
+     "key": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "withholding": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "at",
+     "key",
+     "reason",
+     "withholding"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "commit",
+  "counts"
+ ],
+ "additionalProperties": false
+}

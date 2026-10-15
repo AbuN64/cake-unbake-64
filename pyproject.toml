@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unbake"
+version = "0.2.0"
+description = "N64 decompilation builds and matching with explicit --host or UNBAKE_HOST configuration"
+readme = "README.md"
+license = { file = "LICENSE" }
+classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
+requires-python = ">=3.13"
+dependencies = [
+  "click==8.5.0", "jsonschema==4.26.0", "abucache @ https://github.com/AbuN64/cache-64/releases/download/v0.3.2/abucache-0.3.2-py3-none-any.whl", "psutil==7.2.2", "pyelftools==0.33",
+  "tomlkit==0.15.1", "PyYAML==6.0.3", "rabbitizer==1.16.2", "pycparser==3.0",
+]
+
+[project.scripts]
+unbake = "unbake.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "ruff==0.16.9", "mypy==2.3.1", "pytest", "pytest-xdist==3.8.0",
+  "types-psutil==7.2.2.20260906", "types-PyYAML==6.0.12.20260906", "types-jsonschema==4.26.0.20261006",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["unbake", "unbake.*"]
+
+[tool.setuptools.package-data]
+"unbake" = ["resources/**/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "T20"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.lint.per-file-ignores]
+"src/unbake/cli.py" = ["T20"]
+"cutover/*" = ["T20"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src"]
+mypy_path = "stubs"

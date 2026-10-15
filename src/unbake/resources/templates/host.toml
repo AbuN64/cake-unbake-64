@@ -1,0 +1,42 @@
+# unbake host configuration. Every value is required; unbake never guesses one.
+# cores and workers take an integer or "auto" (resolved to the CPUs this process may run on, recorded with its origin).
+schema = 2
+
+[resources]
+cores = ${cores}
+workers = ${workers}
+memory_parent_bytes = ${memory_parent_bytes}
+memory_worker_bytes = ${memory_worker_bytes}
+# Seconds a move or a setup waits for landings in flight to finish before it refuses as busy.
+move_wait_s = 600
+
+[cache]
+# One content-addressed cache shared by every project and worktree on this host.
+dir = "${cache_dir}"
+max_bytes = ${cache_max_bytes}
+
+[toolchains]
+root = "${toolchain_root}"
+
+[tools]
+git = "${git}"
+make = "${make}"
+cpp = "${cpp}"
+mips_as = "${mips_as}"
+mips_ld = "${mips_ld}"
+mips_objcopy = "${mips_objcopy}"
+mips_objdump = "${mips_objdump}"
+# n64link and armips are optional: configure one only when a toolchain or unit kind needs it.
+n64link = "${n64link}"
+splat = "${splat}"
+armips = "${armips}"
+
+[budgets]
+serial_seconds = ${serial_seconds}
+serial_cores = ${serial_cores}
+pool_fill = ${pool_fill}
+pool_fanout = ${pool_fanout}
+
+[publish]
+author_name = "${author_name}"
+author_email = "${author_email}"

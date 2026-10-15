@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Integration tests: tiny fixture project, fake tool scripts, real make, git and worker processes.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+[[ -x .venv/bin/python ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
+export PYTHONPATH="$PWD/src:$PWD"
+export UNBAKE_INTEGRATION=1
+exec .venv/bin/python -m unittest discover -s tests/integration -t . -v "$@"

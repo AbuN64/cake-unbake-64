@@ -1,0 +1,97 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:sdk",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "source",
+  "signatures"
+ ],
+ "properties": {
+  "source": {
+   "type": "string",
+   "minLength": 1
+  },
+  "signatures": {
+   "type": "array",
+   "items": {
+    "oneOf": [
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "name",
+       "words",
+       "masks"
+      ],
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "words": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "masks": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "module": {
+        "type": "string"
+       },
+       "library": {
+        "type": "string"
+       },
+       "versions": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "name",
+       "size",
+       "crc_head",
+       "crc_body"
+      ],
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "size": {
+        "type": "integer"
+       },
+       "crc_head": {
+        "type": "integer"
+       },
+       "crc_body": {
+        "type": "integer"
+       },
+       "module": {
+        "type": "string"
+       },
+       "library": {
+        "type": "string"
+       },
+       "versions": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}

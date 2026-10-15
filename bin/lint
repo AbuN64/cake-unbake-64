@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+[[ -x .venv/bin/python ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
+export PYTHONPATH=src
+lock="${XDG_RUNTIME_DIR:-$PWD/.test-tmp}/abu-tests.lock"
+if [[ -z "${ABU_TESTS_LOCKED:-}" ]]; then mkdir -p "$(dirname "$lock")"; ABU_TESTS_LOCKED=1 exec flock "$lock" "$PWD/bin/$(basename "$0")" "$@"; fi
+targets=("$@")
+if [[ "$#" -eq 0 ]]; then targets=(src tests); fi
+status=0
+.venv/bin/python -m ruff check "${targets[@]}" || status=1
+.venv/bin/python -m ruff format --check "${targets[@]}" || status=1
+typing=()
+for target in "${targets[@]}"; do
+    if [[ "$target" == src || "$target" == src/* ]]; then typing+=("$target"); fi
+done
+if [[ "${#typing[@]}" -gt 0 ]]; then .venv/bin/python -m mypy "${typing[@]}" || status=1; fi
+exit "$status"
