@@ -66,8 +66,8 @@ def test_render_is_one_instruction_per_line_with_branch_labels():
     text = libasm.render("osCacheLoop", CACHE_LOOP, 0x80000400, {})
     assert text == (
         ".set noreorder\n.set noat\n.section .text\n.globl osCacheLoop\nosCacheLoop:\n"
-        "    lui $t0, 0x8000\n    addiu $t1, $t0, 0x1FF0\n.L008:\n    cache 0x01, 0x0($t0)\n"
-        "    bne $t0, $t1, .L008\n    addiu $t0, $t0, 0x10\n    jr $ra\n    nop\n"
+        "    lui $t0, 0x8000\n    addiu $t1, $t0, 0x1FF0\n.LosCacheLoop_008:\n    cache 0x01, 0x0($t0)\n"
+        "    bne $t0, $t1, .LosCacheLoop_008\n    addiu $t0, $t0, 0x10\n    jr $ra\n    nop\n"
     )
     assert libasm.render("osCacheLoop", CACHE_LOOP, 0x80000400, {}) == text
 
@@ -251,3 +251,17 @@ def test_plan_writes_nothing_for_a_module_another_module_splits_and_says_so(case
         ("library-asm.scattered", "osGetSR"),
         ("library-asm.scattered", "osCache"),
     }
+
+
+def test_plan_labels_are_local_to_each_routine_so_one_module_assembles(case):
+    text = libasm.plan(case({"osA": CACHE_LOOP, "osB": CACHE_LOOP}))[0]["src/libultra/g.s"].decode()
+    labels = [line for line in text.splitlines() if line.startswith(".L")]
+    assert labels == [".LosA_008:", ".LosB_008:"]
+
+
+def test_plan_writes_nothing_for_a_module_whose_routines_different_versions_hold(case):
+    snapshot = case({"osGetSR": GET_SR, "osCache": CACHE_LOOP})
+    members = dict(snapshot.layout.members)
+    members["osCache"] = replace(members["osCache"], placements=members["osCache"].placements[:1])
+    writes, findings = libasm.plan(replace(snapshot, layout=replace(snapshot.layout, members=members)))
+    assert writes == {} and {f.key for f in findings} == {"library-asm.version-split"}

@@ -94,12 +94,12 @@ def render(name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str
     lines = [".set noreorder", ".set noat", ".section .text", f".globl {name}", f"{name}:"]
     for i, ins in enumerate(code):
         if i in labels:
-            lines.append(f".L{4 * i:03X}:")
+            lines.append(f".L{name}_{4 * i:03X}:")
         if i in override:
             text = ins.disassemble(immOverride=override[i])
         elif i in targets:
             t = targets[i]
-            text = ins.disassemble(immOverride=f".L{t - vram:03X}" if vram <= t < end else symbols[t])
+            text = ins.disassemble(immOverride=f".L{name}_{t - vram:03X}" if vram <= t < end else symbols[t])
         else:
             text = _operands(ins, words[i])
         lines.append("    " + " ".join(text.split()))
@@ -184,6 +184,9 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
                 continue
             if not config.library(project, path):
                 findings += [_finding("library-asm.unplaced", n, source) for n in names]
+                continue
+            if len({members[n].holders() for n in names}) > 1:  # one `.s` is assembled whole in every version
+                findings += [_finding("library-asm.version-split", n, source) for n in names]
                 continue
             if _scattered(snapshot, group, names):
                 findings += [_finding("library-asm.scattered", n, source) for n in names]
