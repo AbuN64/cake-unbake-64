@@ -314,6 +314,18 @@ def _log_failure() -> Finding:
     return finding
 
 
+REASON_CHARS = 2000  # a finding's reason in the stage log; a compile error quoting whole headers is 100 KB per unit
+
+
+def _logged(record: StageRecord) -> Json:
+    """The stage-log row of a record: each finding's reason cut to its head (the command's result keeps it whole)."""
+    row = asdict(record)
+    for finding in row["findings"]:
+        if len(finding["reason"]) > REASON_CHARS:
+            finding["reason"] = finding["reason"][:REASON_CHARS] + f" ... ({len(finding['reason'])} chars)"
+    return row
+
+
 def _emit(record: StageRecord, leaf: bool = False, shipped: bool = False) -> StageRecord:
     record = _budget(record, leaf, shipped)
     if _sink and (
@@ -324,7 +336,7 @@ def _emit(record: StageRecord, leaf: bool = False, shipped: bool = False) -> Sta
     ):
         try:
             with _sink.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(asdict(record)) + "\n")
+                stream.write(json.dumps(_logged(record)) + "\n")
         except OSError:
             finding = _log_failure()
             if record.parent is None:

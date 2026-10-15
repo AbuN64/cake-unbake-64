@@ -441,3 +441,17 @@ def test_a_worker_trims_to_what_it_was_forked_holding_but_keeps_content_keyed_ki
     effort._memo.update({("catalog", "wave"): 2, ("words", "h"): 3, ("spellings", "wave"): 4})
     assert effort.trim_to_fork(keep=("words",)) == 2
     assert set(effort._memo) == {("catalog", "base"), ("words", "h")}
+
+
+def test_the_stage_log_keeps_the_head_of_a_long_finding_and_the_record_keeps_it_whole(tmp_path, monkeypatch):
+    sink = tmp_path / "stages.jsonl"
+    reason = "error: " + "x" * 50_000  # a compile error quoting whole headers
+    with effort.command("check", []):
+        monkeypatch.setattr(effort, "_sink", sink)
+        with pytest.raises(Refusal), effort.stage("native.objects"):
+            raise Refusal(Finding("compile.error", reason))
+    row = next(json.loads(line) for line in sink.read_text().splitlines() if "native.objects" in line)
+    logged = row["findings"][0]["reason"]
+    assert logged.startswith("error: x") and len(logged) < effort.REASON_CHARS + 40 and "50007 chars" in logged
+    kept = next(r for r in effort.closed() if r.path[-1] == "native.objects")
+    assert kept.findings[0].reason == reason
