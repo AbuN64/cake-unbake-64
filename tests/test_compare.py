@@ -1285,7 +1285,9 @@ def test_prove_groups_measures_every_alternative_in_one_dispatch(monkeypatch):
     monkeypatch.setattr(compare.ownership, "derive_pairs", lambda pairs, recipe: list(pairs))
     monkeypatch.setattr(compare.recipes, "resolve", lambda c, u, o: None)
     monkeypatch.setattr(
-        compare, "_proof_set", lambda s, b, u, e, strict: {"changed": [u.path], "consumers": [], "proving": True}
+        compare,
+        "_proof_set",
+        lambda s, b, u, e, strict, every=False: {"changed": [u.path], "consumers": [], "proving": True},
     )
     calls = []
 

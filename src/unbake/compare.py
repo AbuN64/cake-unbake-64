@@ -391,7 +391,9 @@ def _extra(snapshot: Snapshot, spec: Path) -> tuple[str, bytes]:
     return unit.path, spec.read_bytes()
 
 
-def _proof_set(snapshot: Snapshot, bound: Snapshot, unit: UnitSpec, extras: Json, strict: bool) -> dict[str, Any]:
+def _proof_set(
+    snapshot: Snapshot, bound: Snapshot, unit: UnitSpec, extras: Json, strict: bool, every: bool = False
+) -> dict[str, Any]:
     """The units a change set proves: `changed` (the primary and the extra sources, which must match exactly) and
     `consumers` (every other unit including a changed header and using a declaration it alters, which must not get
     worse). A change set with no header extra has no consumers. `strict` (recovery)
@@ -402,7 +404,10 @@ def _proof_set(snapshot: Snapshot, bound: Snapshot, unit: UnitSpec, extras: Json
         for p in headers.consumers(bound, changed_headers)
         if p != unit.path and p not in extras and p in snapshot.layout.units
     }
-    consumers = sorted(land.declaration_users(snapshot, bound, includers, changed_headers) if includers else ())
+    if every:  # every includer, as the landing proves them: a header edit can break a unit that uses none of it
+        consumers = sorted(includers)
+    else:
+        consumers = sorted(land.declaration_users(snapshot, bound, includers, changed_headers) if includers else ())
     changed = sorted({unit.path, *(p for p in extras if p in bound.layout.units)})
     proving = strict or len(changed) > 1 or bool(consumers)
     return {"changed": changed, "consumers": consumers, "proving": proving, "wall": 0.0}
@@ -626,8 +631,9 @@ def prove_groups(
     config: Config, snapshot: Snapshot, groups: Sequence[Sequence[Path]], params: Json
 ) -> list[tuple[Finding, ...]]:
     """Per alternative change set (each a primary and its PATH=FILE extras, each judged alone against the same tree)
-    the findings that would refuse it, proving nothing into the queue: every set's units and consumers measured in ONE
-    dispatch on the pool, gated as admission gates them (`_standing`, `_regressions`, the source rules)."""
+    the findings that would refuse it, proving nothing into the queue: every set's units and every unit including a
+    header it changes (as the landing proves them) measured in ONE dispatch on the pool, gated as admission gates them
+    (`_standing`, `_regressions`, the source rules)."""
     overrides = _overrides(params)
     chunk_params = {**params, "function": None, "bulk": True}
     prepared: list[Any] = []
@@ -645,7 +651,7 @@ def prove_groups(
     pairs: list[tuple[Snapshot, UnitSpec]] = []
     for n, (bound, unit) in zip(live, derived, strict=True):
         extras = prepared[n][0]
-        proved = _proof_set(snapshot, bound, unit, extras, True)
+        proved = _proof_set(snapshot, bound, unit, extras, True, every=True)
         units = [unit if p == unit.path else bound.layout.units[p] for p in proved["changed"]]
         everyone = [*units, *(bound.layout.units[p] for p in proved["consumers"])]
         sets[n] = (bound, unit, units, proved, len(pairs), len(everyone))

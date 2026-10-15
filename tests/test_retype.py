@@ -385,3 +385,15 @@ def test_raw_offsets_off_a_typed_record_pointer_become_its_members(site, edit):
     for first, last, new in sorted(found, reverse=True):
         out = out[:first] + new + out[last:]
     assert (out.splitlines()[1].strip() if found else None) == edit
+
+
+def test_a_refusal_blames_the_retypes_that_wrote_a_header_its_compile_log_names():
+    # real case: proof 12:45 on G d66a9347a, 58 land.breaks_dependent naming only the primary src/code_802BAC64.c;
+    # the log's include chain named the written header (in the view as build/views/<key>/include/...)
+    touches = {("first", 0): ["src/code_802BAC64.c"], ("hdr", 1): ["include/span_1000/code_8022F3E8.h", "src/x.c"]}
+    log = (
+        "version de: compile.error: In file included from include/span_C76B0/data.h:7,\n"
+        "                 from build/views/ac3b9cda23337744/include/span_1000/code_8022F3E8.h:8,\n"
+    )
+    rows = [{"path": "src/func_802192C0_de_6.c", "unit": "f", "reason": "src/z.c breaks src/f.c: x", "missing": [log]}]
+    assert retype.blamed(rows, touches) == {("hdr", 1)}

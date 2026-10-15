@@ -659,12 +659,15 @@ def blamed(
     owner: Callable[[str], str | None] = lambda name: None,
 ) -> set[tuple[str, int]]:
     """The retypes a refusal names: those whose writes reach a file a finding sits in, is about, or names as the
-    file that breaks it ("src/a.c breaks src/b.c: ..."), or the file of a member it names ("func_X does not match")."""
+    file that breaks it ("src/a.c breaks src/b.c: ..."), a header of the include chain its compile log names (the
+    view's build/views/<key>/ prefix dropped), or the file of a member it names ("func_X does not match")."""
     written = {p for files in touches.values() for p in files}
     named: set[str] = set()
     for f in findings:
         named |= {f.get("path", ""), f.get("unit", "")}
-        named |= {p for p in re.findall(r"[\w./-]+\.[ch]\b", f.get("reason", "")) if p in written}
+        text = " ".join([f.get("reason", ""), *f.get("missing", ())])  # a compile log names the include chain
+        found = (re.sub(r"^(?:.*/)?build/views/\w+/", "", p) for p in re.findall(r"[\w./-]+\.[ch]\b", text))
+        named |= {p for p in found if p in written}
         named |= {path for word in re.findall(r"\w+", f.get("reason", "")) if (path := owner(word))}
     return {key for key, files in touches.items() if named & set(files)}
 
