@@ -117,10 +117,16 @@ def test_the_map_splits_a_function_at_a_row_edge_and_titles_both_pieces(project)
 def test_symbols_name_tracked_sources_only_one_per_line(project):
     data = present.symbols(project, "us")
     document = json.loads(data)
-    assert document == {
-        "schema": 1,
-        "functions": {"f_draft": {"path": "src/fuzzy/f_draft.c", "line": 1}, "f_exact": {"path": "src/a.c", "line": 3}},
-    }  # f_asm and f_late have no tracked source: asm/ is not committed
+    functions = document["functions"]
+    assert document["schema"] == 2 and set(functions) == {"f_draft", "f_exact"}  # f_asm, f_late: asm/ is untracked
+    assert {k: functions[k]["path"] for k in functions} == {"f_draft": "src/fuzzy/f_draft.c", "f_exact": "src/a.c"}
+    assert functions["f_exact"]["line"] == 3 and functions["f_exact"]["percent"] == 100.0
+    words = functions["f_exact"]["words"]
+    assert words[0] == words[1] > 0 and set(functions["f_draft"]) == {"path", "line", "percent", "words"}
+    assert (
+        0 <= functions["f_draft"]["percent"] < 100
+        and functions["f_draft"]["words"][0] < functions["f_draft"]["words"][1]
+    )
     assert data.count(b"\n") == 4
 
 

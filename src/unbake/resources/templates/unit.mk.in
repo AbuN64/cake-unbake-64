@@ -1,4 +1,3 @@
-# ${unit} (${version})
 ${outputs} &: ${dependencies}
 	$$(Q)${commands}
 ${rom}: PATCHES += ${patches}

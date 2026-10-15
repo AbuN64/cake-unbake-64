@@ -244,6 +244,12 @@ class Credit(NamedTuple):
     score: float
 
 
+def percent(credit: Credit) -> float:
+    """A function's match in one version, 0..100 with two decimals: 100 for exact bytes (withheld or not), else its
+    fuzzy score. The map titles and symbols.json read this one value."""
+    return 100.0 if credit.exact or credit.score >= 1.0 else round(credit.score * 100, 2)
+
+
 def credits(snapshot: Snapshot) -> tuple[Credit, ...]:
     """Every (member, holding version) credit row of the inventory, computed once per snapshot: the README, the
     progress file and the memory map all read these same rows."""
@@ -584,12 +590,12 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
         text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
         first, last = settings["dependencies_begin"], settings["dependencies_end"]
         if text.count(first) == 1 and text.count(last) == 1 and text.index(first) < text.index(last):
-            table = "\n".join(dependencies(snapshot))
+            table = "\n".join(_dependencies(snapshot))
             text = text[: text.index(first) + len(first)] + "\n" + table + "\n" + text[text.index(last) :]
         return text
 
 
-def dependencies(snapshot: Snapshot) -> list[str]:
+def _dependencies(snapshot: Snapshot) -> list[str]:
     """The README table of the pinned build tools, from the pins the generated Makefile fetches: each row names the
     tool by its own identity and links the exact archive by its sha256 (where it is hosted shows only in the URL)."""
     project = snapshot.config.project
@@ -597,11 +603,11 @@ def dependencies(snapshot: Snapshot) -> list[str]:
     used = sorted({u.toolchain for u in snapshot.layout.units.values()} | {project.toolchain})
     lines = ["| Tool | Used for | Pinned archive |", "|---|---|---|"]
     for id in used:
-        for download in rows[id]["downloads"][:1]:
+        for download in rows.get(id, {}).get("downloads", [])[:1]:
             title = rows[id].get("title", id)
             lines.append(f"| {title} | compiles C (`{id}`) | {_archive(download)} |")
     for row in configuration.load_resource("repo.toml")["make"]["tools"].values():
-        if "download" in row and any(f"{{{row['host']}}}" in str(rows[id]) for id in used):
+        if "download" in row and any(f"{{{row['host']}}}" in str(rows.get(id)) for id in used):
             lines.append(
                 f"| {row.get('title', row['host'])} | assembles and links every unit | {_archive(row['download'])} |"
             )

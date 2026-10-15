@@ -254,7 +254,7 @@ def _rule(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[str, str, l
         dependencies.append("$(wildcard " + " ".join(missing) + " include/*.h include/*/*.h)")
     if "compile" in phases:
         dependencies.append(f"$(TOOLCHAIN_{key})")
-    dependencies.extend(tool_stamps(" ".join(commands)))
+    dependencies.extend(_tool_stamps(" ".join(commands)))
     text = Template(configuration.template("unit.mk.in")).substitute(
         unit=unit.path,
         version=version,
@@ -274,7 +274,7 @@ def _rule(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[str, str, l
     )
 
 
-_RULE_FORMAT = 1  # bump when _rule writes its make rule differently: the key names inputs, not the tool code
+_RULE_FORMAT = 2  # bump when _rule writes its make rule differently: the key names inputs, not the tool code
 
 
 def _rules_context(snapshot: Snapshot) -> str:
@@ -396,7 +396,7 @@ def makefile(snapshot: Snapshot) -> bytes:
         cfg, project = snapshot.config, snapshot.config.project
         rows = configuration.toolchains()
         used = sorted({u.toolchain for u in snapshot.layout.units.values()} | {project.toolchain})
-        pinned = fetched(used)
+        pinned = _fetched(used)
         tools = [
             f"ifneq ($(filter default undefined,$(origin {var})),)\n{var} := "
             + (f"tools/{row['host']}/{row['binary']}" if var in pinned else str(row["default"]))
@@ -467,14 +467,14 @@ def makefile(snapshot: Snapshot) -> bytes:
         )
 
 
-def fetched(toolchains: Sequence[str]) -> set[str]:
+def _fetched(toolchains: Sequence[str]) -> set[str]:
     """The make variables of the pinned tools (a download in repo.toml) that a command of these toolchains runs: the
     Makefile fetches each into tools/<host>/ like a compiler, and no machine path (local.mk) names it."""
     rows = configuration.toolchains()
     return {
         var
         for var, row in _REPO["make"]["tools"].items()
-        if "download" in row and any(f"{{{row['host']}}}" in str(rows[id]) for id in toolchains)
+        if "download" in row and any(f"{{{row['host']}}}" in str(rows.get(id)) for id in toolchains)
     }
 
 
@@ -493,7 +493,7 @@ def _fetch_rule(folder: str, download: Json, pins: Mapping[str, str]) -> str:
     )
 
 
-def tool_stamps(commands: str) -> list[str]:
+def _tool_stamps(commands: str) -> list[str]:
     """The fetch stamps of the pinned tools a unit's commands run."""
     return [
         f"tools/{row['host']}/.stamp"

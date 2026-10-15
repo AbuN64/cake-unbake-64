@@ -1,6 +1,6 @@
 # Generated game-repository files (repo.py). Action and image pins are full digests.
 schema = 1
-ignore = ["/asm/", "/build/", "/.boards/", "/roms/", "/tools/", "/.unbake/", "/local.mk", "*.z64", "*.n64", "*.v64"]
+ignore = ["/.env", "/asm/", "/build/", "/.boards/", "/roms/", "/tools/", "/.unbake/", "/local.mk", "*.z64", "*.n64", "*.v64"]
 
 # splat options init writes into each versions/<version>/<name>.yaml (placeholders {version} {name} {rom}).
 [splat.options]

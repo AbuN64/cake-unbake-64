@@ -402,9 +402,9 @@ def test_a_rule_does_not_depend_on_the_host_or_the_project_root(build_snapshot):
 
 def test_unit_fragment_placeholders_and_dependencies(build_snapshot):
     text = build.makefile(build_snapshot).decode()
-    assert text.index("# src/group.c (a)") < text.index("# src/group.c (b)")
+    assert "# src/group.c" not in text  # no comment line per unit rule (14k lines in a large project)
+    assert text.index("build/a/src/group/") < text.index("build/b/src/group/")
     for v in ("a", "b"):
-        assert f"# src/group.c ({v})" in text
         assert re.search(rf"build/{v}/src/group/\w{{12}}/text\.bin &: src/group.c versions/{v}/symbols.ld", text)
         rule = re.search(rf"build/{v}/src/group/\w{{12}}/text\.bin &:[^\n]*", text)[0]
         assert rule.endswith(f"versions/{v}/symbols.ld $(TOOLCHAIN_gcc_test)")
@@ -909,10 +909,10 @@ def test_the_rule_text_is_pinned_so_a_change_forces_the_rule_format_bump(build_s
     text, _tag, outputs, dependencies, commands = build._rule(
         build_snapshot, build_snapshot.layout.units["src/group.c"], "a"
     )
-    assert build._RULE_FORMAT == 1
+    assert build._RULE_FORMAT == 2
     assert (
         digest([text, outputs, dependencies, commands])
-        == "0ff156ff7453cebfd89ba8294d788d25244f8306cb1e658f790b198cc1cddfc0"
+        == "efee2ffe43cf38c895e7855b938526c005956127e574bd7ca8ee354ce2e91d84"
     )
 
 

@@ -15,6 +15,7 @@ from unbake.contracts import Json, Refusal, Snapshot
 
 PROGRESS = "progress.json"
 SCHEMA = 1
+SYMBOLS_SCHEMA = 2  # symbols.json gained percent and words per function
 
 
 def map_path(version: str) -> str:
@@ -117,7 +118,7 @@ def memory_map(snapshot: Snapshot, version: str) -> bytes:
     for credit in report.credits(snapshot):
         if credit.version != version or credit.member.kind != "function":
             continue
-        percent = 100.0 if credit.exact else credit.score * 100
+        percent = report.percent(credit)
         for p in credit.member.placements:
             if p.version == version and p.section == ".text" and p.size > 0:
                 pieces.append((p.rom_start, p.size, credit.name, step(credit.score, credit.exact), percent))
@@ -176,7 +177,8 @@ def _line(text: str, name: str) -> int:
 
 def symbols(snapshot: Snapshot, version: str) -> bytes:
     """versions/<v>/symbols.json: every function of the version that a tracked source holds (its unit, else its fuzzy
-    draft) with the path and the line where it starts. One function per line, so a landing changes a few lines."""
+    draft) with the path and the line where it starts, its percent (report.percent) and its words [matched, total].
+    Statistics only: no byte, instruction or disassembly of the ROM is ever written. One function per line."""
     found: dict[str, Json] = {}
     for row in report.credits(snapshot):
         if row.version != version or row.member.kind != "function":
@@ -187,11 +189,18 @@ def symbols(snapshot: Snapshot, version: str) -> bytes:
         text = _text(snapshot, path)
         if text is None:
             continue
-        found[row.name] = {"path": path, "line": _line(text, row.name) or 1}
+        size = sum(p.size for p in row.member.placements if p.version == version and p.section == ".text")
+        share = report.percent(row)
+        found[row.name] = {
+            "path": path,
+            "line": _line(text, row.name) or 1,
+            "percent": share,
+            "words": [round(share * (size // 4) / 100), size // 4],  # matched, total: counts only, never the bytes
+        }
     body = ",\n".join(
         f"{json.dumps(name)}:{json.dumps(found[name], sort_keys=True, separators=(',', ':'))}" for name in sorted(found)
     )
-    return f'{{"schema":{SCHEMA},"functions":{{\n{body}\n}}}}\n'.encode()
+    return f'{{"schema":{SYMBOLS_SCHEMA},"functions":{{\n{body}\n}}}}\n'.encode()
 
 
 def _text(snapshot: Snapshot, path: str) -> str | None:

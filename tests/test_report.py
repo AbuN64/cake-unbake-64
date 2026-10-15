@@ -553,8 +553,8 @@ def test_readme_dependencies_are_the_pins_the_makefile_fetches(snapshot_factory)
     gcc = configuration.toolchains()["gcc-2.8.1-sn64"]["downloads"][0]
     tool = configuration.load_resource("repo.toml")["make"]["tools"]["N64LINK"]["download"]
     assert (
-        table[2]
-        == f"| GCC 2.8.1 (SN64) | compiles C (`gcc-2.8.1-sn64`) | [linux.tar.gz]({gcc['url']}) sha256 `{gcc['sha256'][:12]}` |"
+        table[2] == f"| GCC 2.8.1 (SN64) | compiles C (`gcc-2.8.1-sn64`) | [linux.tar.gz]({gcc['url']})"
+        f" sha256 `{gcc['sha256'][:12]}` |"
     )
     assert table[3].startswith(
         "| n64link (SN ASN64-compatible assembler and linker) | assembles and links every unit |"
