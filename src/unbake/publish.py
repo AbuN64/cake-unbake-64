@@ -615,7 +615,7 @@ def accept(
     gaps: tuple[Finding, ...] = ()
     for plan in plans(snapshot, unit, proposed, extras):
         proofs, gaps = _proofs(layout.overlay(snapshot, plan.writes), plan.affected)
-        gaps = _regressions(snapshot, gaps, touched, unit.path)
+        gaps = _regressions(snapshot, gaps, unit.members, unit.path)  # the change set's other units: no regression
         if not gaps:
             return plan, proofs, touched
     raise Refusal(*gaps)

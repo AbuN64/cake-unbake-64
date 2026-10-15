@@ -240,6 +240,40 @@ def gaps(snapshot: Snapshot, unit: UnitSpec, proofs: Sequence[Proof]) -> tuple[F
     return tuple(findings)
 
 
+def _gaps_of(snapshot: Snapshot, units: Sequence[UnitSpec], proofs: Sequence[Proof]) -> tuple[Finding, ...]:
+    return tuple(f for unit in units for f in gaps(snapshot, unit, proofs))
+
+
+def _standing(
+    snapshot: Snapshot, primary: UnitSpec, found: Sequence[Finding], proofs: Sequence[Proof], overrides: Json
+) -> tuple[tuple[Finding, ...], set[tuple[str, str]]]:
+    """A change set gates its other units on no regression: a member HEAD already measures inexact in a version, which
+    the change leaves no worse there, is a standing gap of HEAD and not this change's (it lands as it stands); the
+    primary must be exact. Returns the gaps that block and the (member, version) pairs that stand."""
+    heads = {f.unit: layout.unit_of(snapshot, f.unit) for f in found if f.unit not in primary.members}
+    paths = sorted({u.path for u in heads.values() if u is not None})
+    if not paths:
+        return tuple(found), set()
+    before = {(p.member, p.version): p for p in _baseline(snapshot, paths, overrides)}
+    after = {(p.member, p.version): p for p in proofs}
+    blocking, standing = [], set()
+    for gap in found:
+        held = [
+            (gap.unit, v)
+            for v in gap.versions
+            if heads.get(gap.unit) is not None
+            and (old := before.get((gap.unit, v))) is not None
+            and not old.exact
+            and (new := after.get((gap.unit, v))) is not None
+            and new.score >= old.score
+        ]
+        if gap.unit in heads and held and len(held) == len(gap.versions):
+            standing.update(held)
+        else:
+            blocking.append(gap)
+    return tuple(blocking), standing
+
+
 def bind(
     snapshot: Snapshot, file: Path, function: str | None, notes: list[str] | None = None
 ) -> tuple[UnitSpec, Snapshot]:
@@ -502,7 +536,9 @@ def _prove(
             everyone = measure_units(bound, [*units, *(bound.layout.units[p] for p in proved["consumers"])], overrides)
             found_here = _regressions(snapshot, proved["consumers"], everyone, overrides)
         proofs = tuple(p for p in everyone if p.unit in proved["changed"])
-        found = tuple(f for candidate in units for f in gaps(bound, candidate, proofs)) + found_here
+        found, standing = _standing(snapshot, unit, _gaps_of(bound, units, proofs), proofs, overrides)
+        proofs = tuple(p for p in proofs if (p.member, p.version) not in standing)
+        found += found_here
     else:
         proofs = measure(bound, unit, overrides, out)
         found = gaps(bound, unit, proofs)

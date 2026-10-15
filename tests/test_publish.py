@@ -390,14 +390,33 @@ def test_land_change_set_is_one_plan_and_one_commit(lane):
     assert {"src/f.c", "src/g.c"} <= set(plan.affected)
 
 
-def test_land_change_set_refuses_every_file_when_one_unit_is_not_exact(lane, monkeypatch):
+def test_land_change_set_refuses_every_file_when_one_unit_breaks_where_head_is_exact(lane, monkeypatch):
     entry = _change_set(lane, {"src/g.c": b"int g;\n", "include/x.h": b"extern int g;\n"})
     bad = Finding("land.not_exact", "g differs", unit="g", versions=("a",), missing=("bytes",))
-    monkeypatch.setattr(publish, "_proofs", Mock(return_value=(lane["proofs"], (bad,))))
+    head = (*lane["proofs"], fixture.proof("src/g.c", "g", "a", True))
+    monkeypatch.setattr(publish, "_proofs", Mock(side_effect=[(lane["proofs"], (bad,)), (head, ())]))
     with pytest.raises(Refusal) as exc:
         publish.land(lane["config"], entry)
-    assert [f.unit for f in exc.value.findings] == ["g"]
+    assert [(f.key, f.unit) for f in exc.value.findings] == [("land.breaks_dependent", "g")]
     publish.journal.apply.assert_not_called()
+
+
+def test_land_change_set_lands_over_a_gap_head_already_has_in_another_unit(lane, monkeypatch):
+    entry = _change_set(lane, {"src/g.c": b"int g;\n", "include/x.h": b"extern int g;\n"})
+    standing = Finding("land.not_exact", "g unresolved", unit="g", versions=("a",), missing=("unresolved",))
+    head = (*lane["proofs"], fixture.proof("src/g.c", "g", "a", False, missing=("unresolved",)))
+    monkeypatch.setattr(publish, "_proofs", Mock(side_effect=[(lane["proofs"], (standing,)), (head, ())]))
+    publish.land(lane["config"], entry)
+    publish.journal.apply.assert_called_once()
+
+
+def test_land_change_set_refuses_its_own_unit_gap_even_where_head_is_inexact(lane, monkeypatch):
+    entry = _change_set(lane, {"src/g.c": b"int g;\n", "include/x.h": b"extern int g;\n"})
+    own = Finding("land.not_exact", "f differs", unit="f", versions=("a",), missing=("bytes",))
+    monkeypatch.setattr(publish, "_proofs", Mock(return_value=(lane["proofs"], (own,))))
+    with pytest.raises(Refusal) as exc:
+        publish.land(lane["config"], entry)
+    assert [f.unit for f in exc.value.findings] == ["f"]
 
 
 @pytest.mark.parametrize("same,decompiled", [(True, True), (False, True), (True, False)])

@@ -1237,3 +1237,23 @@ def test_a_bulk_member_that_really_regresses_its_siblings_draft_is_refused_namin
     second = rows[1]["findings"]
     assert {(f["unit"], f["versions"][0]) for f in second} == {("src/a.c", "a"), ("src/a.c", "b")}
     assert all("src/a.c was refused" in f["reason"] for f in second)
+
+
+def test_a_change_set_lets_another_unit_keep_a_gap_head_already_has_and_blocks_new_ones(monkeypatch):
+    NS = SimpleNamespace
+    primary, other = NS(members=("f",), path="src/f.c"), NS(members=("g", "h"), path="src/g.c")
+    monkeypatch.setattr(compare.layout, "unit_of", lambda s, m: other if m in other.members else primary)
+    head = (
+        fixture.proof("src/g.c", "g", "eu", False, missing=("unresolved",), score=0.0),
+        fixture.proof("src/g.c", "h", "eu", True),
+    )
+    monkeypatch.setattr(compare, "_baseline", lambda s, paths, o: head)
+    after = (
+        fixture.proof("src/g.c", "g", "eu", False, missing=("unresolved",), score=0.0),
+        fixture.proof("src/g.c", "h", "eu", False, missing=("bytes",)),
+        fixture.proof("src/f.c", "f", "eu", False, missing=("bytes",)),
+    )
+    gaps = [Finding("land.not_exact", "x", unit=n, versions=("eu",), missing=("m",)) for n in ("g", "h", "f")]
+    blocking, standing = compare._standing(None, primary, gaps, after, {})
+    assert [g.unit for g in blocking] == ["h", "f"]  # h was exact at HEAD, f is the primary
+    assert standing == {("g", "eu")}

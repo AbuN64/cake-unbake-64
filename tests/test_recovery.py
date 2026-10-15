@@ -463,6 +463,8 @@ def test_prove_extras_reports_a_nonexact_extra_and_never_queues_it(cfg, tmp_path
     monkeypatch.setattr(compare, "measure", lambda *a: pytest.fail("prove_extras measured only the primary"))
     proofs = (fixture.proof("src/a.c", "a", "a", True), fixture.proof("src/b.c", "b", "a", False, ("bytes differ",)))
     monkeypatch.setattr(compare, "measure_units", lambda *a: proofs)
+    monkeypatch.setattr(compare.layout, "unit_of", lambda s, m: units[0] if m == "a" else units[1])
+    monkeypatch.setattr(compare, "_baseline", lambda *a: (fixture.proof("src/b.c", "b", "a", True),))  # exact at HEAD
     params = {"function": None, "note": None, "withhold": False, "prove_extras": True}
     done = compare._admit(cfg, snapshot, [primary, tmp_path / "b.c"], params, {}, None, "submit")
     assert done["submission"] is None
