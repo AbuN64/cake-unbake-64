@@ -93,6 +93,20 @@ A push checks the tree and the files a site reads, which are `progress.json`, `d
 The boards workflow runs once a day and feeds each board only after `progress.json` changed.
 Upload boards need a repository secret, for example `BYTEMATCH_TOKEN`.
 
+## AI Usage
+
+### Workflow
+
+AI is used in the decompilation process and every function is verified by compiling it against the original ROM. A match can still be a fakematch or use odd C semantics. I try to mark these in source as they are discovered.
+
+I turned these efforts into a repeatable process with [AbuCakeUnbake64](https://github.com/AbuN64/cake-unbake-64). It is built so AI can drive it against any N64 ROM.
+
+### Personal Thoughts
+
+AI suits decompilation well. Every function is checked deterministically against the original ROM so correctness is always provable. Decompiled code is plain source built with the original toolchain so nothing opaque runs on the player's machine and the only attack surface is the build tooling. Readable source can be ported, fixed and preserved long after its tools are gone.
+
+While recompilations can be a fine short-term way to play a favourite game, I believe AI-driven recomps are junk and should be avoided entirely. Used this way AI carries more security risk and is more likely to leave the scene littered with broken and abandoned ports. For games as compact as most N64 titles it makes more sense to point AI at a proper decompilation instead.
+
 ## Development
 
 Run `bin/dev-setup` once, then `bin/test`, `bin/lint` and `bin/hygiene`.
