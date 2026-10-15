@@ -28,7 +28,10 @@ def _refused(result: Json | None) -> list[Finding]:
     a command whose work was refused did not succeed, and one run names everything to fix."""
     result = result or {}
     drain = (result["drain"] or {}) if "drain" in result else result  # a command that drained nothing holds None
-    bodies = [*drain.get("refused", ()), *(row for row in result.get("submissions", ()) if row.get("refused"))]
+    rows = result.get("submissions") or ()
+    if isinstance(rows, dict):  # a command that submitted one bulk group holds the submit result itself
+        rows = rows.get("submissions") or ()
+    bodies = [*drain.get("refused", ()), *(row for row in rows if row.get("refused"))]
     return [
         Finding(**{**f, "versions": tuple(f["versions"]), "missing": tuple(f["missing"])})
         for body in bodies

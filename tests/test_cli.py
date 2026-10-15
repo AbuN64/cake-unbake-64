@@ -155,6 +155,19 @@ def test_every_refused_bulk_row_fails_the_command_with_all_its_findings_at_once(
     assert [r["member"] for r in document["result"]["submissions"]] == ["f", "g", "h"]  # the rows stay in the result
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_dry_or_grouped_submission_result_is_read_not_crashed_on(
+    argv: list[str], monkeypatch: Patch, capsys: Capture, nested: bool
+) -> None:
+    # retype-params returns submissions None when dry and the whole submit result ({"submissions": [...]}) when not
+    bad = {"member": "f", "id": None, "refused": True, "findings": [Finding("land.not_exact", "f").__dict__]}
+    held = {"submissions": [bad], "drain": None} if nested else None
+    monkeypatch.setattr(repo, "setup", lambda cfg, params: {"submissions": held, "drain": None})
+    assert cli.main(argv) == (1 if nested else 0)
+    keys = [f["key"] for f in _envelope(capsys.readouterr().out)["findings"]]
+    assert keys == (["land.not_exact"] if nested else [])
+
+
 def test_a_command_that_drained_nothing_succeeds(argv: list[str], monkeypatch: Patch, capsys: Capture) -> None:
     monkeypatch.setattr(repo, "setup", lambda cfg, params: {"drain": None, "exact": 3})
     assert cli.main(argv) == 0

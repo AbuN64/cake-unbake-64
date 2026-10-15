@@ -197,6 +197,43 @@ def _reaches(texts: Mapping[str, str]) -> Callable[[str, str], bool]:
     return reaches
 
 
+def _tag(owner: str, name: str, tagged: bool) -> str:
+    """The struct tag that names the record `name` in its declaring header's text, or "" when it has none."""
+    if tagged:
+        return name
+    alias = re.search(rf"\btypedef\s+struct\s+(\w+)\s*\**\s*\b{re.escape(name)}\s*;", owner)
+    if alias:
+        return alias[1]
+    for head in re.finditer(r"\btypedef\s+struct\s+(\w+)\s*\{", owner):
+        depth, end = 0, len(owner)
+        for index in range(head.end() - 1, len(owner)):
+            depth += (owner[index] == "{") - (owner[index] == "}")
+            if depth == 0:
+                end = index
+                break
+        if re.match(rf"\}}\s*{re.escape(name)}\s*;", owner[end:]):
+            return head[1]
+    return ""
+
+
+def _visible(code: str, name: str, tagged: bool) -> bool:
+    """Whether code declares the type name (a struct tag when tagged) at file scope."""
+    if tagged:
+        return _declared_tag(code, name)
+    return bool(re.search(rf"\btypedef\b[^;{{}}]*\b{re.escape(name)}\s*;|\}}\s*{re.escape(name)}\s*;", code))
+
+
+def _declared_tag(code: str, tag: str) -> bool:
+    """Whether code declares struct tag at file scope: a forward declaration, a definition or a typedef of it."""
+    pattern = rf"^[ \t]*(?:typedef\s+|extern\s+)?struct\s+{re.escape(tag)}\b\s*(?:;|\{{|\**\s*\w+\s*[;\[])"
+    return any(_depth(code, m.start()) == 0 for m in re.finditer(pattern, code, re.M))  # a field declares nothing
+
+
+def _depth(code: str, at: int) -> int:
+    """The brace depth at an offset of comment-free code."""
+    return code.count("{", 0, at) - code.count("}", 0, at)
+
+
 def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callable[[str, str], bool]) -> dict[str, Any]:
     """The writes that retype every eligible parameter, with the debt counted before and after and each skipped
     parameter under its reason. texts maps every source and header path to its text, declared maps each type name
@@ -272,6 +309,18 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
             break
     edits: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
     includes: dict[str, set[str]] = defaultdict(set)
+    added: set[tuple[str, str]] = set()  # the include edges this plan already adds
+    forwards: dict[tuple[str, str], int] = {}  # per header and tag the earliest prototype that needs its declaration
+
+    def linked(start: str, goal: str, used: frozenset[tuple[str, str]] = frozenset()) -> bool:
+        """Whether start includes goal once the planned includes are in: a planned edge joins two reaches."""
+        if reaches(start, goal):
+            return True
+        return any(
+            (start == src or reaches(start, src)) and linked(dst, goal, used | {(src, dst)})
+            for src, dst in added - used
+        )
+
     retyped = 0
     for (function, index), item in sorted(wanted.items()):
         path, row, spelled = item["path"], item["row"], item["spelled"]
@@ -279,8 +328,10 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
         target = re.findall(r"\w+", spelled)[-1]
         key = "struct " + target if spelled.split()[0] in ("struct", "const") and "struct" in spelled else target
         owner = declared.get(key)
+        tag = _tag(texts.get(owner or "", ""), target, key != target)
         plan_edits: list[tuple[str, int, int, str]] = []
         needs: set[str] = set()
+        declares: dict[str, int] = {}
         failure = ""
         for site in sites.get(function, ()):
             where, (begin, end) = site["path"], site["args"]
@@ -294,14 +345,36 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
                     failure = "declaration has no such parameter"
                     break
                 offset, old = args[index]
-                new = _retyped(old, spelled)
+                if owner is None:
+                    blind = False
+                elif where == owner:  # its own header: the type must come before the declaration
+                    blind = not _visible(codes[where][: site["at"]], target, key != target)
+                else:
+                    blind = not linked(where, owner)
+                # a file-scope declaration that cannot see the type names its tag, declared just before: an include
+                # would add an edge to the include graph (a cycle, or another header's conflicting declarations)
+                tagged = blind and bool(tag) and _depth(codes[where], site["at"]) == 0
+                if blind and not tagged and where == owner:
+                    failure = "declaration comes before its type"
+                    break
+                named = rf"(?:\bstruct\s+)?\b{re.escape(target)}\b"
+                local = re.sub(named, f"struct {tag}", spelled) if tagged else spelled
+                new = _retyped(old, local)
                 if new is None:
                     if re.sub(r"\s+", "", old).startswith(re.sub(r"\s+", "", spelled)):
                         continue
                     failure = "declaration spells another type"
                     break
                 plan_edits.append((where, begin + offset, begin + offset + len(old), new))
-                needs.add(where)
+                if tagged:
+                    if not _declared_tag(codes[where][: site["at"]], tag):
+                        code = codes[where]
+                        edge = max(code.rfind(c, 0, site["at"]) for c in ";{}") + 1
+                        lead = edge + len(code[edge:]) - len(code[edge:].lstrip())
+                        line = code.rfind("\n", 0, lead) + 1  # the line the declaration statement starts on
+                        declares[where] = min(declares.get(where, line), line)
+                else:
+                    needs.add(where)
             else:
                 args = _split(codes[where][begin:end])
                 if index < len(args):
@@ -329,23 +402,29 @@ def plan(texts: Mapping[str, str], declared: Mapping[str, str], reaches: Callabl
             (path, row["span"][0], row["span"][1], _retyped(texts[path][slice(*row["span"])], spelled) or "")
         )
         needs.discard(path)
-        extra: set[str] = set()
-        for where in needs:
+        extra: set[tuple[str, str]] = set()
+        for where in sorted(needs):
             if owner is None:
                 failure = "type is not declared in a header"
-            elif where != owner and not reaches(where, owner):
-                if reaches(owner, where):
+            elif where != owner and not linked(where, owner):
+                if linked(owner, where):  # with every include planned so far: a new include must close no cycle
                     failure = "declaring header includes the file that needs the type"
                 else:
-                    extra.add(where)
+                    extra.add((where, owner))
+                    added.add((where, owner))
         if failure:
+            added.difference_update(extra)
             skip(failure, *label)
             continue
         retyped += 1
         for where, first, last, new in plan_edits:
             edits[where].append((first, last, new))
-        for where in extra:
+        for where, _ in extra:
             includes[where].add(owner or "")
+        for where, line in declares.items():
+            forwards[(where, tag)] = min(forwards.get((where, tag), line), line)
+    for (where, tag), line in sorted(forwards.items()):
+        edits[where].append((line, line, f"struct {tag};\n"))
     writes: dict[str, str] = {}
     for path, spans in edits.items():
         text = texts[path]
