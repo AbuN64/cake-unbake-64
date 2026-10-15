@@ -752,8 +752,21 @@ def fresh(snapshot: Snapshot, path: str, findings: Sequence[Finding], sdk_group:
     if not findings:
         return ()
     old = snapshot.peek(path)
-    before = evaluate(snapshot, path, old.decode(), None, sdk_group) if old is not None else ()
-    return scope(before, findings, {path})[0]
+    if old is None:
+        return scope((), findings, {path})[0]
+    viewed = None  # a rule that reads the preprocessed view judges the old text through the old view too
+    unit = snapshot.layout.units.get(path)
+    if unit is not None and {f.key.removeprefix("source.") for f in findings} & _VIEWED:
+        try:
+            viewed = _view.get(
+                snapshot, unit, _census_version(snapshot, unit), recipes.resolve(snapshot.config, unit, {})
+            )
+        except Refusal:  # the old text has no view: its view rules found nothing
+            viewed = None
+    return scope(evaluate(snapshot, path, old.decode(), viewed, sdk_group), findings, {path})[0]
+
+
+_VIEWED = frozenset({"shared-declarations", "volatile-storage"})  # the checks that read a source view (`_hits`)
 
 
 def _census_version(snapshot: Snapshot, unit: UnitSpec) -> str:

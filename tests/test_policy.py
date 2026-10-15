@@ -1206,3 +1206,16 @@ def test_a_documented_difference_that_does_not_stand_is_a_finding_judged_against
     blocking, debt = policy.scope(found, policy.evaluate(snapshot, PATH, "void f(void) { }\n", None, False), {PATH})
     assert blocking == () and len(debt) == 1  # the base text had it: debt, not this change's refusal
     assert len(policy.scope((), found, {PATH})[0]) == 1  # a new failure blocks
+
+
+def test_fresh_judges_a_view_rule_the_old_text_already_breaks_through_the_old_view(snapshot, monkeypatch):
+    repeated = Finding("source.shared-declarations", "repeated: extern int x;", path=PATH, line=2)
+    snapshot.layout.units = {PATH: UnitSpec(PATH, "c", "g", ("f",), "t", {})}
+    monkeypatch.setattr(snapshot, "peek", lambda path: b"old")
+    monkeypatch.setattr(policy, "_census_version", lambda s, u: "a")
+    monkeypatch.setattr(policy.recipes, "resolve", lambda *a: None)
+    monkeypatch.setattr(policy._view, "get", lambda *a: "old view")
+    seen = []
+    monkeypatch.setattr(policy, "evaluate", lambda s, p, t, view, sdk: seen.append(view) or (repeated,))
+    assert policy.fresh(snapshot, PATH, [repeated], False) == ()
+    assert seen == ["old view"]
