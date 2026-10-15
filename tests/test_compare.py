@@ -1307,16 +1307,10 @@ def test_prove_groups_measures_every_alternative_in_one_dispatch(monkeypatch):
     assert calls == [2] and found[0] == () and [f.unit for f in found[1]] == ["b"]
 
 
-@pytest.mark.parametrize(
-    ("name", "fuzzy"),
-    [
-        ("func_80201AD0_de.c", {"func_80201AD0_de": {"path": "src/fuzzy/func_80201ACC_de.c"}}),  # the draft's name
-        ("func_80201AD0_de.c", {}),  # the file is named after the member and defines one function
-    ],
-)
 def test_bind_spells_a_draft_copy_defining_an_older_address_name_as_its_member(
-    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, fuzzy: dict
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    name, fuzzy = "func_80201AD0_de.c", {"func_80201AD0_de": {"path": "src/fuzzy/func_80201ACC_de.c"}}
     u = unit("func_80201AD0_de", path="src/a.c")
     s = snap(cfg, {"func_80201AD0_de": member("func_80201AD0_de")}, (u,))
     s = replace(s, layout=replace(s.layout, fuzzy=fuzzy))

@@ -345,15 +345,13 @@ def bind(
 
 def _member_name(snapshot: Snapshot, file: Path, content: bytes) -> tuple[bytes, list[str]]:
     """A candidate copied from a fuzzy draft defines the draft's name, which can be an older boundary's address name
-    (the draft src/fuzzy/func_X.c of member func_Y defines func_X): with no member defined, the one function named like
-    a draft's file, else the only function of a file named after a member, is spelled as that member (`old->new`)."""
+    (the draft src/fuzzy/func_X.c of member func_Y defines func_X): with no member defined, the function named like a
+    draft's file is spelled as that draft's member (`old->new`)."""
     defined = headers.defined(content)
     if any(n in snapshot.layout.members for n in defined):
         return content, []
     drafts = {Path(str(r.get("path", ""))).stem: m for m, r in snapshot.layout.fuzzy.items()}
     pairs = [(n, drafts[n]) for n in defined if drafts.get(n, n) != n and drafts[n] in snapshot.layout.members]
-    if not pairs and file.stem in snapshot.layout.members and len(defined) == 1:
-        pairs = [(defined[0], file.stem)]
     if not pairs:
         return content, []
     old, new = pairs[0]
