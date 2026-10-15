@@ -51,10 +51,18 @@ def scene(tmp_path, monkeypatch):
     )
 
     def make(
-        entries=(("func_80000400", "asm", RETURN),), *, other=None, units=(), authored=(), fuzzy=None, grouped=True
+        entries=(("func_80000400", "asm", RETURN),),
+        *,
+        other=None,
+        third=None,
+        units=(),
+        authored=(),
+        fuzzy=None,
+        grouped=True,
     ):
         versions, named = {}, {}
-        for vid, items in (("a", entries), ("b", entries if other is None else other)):
+        held = (("a", entries), ("b", entries if other is None else other), *((("c", third),) if third else ()))
+        for vid, items in held:
             subs, blob = [], b""
             for name, state, words in items:
                 at = 0x1000 + len(blob)
@@ -87,9 +95,10 @@ def scene(tmp_path, monkeypatch):
         text = layout.dump_map(initial)
         (tmp_path / "layout.toml").write_bytes(text)
         monkeypatch.setattr(layout.version_data, "read", Mock(return_value=versions))
-        loaded = layout.load_map(config, versions, text, lambda p: (tmp_path / p).read_bytes())
+        bound = replace(config, project=replace(config.project, versions=tuple(versions))) if third else config
+        loaded = layout.load_map(bound, versions, text, lambda p: (tmp_path / p).read_bytes())
         return Snapshot(
-            config,
+            bound,
             "head",
             loaded,
             versions,
@@ -1078,6 +1087,7 @@ def test_boundary_proposes_no_split_for_a_piece_of_only_nops(scene, monkeypatch)
         "no_return",
         "segment",
         "same_offset",
+        "walk_stops",
     ],
 )
 def test_boundary_nonzero_fill_after_completed_return(scene, monkeypatch, guard):
@@ -1092,6 +1102,8 @@ def test_boundary_nonzero_fill_after_completed_return(scene, monkeypatch, guard)
     first = ("first", "c" if guard in ("landed_previous", "no_return") else "asm", (0, *RETURN))
     if guard == "no_return":
         first = (first[0], first[1], (0, 0x24020001, 0))
+    if guard == "walk_stops":  # an indirect jump the walk cannot follow, then the member's own final return
+        first = (first[0], first[1], (0x00400008, *RETURN))
     target = (name, "c" if guard == "compiled" else "asm", (0x00001821, *body))
     other = (("first", first[1], RETURN), (name, target[1], (0x08000140, 0, *body)))
     if guard == "body":
@@ -1118,7 +1130,7 @@ def test_boundary_nonzero_fill_after_completed_return(scene, monkeypatch, guard)
             },
         )
     plan, counts = layout.boundary_plan(snapshot)
-    if guard not in ("none", "landed_previous", "landed_aligned"):
+    if guard not in ("none", "landed_previous", "landed_aligned", "walk_stops"):
         assert not any("_padding_" in p for p in plan.writes)
         return
     changed = layout.overlay(snapshot, plan.writes)
@@ -1302,6 +1314,22 @@ def test_boundary_fill_peels_the_leading_words_of_a_landed_inexact_member_withou
         changed, rows = _rows(snapshot, plan)
         assert rows["a"][name][0] == "c" and rows["a"][name][1].vram == BASE + 16
         assert rows["a"][f"{name}_padding_100C"][0] == "data" and name in changed.layout.units["src/grp.c"].members
+
+
+@pytest.mark.parametrize("peeled_body", ["held", "own"])
+def test_boundary_fill_peels_a_version_whose_body_another_version_holds_though_a_third_differs(scene, peeled_body):
+    # a holds the function after one stale word; b holds the same body bare; c is the function changed elsewhere
+    body = (0x27BDFFE8, 0x24020001, *RETURN)
+    changed = (0x27BDFFE8, 0x24030002, *RETURN)
+    name = "func_8000040C"
+    peeled = body if peeled_body == "held" else (0x27BDFFE8, 0x24040003, *RETURN)
+    snapshot = scene(
+        (("first", "asm", (0, *RETURN)), (name, "asm", (STALE_A, *peeled))),
+        other=(("first", "asm", (0, *RETURN)), (name, "asm", body)),
+        third=(("first", "asm", (0, *RETURN)), (name, "asm", changed)),
+    )
+    plan, _ = layout.boundary_plan(snapshot)
+    assert any("_padding_" in p for p in plan.writes) == (peeled_body == "held")
 
 
 @pytest.mark.parametrize("words", [(JR, 0x27BD0018), (JR, 0x24020001)])

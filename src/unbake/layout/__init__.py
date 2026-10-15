@@ -1328,6 +1328,12 @@ def _end(code: Sequence[int], vram: int) -> int | None:
     return max(covered) + 1 if covered else None
 
 
+def _ends(code: Sequence[int], vram: int) -> bool:
+    """The member before ends at its last word: every path from its entry ends there, or (a jump table or a second
+    function the walk cannot follow) its last two words are `jr $ra` and a slot that is no jump itself."""
+    return _end(code, vram) == len(code) or (code[-2] == 0x03E00008 and not version_data.delay_slot(code[-1]))
+
+
 def _heads(snapshot: Snapshot, counts: dict[str, Any]) -> tuple[dict[str, bytes | None], set[str]]:
     """Return a detached prologue to its body without changing the body's established name."""
     _, assembly, _ = _kinds()
@@ -1697,7 +1703,7 @@ def _boundary(snapshot: Snapshot) -> tuple[Plan, dict[str, Any]]:
             editable = (name not in landed and name not in snapshot.layout.fuzzy) or inexact(name, holder)
             k = next((i for i, w in enumerate(code[:4]) if _frame(w)), len(code))
             if (
-                (not k or (previous is not None and len(prior) >= 2 and _end(prior, previous[2].vram) == len(prior)))
+                (not k or (previous is not None and len(prior) >= 2 and _ends(prior, previous[2].vram)))
                 and k < len(code)
                 and 0x03E00008 not in code[:k]
                 and (
@@ -1771,7 +1777,11 @@ def _boundary(snapshot: Snapshot) -> tuple[Plan, dict[str, Any]]:
             candidates.setdefault(name, {})[holder] = decisions
     padding: dict[str, dict[str, str]] = {}
     for name, held in fills.items():
-        if set(held) == set(candidates[name]) and len({r[2] for r in held.values()}) == 1:
+        bare = {r[2] for r in held.values() if not r[0]}  # the bodies of the versions with no leading words
+        # one body in every version, or each peeled version's body is one an unpeeled version already holds (versions
+        # whose code differs elsewhere: the peeled word is still no part of the function)
+        same = len({r[2] for r in held.values()}) == 1 or all(r[2] in bare for r in held.values() if r[0])
+        if set(held) == set(candidates[name]) and same:
             pads = {h: f"{name}_padding_{placements[h, name].rom_start:X}" for h, r in held.items() if r[0]}
             if (
                 pads
