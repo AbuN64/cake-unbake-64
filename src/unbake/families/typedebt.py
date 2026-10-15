@@ -102,14 +102,33 @@ def _padded(code: str, head: re.Match[str]) -> tuple[bool, int]:
     return bool(pad and 2 * pad >= total and named <= 3), stop
 
 
+_OWNER_RECORD = re.compile(r"Data[A-Z0-9][A-Za-z0-9]*")  # recipe's owner-local record of one data symbol
+
+
+def owner_record(code: str, name: str) -> bool:
+    """Whether `name` is the owner-local record of a data symbol this text declares as it or as a pointer to it: its
+    members are every offset the symbol's users access, the bytes between no one reads (owner 2026-10-15), so its
+    padding is the evidence, not a view standing in for real fields."""
+    return bool(_OWNER_RECORD.fullmatch(name)) and bool(
+        re.search(rf"^[ \t]*extern\s+(?:struct\s+)?{name}\s*\*?\s*[A-Za-z_]\w*\s*;", code, re.M)
+    )
+
+
+def _named(code: str, head: re.Match[str]) -> str:
+    """The typedef alias, else the tag, of the struct opened by `head`."""
+    alias = re.match(r"\}\s*(\w+)\s*;", code[_body(code, head.end() - 1)[1] :])
+    tag = re.match(r"struct\s+(\w+)", head[0])
+    return alias[1] if alias else tag[1] if tag else ""
+
+
 def pad_view(code: str) -> dict[int, str]:
     """Struct definitions where pad arrays (offset-named: pad*, unk<hex>, field_<hex>) are at least half the bytes and
-    at most three fields are named."""
+    at most three fields are named; a data symbol's owner-local record is none."""
     line = _line(code)
     return {
         line(head.start()): " ".join(head[0].split())
         for head in re.finditer(r"\bstruct\s*(?:\w+\s*)?\{", code)
-        if _padded(code, head)[0]
+        if _padded(code, head)[0] and not owner_record(code, _named(code, head))
     }
 
 
@@ -141,9 +160,11 @@ def view_types(code: str) -> set[str]:
     names: set[str] = set()
     for head in re.finditer(r"(?<![\w])(?:(typedef)\s+)?(struct|union)\s*(\w+)?\s*\{", code):
         padded, stop = _padded(code, head) if head[2] == "struct" else (False, _body(code, head.end() - 1)[1])
+        alias = re.match(r"\}\s*(\w+)\s*;", code[stop:]) if head[1] else None
+        if padded and owner_record(code, alias[1] if alias else head[3] or ""):
+            continue
         if head[2] != "union" and not padded:
             continue
-        alias = re.match(r"\}\s*(\w+)\s*;", code[stop:]) if head[1] else None
         names.update(n for n in (head[3], alias[1] if alias else None) if n)
     return names
 

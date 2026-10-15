@@ -8,6 +8,7 @@ import pytest
 
 from unbake import policy
 from unbake.contracts import Config, Finding, Project, Snapshot
+from unbake.families import typedebt
 
 PATH = "src/unit.c"
 CASES = {
@@ -125,3 +126,23 @@ def test_a_unit_naming_a_header_view_record_is_measured_not_unclean(snapshot):
     assert [(f.key, f.line, f.path) for f in found] == [("source.uses-view-type", 1, PATH)]
     assert "uses-view-type" not in policy.config.load_resource("rules.toml")["unclean"]
     assert policy._view_uses(snapshot, unit, "void f(int *w) {}\n", ["include/w.h"]) == ()
+
+
+OWNER = (
+    "typedef struct Data80135834Ptr {\n    u8 unk_0[0x8];\n    u16 unk8;\n    u8 unk_A[0x16];\n    s32 unk20;\n"
+    "} Data80135834Ptr;\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("declared", "found"),
+    [
+        ("extern Data80135834Ptr *D_auto_80135834;\n", False),  # the symbol's own record: its pads are evidence
+        ("", True),  # no symbol declared as it: a view like any other
+    ],
+)
+def test_pad_view_spares_a_data_symbols_owner_local_record_only(declared, found):
+    code = OWNER + declared
+    assert bool(typedebt.pad_view(code)) is found
+    assert ("Data80135834Ptr" in typedebt.view_types(code)) is found
+    assert bool(typedebt.pad_view(code.replace("Data80135834Ptr", "Shape"))) is True
