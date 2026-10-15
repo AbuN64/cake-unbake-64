@@ -1084,13 +1084,14 @@ def _unclean_losses(before: Snapshot, after: Snapshot, affected: Collection[str]
     now = policy.unclean_rules(after, set(mine))
     ids = configuration.load_resource("rules.toml").get("unclean", ())
     found: list[tuple[str, Finding]] = []
-    for path, unit in sorted(mine.items()):
-        lost = [n for n in unit.members if n in now and n not in was]
+    for path in sorted(mine):
+        text = after.read(path).decode()
+        functions = policy.credited(after, path, text)
+        lost = [n for n in functions if n in now and n not in was]
         if not lost:
             continue
-        text = after.read(path).decode()
         hits = policy.evaluate(after, path, text, None, False, ids)
-        located = [f for f in hits if set(policy.withheld(text, [f], unit.members)) & set(lost)]
+        located = [f for f in hits if set(policy.withheld(text, [f], functions)) & set(lost)]
         for f in located[:3] or [Finding(now[lost[0]][0], "fires")]:
             found.append(
                 (

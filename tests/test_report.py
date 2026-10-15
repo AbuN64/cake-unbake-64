@@ -1249,3 +1249,16 @@ def test_moved_rows_bind_and_measure_in_one_worker_dispatch_and_the_parent_binds
     monkeypatch.setattr(rescore.pool, "map", fake_map)
     rescore.rows(snapshot)
     assert dispatches == [("rescore.keys", 2), ("rescore.measure", 2)] and parent_binds == []
+
+
+def test_a_member_keeps_the_exact_bytes_of_its_clean_functions_when_a_helper_inside_is_withheld(
+    snapshot_factory, monkeypatch
+):
+    monkeypatch.setattr(report.policy, "unclean_rules", lambda s: {"helper": ("source.raw-offset",)})
+    monkeypatch.setattr(report.policy, "withheld_bytes", lambda s, rules, name, v: 4 if name == "big" else 0)
+    snapshot = snapshot_factory([_member("big", size=16), _member("small")], units=[_unit("big"), _unit("small")])
+    current = report.current(snapshot)
+    result = current["versions"]["a"]
+    assert (result["code_matched"], result["code_fuzzy"], result["functions_matched"]) == (28, 4, 1)
+    (big,) = [u for u in report.objdiff(snapshot, current, "a")["units"] if u["name"] == "big"]
+    assert big["measures"]["matched_code"] == "12" and not big["metadata"]["complete"]

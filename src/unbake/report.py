@@ -250,10 +250,14 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
     for name, member, unit, _matched, segment in _inventory(snapshot):
         for v in member.holders():
             built = _version_matched(snapshot.config.project, unit, v)
-            exact = built and name not in dirty  # a function an unclean finding withholds earns none; data keeps it
+            # the bytes of the functions an unclean finding withholds earn none; the member's other functions and data
+            # keep theirs
+            held = policy.withheld_bytes(snapshot, dirty, name, v) if built and member.kind == "function" else 0
+            exact = built and not held
             placements = [p for p in member.placements if p.version == v]
             code = sum(p.size for p in placements if p.section == ".text")
             data = sum(p.size for p in placements if p.section in (".data", ".rodata"))
+            kept = code - held if built else 0  # exact code bytes that earn credit
             score = 0.0 if exact else snapshot.layout.fuzzy.get(name, {"scores": {}})["scores"].get(v, 0.0)
             if unit is not None and unit.path in broken and not exact:
                 score = 0.0  # it does not compile: no credit
@@ -264,11 +268,15 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
                 segments[segment].setdefault(v, dict(zero)),
                 kinds[unit.kind if unit else member.state].setdefault(v, dict(zero)),
             ):
-                for prefix, size in (("code_", code), ("data_", data), ("functions_", int(member.kind == "function"))):
+                for prefix, size, earned in (
+                    ("code_", code, kept),
+                    ("data_", data, data if exact else 0),
+                    ("functions_", int(member.kind == "function"), int(exact and member.kind == "function")),
+                ):
                     bucket[prefix + "total"] += size
-                    bucket[prefix + "matched"] += size if exact else 0
+                    bucket[prefix + "matched"] += earned
                 bucket["functions_fuzzy"] += int(member.kind == "function" and not exact and score > 0)
-                bucket["code_fuzzy"] += round(score * code)
+                bucket["code_fuzzy"] += round(score * (code - kept))
                 bucket["data_fuzzy"] += round(score * data)
     return totals, segments, kinds
 
@@ -410,9 +418,10 @@ def objdiff(
                 and unit.path not in broken
                 and _version_matched(snapshot.config.project, unit, version)
             )
-            matched = built and name not in rules
-            dirty = built and not matched  # exact bytes, a function an unclean finding withholds: fuzzy 100
             function = member.kind == "function"
+            held = policy.withheld_bytes(snapshot, rules, name, version) if built and function else 0
+            matched = built and not held
+            dirty = built and not matched  # exact bytes, a function an unclean finding withholds: fuzzy 100
             sections = (".text",) if function else (".data", ".rodata")
             size = sum(p.size for p in placements if p.section in sections)
             fuzzy = snapshot.layout.fuzzy.get(name) if not matched and not (unit and unit.path in broken) else None
@@ -422,6 +431,9 @@ def objdiff(
             measures: dict[str, Any] = {counter: str(size), "total_units": 1}
             if function:
                 measures.update(total_functions=1, fuzzy_match_percent=percent)
+            if dirty and held < size:  # the clean functions inside the member keep their exact bytes
+                measures["matched_" + prefix] = str(size - held)
+                measures["matched_" + prefix + "_percent"] = _f32((size - held) * 100 / size)
             if matched:
                 for key in ("matched_", "complete_"):
                     measures[key + prefix] = str(size)

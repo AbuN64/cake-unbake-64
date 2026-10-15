@@ -1149,3 +1149,47 @@ def test_the_sdk_unions_are_not_union_views_but_a_game_union_is():
         f.line for f in policy.text_findings("include/shared/bt_gfx.h", text, False) if f.key == "source.union-view"
     ]
     assert found == [9]
+
+
+def _spanned(starts):
+    from types import SimpleNamespace as NS
+
+    place = NS(version="v", section=".text", vram=0x100, size=0x40)
+    member = NS(placements=(place,), kind="function")
+    return NS(layout=NS(members={"head": member}), digest="d"), starts
+
+
+def test_withheld_bytes_are_the_pieces_of_the_withheld_functions_inside_a_member(monkeypatch):
+    snapshot, starts = _spanned([(0x100, "head"), (0x110, "helper"), (0x120, "clean"), (0x140, "next")])
+    monkeypatch.setattr(policy, "_function_starts", lambda s, v: starts)
+    assert policy.withheld_bytes(snapshot, {"helper": ()}, "head", "v") == 0x10
+    assert policy.withheld_bytes(snapshot, {"head": ()}, "head", "v") == 0x10
+    assert policy.withheld_bytes(snapshot, {"head": (), "clean": ()}, "head", "v") == 0x30
+    assert policy.withheld_bytes(snapshot, {"next": ()}, "head", "v") == 0
+    assert policy.withheld_bytes(snapshot, {}, "head", "v") == 0
+
+
+def test_a_member_with_no_function_inside_withholds_all_its_bytes(monkeypatch):
+    snapshot, starts = _spanned([])
+    monkeypatch.setattr(policy, "_function_starts", lambda s, v: starts)
+    assert policy.withheld_bytes(snapshot, {"head": ()}, "head", "v") == 0x40
+
+
+def test_credited_names_members_and_placed_helpers_not_inlined_ones(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    text = "static int inl(int x) { return x; }\nint helper(void) { return inl(1); }\nint head(void) { return 0; }\n"
+    unit = NS(members=("head",))
+    snapshot = NS(
+        layout=NS(units={"src/a.c": unit}, members={"head": NS(kind="function")}),
+        versions={"v": NS(symbols={"head": 0x100, "helper": 0x110})},
+    )
+    monkeypatch.setattr(policy, "_census_version", lambda s, u: "v")
+    assert policy.credited(snapshot, "src/a.c", text) == ["head", "helper"]
+
+
+def test_a_finding_in_a_placed_helper_withholds_the_helper_not_its_member():
+    text = "int helper(void *p) { return *(int *)((u8 *)p + 4); }\nint head(void) { return helper(0); }\n"
+    found = [Finding("source.raw-offset", "raw: x", line=1)]
+    assert policy.withheld(text, found, ["head", "helper"]) == {"helper": ("source.raw-offset",)}
+    assert policy.withheld(text, found, ["head"]) == {"head": ("source.raw-offset",)}  # inlined: its caller

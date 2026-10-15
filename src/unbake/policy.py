@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import config, delta, effort, native, pool, process, recipes, store, types, versions
+from unbake import config, delta, effort, native, pool, process, recipes, store, symbols, types, versions
 from unbake import view as _view
 from unbake.contracts import Finding, Json, Refusal, Snapshot, SourceView, UnitSpec, code_identity, digest
 from unbake.families import typedebt
@@ -994,9 +994,55 @@ def unclean_rules(snapshot: Snapshot, only: Collection[str] | None = None) -> di
 def _unclean_unit(item: tuple[Snapshot, str, Sequence[str], Any]) -> tuple[tuple[str, tuple[str, ...]], ...]:
     snapshot, path, ids, _ = item
     text = snapshot.read(path).decode()
-    members = snapshot.layout.members
-    functions = [n for n in snapshot.layout.units[path].members if members[n].kind == "function"]
+    functions = credited(snapshot, path, text)
     return tuple(sorted(withheld(text, evaluate(snapshot, path, text, None, False, ids), functions).items()))
+
+
+def credited(snapshot: Snapshot, path: str, text: str | None = None) -> list[str]:
+    """The functions of a unit that earn credit of their own: its function members and every other function its text
+    defines that has an address of its own (a helper compiled inside a member's bytes). A defined function with no
+    address was inlined into the functions that name it, so its findings withhold them instead."""
+    unit, members = snapshot.layout.units[path], snapshot.layout.members
+    own = [n for n in unit.members if members[n].kind == "function"]
+    text = snapshot.read(path).decode() if text is None else text
+    placed = snapshot.versions[_census_version(snapshot, unit)].symbols if own else {}
+    inner = [h for _, _, h, _, _ in _top(_scopes(text)["code"]) if h and h not in own and h in placed]
+    return [*own, *dict.fromkeys(inner)]
+
+
+def withheld_bytes(snapshot: Snapshot, rules: Collection[str], member: str, version: str) -> int:
+    """The .text bytes of a function member in one version that unclean verdicts withhold. The member's bytes split at
+    the address of each function inside them; a piece goes with the function that starts it (the first with the
+    member), so a member keeps the credit of its clean functions when a helper inside it is withheld."""
+    if not rules:
+        return 0
+    places = [p for p in snapshot.layout.members[member].placements if p.version == version and p.section == ".text"]
+    starts, total = _function_starts(snapshot, version), 0
+    for place in places:
+        cuts = [(place.vram, member), *_starts_in(starts, place)]
+        for (start, name), (end, _) in zip(cuts, [*cuts[1:], (place.vram + place.size, "")], strict=True):
+            total += end - start if name in rules else 0
+    return total
+
+
+def _starts_in(starts: Sequence[tuple[int, str]], place: Any) -> list[tuple[int, str]]:
+    """The (address, name) starts strictly inside one placement: its own start belongs to the member."""
+    low, high = place.vram, place.vram + place.size
+    return list(starts[bisect_right(starts, (low, "\uffff")) : bisect_left(starts, (high, ""))])
+
+
+def _function_starts(snapshot: Snapshot, version: str) -> list[tuple[int, str]]:
+    """(address, name) of every function of the symbol table in one version, sorted: where a function's bytes start. A
+    project with no symbol table knows no function inside a member."""
+
+    def starts() -> list[tuple[int, str]]:
+        if snapshot.peek(symbols.path()) is None:
+            return []
+        table = symbols.load(snapshot.read, snapshot.config.project.versions, store.content(snapshot.config).cached)
+        located = snapshot.versions[version].symbols
+        return sorted((located[n], n) for n, row in table.items() if row.get("kind") == "function" and n in located)
+
+    return effort.memo(("function-starts", snapshot.digest, version), starts)
 
 
 _C_KEYWORDS = _NOT_NAMES | {"char", "const", "double", "extern", "float", "int", "long", "short", "signed", "static"}
@@ -1121,7 +1167,8 @@ def _unclean_key(item: tuple[Snapshot, str, Sequence[str], Any]) -> str:
             _unclean_context(snapshot),
             ids,
             rows,
-            code_identity(_unclean_unit, typedebt),
+            credited(snapshot, path),
+            code_identity(_unclean_unit, credited, typedebt),
         )
     )
 
