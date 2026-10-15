@@ -279,3 +279,19 @@ def test_plan_labels_are_local_to_each_routine_so_one_module_assembles(case):
     text = libasm.plan(case({"osA": CACHE_LOOP, "osB": CACHE_LOOP}))[0]["src/libultra/g.s"].decode()
     labels = [line for line in text.splitlines() if line.startswith(".L")]
     assert labels == [".LosA_008:", ".LosB_008:"]
+
+
+@pytest.mark.parametrize(
+    ("word", "wide"),
+    [
+        (0xFF420008, True),  # sd $v0, 0x8($k0): a doubleword store, two words under o32
+        (0xDF480178, True),  # ld $t0, 0x178($k0)
+        (0xF7410220, True),  # sdc1 $f1, 0x220($k0): an odd double register
+        (0xF7400218, False),  # sdc1 $f0: even, o32 assembles it as itself
+        (0x8F480178, False),  # lw $t0
+        (0x00000000, False),
+    ],
+)
+def test_render_assembles_64_bit_code_with_64_bit_registers(word, wide):
+    text = libasm.render("handler", [word, 0x03E00008, 0], 0x80000400, {})
+    assert (".set gp=64\n.set fp=64\n" in text) == wide

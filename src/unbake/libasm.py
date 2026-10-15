@@ -92,7 +92,10 @@ def render(name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str
                 break
             if _writes(words[j], register) or (words[j] >> 26 in (2, 3)):
                 break
-    lines = [".set noreorder", ".set noat", ".section .text", f".globl {name}", f"{name}:"]
+    # o32 assembles a doubleword move as two words and an odd double FP register as a pair: code the ROM holds
+    # as 64-bit instructions (an exception handler saving the whole context) is assembled with 64-bit registers
+    wide = [".set gp=64", ".set fp=64"] if any(_wide(w) for w in words) else []
+    lines = [".set noreorder", ".set noat", *wide, ".section .text", f".globl {name}", f"{name}:"]
     for i, ins in enumerate(code):
         if i in labels:
             lines.append(f".L{name}_{4 * i:03X}:")
@@ -105,6 +108,24 @@ def render(name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str
             text = _operands(ins, words[i])
         lines.append("    " + " ".join(text.split()))
     return "\n".join(lines) + "\n"
+
+
+_DOUBLE_OPS = frozenset(
+    (0x18, 0x19, 0x1A, 0x1B, 0x2C, 0x2D, 0x34, 0x37, 0x3C, 0x3F)
+)  # daddi(u) ldl ldr sdl sdr lld ld scd sd
+_DOUBLE_SPECIAL = frozenset((0x14, 0x16, 0x17, 0x1C, 0x1D, 0x1E, 0x1F, *range(0x2C, 0x30), *range(0x38, 0x40)))
+
+
+def _wide(word: int) -> bool:
+    """A word o32 cannot assemble as itself: a doubleword GPR operation, or a double FP move of an odd register."""
+    op = word >> 26
+    if op in _DOUBLE_OPS or (op == 0 and word & 0x3F in _DOUBLE_SPECIAL):
+        return True
+    if op in (0x35, 0x3D):  # ldc1, sdc1
+        return bool(word >> 16 & 1)
+    if op == 0x11 and word >> 21 & 31 in (1, 5):  # dmfc1, dmtc1
+        return bool(word >> 11 & 1)
+    return op == 0x11 and word >> 21 & 31 == 17 and bool((word >> 16 | word >> 11 | word >> 6) & 1)  # .d operands
 
 
 def _writes(word: int, register: int) -> bool:

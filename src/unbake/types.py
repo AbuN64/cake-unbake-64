@@ -131,7 +131,9 @@ def _scan(snapshot: Snapshot) -> bytes:
     for kind, rows in tomllib.loads(stale.decode()).items():  # a row nothing in the C produces is authored: it stays
         if kind in ("struct", "global", "function"):
             for name, row in rows.items():
-                if row.get("evidence") not in ("landed", "declared") and name not in _ASM:  # those two are recomputed above and below
+                if (
+                    row.get("evidence") not in ("landed", "declared") and name not in _ASM
+                ):  # those two are recomputed above and below
                     doc[kind].setdefault(name, row)
     known = _KEYWORDS | doc["struct"].keys()
     agreed = {
