@@ -686,6 +686,9 @@ class Segments:
 
 def map_command(config: Config, params: Json) -> Json:
     """Write the layout map with its objective evidence to .unbake/map.json (CONTRACTS 3.2); nothing tracked changes."""
+    if params.get("fakes"):
+        with effort.stage("report.fakes"):
+            return _fakes_stream(layout.capture(config))
     with effort.stage("report.map"):
         snapshot = layout.capture(config)
         lay, project = snapshot.layout, config.project
@@ -814,6 +817,36 @@ def map_command(config: Config, params: Json) -> Json:
         if params.get("moves"):
             result["moves"] = _moves_stream(snapshot)
         return result
+
+
+def _fakes_stream(snapshot: Snapshot) -> Json:
+    """Write the fold plan of every invented per-function record to .unbake/fakes.jsonl (input of `unbake move -
+    --partial`) and its census to .unbake/fakes.json; the count of records per class and of rows."""
+    from unbake import fakefold, move
+
+    laid, aliases = move.record_layouts(snapshot)
+    texts = {
+        p: snapshot.read(p).decode(errors="replace")
+        for p in [*headers.sources(snapshot), *headers.sources(snapshot, "src", ".c")]
+    }
+    reached = fakefold.reaches(texts, [n for n in laid if fakefold.invented(n)])
+    taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}
+    rows, census = fakefold.plan(laid, aliases, reached, taken)
+    root = snapshot.config.project.root
+    store.write(
+        root / ".unbake/fakes.jsonl",
+        "".join(json.dumps(r, sort_keys=True) + "\n" for r in [{"layout": snapshot.layout.digest}, *rows]).encode(),
+    )
+    store.write(root / ".unbake/fakes.json", json.dumps(census, indent=1, sort_keys=True).encode())
+    classes = Counter(r["class"] for r in census)
+    reasons = Counter(re.sub(r"\d+", "N", r["reason"]) for r in census if r["class"] == "d")
+    return {
+        "path": ".unbake/fakes.jsonl",
+        "census": ".unbake/fakes.json",
+        "rows": len(rows),
+        "classes": dict(sorted(classes.items())),
+        "unplanned": dict(reasons.most_common(8)),
+    }
 
 
 def _moves_stream(snapshot: Snapshot) -> Json:

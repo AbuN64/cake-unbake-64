@@ -116,6 +116,7 @@ help = "Write the layout map with its objective evidence to .unbake/map.json; wr
 handler = "report.map_command"
 params = [
   { name = "moves", kind = "flag", type = "str", required = false, multiple = false, help = "also write .unbake/moves.jsonl: the full move stream (input of `unbake move -`) that places modules in src/game/<segment>/<subsystem> and src/sdk/<library>" },
+  { name = "fakes", kind = "flag", type = "str", required = false, multiple = false, help = "only write .unbake/fakes.jsonl: type moves folding every invented per-function record into a real record that fits, one shared record per same-layout group, or its data symbol's owner-local record; .unbake/fakes.json holds each record's class and reason" },
 ]
 
 [command.report]

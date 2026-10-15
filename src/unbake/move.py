@@ -1778,3 +1778,35 @@ def _apply(
             deleted=sorted(p for p in written if plan.writes[p] is None),
             message=message,
         )
+
+
+def record_layouts(snapshot: Snapshot) -> tuple[dict[str, Any], dict[str, str]]:
+    """(per record tag and typedef name its laid layout, per typedef name the tag it names) of every record the
+    headers and landed sources declare."""
+    types = _Types(snapshot)
+    for path in headers.sources(snapshot, "src", ".c"):
+        for key, _, statement in headers._declared(snapshot.read(path).decode(errors="replace")):
+            kind, _, tag = key.partition(" ")
+            if tag and kind in ("struct", "union"):
+                types.records.setdefault(tag, statement)
+            elif re.match(r"typedef\b", statement):
+                types.typedefs.setdefault(key, statement)
+    aliases: dict[str, str] = {}
+    for name in types.typedefs:
+        found = re.fullmatch(r"typedef (?:struct|union) (\w+) (\w+) ?;", types.typedefs[name])
+        named = types.tag(name) or (found[1] if found and found[2] == name else None)
+        if named and named != name:
+            aliases[name] = named
+    out: dict[str, Any] = {}
+    for tag, statement in types.records.items():
+        if not re.match(r"(?:typedef\s+)?struct\b", statement) or "{" not in statement:
+            continue
+        start, end = _body(statement)
+        laid = _probe_layouts(types, {f"struct {tag}": f"struct {tag} {statement[start : end + 1]};"})
+        out[tag] = (
+            laid.get(f"struct {tag}", {"conflict": "no layout"}) if isinstance(laid, dict) else {"conflict": laid}
+        )
+    for name, tag in aliases.items():
+        if tag in out and name not in out:
+            out[name] = out[tag]
+    return out, aliases
