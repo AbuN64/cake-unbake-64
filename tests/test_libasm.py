@@ -232,3 +232,9 @@ def test_report_names_hardware_routines_library_asm_and_credits_library_units(ca
     elsewhere = replace(unit, path="src/game/osGetSR.s")
     away = replace(snapshot, layout=replace(snapshot.layout, units={elsewhere.path: elsewhere}))
     assert "osGetSR" in {r["member"] for r in report.items(away, {})}
+
+
+def test_plan_takes_hand_written_assembly_as_library_assembly_whatever_its_instructions(case):
+    writes, findings = libasm.plan(case({"osAdd": LEAF_C}, state="hasm"))
+    assert sorted(writes) == ["a.yaml", "b.yaml", "layout.toml", "src/libultra/g.s"] and findings == ()
+    assert writes["a.yaml"] == b"split:a|osAdd:c"

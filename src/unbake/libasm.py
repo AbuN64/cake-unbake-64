@@ -16,6 +16,7 @@ from unbake.contracts import Finding, Snapshot, UnitSpec
 
 _LOW_USERS = frozenset({0x08, 0x09, 0x0C, 0x0D, 0x20, 0x21, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2B, 0x31, 0x39})
 _CONTROL = frozenset({"cfc1", "ctc1"})
+_HAND = "hasm"  # the split row splat gives hand-written assembly: never compiler output, library assembly as it is
 _FIX = "place the module in a library directory with `recipe structure` or `unbake move`"
 
 
@@ -140,9 +141,9 @@ def _finding(key: str, member: str, path: str) -> Finding:
 
 
 def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ...]]:
-    """The writes that turn each unlanded foreign assembly function into library assembly, one `.s` per module at the
-    module's own path: its split rows turned to compiled and its unit in the layout map; and the findings for the
-    functions that cannot be."""
+    """The writes that turn each unlanded foreign or hand-written (splat `hasm`) assembly function into library
+    assembly, one `.s` per module at the module's own path: its split rows turned to compiled and its unit in the
+    layout map; and the findings for the functions that cannot be."""
     project = snapshot.config.project
     with effort.stage("libasm.plan"):
         compiled, assembly, _ = layout._kinds()
@@ -153,10 +154,10 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
         for name, member in snapshot.layout.members.items():
             if (
                 member.kind == "function"
-                and member.state == assembly
+                and member.state in (assembly, _HAND)
                 and member.group
                 and layout.unit_of(snapshot, name) is None
-                and recognised(snapshot, name)
+                and (member.state == _HAND or recognised(snapshot, name))
             ):
                 pending.setdefault(member.group, []).append(name)
         for group, names in pending.items():
@@ -180,7 +181,7 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
                 for holder in members[name].holders():
                     split = snapshot.versions[holder].split
                     current = writes.get(split) or snapshot.read(split)
-                    writes[split] = layout.edit_split(current, name, state=compiled, types=frozenset({assembly}))
+                    writes[split] = layout.edit_split(current, name, state=compiled, types=frozenset({assembly, _HAND}))
             if done:
                 units[path] = UnitSpec(path, assembly, group, tuple(done), project.toolchain, {"add": [], "omit": []})
         if writes:
