@@ -7,7 +7,7 @@ import os
 import resource
 import time
 import traceback
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, replace
@@ -105,13 +105,34 @@ def release(digest_: str) -> int:
 _inherited: frozenset[Any] = frozenset()  # the memo keys a forked worker was born holding (shared with the parent)
 
 
-def trim_to_fork(keep: Collection[str] = ()) -> int:
-    """A worker drops what it memoised since the fork, except the kinds in `keep` (small values keyed by content):
-    what it built for one overlay is never read on the next. Returns how many went."""
-    gone = [k for k in _memo if k not in _inherited and not (isinstance(k, tuple) and k and k[0] in keep)]
+def trim_to_fork(keep: Collection[str] = (), digests: Collection[str] = ()) -> int:
+    """A worker drops what it memoised since the fork, except the kinds in `keep` (small values keyed by content) and
+    what it built for a snapshot it still holds (a key naming one of `digests`): what it built for one overlay is
+    never read on the next, while the warm base the next one is laid over keeps its indexes. Returns how many went."""
+    held = set(digests)
+    gone = [
+        k
+        for k in _memo
+        if k not in _inherited
+        and not (isinstance(k, tuple) and k and (k[0] in keep or (held and any(p in held for p in k[1:]))))
+    ]
     for k in gone:
         del _memo[k]
     return len(gone)
+
+
+def held(kinds: Collection[str]) -> dict[object, Any]:
+    """The memoised values of these kinds (content-keyed indexes a parent hands to warm workers)."""
+    return {k: v for k, v in _memo.items() if isinstance(k, tuple) and k and k[0] in kinds}
+
+
+def adopt(entries: Mapping[object, Any], kinds: Collection[str]) -> None:
+    """A warm worker takes the parent's indexes of these kinds: the ones it held of them before (an earlier round's)
+    go, unless it was forked holding them, and what it already holds is kept."""
+    for key in [k for k in held(kinds) if k not in entries and k not in _inherited]:
+        del _memo[key]
+    for key, value in entries.items():
+        _memo.setdefault(key, value)
 
 
 _fork_data = -1  # a worker's VmData at fork, set by pool._init; -1 in the parent

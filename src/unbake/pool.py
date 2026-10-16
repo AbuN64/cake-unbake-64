@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import fcntl
 import gc
@@ -16,7 +17,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
@@ -32,11 +33,7 @@ from unbake import effort, store
 from unbake.contracts import Config, Finding, Host, Json, Refusal, Snapshot, code_identity, digest, sha256
 
 _KEYS_INLINE = 1  # keys of up to this many items per worker are computed here: a dispatch costs more than they do
-_REGROW_GAIN = 2  # workers a refork must add at least
-_REGROW_COOLDOWN = 30.0  # seconds between reforks of one process: a flapping share cannot refork every look
-_regrown = -_REGROW_COOLDOWN
 _REBALANCE = 0.5  # seconds between looks at the other commands while a pool works
-_AHEAD = 3  # chunks queued per worker, so a worker that finishes one starts the next without waiting for the parent
 _executor: ProcessPoolExecutor | None = None
 _host_digest: str | None = None
 _in_worker = False
@@ -47,15 +44,23 @@ _want = 0  # this command's host budget, as the last acquisition declared it
 _users = 0  # gathers using the pool now: the slots are released when the last one ends
 _users_lock = threading.Lock()
 _fed: list[io.IOBase] = []  # slots a jobserver feeder added for a running make: a pool rebalance never gives them back
-_size = 0  # workers of the current executor
-_share = 0  # the share the last acquisition computed: an executor smaller than it (and the work) is grown
+_size = 0  # workers of the current executor: the host's whole fan, forked once per command
+_share = 0  # the share the last acquisition computed
 _flying = 0  # chunks every gather of this process has in flight: their slots are never given back
 _WINDOW = _REBALANCE * 20  # seconds without a finished chunk before the workers are looked at
 _cmd: list[io.TextIOWrapper] = []  # this command's own lock file: its presence is what divides the slots fairly
 _SHARED: dict[str, Snapshot] = {}  # the snapshots by key: workers are forked holding them, items name them by key
+_spilled: dict[str, str] = {}  # snapshot or writes key -> the file a live pool's workers read it from, oldest first
+_spill_users: dict[str, int] = {}  # spill key -> gathers of this process whose tasks name it now
+_SPILL_KEEP = 8  # spill files kept past their last gather: the next dispatch of a round names the same snapshot
+_spill_lock = threading.Lock()
 _short: list[int] = []  # (slots got, slots wanted) of the last short share reported
 _laid: list[str] = []  # in a worker, the overlay keys it laid again itself (not forked holding)
 KEEP = ("declarations", "words", "spelled", "typed")  # memo kinds keyed by content alone: valid for every overlay
+WARM = ("catalog", "spellings", "authority", "spellers")  # content-keyed indexes the parent builds for a round's tree:
+# a spill file carries them, so warm workers read them instead of building them each (forked workers inherited them)
+_carried: dict[str, dict[Any, Any]] = {}  # name -> a module's content-keyed table a spill file carries the news of
+_sent: dict[str, set[Any]] = {}  # name -> the keys of that table a spill file of this command carried already
 _forked: set[str] = set()  # the keys of `_SHARED` the current workers were forked with
 
 
@@ -290,11 +295,12 @@ def _inotify(*paths: Path) -> int:
     return fd
 
 
-def _until(pool: Path, mine: Path, attempt: Callable[[], bool], stop: int | None = None, idle: bool = False) -> None:
+def _until(pool: Path, mine: Path, attempt: Callable[[], bool], stop: int | None = None) -> None:
     """Calls `attempt` until it is true or `stop` is readable, sleeping between attempts only until something that can
     free a slot happens: a release (the write-close every holder makes), a new or finished command (its lock file),
     or the death of a live command (its pidfd). Nothing is polled and no descriptor waits on one particular slot.
-    `idle`: a sleep of one window stops this process's idle workers, so they are not what holds the slots."""
+    Idle workers stay up through the wait: they hold no slot (each closed the parent's locks when it forked) and
+    their warm state is what the next dispatch runs on."""
     watch = _inotify(pool)  # watched before the first attempt: no release between the two is missed
     try:
         while True:
@@ -302,13 +308,10 @@ def _until(pool: Path, mine: Path, attempt: Callable[[], bool], stop: int | None
             try:  # opened before the attempt: a death after it shows as a readable pidfd
                 if attempt():
                     return
-                timeout = _WINDOW if idle and _executor is not None and not _flying else None
-                ready = select.select([watch, *pids, *(() if stop is None else (stop,))], [], [], timeout)[0]
+                ready = select.select([watch, *pids, *(() if stop is None else (stop,))], [], [])[0]
             finally:
                 for fd in pids:
                     os.close(fd)
-            if not ready:
-                _stop_workers()
             if stop is not None and stop in ready:
                 return
             if watch in ready:
@@ -328,7 +331,7 @@ def _wait_free(pool: Path, mine: Path, want: int) -> None:
     def attempt() -> bool:
         return bool(_take(pool, _divide(pool, mine, want)[1], 1))
 
-    _until(pool, mine, attempt, idle=True)
+    _until(pool, mine, attempt)
 
 
 def _acquire(want: int, active: int = 0, cap: int = 0) -> None:
@@ -475,7 +478,10 @@ def _stalled(executor: Any, seen: dict[int, float]) -> bool:
 
 
 def _drop_executor() -> None:
+    """Ends the workers and gives the slots back; their spill files and what they were sent go with them."""
     _stop_workers()
+    _forget_spills()
+    _sent.clear()
     for mine in _cmd:
         Path(mine.name).unlink(missing_ok=True)
         mine.close()
@@ -500,19 +506,32 @@ def _flight(step: int) -> int:
         return _flying
 
 
+def _fan(host: Host) -> int:
+    """The workers one command forks: the host's worker count within its slots, whatever its share is now."""
+    return max(1, min(host.workers, _budget(host)))
+
+
+def _warm(config: Config) -> bool:
+    """Whether this command's workers are up for this host: a dispatch then ships what they lack, never reforks."""
+    return _executor is not None and _host_digest == config.host.digest
+
+
 def _get_executor(config: Config, needed: frozenset[str] = frozenset(), work: int = 0) -> ProcessPoolExecutor:
-    """Workers fork once the snapshots they run against are in `_SHARED`; a new snapshot makes a new pool."""
+    """One pool per command, forked once at the host's fan and kept warm across rounds, levels and stages: a new
+    snapshot travels to the workers that lack it (`_Pickler`), and a share that grows or shrinks changes how many
+    chunks are in flight, never the workers. Only a host change (or a broken pool) forks again. Workers fork
+    holding the snapshots in `needed` that are in `_SHARED` then."""
     global _executor, _host_digest, _size
     held = _executor
-    grown = _size >= min(work or _size, _share or _size)  # never smaller than the work and the share allow
-    if held is not None and _host_digest == config.host.digest and needed <= _forked and grown:
+    if held is not None and _host_digest == config.host.digest:
         return held
     with _creating:  # two threads asking at once make one executor, not two
-        if _executor is not None and (_host_digest != config.host.digest or not needed <= _forked or not grown):
+        if _executor is not None and _host_digest != config.host.digest:
             _drop_executor()
         if _executor is None:
-            _acquire(_budget(config.host), cap=work)
-            _size = max(1, len(_slots))  # forks what the work and the share need, not the host's whole count
+            if not _slots:
+                _acquire(_budget(config.host), cap=work)
+            _size = _fan(config.host)  # idle workers cost no slot and no CPU: the fan is forked once
             for key in [k for k in _SHARED if k not in needed]:  # workers fork holding only what they run against
                 del _SHARED[key]
             _executor = ProcessPoolExecutor(
@@ -566,60 +585,194 @@ def _job(function: Callable[[Any], Any], item: Any, floor: float) -> tuple[bool,
     )
 
 
-_OVER_BYTES = 4 << 20  # an overlay whose writes pickle larger is held by forked workers: every task carried it once
+_INLINE_BYTES = 64 << 10  # an overlay's writes up to this travel inside each task; larger ones in one spill file
+
+
+def _spill_dir(config: Config) -> Path:
+    """This command's spill files, under the project's own state (never a RAM tmpfs). A dead command's are removed
+    the first time a later one spills."""
+    base = config.project.root / ".unbake/pool"
+    mine = base / str(os.getpid())
+    if not mine.is_dir():
+        mine.mkdir(parents=True, exist_ok=True)
+        atexit.register(shutil.rmtree, mine, True)
+        for other in base.iterdir():
+            if other != mine and other.name.isdigit() and not psutil.pid_exists(int(other.name)):
+                shutil.rmtree(other, ignore_errors=True)
+    return mine
+
+
+def _spill(config: Config, name: str, value: Callable[[], bytes]) -> str:
+    """The file holding `value()` for the workers, written once per name per command: every task names it, each
+    worker reads it once."""
+    with _spill_lock:
+        if (path := _spilled.pop(name, None)) is None or not Path(path).exists():
+            target = _spill_dir(config) / f"{name}.pickle"
+            part = target.with_suffix(".part")
+            part.write_bytes(value())
+            part.replace(target)
+            path = str(target)
+            effort.count("pool.spill", False)
+        else:
+            effort.count("pool.spill", True)
+        _spilled[name] = path  # newest last
+        return path
+
+
+def carry(name: str, table: dict[Any, Any]) -> None:
+    """Registers a module's content-keyed table (a scan per text): each spill file carries the entries the parent
+    made since the last one, so warm workers never redo what the parent did."""
+    _carried[name] = table
+
+
+def _warmth() -> dict[str, Any]:
+    """What a spill file hands warm workers beside the snapshot: the parent's indexes of the WARM kinds and the news of
+    every carried table."""
+    news = {}
+    for name, table in _carried.items():
+        sent = _sent.setdefault(name, set())
+        news[name] = {k: v for k, v in list(table.items()) if k not in sent}
+        sent.update(news[name])
+    return {"memo": effort.held(WARM), "tables": news}
+
+
+def _adopt(warmth: dict[str, Any]) -> None:
+    effort.adopt(warmth["memo"], WARM)
+    for name, news in warmth["tables"].items():
+        if name in _carried:
+            for key, value in news.items():
+                _carried[name].setdefault(key, value)
+
+
+def _hold_spills(names: Collection[str], step: int) -> None:
+    """A gather names its spill files while its tasks may read them; at its end, files no live gather names go,
+    except the newest few (the next dispatch of a round names the same snapshot)."""
+    with _spill_lock:
+        for name in names:
+            _spill_users[name] = _spill_users.get(name, 0) + step
+            if _spill_users[name] <= 0:
+                del _spill_users[name]
+        if step > 0:
+            return
+        idle = [n for n in _spilled if n not in _spill_users]
+        for name in idle[: max(0, len(idle) - _SPILL_KEEP)]:
+            Path(_spilled.pop(name)).unlink(missing_ok=True)
+
+
+def _forget_spills() -> None:
+    """Every spill file of this command goes: its workers are gone."""
+    with _spill_lock:
+        for path in _spilled.values():
+            Path(path).unlink(missing_ok=True)
+        _spilled.clear()
+        _spill_users.clear()
 
 
 class _Pickler(pickle.Pickler):
-    """Items travel without the snapshot they run against: the workers were forked holding it in `_SHARED`. A snapshot
-    laid over one the workers hold (a later wave's writes) travels as its key and the files it overlays differently,
-    so a new overlay forks no new workers."""
+    """Items travel without the snapshot they run against. Before the pool forks (`ship` false), a snapshot goes into
+    `_SHARED` and the workers fork holding it; an overlay of one travels as its base and its writes, laid again in
+    each worker. Once the workers are up (`ship`), nothing forks again: an overlay travels as its base's reference and
+    its writes (inline when small, else one spill file), any other snapshot they were not forked with (the next
+    round's capture) as one spill file of the whole of it; each file is written once and read once per worker, so
+    rounds, levels and stages all run on the same warm workers."""
 
-    def __init__(self, stream: io.BytesIO, needed: set[str], blobs: dict[str, bytes] | None = None):
+    def __init__(self, stream: io.BytesIO, needed: set[str], blobs: dict[str, Any] | None = None, ship: bool = False):
         super().__init__(stream, protocol=5)
         self.needed = needed
-        self.blobs = {} if blobs is None else blobs  # per overlay digest its writes, pickled once per dispatch
+        self.blobs = {} if blobs is None else blobs  # per dispatch: each overlay's writes and each spill's file, once
+        self.ship = ship
+        self.spills: set[str] = set()  # the spill files this pickler's tasks name
 
     def persistent_id(self, obj: Any) -> Any:
         if isinstance(obj, Snapshot):
-            key = _key(obj)
-            made = effort.peek(("parent", obj.digest))  # (snapshot, writes) it was laid over with
-            if key not in _forked and made is not None:
-                blob = self.blobs.get(obj.digest)
-                if blob is None:
-                    blob = self.blobs[obj.digest] = pickle.dumps(dict(made[1]), protocol=5)
-                if len(blob) <= _OVER_BYTES:  # small writes travel in each task; large ones fork once instead
-                    base = made[0]
-                    _SHARED[_key(base)] = base
-                    self.needed.add(_key(base))
-                    return ("over", _key(base), key, obj.digest, blob)
-            _SHARED[key] = obj
-            self.needed.add(key)
-            return key
+            return self._ref(obj)
         return None
+
+    def _ref(self, obj: Snapshot) -> Any:
+        key = _key(obj)
+        if key in _forked:
+            self.needed.add(key)  # a refork after a broken pool forks holding it again
+            return key
+        made = effort.peek(("parent", obj.digest))  # (snapshot, writes) it was laid over with
+        if made is not None:
+            blob = self.blobs.get(obj.digest)
+            if blob is None:
+                blob = self.blobs[obj.digest] = pickle.dumps(dict(made[1]), protocol=5)
+            if len(blob) <= _INLINE_BYTES:  # small writes travel in each task over the base's reference
+                return ("over", self._ref(made[0]), key, obj.digest, blob)
+            if self.ship:  # large writes: one file, laid again once per worker over the base it holds
+                return ("over", self._ref(made[0]), key, obj.digest, self._spill(obj, f"w{obj.digest}", made[1]))
+        if self.ship:  # a snapshot of its own (a capture): the whole of it, read once per worker
+            return ("snap", key, self._spill(obj, f"s{key}", obj))
+        _SHARED[key] = obj
+        self.needed.add(key)
+        return key
+
+    def _spill(self, obj: Snapshot, name: str, value: Any) -> str:
+        """The file of one snapshot or writes, with the parent's warm indexes beside it."""
+        self.spills.add(name)
+        if (path := self.blobs.get(f"file:{name}")) is None:
+            produce = lambda: pickle.dumps((dict(value) if isinstance(value, Mapping) else value, _warmth()), 5)  # noqa: E731
+            path = self.blobs[f"file:{name}"] = _spill(obj.config, name, produce)
+        return str(path)
 
 
 def _key(snapshot: Snapshot) -> str:
     return sha256((str(snapshot.config.project.root) + snapshot.digest).encode())
 
 
+def _chain(ref: Any) -> list[tuple[str, str | None]]:
+    """(key, digest) of every snapshot a reference lays, top first; a forked key has no digest to name."""
+    if isinstance(ref, str):
+        return [(ref, None)]
+    if ref[0] == "snap":
+        return [(ref[1], None)]
+    return [(ref[2], ref[3]), *_chain(ref[1])]
+
+
+def _lay(ref: Any) -> Snapshot:
+    """The snapshot a reference names, laid in this worker once and held in `_SHARED` until another one comes."""
+    if isinstance(ref, str):
+        return _SHARED[ref]
+    if ref[0] == "snap":
+        _, key, path = ref
+        if key not in _SHARED:
+            _SHARED[key], warmth = pickle.loads(Path(path).read_bytes())
+            _adopt(warmth)
+            _laid.append(key)
+        return _SHARED[key]
+    from unbake import layout
+
+    _, base, key, digest_, payload = ref
+    if key not in _SHARED:
+        under = _lay(base)  # first: the writes' file carries the newer indexes
+        if isinstance(payload, bytes):
+            writes = pickle.loads(payload)
+        else:
+            writes, warmth = pickle.loads(Path(payload).read_bytes())
+            _adopt(warmth)
+        _SHARED[key] = layout.overlay(under, writes)
+        _laid.append(key)
+        if _SHARED[key].digest != digest_:
+            raise RuntimeError(f"an overlay laid again in a worker has digest {_SHARED[key].digest}")
+    return _SHARED[key]
+
+
 class _Unpickler(pickle.Unpickler):
     def persistent_load(self, pid: Any) -> Snapshot:
-        if isinstance(pid, tuple):  # an overlay of a held snapshot: laid again once per worker
-            from unbake import layout
-
-            _, base, key, digest_, blob = pid
-            if key not in _SHARED:
-                # a new overlay (the next wave's writes): the one laid before it, and everything this worker built
-                # for it (its indexes, pins and views), is never read again; only what it was forked holding stays
-                for old in [k for k in _laid if k != key]:
-                    _SHARED.pop(old, None)
-                _laid.clear()
-                effort.trim_to_fork(keep=KEEP)
-                _SHARED[key] = layout.overlay(_SHARED[base], pickle.loads(blob))
-                _laid.append(key)
-                if _SHARED[key].digest != digest_:
-                    raise RuntimeError(f"an overlay laid again in a worker has digest {_SHARED[key].digest}")
-            return _SHARED[key]
+        if isinstance(pid, tuple):  # a snapshot the worker was not forked holding: laid again once per worker
+            chain = _chain(pid)
+            if chain[0][0] not in _SHARED:
+                # a new one (the next wave's writes, the next round's tree): what this worker laid before and built
+                # for it (its indexes, pins and views) is never read again, unless the new one is laid over it
+                keep = {k for k, _ in chain}
+                for old in [k for k in _laid if k not in keep]:
+                    gone = _SHARED.pop(old, None)
+                    if gone is not None:
+                        effort.release(gone.digest)
+                _laid[:] = [k for k in _laid if k in keep]
+                effort.trim_to_fork(keep=(*KEEP, *WARM), digests={_SHARED[k].digest for k in keep if k in _SHARED})
+            return _lay(pid)
         return _SHARED[pid]
 
 
@@ -808,14 +961,15 @@ def map(
 
 def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]:
     """Runs independent (name, function, items[, key]) groups in one dispatch loop, so a small group never idles the
-    workers. A keyed group resolves its cache hits in the parent and dispatches only its misses."""
-    global _regrown
+    workers. A keyed group resolves its cache hits in the parent and dispatches only its misses. Every chunk is
+    ready at once: as many are in flight as the slots held allow, and a finished one is replaced at once."""
     with effort.stage("pool.map"):
         start_ns, waited, current, rebalanced = time.monotonic_ns(), 0.0, (0, 0), time.monotonic()
         runs = [_Run(*group) for group in groups]
         total, admitted, joined = 0, 0, False
         pending: dict[Future[list[tuple[bool, Any, Json]]], tuple[_Run, list[int]]] = {}
         quiet: dict[int, float] = {}  # the workers' CPU at the last window that finished no chunk
+        spills: set[str] = set()  # the spill files this gather's tasks name: kept while it runs
         try:
             _resolve(config, runs)
             total = sum(len(r.todo) for r in runs)
@@ -828,13 +982,15 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             tasks = [(r, r.todo[lo : lo + size[r]]) for r in runs for lo in range(0, len(r.todo), size[r])]
             blobs = [b""] * len(tasks)
             if not inline:  # the snapshots in the items are known before the workers are forked
-                writes: dict[str, bytes] = {}  # an overlay's writes are pickled once for every task of this dispatch
+                writes: dict[str, Any] = {}  # an overlay's writes are pickled once for every task of this dispatch
+                ship = _warm(config)  # workers up: what they lack travels to them, they never fork again
                 for n, (run, picked) in enumerate(tasks):
                     stream = io.BytesIO()
-                    _Pickler(stream, needed, writes).dump(
-                        (run.function, [run.items[i] for i in picked], run.sink(config, picked))
-                    )
+                    pickler = _Pickler(stream, needed, writes, ship)
+                    pickler.dump((run.function, [run.items[i] for i in picked], run.sink(config, picked)))
                     blobs[n] = stream.getvalue()
+                    spills |= pickler.spills
+                _hold_spills(spills, 1)
                 with _users_lock:
                     if not _slots:  # released after the last gather: take the share again, or wait for any free slot
                         _acquire(_budget(config.host), cap=len(tasks))
@@ -847,9 +1003,8 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             admitted = 0 if inline else width
             queue = iter(zip(tasks, blobs, strict=True))
             left = len(tasks)  # chunks not submitted yet
-            regrow = False  # the share outgrew the forked workers: finish the chunks in flight, then fork wider
             while True:
-                while not regrow and len(pending) < width and (task := next(queue, None)):
+                while len(pending) < width and (task := next(queue, None)):
                     (run, picked), blob = task
                     left -= 1
                     if inline:
@@ -863,19 +1018,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                     _flight(1)
                     run.submitted, run.first = run.submitted + len(picked), run.first or time.monotonic_ns()
                 if not pending:
-                    if not (regrow and left):
-                        break
-                    regrow = False
-                    with _users_lock:
-                        alone = _flying == 0 and _users == 1
-                    if alone:  # no other gather of this process runs on the executor that is stopped
-                        _regrown = time.monotonic()
-                        _stop_workers()  # the slots stay held through the refork: no peer can take them between
-                        executor = _get_executor(config, frozenset(needed), left)
-                        with _users_lock:
-                            width = max(1, min(len(_slots), _size or len(_slots)))
-                        admitted = max(admitted, width)
-                    continue
+                    break
                 blocked = time.perf_counter()
                 completed, _ = wait(pending, timeout=None if inline else _WINDOW, return_when=FIRST_COMPLETED)
                 waited += time.perf_counter() - blocked
@@ -898,25 +1041,18 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                     if time.monotonic() - rebalanced >= _REBALANCE:  # peers are probed now and then, not per chunk
                         rebalanced = time.monotonic()
                         with _users_lock:  # never hold a slot no worker of this pool can use: more than the
-                            # executor forked, or more than the chunks still to run, go back to the other commands
+                            # executor forked, or more than the chunks still to run, go back to the other commands;
+                            # a share that grew is used at once by the same workers (they were forked at the fan)
                             more = len(pending) + left
-                            # alone in this process, a wider share is kept: the executor reforks to use it
-                            cooled = time.monotonic() - _regrown >= _REGROW_COOLDOWN
-                            reach = more if _users == 1 and left > _size and cooled else min(more, _size or len(tasks))
-                            _acquire(_budget(config.host), _flying, max(1, reach))
+                            _acquire(_budget(config.host), _flying, max(1, min(more, _size or len(tasks))))
                             width = min(len(_slots), _size or len(_slots))
-                            regrow = (
-                                _users == 1
-                                and len(_slots) >= _size + _REGROW_GAIN
-                                and left > _size
-                                and time.monotonic() - _regrown >= _REGROW_COOLDOWN
-                            )
                     admitted = max(admitted, width)
         except BrokenProcessPool as exc:
             _drop_executor()
             _raise_failure(config, runs[current[0]].name, current[1], exc)
         finally:
             _flight(-len(pending))
+            _hold_spills(spills, -1)
             if joined:
                 with _users_lock:
                     if _users_add(-1) == 0:

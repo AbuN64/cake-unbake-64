@@ -1,6 +1,7 @@
 """Catalogue header declarations and fold candidate declarations into their owners."""
 
 import heapq
+import json
 import pickle
 import posixpath
 import re
@@ -8,7 +9,7 @@ from collections import ChainMap, defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, replace
-from functools import lru_cache, partial
+from functools import cache, lru_cache, partial
 from itertools import pairwise
 from typing import Any, ClassVar, NamedTuple, cast
 
@@ -342,6 +343,9 @@ def duplicates(path: str, text: str) -> list[Finding]:
 
 _SCANS: dict[tuple[str, bool], dict[str, Any]] = {}  # by (sha256 of the text, source or not): a scan is a pure
 # function of the text, so every command may share it
+
+
+pool.carry("headers.scans", _SCANS)  # warm workers get the parent's new scans with each spilled tree
 
 
 def _scanned(snapshot: Snapshot, paths: list[str], pinned: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
@@ -2924,21 +2928,34 @@ def _typedef_spellings(text: str) -> frozenset[str]:
     return frozenset(spelled for _, _, spelled in _typedefs(text))
 
 
-def _inherited(read: Callable[[str], str | None], path: str, text: str) -> set[str]:
-    """The typedef spellings of every file `text` includes by a quoted name, directly or through others."""
+def _inherited(
+    read: Callable[[str], str | None], path: str, text: str, edges: dict[str, list[tuple[str, str]]] | None = None
+) -> set[str]:
+    """The typedef spellings of every file `text` includes by a quoted name, directly or through others. `edges`
+    keeps each included file's resolved includes across the calls of one respell: a header met in hundreds of
+    closures is resolved and parsed once."""
     found: set[str] = set()
     visited = {path}
     pending = [(path, text)]
+    edges = {} if edges is None else edges
     while pending:
         here, body = pending.pop()
-        for name in _quoted(body.encode()):
-            for base in (posixpath.dirname(here), "include", "src"):
-                target = posixpath.normpath(posixpath.join(base, name))
-                content = read(target) if target not in visited else None
-                if content is not None:
-                    visited.add(target)
-                    found.update(_typedef_spellings(content))
-                    pending.append((target, content))
+        if here == path or here not in edges:
+            resolved = []
+            for name in _quoted(body.encode()):
+                for base in (posixpath.dirname(here), "include", "src"):
+                    target = posixpath.normpath(posixpath.join(base, name))
+                    if (content := read(target)) is not None:
+                        resolved.append((target, content))
+            if here != path:
+                edges[here] = resolved
+        else:
+            resolved = edges[here]
+        for target, content in resolved:
+            if target not in visited:
+                visited.add(target)
+                found.update(_typedef_spellings(content))
+                pending.append((target, content))
     return found
 
 
@@ -3012,11 +3029,14 @@ def respell(
         if path in files or text != current:
             writes[path] = text.encode()
 
-    def read(p: str) -> str | None:  # an included file as this respell spells it
-        return texts[p] if p in texts else files[p] if p in files else _peek(snapshot, p)
+    read_ = cache(lambda p: texts[p] if p in texts else files[p] if p in files else _peek(snapshot, p))
+    edges: dict[str, list[tuple[str, str]]] = {}  # an included file's includes, resolved once per respell
+
+    def read(p: str) -> str | None:  # an included file as this respell spells it, read once
+        return read_(p)
 
     for path in deduped:
-        text = _dedupe(texts[path], _inherited(read, path, texts[path]))
+        text = _dedupe(texts[path], _inherited(read, path, texts[path], edges))
         if path in files or text != texts[path] or path in writes:
             writes[path] = text.encode()
     return writes
@@ -3052,11 +3072,26 @@ def source_types(snapshot: Snapshot, name: str) -> tuple[dict[str, str], dict[st
     return records, typedefs
 
 
+def _spellers(snapshot: Snapshot, place: str, suffix: str) -> dict[str, list[str]]:
+    """Per word the `sources` of a place that spell it, in path order: one index per listing of the place (its pins),
+    so a move's thousands of name lookups never walk every scan again (3,257 walks of 5,000 scans, 17 s a round)."""
+    key = landed_sources(snapshot, place, suffix)[1]
+
+    def produce() -> dict[str, list[str]]:
+        index: defaultdict[str, list[str]] = defaultdict(list)
+        for path, _, scanned in _listed(snapshot, place, suffix):
+            for word in scanned["words"]:
+                index[word].append(path)
+        return dict(index)
+
+    return effort.memo(("spellers", str(snapshot.config.project.root), place, suffix, key), produce)
+
+
 def spelled_in(snapshot: Snapshot, name: str) -> tuple[list[str], list[str]]:
     """(the landed sources, the headers) whose text spells `name`, from the scans the pins keep."""
     return (
-        [p for p, _, scanned in _listed(snapshot, "src", ".c") if name in scanned["words"]],
-        [p for p, _, scanned in _listed(snapshot, "include", ".h") if name in scanned["words"]],
+        list(_spellers(snapshot, "src", ".c").get(name, ())),
+        list(_spellers(snapshot, "include", ".h").get(name, ())),
     )
 
 
@@ -3345,14 +3380,25 @@ def _probe_job(item: tuple[Snapshot, UnitSpec, str, str, Any]) -> dict[str, Any]
     except Refusal as refusal:
         return {**row, "errors": len(refusal.findings), "first": [f.reason for f in refusal.findings[:3]]}
     step = adapters.chain_steps(snapshot.config, recipe.toolchain, recipe, (), "probe")[0]
-    with store.work(snapshot.config) as home:
-        (home / "probe.i").write_text(seen.text, encoding="utf-8")
-        argv = [w.replace("{in}", "probe.i").replace("{out}", "/dev/null") for w in step.argv]
-        result = process.run("headers.probe", argv, home, tmp=process.scratch(snapshot.config.project.root))
-    lines = result.stderr.decode(errors="replace").splitlines()
-    errors = [line for line in lines if _ERROR_LINE.search(line)]
-    if not errors and (result.exit != 0 or result.signal is not None):
-        errors = lines[-1:] or [f"the compiler exited {result.exit}"]
+    argv = [w.replace("{in}", "probe.i").replace("{out}", "/dev/null") for w in step.argv]
+    tools = effort.memo(
+        ("tool-identity", recipe.toolchain), lambda: adapters.tool_identity(snapshot.config, recipe.toolchain)
+    )
+
+    def compiled() -> bytes:
+        with store.work(snapshot.config) as home:
+            (home / "probe.i").write_text(seen.text, encoding="utf-8")
+            result = process.run("headers.probe", argv, home, tmp=process.scratch(snapshot.config.project.root))
+        lines = result.stderr.decode(errors="replace").splitlines()
+        errors = [line for line in lines if _ERROR_LINE.search(line)]
+        if not errors and (result.exit != 0 or result.signal is not None):
+            errors = lines[-1:] or [f"the compiler exited {result.exit}"]
+        return json.dumps(errors).encode()
+
+    # keyed by what the compiler reads (the preprocessed text, its command and tools): a header probed in an earlier
+    # round, level or command with the same text is never compiled again, whichever tree state asks
+    key = digest((seen.text, argv, str(tools), "probe"))
+    errors = json.loads(store.cached(snapshot.config, "header-probe", key, compiled))
     return {**row, "errors": len(errors), "first": errors[:3]}
 
 

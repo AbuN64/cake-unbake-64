@@ -1068,6 +1068,41 @@ def test_respell_dedupes_the_typedefs_a_many_to_one_rename_leaves_in_a_file():
     assert written["src/u.c"].decode() == '#include "h.h"\ntypedef struct S Own;\nint f;\n'
 
 
+def test_respell_resolves_and_parses_a_shared_include_chain_once_for_every_file(monkeypatch):
+    """The 2026-10-15 fakes move respelled 853 files whose closures met the same headers 111,879 times (31 s)."""
+    texts = {f"src/u{i}.c": b'#include "a.h"\ntypedef struct S Old%d;\nint f%d;\n' % (i, i) for i in range(30)}
+    texts |= {"include/a.h": b'#include "b.h"\ntypedef struct S A;\n', "include/b.h": b"typedef struct S B;\n"}
+    snapshot = SimpleNamespace(peek=texts.get, layout=SimpleNamespace(units={}), config=SimpleNamespace())
+    parsed = []
+    real = headers._quoted
+    monkeypatch.setattr(headers, "_quoted", lambda content: parsed.append(content) or real(content))
+    with (
+        effort.command("check", []),
+        patch.object(
+            headers, "sources", lambda snap, place="include", suffix=".h": [p for p in texts if p.endswith(suffix)]
+        ),
+    ):
+        written = headers.respell(snapshot, {}, {}, [], {f"Old{i}": "B" for i in range(30)})
+    assert all(b"typedef struct S B;" not in written[f"src/u{i}.c"] for i in range(30))  # inherited through a.h
+    assert parsed.count(texts["include/a.h"]) == 1  # resolved once for 30 closures, never once per closure
+
+
+def test_a_moves_name_lookups_index_the_scans_once_per_listing(monkeypatch):
+    listed = []
+    rows = {
+        "src": [(f"src/{i}.c", "pin", {"words": frozenset({f"f{i}", "shared"})}) for i in range(50)],
+        "include": [("include/h.h", "pin", {"words": frozenset({"shared"})})],
+    }
+    monkeypatch.setattr(headers, "_listed", lambda snap, place="src", suffix=".c": listed.append(place) or rows[place])
+    monkeypatch.setattr(headers, "landed_sources", lambda snap, place="src", suffix=".c": ([], f"{place}-pins"))
+    snapshot = SimpleNamespace(config=SimpleNamespace(project=SimpleNamespace(root="/p")))
+    with effort.command("check", []):
+        found = [headers.spelled_in(snapshot, f"f{i}") for i in range(50)]
+        shared = headers.spelled_in(snapshot, "shared")
+    assert found[7] == (["src/7.c"], []) and shared == ([f"src/{i}.c" for i in range(50)], ["include/h.h"])
+    assert sorted(listed) == ["include", "src"]  # 51 lookups, one walk of each place
+
+
 def test_a_typedef_repeated_in_another_conditional_branch_stays():
     branches = "#if V\ntypedef struct S A;\n#else\ntypedef struct S A;\n#endif\n"
     assert headers._dedupe(branches) == branches
@@ -1341,6 +1376,15 @@ def test_probe_compiles_each_header_alone_per_version_and_fails_on_one_error(mon
     monkeypatch.setattr(process, "run", run)
     monkeypatch.setattr(process, "scratch", lambda root: tmp_path)
     monkeypatch.setattr(headers.pool, "map", lambda config, name, fn, items, key=None: [fn(i) for i in items])
+    monkeypatch.setattr(adapters, "tool_identity", lambda config, toolchain: "cc1 2.7")
+    stored: dict[tuple[str, str], bytes] = {}
+
+    def cached(config, kind, key, produce):
+        if (kind, key) not in stored:
+            stored[kind, key] = produce()
+        return stored[kind, key]
+
+    monkeypatch.setattr(headers.store, "cached", cached)
     result = headers.probe_command(config, {"probe": True, "versions": "all"})
     rows = {(r["header"], r["version"]): r["errors"] for r in result["headers"]}
     assert rows == {
@@ -1349,8 +1393,11 @@ def test_probe_compiles_each_header_alone_per_version_and_fails_on_one_error(mon
         ("include/good.h", "a"): 0,
         ("include/good.h", "b"): 0,
     }
-    assert result["failing"] == 2 and len(runs) == 4 and runs[0][-1] == "/dev/null"
+    # keyed by the preprocessed text, command and tools: a version that preprocesses to the same text compiles nothing
+    assert result["failing"] == 2 and len(runs) == 2 and runs[0][-1] == "/dev/null"
     assert [r["findings"][0]["key"] for r in result["refused"]] == ["headers.probe"] * 2
+    again = headers.probe_command(config, {"probe": True, "versions": "all"})  # the next round, level or command
+    assert len(runs) == 2 and again["headers"] == result["headers"]
 
 
 def test_many_events_into_one_target_merge_it_once(monkeypatch):
