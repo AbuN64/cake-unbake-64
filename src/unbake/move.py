@@ -105,6 +105,7 @@ class Edited:
     # (sources, member renames, the type names those sources spell: a unit composed from their text spells one)
     accesses: list[tuple[tuple[str, ...], dict[str, str], frozenset[str]]] = field(default_factory=list)
     includes: dict[str, set[str]] = field(default_factory=dict)  # file -> headers a fold makes it include
+    event_moves: list[int] = field(default_factory=list)  # the input move of each header event, before paths change
 
 
 @dataclass
@@ -276,6 +277,7 @@ def edit(
         renames: dict[str, str] = {}
         was: dict[str, str] = {}
         events: list[tuple[str, str, str, frozenset[str]]] = []
+        event_moves: list[int] = []
         touched: defaultdict[int, set[str]] = defaultdict(set)
         bad: list[tuple[Move, Finding]] = []
         own = {m.subject for m in moves if m.op == "member"}
@@ -377,6 +379,7 @@ def edit(
                         del groups[src]
                     if old_header != dest.header:
                         events.append(("names", old_header, dest.header, frozenset(carried)))
+                        event_moves.append(move.index)
                 bind(replace(dest, members=(*dest.members, *carried)))
                 touch |= {*carried, src, target}
             elif op == "module":
@@ -387,6 +390,7 @@ def edit(
                     into = groups[target]
                     if group.header != into.header:
                         events.append(("file", group.header, into.header, frozenset()))
+                        event_moves.append(move.index)
                         for g in groups.values():
                             if g.header == group.header:
                                 groups[g.name] = replace(g, header=into.header)
@@ -424,6 +428,7 @@ def edit(
                 if old != target:
                     names = frozenset(named.members) if named and (shared or base) else frozenset()
                     events.append(("names" if names else "file", old, target, names))
+                    event_moves.append(move.index)
                 affected = [named] if named and (shared or base) else [g for g in groups.values() if g.header == old]
                 if bad_header := [g for g in affected if not _header_ok(g, target, groups, rows)]:
                     reject(move, "move.name", f"{target} is not the header of {bad_header[0].name}", path=target)
@@ -483,6 +488,7 @@ def edit(
             shaped=dict(types.shaped) if types else {},
             accesses=types.accesses if types else [],
             includes=dict(types.includes) if types else {},
+            event_moves=event_moves,
         )
 
 
@@ -1076,8 +1082,18 @@ def _moves_for(edited: Edited, moves: Sequence[Move], unit: UnitSpec | None, eve
 
 
 def _cycle_moves(edited: Edited, moves: Sequence[Move], path: str) -> list[Move]:
-    """The moves a relocate refusal at `path` blames: those naming it, else those whose modules' header it is (the
-    moves that merge it and so close the cycle), and only when none can be told every move."""
+    """Trace the refused header through its actual events before consulting final names. A renamed old path may
+    name no final module; that must not turn its one causal move into blame for the whole stream."""
+    live, causes = {path}, set()
+    for (kind, old, new, _), index in zip(edited.events, edited.event_moves, strict=True):
+        if old not in live:
+            continue
+        causes.add(index)
+        if kind == "file":  # follow this header's body, not an unrelated file that later reuses its old name
+            live.remove(old)
+        live.add(new)  # a names part also travels through later moves of its new header
+    if causes:
+        return [m for m in moves if m.index in causes]
     named = [m for m in moves if path and path in (m.subject, m.target)]
     return named or (_header_moves(edited, moves, path, path) if path else []) or list(moves)
 

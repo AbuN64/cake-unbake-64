@@ -2198,7 +2198,7 @@ def test_a_relocate_cycle_refusal_blames_the_moves_that_merge_its_header_not_the
     from unbake.contracts import Move
 
     groups = {"a": NS(name="a", header="include/a.h"), "b": NS(name="b", header="include/b.h")}
-    edited = NS(layout=NS(groups=groups), touched={0: {"a"}, 1: {"b"}, 2: {"b"}})
+    edited = NS(layout=NS(groups=groups), touched={0: {"a"}, 1: {"b"}, 2: {"b"}}, events=[], event_moves=[])
     moves = [Move(0, "module", "a", "x"), Move(1, "module", "b", "y"), Move(2, "member", "f", "b")]
     assert move._cycle_moves(edited, moves, "include/a.h") == [moves[0]]
     assert move._cycle_moves(edited, moves, "include/none.h") == moves
@@ -2414,3 +2414,46 @@ def test_modules_with_other_flag_sets_never_share_a_unit(tmp_path: Path, seen: A
     edited = move.edit(snap, [Move(0, "options", "gc", '{"add": ["-mfp32"]}'), Move(1, "member", "f3", "ga")])
     laid = {p: (u.members, u.options) for p, u in edited.layout.units.items()}
     assert laid["src/f1.c"] == (("f1", "f2", "f3"), {"add": [], "omit": []})  # f3 joined ga: ga's set, one file
+
+
+def test_cycle_blame_tracks_actual_header_events_and_not_unrelated_same_target_moves(tmp_path, seen):
+    cfg = world(tmp_path)
+    snapshot = layout.capture(cfg)
+    moves = [Move(0, "header", "ga", "include/changed.h"), Move(1, "header", "gb", "include/unrelated.h")]
+    edited = move.edit(snapshot, moves)
+    assert edited.event_moves == [0, 1]
+    assert edited.layout.groups["ga"].header == "include/changed.h"
+    assert move._cycle_moves(edited, moves, "include/main/ga.h") == [moves[0]]
+    # The number of unrelated work items cannot enlarge the retry set.
+    more = [Move(i, "source", "gc", f"src/unrelated{i}.c") for i in range(2, 1002)]
+    assert move._cycle_moves(edited, [*moves, *more], "include/main/ga.h") == [moves[0]]
+
+
+def test_cycle_blame_follows_rename_order_without_capturing_reused_names_or_incoming_files():
+    events = [
+        ("file", "include/mid.h", "include/elsewhere.h", frozenset()),
+        ("file", "include/old.h", "include/mid.h", frozenset()),
+        ("file", "include/mid.h", "include/final.h", frozenset()),
+        ("file", "include/other.h", "include/old.h", frozenset()),
+        ("file", "include/old.h", "include/reused.h", frozenset()),
+        ("file", "include/incoming.h", "include/final.h", frozenset()),
+    ]
+    moves = [Move(i, "file", old, new) for i, (_, old, new, _) in enumerate(events)]
+    edited = SimpleNamespace(events=events, event_moves=list(range(6)), layout=SimpleNamespace(groups={}), touched={})
+    assert move._cycle_moves(edited, moves, "include/old.h") == moves[1:3]
+    assert move._cycle_moves(edited, moves, "include/mid.h") == moves[:1]
+
+
+@pytest.mark.parametrize(
+    "moves,kinds",
+    [
+        ([Move(0, "module", "ga", "gb")], ["file"]),
+        ([Move(0, "member", "f1", "new_group"), Move(1, "header", "new_group", "include/new.h")], ["names", "file"]),
+    ],
+)
+def test_every_header_event_retains_its_input_move(tmp_path, seen, moves, kinds):
+    edited = move.edit(layout.capture(world(tmp_path)), moves)
+    assert not edited.bad
+    assert [e[0] for e in edited.events] == kinds
+    assert edited.event_moves == list(range(len(kinds)))
+    assert move._cycle_moves(edited, moves, edited.events[0][1]) == moves
