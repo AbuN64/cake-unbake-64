@@ -642,6 +642,28 @@ def accept(
         _PRESENT.reset(token)
 
 
+def accept_each(
+    config: Config, checks: Sequence[tuple[Snapshot, Json, Mapping[str, bytes], bool]]
+) -> list[tuple[Finding, ...]]:
+    """Admission's acceptance check (`accept` without the progress block) of many candidates, each (snapshot,
+    request, extras, partial), in ONE dispatch: each candidate's whole check is one job, so the checks of a bulk run
+    side by side instead of one candidate's small dispatches after another's. Per candidate the findings of its
+    Refusal, empty when it is accepted: one candidate's refusal never touches another's verdict."""
+    if not checks:
+        return []
+    with effort.stage("publish.accept_each"):
+        return pool.map(config, "publish.accept", _accept_verdict, list(checks))
+
+
+def _accept_verdict(item: tuple[Snapshot, Json, Mapping[str, bytes], bool]) -> tuple[Finding, ...]:
+    snapshot, request, extras, partial = item
+    try:
+        accept(snapshot, request, extras, partial, present=False)
+    except Refusal as refusal:
+        return tuple(refusal.findings)
+    return ()
+
+
 def _accept(
     snapshot: Snapshot, request: Json, extras: Mapping[str, bytes], partial: bool
 ) -> tuple[Plan, tuple[Proof, ...], tuple[str, ...]]:

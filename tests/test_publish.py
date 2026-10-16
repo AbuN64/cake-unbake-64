@@ -1158,3 +1158,32 @@ def test_a_warning_said_more_often_than_head_says_it_blocks_on_the_changed_line(
         unit, after, before.encode(), (f"src/a.c:2: {said}", f"src/a.c:3: {said}"), (f"src/a.c:2: {said}",)
     )
     assert [f.line for f in found] == [2, 3]  # one complaint is new: every changed line saying it is named
+
+
+def test_accept_each_checks_every_bulk_candidate_in_one_dispatch_with_its_own_verdict(monkeypatch):
+    # RW submit --bulk b0d5a298: land.submit 874 s over 83 groups, each group's acceptance check a few small dispatches
+    # after the last group's (3.1 cores). TOOL-T-BUNDLE-3 on T 8fb7e08: 16 groups, 573 s, 4.6 cores, 15 admitted;
+    # func_802BE3B0_eu_x refused alone (land.request: source defines func_802C31C0, no layout member).
+    names = [f"func_retype_{n:02d}" for n in range(15)] + ["func_802BE3B0_eu_x"]
+    refusal = Finding("land.request", "source defines func_802C31C0, no layout member", unit="func_802BE3B0_eu_x")
+    dispatches, present = [], []
+
+    def accept(snapshot, request, extras, partial):
+        present.append(publish._PRESENT.get())
+        if request["function"] == "func_802BE3B0_eu_x":
+            raise Refusal(refusal)
+        return ("plan", (), ())
+
+    def map_(config, name, function, items, key=None):
+        dispatches.append((name, len(items)))
+        return [function(item) for item in items]
+
+    monkeypatch.setattr(publish, "_accept", accept)
+    monkeypatch.setattr(publish.pool, "map", map_)
+    monkeypatch.setattr(publish.effort, "stage", lambda name: nullcontext())
+    checks = [(Mock(), {"file": f"{n}.c", "function": n}, {}, False) for n in names]
+    verdicts = publish.accept_each(Mock(), checks)
+    assert dispatches == [("publish.accept", 16)]  # one dispatch, never one per group
+    assert verdicts[:15] == [()] * 15 and verdicts[15] == (refusal,)
+    assert present == [False] * 16 and publish._PRESENT.get()  # admission plans carry no progress block
+    assert publish.accept_each(Mock(), []) == [] and dispatches == [("publish.accept", 16)]

@@ -8,7 +8,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import ExitStack, suppress
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -127,41 +127,123 @@ def submit(
     or the whole set refused; only exact sets are submitted. `withhold` lands the exact versions and withholds the rest
     (with none exact it measures as without it). `snapshot` is the capture the caller measured against."""
     with effort.stage("land.submit"):
-        member = request["function"] or unit.members[0]
-        snapshot = snapshot or layout.capture(config)
-        current = snapshot.layout.units.get(unit.path)
-        kinds = configuration.kinds()
-        path = config.project.root / unit.path
-        extras = extras or {}
-        if (
-            current
-            and kinds[current.kind]["decompiled"]
-            and path.is_file()
-            and path.read_bytes() == source
-            and not extras
-        ):
+        intake = _intake(config, request, unit, proofs, source, extras, withhold, snapshot)
+        if intake is None:
             return None
-        exact = {p.version for p in proofs if all(q.exact for q in proofs if q.version == p.version)}
-        withheld = sorted({p.version for p in proofs} - exact) if withhold and exact else []
-        if proofs and (all(p.exact for p in proofs) or withheld):
-            operation = "publish"
-            publish.accept(snapshot, {**request, "function": member}, extras, bool(withheld), present=False)  # refusal
-        else:
-            if extras:
-                return None
-            scores = snapshot.layout.fuzzy[member]["scores"] if member in snapshot.layout.fuzzy else {}
-            before = min(scores.values()) if scores else 0.0
-            gain = configuration.fuzzy()["min_gain"]
-            if (
-                not proofs
-                or any(
-                    any(key in p.symptoms for key in ("compile_failed", "unresolved", "no_measurement")) for p in proofs
-                )
-                or min(p.score for p in proofs) - before < gain
-            ):
-                return None
-            operation = "fuzzy"
-        return _enqueue(config, request, member, operation, source, proofs, origin, snapshot.commit, extras, withheld)
+        if intake.operation == "publish":  # refusal
+            publish.accept(intake.snapshot, intake.check, intake.extras, bool(intake.withheld), present=False)
+        return _entered(config, request, source, proofs, origin, intake)
+
+
+def submit_many(config: Config, calls: Sequence[Mapping[str, Any]]) -> list[Submission | Refusal | None]:
+    """Many submissions (each call holds `submit`'s arguments by name), their publish acceptance checks in ONE
+    dispatch across every call, never one call's checks after another's. Each call keeps its own verdict: its
+    Refusal is its result and blocks no other call; the accepted ones enter the queue in order."""
+    with effort.stage("land.submit_many"):
+        intakes = [
+            _intake(
+                config,
+                c["request"],
+                c["unit"],
+                c["proofs"],
+                c["source"],
+                c.get("extras"),
+                c.get("withhold", False),
+                c.get("snapshot"),
+            )
+            for c in calls
+        ]
+        checked = [n for n, i in enumerate(intakes) if i is not None and i.operation == "publish"]
+        verdicts = dict(
+            zip(
+                checked,
+                publish.accept_each(
+                    config,
+                    [
+                        (i.snapshot, i.check, i.extras, bool(i.withheld))
+                        for i in (intakes[n] for n in checked)
+                        if i is not None
+                    ],
+                ),
+                strict=True,
+            )
+        )
+        out: list[Submission | Refusal | None] = []
+        for n, (call, intake) in enumerate(zip(calls, intakes, strict=True)):
+            if intake is None:
+                out.append(None)
+            elif verdicts.get(n):
+                out.append(Refusal(*verdicts[n]))
+            else:
+                out.append(_entered(config, call["request"], call["source"], call["proofs"], call["origin"], intake))
+        return out
+
+
+@dataclass(frozen=True)
+class _Intake:
+    """What a submission enters as, decided before its acceptance check."""
+
+    member: str
+    operation: str
+    withheld: tuple[str, ...]
+    snapshot: Snapshot
+    extras: Mapping[str, bytes]
+    check: Json  # the request the publish acceptance check reads
+
+
+def _intake(
+    config: Config,
+    request: Json,
+    unit: UnitSpec,
+    proofs: Sequence[Proof],
+    source: bytes,
+    extras: Mapping[str, bytes] | None,
+    withhold: bool,
+    snapshot: Snapshot | None,
+) -> _Intake | None:
+    """The operation a submission enters as, or None when there is nothing to submit."""
+    member = request["function"] or unit.members[0]
+    snapshot = snapshot or layout.capture(config)
+    current = snapshot.layout.units.get(unit.path)
+    kinds = configuration.kinds()
+    path = config.project.root / unit.path
+    extras = extras or {}
+    if current and kinds[current.kind]["decompiled"] and path.is_file() and path.read_bytes() == source and not extras:
+        return None
+    exact = {p.version for p in proofs if all(q.exact for q in proofs if q.version == p.version)}
+    withheld = tuple(sorted({p.version for p in proofs} - exact)) if withhold and exact else ()
+    check = {**request, "function": member}
+    if proofs and (all(p.exact for p in proofs) or withheld):
+        return _Intake(member, "publish", withheld, snapshot, extras, check)
+    if extras:
+        return None
+    scores = snapshot.layout.fuzzy[member]["scores"] if member in snapshot.layout.fuzzy else {}
+    before = min(scores.values()) if scores else 0.0
+    gain = configuration.fuzzy()["min_gain"]
+    if (
+        not proofs
+        or any(any(key in p.symptoms for key in ("compile_failed", "unresolved", "no_measurement")) for p in proofs)
+        or min(p.score for p in proofs) - before < gain
+    ):
+        return None
+    return _Intake(member, "fuzzy", withheld, snapshot, extras, check)
+
+
+def _entered(
+    config: Config, request: Json, source: bytes, proofs: Sequence[Proof], origin: str, intake: _Intake
+) -> Submission:
+    return _enqueue(
+        config,
+        request,
+        intake.member,
+        intake.operation,
+        source,
+        proofs,
+        origin,
+        intake.snapshot.commit,
+        intake.extras,
+        intake.withheld,
+    )
 
 
 def _move(config: Config, identity: str, destination: str) -> None:

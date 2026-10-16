@@ -1427,3 +1427,51 @@ def test_check_dispatches_the_exact_compile_job():
     source = inspect.getsource(land.check_command)
     assert "build.check_unit" in source and "build.compile_unit" not in source
     assert "build.check_key" in source  # a warm unit dispatches nothing, even after an install
+
+
+def test_submit_many_checks_every_publish_in_one_dispatch_and_keeps_each_verdict(lane, monkeypatch):
+    # TOOL-T-BUNDLE-3 bulk on T 8fb7e08: 16 groups in 573 s at 4.6 cores, each group's acceptance check run after the
+    # last one's; 15 admitted, func_802BE3B0_eu_x refused alone (source defines func_802C31C0, no layout member).
+    cfg, unit, snapshot = lane[:3]
+    names = [f"func_retype_{n:02d}" for n in range(15)] + ["func_802BE3B0_eu_x"]
+    refusal = Finding("land.request", "source defines func_802C31C0, no layout member", unit="func_802BE3B0_eu_x")
+    batches = []
+
+    def accept_each(config, checks):
+        batches.append([(request["function"], partial) for _, request, _, partial in checks])
+        return [(refusal,) if request["function"] == "func_802BE3B0_eu_x" else () for _, request, _, _ in checks]
+
+    monkeypatch.setattr(land.publish, "accept_each", accept_each)
+    monkeypatch.setattr(land.publish, "accept", Mock(side_effect=AssertionError("checked one group at a time")))
+    calls = [
+        {
+            "request": _request(function=name),
+            "unit": unit,
+            "proofs": _proofs(unit),
+            "source": f"void {name}(void) {{}}\n".encode(),
+            "origin": "submit",
+            "snapshot": snapshot,
+        }
+        for name in names
+    ]
+    fuzzy = {**calls[0], "request": _request(function="f"), "proofs": _proofs(unit, False, 0.5), "source": b"fuzzy"}
+    nothing = {**calls[0], "request": _request(function="f"), "proofs": (), "source": b"nothing"}
+    out = land.submit_many(cfg, [*calls, fuzzy, nothing])
+    assert batches == [[(name, False) for name in names]]  # one dispatch; fuzzy and empty candidates need no check
+    assert [e.member for e in out[:15]] == names[:15] and all(e.operation == "publish" for e in out[:15])
+    assert isinstance(out[15], Refusal) and out[15].findings == (refusal,)
+    assert out[16].operation == "fuzzy" and out[17] is None
+    queued = sorted(p.stem for p in (cfg.project.root / ".unbake/inbox").glob("*.json"))
+    assert queued == sorted(e.id for e in (*out[:15], out[16]))  # the refused group entered nothing
+    assert "land.submit_many" in lane[-1]
+
+
+def test_submit_many_withheld_partial_matches_submit(lane, monkeypatch):
+    cfg, unit = lane[:2]
+    seen = []
+    monkeypatch.setattr(land.publish, "accept_each", lambda _config, checks: [seen.append(c[3]) or () for c in checks])
+    call = {"request": _request(), "unit": unit, "proofs": _one_exact(unit), "source": b"candidate", "origin": "submit"}
+    (many,) = land.submit_many(cfg, [{**call, "withhold": True}])
+    single = land.submit(cfg, _request(), unit, _one_exact(unit), b"candidate", "submit", withhold=True)
+    assert seen == [True] and many.id == single.id and many.withheld == ("b",)
+    assert land.publish.accept.call_args.args[3] is True  # the one-group path checks the same partial landing
