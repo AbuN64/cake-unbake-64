@@ -1,6 +1,7 @@
 """View contract tests with an in-memory cache and canned preprocessor output."""
 
 import json
+import shutil
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -24,7 +25,6 @@ from unbake.contracts import (
     digest,
     sha256,
 )
-
 
 _STORE = (store.get, store.put, store.put_many, store.content)  # the real cache, before a lane mocks it
 
@@ -645,15 +645,15 @@ def test_a_warm_view_key_names_its_digests_without_loading_or_parsing_the_view(l
 
 @pytest.mark.parametrize("overlaid", [False, True])
 def test_a_view_stored_by_one_install_and_root_hits_in_another_with_the_same_content(lane, monkeypatch, overlaid):
-    """Map's cold ownership pass missed 0/14,140 views on every new install while units hit: the view kinds were keyed
-    by the tool code. Same files, recipe and tool bytes in another checkout under another install share the stored view."""
+    """Map's cold ownership pass missed 0/14,140 views on every new install while units hit: the view kinds were
+    keyed by the tool code. Same files, recipe and tool bytes in another checkout under another install share the
+    stored view."""
     for name, real in zip(("get", "put", "put_many", "content"), _STORE, strict=True):
         monkeypatch.setattr(store, name, real)
     writes = {"include/active.h": b"typedef long active;\n"} if overlaid else {}
     monkeypatch.setattr(store, "code", lambda: "install-one")
     first = _get(lane, _overlay(lane.snapshot, writes))
     other = lane.root.parent / "other"
-    import shutil
     shutil.copytree(lane.root, other)
     moved = replace(lane.snapshot.config, project=replace(lane.snapshot.config.project, root=other))
     lane.text = lane.text.replace(str(lane.root), str(other))

@@ -978,6 +978,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
     ready at once: as many are in flight as the slots held allow, and a finished one is replaced at once."""
     with effort.stage("pool.map"):
         start_ns, waited, current, rebalanced = time.monotonic_ns(), 0.0, (0, 0), time.monotonic()
+        held, mark = 0.0, time.monotonic()  # slot-seconds this gather held: the share it was given, as it changed
         runs = [_Run(*group) for group in groups]
         total, admitted, joined = 0, 0, False
         pending: dict[Future[list[tuple[bool, Any, Json]]], tuple[_Run, list[int]]] = {}
@@ -1014,7 +1015,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                 # executor taken before that wait would be the one stopped
                 executor = _get_executor(config, frozenset(needed), len(tasks))
                 width = min(len(_slots), _size or len(_slots))
-            admitted = 0 if inline else width
+            admitted, mark = 0 if inline else width, time.monotonic()
             queue = iter(zip(tasks, blobs, strict=True))
             left = len(tasks)  # chunks not submitted yet
             while True:
@@ -1059,6 +1060,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                             # a share that grew is used at once by the same workers (they were forked at the fan)
                             more = len(pending) + left
                             _acquire(_budget(config.host), _flying, max(1, min(more, _size or len(tasks))))
+                            held, mark = held + width * (time.monotonic() - mark), time.monotonic()
                             width = min(len(_slots), _size or len(_slots))
                     admitted = max(admitted, width)
         except BrokenProcessPool as exc:
@@ -1067,6 +1069,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
         finally:
             _flight(-len(pending))
             _hold_spills(spills, -1)
+            held += width * (time.monotonic() - mark)
             if joined:
                 with _users_lock:
                     if _users_add(-1) == 0:
@@ -1081,6 +1084,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                     end_ns=run.last or start_ns,
                     envelopes=[o[2] for o in run.outcomes if o and o[2]],
                     dispatch_seconds=(time.monotonic_ns() - start_ns) / 1e9 - waited,
+                    slot_seconds=held if len(runs) == 1 and admitted else 0.0,  # inline jobs hold no slot
                 )
         for run in runs:
             run.seal(config)

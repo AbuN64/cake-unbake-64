@@ -1772,3 +1772,42 @@ def test_a_chunk_ships_every_jobs_records_folded_by_path_once(tmp_path):
     assert jobs["parent_cpu_seconds"] >= 0.5 * total  # a workers own cpu is summed, not the first jobs alone
     view = by_path[("job", "native.objects", "view.get")]
     assert view["parent"] == by_path[("job", "native.objects")]["span"]
+
+
+_CLOCK = [0.0]
+
+
+def _tick(value):
+    """A job of one second on the test clock."""
+    _CLOCK[0] += 1.0
+    return value
+
+
+def test_a_pool_records_the_slot_seconds_it_held_as_its_share_shrank(tmp_path, monkeypatch, mocked_parallel):
+    """Move round 1 kept 6.6 of the 12 workers it was once admitted busy while another command took half the host:
+    the pool record carries the slots it held over time, so its fill is judged against that share."""
+    _CLOCK[0] = 0.0
+    clock = SimpleNamespace(
+        monotonic=lambda: _CLOCK[0],
+        monotonic_ns=lambda: int(_CLOCK[0] * 1e9),
+        perf_counter=time.perf_counter,
+        perf_counter_ns=time.perf_counter_ns,
+        sleep=time.sleep,
+    )
+    monkeypatch.setattr(pool, "time", clock)
+    monkeypatch.setattr(pool, "_REBALANCE", 0.0)
+    monkeypatch.setattr(pool, "_size", 12)
+    monkeypatch.setenv("UNBAKE_CORES", "12")
+    real = pool._acquire
+
+    def acquire(want, active=0, cap=0):
+        real(want, active, cap)
+        os.environ["UNBAKE_CORES"] = "3"  # a peer command takes three quarters of the host after the first look
+
+    monkeypatch.setattr(pool, "_acquire", acquire)
+    config = replace(_config(tmp_path), host=_host(tmp_path, slots=12, workers=12))
+    with effort.command("check", []):
+        assert pool.map(config, "units", _tick, list(range(48))) == list(range(48))
+    record = next(r for r in effort.closed() if r.kind == "pool")
+    held = record.slot_seconds / record.wall_seconds
+    assert record.workers_admitted == 12 and 3.0 < held < 6.0

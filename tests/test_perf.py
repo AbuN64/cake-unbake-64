@@ -144,3 +144,22 @@ def test_budget_does_not_flag_a_stage_shipped_from_many_jobs_as_closed_twice(cfg
         slow = replace(base, wall_seconds=5.0, cores=3.0)
         assert [effort._budget(slow, True, True).findings for _ in range(3)] == [(), (), ()]
         assert not effort._seen
+
+
+@pytest.mark.parametrize(("held", "flagged"), [(6.8, False), (12.0, True)])
+def test_a_pool_is_judged_against_the_slots_it_held_not_the_most_it_was_admitted(cfg, held, flagged):
+    """Move round 1 (db552f2 slice): 501 jobs, 12 admitted at most, 6.6 cores over 162 s while a peer command held
+    half the host. Busy for the share it held is not underused; the same cores with all 12 held are."""
+    (record,) = _budgeted(
+        cfg,
+        {
+            "kind": "pool",
+            "jobs": 501,
+            "workers_admitted": 12,
+            "wall_seconds": 162.0,
+            "cores": 6.6,
+            "slot_seconds": 162.0 * held,
+            "cache": {"x": (0, 501)},
+        },
+    )
+    assert ("budget.pool_underused" in {f.key for f in record.findings}) is flagged

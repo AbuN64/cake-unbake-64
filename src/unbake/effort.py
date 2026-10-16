@@ -316,12 +316,18 @@ def _budget(record: StageRecord, leaf: bool, shipped: bool = False) -> StageReco
     hits, misses = (sum(v[i] for v in record.cache.values()) for i in (0, 1))
     if leaf and alone and record.cores < host.serial_cores:
         found.append(("single_core", "serial_seconds", f"ran {record.wall_seconds:.1f}s at {cores}"))
-    if (
-        pool
-        and record.jobs >= host.pool_fanout * record.workers_admitted
-        and (record.cores < host.pool_fill * record.workers_admitted)
-    ):
-        found.append(("pool_underused", "pool_fill", f"kept {cores} of {record.workers_admitted} workers busy"))
+    # a pool is judged against the slots it held on average: a share the other commands of the host took back
+    # between rebalances is theirs, not idle workers (the most it was ever admitted overstates it)
+    held = record.slot_seconds / record.wall_seconds if record.slot_seconds and record.wall_seconds else None
+    share = record.workers_admitted if held is None else held
+    if pool and share and record.jobs >= host.pool_fanout * share and record.cores < host.pool_fill * share:
+        found.append(
+            (
+                "pool_underused",
+                "pool_fill",
+                f"kept {cores} of {share:.2f} slots held busy (at most {record.workers_admitted} admitted)",
+            )
+        )
     if pool and record.workers_admitted and record.jobs and hits and not misses:  # inline jobs dispatch nothing
         found.append(("warm_dispatch", "pool_fill", f"dispatched {record.jobs} jobs with every cache lookup warm"))
     # a job's stage repeats once per job by design; a dispatch repeats when a later phase needs the earlier results
@@ -556,6 +562,7 @@ def record_pool(
     envelopes: Sequence[Json],
     dispatch_seconds: float = 0.0,
     end_ns: int | None = None,
+    slot_seconds: float = 0.0,
 ) -> None:
     if not _stack.get():
         return
@@ -609,6 +616,7 @@ def record_pool(
             cache=cache,
             workers_used=len({e["pid"] for e in envelopes}),
             dispatch_seconds=dispatch_seconds,
+            slot_seconds=slot_seconds,
             wait_seconds=sum(e.get("wait_seconds", 0.0) for e in envelopes),
             busy_seconds=sum((e["end_ns"] - e["start_ns"]) / 1e9 - e.get("wait_seconds", 0.0) for e in envelopes),
             worker_rss_peak_bytes=max((e["rss"] for e in envelopes), default=0),
@@ -667,6 +675,7 @@ def fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord,
             wait_seconds=sum(r.wait_seconds for r in rows),
             dispatch_seconds=sum(r.dispatch_seconds for r in rows),
             busy_seconds=sum(r.busy_seconds for r in rows),
+            slot_seconds=sum(r.slot_seconds for r in rows),
             spans=sum(r.spans for r in rows),
         )
         out.append((folded, all(leaf for _, leaf in members)))

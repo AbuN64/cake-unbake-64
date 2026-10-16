@@ -111,6 +111,7 @@ def summary(records: Sequence[StageRecord]) -> list[str]:
     lines.extend(
         f"  {' > '.join(r.path)}  {r.wall_seconds:.2f}s  {r.cores:.2f} cores  {r.execution}  items {r.items} "
         f"jobs {r.jobs} workers {r.workers_used}/{r.workers_admitted}"
+        + (f" held {r.slot_seconds / r.wall_seconds:.1f}" if r.slot_seconds and r.wall_seconds else "")
         for r in sorted(records, key=lambda r: r.wall_seconds, reverse=True)[:10]
     )
     lines.extend(

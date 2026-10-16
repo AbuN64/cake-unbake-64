@@ -643,6 +643,7 @@ class StageRecord:
     dispatch_seconds: float = 0.0  # pool: wall the parent spent outside waiting on workers
     busy_seconds: float = 0.0  # pool: wall the workers spent inside jobs, summed
     spans: int = 1  # how many worker spans of one pool this record folds, by path
+    slot_seconds: float = 0.0  # pool: host slots held times the seconds held (the share peers left it), summed
 
 
 # ---------------------------------------------------------------- adapter protocols

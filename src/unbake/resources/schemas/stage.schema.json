@@ -256,6 +256,10 @@
   "spans": {
    "type": "integer",
    "minimum": 1
+  },
+  "slot_seconds": {
+   "type": "number",
+   "minimum": 0
   }
  },
  "required": [
