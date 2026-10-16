@@ -39,6 +39,22 @@ def _no_ownership(monkeypatch):  # the units here have no source to compile: the
     monkeypatch.setattr(ownership, "derive_pairs", lambda pairs, loose=False, recipe=None: list(pairs))
 
 
+def _each(submit: Any) -> Any:
+    """A land.submit_many over a fake land.submit: each call's Refusal is its own result."""
+    keys = ("request", "unit", "proofs", "source", "origin", "extras", "withhold", "snapshot")
+
+    def many(config: Config, calls: Any) -> list[Any]:
+        out = []
+        for call in calls:
+            try:
+                out.append(submit(config, *(call[k] for k in keys)))
+            except Refusal as refusal:
+                out.append(refusal)
+        return out
+
+    return many
+
+
 def member(name: str, versions: tuple[str, ...] = ("a", "b")) -> Member:
     places = tuple(Placement(v, ".text", 0x1000, 0x1008, 0x80000400) for v in versions)
     return Member(name, "function", "c", "g", places)
@@ -304,6 +320,7 @@ def mock_run(
         return {"running": False, "landed": [], "refused": []}
 
     monkeypatch.setattr(compare.land, "submit", fake_submit)
+    monkeypatch.setattr(compare.land, "submit_many", _each(fake_submit))
     monkeypatch.setattr(compare.land, "drain", fake_drain)
     return s
 
@@ -619,6 +636,7 @@ def _score_scene(
 
     monkeypatch.setattr(compare.native, "prove", prove)
     monkeypatch.setattr(compare.land, "submit", lambda *a, **k: pytest.fail("score never submits"))
+    monkeypatch.setattr(compare.land, "submit_many", lambda *a, **k: pytest.fail("score never submits"))
     monkeypatch.setattr(compare.land, "drain", lambda *a, **k: pytest.fail("score never lands"))
     return calls, params(tmp_path, version=None, lines=None) | {"flag": [], "omit_flag": [], "alloc": False}
 
@@ -1024,6 +1042,7 @@ def test_a_bulk_group_refused_at_entry_is_its_own_row_with_every_finding_and_the
         return fixture.submission(id="sub")
 
     monkeypatch.setattr(compare.land, "submit", fake_submit)
+    monkeypatch.setattr(compare.land, "submit_many", _each(fake_submit))
     base = {"function": None, "note": None, "withhold": False, "bulk": True, "toolchain": None}
     result = compare.submit_command(cfg, {**base, "files": [first, second], "flag": [], "omit_flag": []})
     rows = result["submissions"]
@@ -1195,11 +1214,11 @@ def _bulk_pair(
         return out
 
     monkeypatch.setattr(compare, "measure_bound", measured)
-    monkeypatch.setattr(
-        compare.land,
-        "submit",
-        lambda config, request, spec, *rest, **kw: fixture.submission(id=f"sub-{spec.path}", member=spec.members[0]),
+    entered = lambda config, request, spec, *rest, **kw: fixture.submission(  # noqa: E731
+        id=f"sub-{spec.path}", member=spec.members[0]
     )
+    monkeypatch.setattr(compare.land, "submit", entered)
+    monkeypatch.setattr(compare.land, "submit_many", _each(entered))
     files: list[Path] = []
     for name, text in headers.items():
         source, header = tmp_path / f"{name}.c", tmp_path / f"{name}.h"

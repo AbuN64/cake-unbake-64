@@ -945,6 +945,8 @@ def _movable(snapshot: Snapshot, rows: list[Json], census: list[Json]) -> list[J
     from unbake import move
     from unbake.contracts import Move
 
+    if not rows:
+        return rows
     why = {r["record"]: n for n, r in enumerate(census)}
     with effort.stage("report.fakes.movable"):
         bad = move.edit(snapshot, [Move(i, r["op"], r["subject"], r["target"]) for i, r in enumerate(rows)]).bad

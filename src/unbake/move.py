@@ -417,7 +417,8 @@ def edit(
         shifted = replace(lay, groups=groups, units=units, fuzzy=fuzzy, digest="", boundaries=bounds)
         mid = layout.overlay(snapshot, {**writes, "layout.toml": layout.dump_map(shifted)})
         split: list[Finding] = []
-        final = replace(mid.layout, units=layout.physical(mid, mid.layout, split, keep))
+        reflow = None if any(m.op == "relayout" for m in moves) else ()  # a move re-lays only the modules it changes
+        final = replace(mid.layout, units=layout.physical(mid, mid.layout, split, keep, reflow=reflow))
         if (final.groups, final.units, final.fuzzy, final.boundaries) != (
             lay.groups,
             lay.units,

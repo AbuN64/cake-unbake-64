@@ -749,25 +749,30 @@ def _enter(
     config: Config, snapshot: Snapshot, files: Sequence[Path], params: Json, overrides: Json, origin: str, done: Json
 ) -> Json:
     """Submit a proved candidate: a proving change set only when it has proofs and no finding."""
-    request = {"file": str(files[0]), "function": done["member"], "overrides": overrides, "note": params["note"] or ""}
-    if done["proving"] and (not done["proofs"] or done["found"]):  # refused unentered: name its source rules too
+    call = _entry(snapshot, files, params, overrides, origin, done)
+    if call is None:  # refused unentered: name its source rules too
         return {**done, "found": done["found"] + _source_rules(snapshot, done), "submission": None}
-    submission = (
-        None
-        if done["proving"] and (not done["proofs"] or done["found"])
-        else land.submit(
-            config,
-            request,
-            done["unit"],
-            done["proofs"],
-            moved.rewrite(snapshot, files[0].read_bytes())[0],
-            origin,
-            done["extras"],
-            bool(params["withhold"]),
-            snapshot,
-        )
-    )
-    return {**done, "submission": submission}
+    keys = ("request", "unit", "proofs", "source", "origin", "extras", "withhold", "snapshot")
+    return {**done, "submission": land.submit(config, *(call[k] for k in keys))}
+
+
+def _entry(
+    snapshot: Snapshot, files: Sequence[Path], params: Json, overrides: Json, origin: str, done: Json
+) -> dict[str, Any] | None:
+    """The `land.submit` arguments of a proved candidate, or None when it is refused before entry."""
+    if done["proving"] and (not done["proofs"] or done["found"]):
+        return None
+    request = {"file": str(files[0]), "function": done["member"], "overrides": overrides, "note": params["note"] or ""}
+    return {
+        "request": request,
+        "unit": done["unit"],
+        "proofs": done["proofs"],
+        "source": moved.rewrite(snapshot, files[0].read_bytes())[0],
+        "origin": origin,
+        "extras": done["extras"],
+        "withhold": bool(params["withhold"]),
+        "snapshot": snapshot,
+    }
 
 
 def _overrides(params: Json) -> dict[str, Any]:
@@ -884,6 +889,19 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
             except Refusal as refusal:
                 proved[n] = refusal
         _settle(proved, {p[1].path: n for n, p in bound.items()})
+        # every entering group's acceptance check runs in ONE dispatch; a refusal at entry is that group's row only
+        calls: dict[int, dict[str, Any]] = {}
+        for n, group in enumerate(groups[at : at + chunk]):
+            done = proved[n]
+            if isinstance(done, Refusal):
+                continue
+            call = _entry(snapshot, group, chunk_params, _overrides(params), "submit", done)
+            if call is None:
+                proved[n] = {**done, "found": done["found"] + _source_rules(snapshot, done), "submission": None}
+            else:
+                calls[n] = call
+        for n, entered in zip(calls, land.submit_many(config, list(calls.values())), strict=True):
+            proved[n] = entered if isinstance(entered, Refusal) else {**proved[n], "submission": entered}
         for n, group in enumerate(groups[at : at + chunk]):
             done = proved[n]
             file = group[0]
@@ -898,11 +916,6 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
                 "findings": [],
                 "consumers": {"count": 0, "wall": 0.0},
             }
-            if not isinstance(done, Refusal):
-                try:  # a refusal at entry is this group's row too: the other groups still enter
-                    done = _enter(config, snapshot, group, chunk_params, _overrides(params), "submit", done)
-                except Refusal as refusal:
-                    done = refusal
             if isinstance(done, Refusal):
                 row["findings"] = [asdict(f) for f in done.findings]
                 row["refused"] = True
