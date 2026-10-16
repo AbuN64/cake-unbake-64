@@ -16,6 +16,7 @@ from typing import Any, ClassVar, NamedTuple, cast
 from pycparser import CParser, c_ast, c_generator
 from pycparser.c_parser import Coord, ParseError
 
+from unbake import config as configuration
 from unbake import declarations as _declarations
 from unbake import effort, pool, store, symbols, types
 from unbake import view as _view
@@ -26,10 +27,24 @@ def _blank(text: str) -> str:
     return re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: re.sub(r"[^\n]", " ", m[0]), text, flags=re.S)
 
 
+def _kind_of(suffix: str) -> Callable[[str], bool]:
+    """The test a suffix names: ".c" any source (.c, .cpp, any case), ".h" any header, else that exact suffix."""
+    if suffix == ".c":
+        return configuration.is_source
+    if suffix == ".h":
+        return configuration.is_header
+    return lambda path: path.endswith(suffix)
+
+
 def sources(snapshot: Snapshot, place: str = "include", suffix: str = ".h") -> list[str]:
     root = snapshot.config.project.root
-    paths = set() if snapshot.tree else {p.relative_to(root).as_posix() for p in (root / place).rglob("*" + suffix)}
-    paths.update(p for p in snapshot.overlays if p.startswith(place + "/") and p.endswith(suffix))
+    kind = _kind_of(suffix)
+    paths = (
+        set()
+        if snapshot.tree
+        else {rel for p in (root / place).rglob("*") if p.is_file() and kind(rel := p.relative_to(root).as_posix())}
+    )
+    paths.update(p for p in snapshot.overlays if p.startswith(place + "/") and kind(p))
     return sorted(
         p
         for p in paths
@@ -81,7 +96,7 @@ def dangling(before: Snapshot, after: Snapshot, changed: Collection[str]) -> tup
     header no longer parses, so every unit including it fails whether or not its code reaches the name."""
     gone: set[str] = set()
     for path in changed:
-        if path.endswith(".h"):
+        if configuration.is_header(path):
             rows = [_declarations.dependencies((s.peek(path) or b"").decode()) for s in (before, after)]
             if rows[0] is None or rows[1] is None:
                 return tuple(changed)  # a header that cannot be read is a header that cannot be trusted
@@ -114,8 +129,12 @@ def reaching(before: Snapshot, after: Snapshot, changed: Collection[str], units:
     and no longer does takes its every declaration out."""
     gained = _closure(after, changed) - _closure(before, changed)
     lost = _closure(before, changed) - _closure(after, changed)  # a unit naming what it brought reads it no more
-    old = {p: _declarations.dependencies((before.peek(p) or b"").decode()) for p in changed if p.endswith(".h")}
-    new = {p: _declarations.dependencies((after.peek(p) or b"").decode()) for p in changed if p.endswith(".h")}
+    old = {
+        p: _declarations.dependencies((before.peek(p) or b"").decode()) for p in changed if configuration.is_header(p)
+    }
+    new = {
+        p: _declarations.dependencies((after.peek(p) or b"").decode()) for p in changed if configuration.is_header(p)
+    }
     if any(rows is None for rows in (*old.values(), *new.values())):
         return tuple(units)
     texts = {
@@ -368,7 +387,7 @@ def _scanned(snapshot: Snapshot, paths: list[str], pinned: Mapping[str, str] | N
     keys: list[tuple[str, bool]] = []
     fresh: dict[tuple[str, bool], tuple[bytes, bool]] = {}
     for path in paths:
-        source, text = path.endswith(".c"), None
+        source, text = configuration.is_source(path), None
         if pinned is None or path not in pinned:
             text = snapshot.read(path)
         key = (pinned[path] if text is None and pinned is not None else sha256(text or b""), source)
@@ -1040,7 +1059,7 @@ def changed(old: bytes | None, new: bytes | None, path: str) -> frozenset[str] |
     its includes differ, so what it makes visible changed and every reader of it is affected."""
     if _quoted(old or b"") != _quoted(new or b""):
         return None
-    source = path.endswith(".c")
+    source = configuration.is_source(path)
 
     def rows(text: bytes | None) -> set[tuple[str, str]]:
         scan = _file_job((text or b"", source))
@@ -1526,7 +1545,7 @@ def _appended(text: str, body: str) -> str:
 
 def wrapped(path: str, body: str) -> str:
     """The body inside the include guard that the header path names: <PATH BELOW include/>_H, no tool name."""
-    guard = re.sub(r"[^A-Z0-9]", "_", f"{path.removeprefix('include/').removesuffix('.h')}_H".upper())
+    guard = re.sub(r"[^A-Z0-9]", "_", f"{re.sub(r'(?i)[.]h$', '', path.removeprefix('include/'))}_H".upper())
     return f"#ifndef {guard}\n#define {guard}\n\n{body.strip(chr(10))}\n\n#endif\n"
 
 
@@ -1969,7 +1988,7 @@ def _each(snapshot: Snapshot, place: str, suffix: str) -> dict[str, str]:
             return {p: _view._pin(snapshot, p) for p in sources(snapshot, place, suffix)}
         found = dict(_each(parent, place, suffix))
         for path, data in snapshot.overlays.items():
-            if not path.startswith(place + "/") or not path.endswith(suffix) or path.startswith(libraries):
+            if not path.startswith(place + "/") or not _kind_of(suffix)(path) or path.startswith(libraries):
                 continue
             if path in parent.overlays and parent.overlays[path] == data:
                 continue
@@ -2472,7 +2491,7 @@ def reconcile(
     """The writes with every name a written header declares once: the declaration in its owner stays, the others in
     written headers go and those include the owner. A name spelled with another type than the owner's, or one this
     cannot drop, is a finding naming both places. overlay is the snapshot with the writes applied."""
-    edited = {p for p, d in writes.items() if p.endswith(".h") and d is not None}
+    edited = {p for p, d in writes.items() if configuration.is_header(p) and d is not None}
     known = types.authority(snapshot)
     authority = {n: _unnamed(_normal(_type_of(normal(r["signature"]), n))) for n, r in known["function"].items()}
     authority.update(
@@ -2679,9 +2698,10 @@ def relocate(
     # the shared headers (repo.toml [layout]) are the base every other header builds on: they include only each
     # other, so a header that includes any other one never merges into them (it would put that header, and every
     # header it reaches, under everything that includes the base, in a cycle with its own includers)
-    from unbake import config as configuration
 
-    base = frozenset(configuration.load_resource("repo.toml")["layout"]["shared_headers"])
+    config = getattr(snapshot, "config", None)  # a walk over bare header texts reads the tool's own rows
+    rows = configuration.layout_rows(config.project) if config else configuration.load_resource("repo.toml")["layout"]
+    base = frozenset(rows["shared_headers"])
     leaf_memo: dict[tuple[str, int, int], set[int]] = {}
     # a names part (origin "") by the identity of its pending tuple: the header it came from and the names it took
     named: dict[int, tuple[str, frozenset[str]]] = {}
@@ -3100,19 +3120,19 @@ def respell(
             continue
         known = files.get(path)
         current = known if known is not None else (snapshot.peek(path) or b"").decode(errors="replace")
-        text = rewrite_includes(current, moved, path) if path.endswith((".c", ".h")) else current
+        text = rewrite_includes(current, moved, path) if configuration.is_text(path) else current
         words = set(re.findall(r"\w+", text))
         for old, new, names in stay:
             if path != new and names & words and rewrite_includes(text, {old: ""}, path) != text:
                 text = included(text, [new.removeprefix("include/")])
         for tag in sorted(set(folded) & words):
-            text = drop_record(text, tag) if path.endswith((".c", ".h")) else _drop_row(text, tag)
+            text = drop_record(text, tag) if configuration.is_text(path) else _drop_row(text, tag)
         spelled = sorted(symbols.tokens(text) & renames.keys())
         for old in spelled:
             text = symbols.rewrite(text, old, renames[old])
         texts[path] = text
         # several names may now be one: each typedef stays once per file, also where an included file now repeats it
-        if (spelled or words & targets) and path.endswith((".c", ".h")):
+        if (spelled or words & targets) and configuration.is_text(path):
             deduped.append(path)
         if path in files or text != current:
             writes[path] = text.encode()
@@ -3493,7 +3513,6 @@ def _probe_job(item: tuple[Snapshot, UnitSpec, str, str, Any]) -> dict[str, Any]
 def probe(snapshot: Snapshot, versions: Sequence[str]) -> list[dict[str, Any]]:
     """Every header under include/ compiled alone in each version, with the flags of the project's first C unit
     outside the libraries, over the pool: the header oracle that needs no make."""
-    from unbake import config as configuration
     from unbake import layout, recipes
 
     library = tuple(f.rstrip("/") + "/" for f in snapshot.config.project.library_dirs)

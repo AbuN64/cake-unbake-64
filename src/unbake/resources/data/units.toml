@@ -4,6 +4,12 @@
 # no phase expands (assembler includes, incbin) is `cacheable = false` and says why in `uncacheable`.
 schema = 1
 
+# What a source and a header are, compared without case: a project keeps the names its evidence gives (TURRETAI.CPP),
+# and every source compiles through its kind's phases whatever its suffix says (cc1 reads the preprocessed text).
+[files]
+source = [".c", ".cpp"]
+header = [".h"]
+
 [kind.c]
 phases = ["preprocess", "compile", "assemble", "link"]
 credit = "code"

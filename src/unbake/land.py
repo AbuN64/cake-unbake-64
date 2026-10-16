@@ -436,7 +436,7 @@ def declaration_users(before: Snapshot, after: Snapshot, affected: set[str], cha
     # a header naming a dropped declaration no longer parses: each of its includers breaks, used or not
     broken = affected & {*dead, *headers.consumers(after, dead)}
     for path in changed:
-        if path.endswith(".h"):
+        if configuration.is_header(path):
             old, new = (declarations.dependencies((s.peek(path) or b"").decode()) for s in (before, after))
             if old is None or new is None:
                 return affected
@@ -550,13 +550,15 @@ def check_command(config: Config, params: Json) -> Json:
                 )
                 .stdout.decode()
                 .split("\0")
-                if p.endswith((".c", ".h"))
+                if configuration.is_text(p)
             ]
             paths = sorted(set(diffed) | _project_units(snapshot, staged))
             changes = {p: ((snapshot.peek(p) or b"").decode(), (staged.peek(p) or b"").decode()) for p in paths}
             findings, _ = policy.census(staged, changes=changes, baseline=snapshot)
             blocking = tuple(f for f in findings if f.blocking)
-            duplicate = [f for p, (_, text) in changes.items() if p.endswith(".h") for f in headers.duplicates(p, text)]
+            duplicate = [
+                f for p, (_, text) in changes.items() if configuration.is_header(p) for f in headers.duplicates(p, text)
+            ]
             if paths:
                 affected = set(headers.consumers(staged, paths)) | set(headers.consumers(snapshot, paths))
                 affected.update(p for p in paths if p in staged.layout.units)
@@ -693,7 +695,7 @@ def _live_words(snapshot: Snapshot) -> set[str]:
     """Every word of the live text of every decompiled unit in every version it holds."""
     words: set[str] = set()
     for unit in snapshot.layout.units.values():
-        if not unit.path.endswith(".c") or not configuration.kind(unit.kind)["decompiled"]:
+        if not configuration.is_source(unit.path) or not configuration.kind(unit.kind)["decompiled"]:
             continue
         for version in sorted(snapshot.layout.held(unit.members)):
             source = view.get(snapshot, unit, version, recipes.resolve(snapshot.config, unit, {}), lines=False)
@@ -710,7 +712,7 @@ def _prototype_users(trial: Snapshot, paths: Sequence[str]) -> set[str]:
     """The units that read one of the written files: the sources among them and the includers of the headers."""
     return {
         p
-        for p in (*paths, *headers.consumers(trial, [p for p in paths if p.endswith(".h")]))
+        for p in (*paths, *headers.consumers(trial, [p for p in paths if configuration.is_header(p)]))
         if p in trial.layout.units
     }
 

@@ -139,7 +139,7 @@ def referenced(snapshot: Snapshot, table: Mapping[str, Mapping[str, Any]]) -> se
     with effort.stage("symbols.referenced"):
         found: set[str] = set()
         for unit in snapshot.layout.units.values():
-            if unit.path.endswith(".c"):
+            if config.is_source(unit.path):
                 found |= tokens(snapshot.read(unit.path).decode(errors="replace")) & table.keys()
         return found
 

@@ -47,12 +47,12 @@ def _conflict_job(item: tuple[Any, ...]) -> list[Any]:
 
 
 def _contexts(snapshot: Snapshot, authored: Json) -> tuple[dict[str, tuple[str, int, str]], list[Finding]]:
-    paths = [*headers.sources(snapshot), *(p for p in snapshot.layout.units if p.endswith(".c"))]
+    paths = [*headers.sources(snapshot), *(p for p in snapshot.layout.units if configuration.is_source(p))]
     scans = headers._scanned(snapshot, paths)
     catalogue = {
         name: (path, line, text)
         for path, scan in reversed(list(zip(paths, scans, strict=True)))
-        if path.endswith(".h")
+        if configuration.is_header(path)
         for name, line, text in reversed(scan["declared"])
     }
     # Partition by name, keeping all declarations of a name together. Parsing happens once per file.
@@ -97,7 +97,7 @@ def _sources(snapshot: Snapshot, real_root: str, kinds: Json) -> list[Any]:
     config = snapshot.config
     jobs: list[Any] = []
     for unit in snapshot.layout.units.values():
-        if not unit.path.endswith(".c") or not kinds[unit.kind]["decompiled"]:
+        if not configuration.is_source(unit.path) or not kinds[unit.kind]["decompiled"]:
             continue
         held = compare.holders(snapshot, unit)
         if held:
@@ -154,7 +154,7 @@ def _analysis(snapshot: Snapshot, real_root: str, kinds: Json) -> tuple[list[Any
     pins = [
         view.closure(snapshot, unit, version)
         for unit in snapshot.layout.units.values()
-        if unit.path.endswith(".c") and kinds[unit.kind]["decompiled"]
+        if configuration.is_source(unit.path) and kinds[unit.kind]["decompiled"]
         for version in sorted(compare.holders(snapshot, unit))
     ]
     key = digest((code_identity(_derive_all), snapshot.digest, pins))
@@ -283,7 +283,7 @@ def run(config: Config, params: Json) -> Json:
         leftovers = [
             p
             for p, raw in writes.items()
-            if p.endswith(".c")
+            if configuration.is_source(p)
             and any(
                 _is_view(n)
                 for n in re.findall(r"\(\s*(?:struct\s+)?(\w+)\s*\*\s*\)", policy.scopes(raw.decode())["code"])
@@ -295,7 +295,7 @@ def run(config: Config, params: Json) -> Json:
         home = out / result["id"]
         for path, raw in writes.items():
             store.write(home / path, raw)
-        sources = sorted(p for p in writes if p.endswith(".c"))
+        sources = sorted(p for p in writes if configuration.is_source(p))
         if not sources:
             continue
         primary = sources[0]

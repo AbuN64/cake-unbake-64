@@ -870,7 +870,7 @@ def addresses(snapshot: Snapshot, debt: Sequence[Any]) -> tuple[dict[tuple[str, 
         users = [
             (snapshot, unit, version)
             for unit in units.values()
-            if unit.path.endswith(".c")
+            if config.is_source(unit.path)
             for version in held(unit)
             if (unit.path, version) not in failed
             and names & symbols.tokens(snapshot.read(unit.path).decode(errors="replace"))

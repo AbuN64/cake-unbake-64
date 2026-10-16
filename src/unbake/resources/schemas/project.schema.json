@@ -275,6 +275,84 @@
     }
    },
    "additionalProperties": false
+  },
+  "layout": {
+   "type": "object",
+   "properties": {
+    "subsystem_header": {
+     "type": "string",
+     "minLength": 1
+    },
+    "library_header": {
+     "type": "string",
+     "minLength": 1
+    },
+    "subsystem_source": {
+     "type": "string",
+     "minLength": 1
+    },
+    "library_source": {
+     "type": "string",
+     "minLength": 1
+    },
+    "shared_headers": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    }
+   },
+   "additionalProperties": false
+  },
+  "naming": {
+   "description": "The project's naming style for paths a structure tool assigns (read by recipe; unbake records paths as given).",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "case": {
+     "enum": [
+      "as-is",
+      "upper",
+      "lower"
+     ]
+    },
+    "stem_max": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "source_ext": {
+     "type": "string",
+     "pattern": "^[.]"
+    },
+    "stem": {
+     "type": "string",
+     "minLength": 1
+    },
+    "subsystem": {
+     "type": "string",
+     "minLength": 1
+    },
+    "shared_dir": {
+     "type": "string",
+     "minLength": 1
+    },
+    "data_dir": {
+     "type": "string",
+     "minLength": 1
+    },
+    "part": {
+     "type": "string",
+     "minLength": 1
+    },
+    "evidence": {
+     "enum": [
+      "keep",
+      "upper",
+      "lower"
+     ]
+    }
+   }
   }
  },
  "required": [

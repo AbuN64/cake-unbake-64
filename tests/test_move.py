@@ -398,7 +398,25 @@ def test_an_unplaced_module_takes_only_a_shared_or_unbound_header(
     ],
 )
 def test_a_source_path_places_its_module(source: str, placed: tuple[str, str]) -> None:
-    assert move._placement(source) == placed
+    assert move._placement(source, configuration.load_resource("repo.toml")["layout"]) == placed
+
+
+def test_a_project_layout_places_evidence_paths_and_a_library_folder_wins_over_a_subsystem_prefix() -> None:
+    rows = {**configuration.load_resource("repo.toml")["layout"], "subsystem_source": "src/{subsystem}"}
+    assert move._placement("src/AI/ENEMIES/TURRETAI.CPP", rows) == ("AI/ENEMIES", "")
+    assert move._placement("src/sdk/libgultra/getsr.c", rows) == ("", "libgultra")
+
+
+def test_a_source_move_takes_an_evidenced_upper_case_cpp_path(tmp_path: Path, seen: Any) -> None:
+    rows = '[layout]\nsubsystem_source = "src/{subsystem}"\nsubsystem_header = "include/{subsystem}.H"\n'
+    cfg = world(tmp_path)
+    path = cfg.project.root / "config.toml"
+    path.write_text(path.read_text() + "\n" + rows)
+    cfg = configuration.load(cfg.project.root, fixture.host(tmp_path))
+    result = go(cfg, "source", "ga", "src/AI/ENEMIES/TURRETAI.CPP")
+    assert result["refused"] == []
+    after = layout.overlay(move.layout.capture(cfg), seen.plans[-1].writes)
+    assert after.layout.groups["ga"].subsystem == "AI/ENEMIES" and "src/AI/ENEMIES/TURRETAI.CPP" in after.layout.units
 
 
 def test_every_module_of_a_library_takes_the_library_header_not_only_the_first(tmp_path: Path, seen: Any) -> None:

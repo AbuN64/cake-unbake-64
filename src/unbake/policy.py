@@ -120,7 +120,7 @@ def _header_names(snapshot: Snapshot | None, active: str) -> dict[str, int]:
 def _shared(code: str, source: SourceView, path: str, snapshot: Snapshot | None = None) -> set[int]:
     header_names: set[Any] = set()
     for header, _ in source.dependencies:
-        if header != path and header.endswith(".h"):
+        if header != path and config.is_header(header):
             header_names.update(_header_names(snapshot, _active(source, header)))
     return {line for name, line in _declarations(code).items() if name in header_names}
 
@@ -458,7 +458,7 @@ def _header_guards(snapshot: Snapshot, path: str, text: str) -> set[int]:
     """The guard lines of a header whose version-only `#if` chains really split the ROMs: the branches partition the
     versions into sides, and a code function of a unit that mentions a name the chain defines or declares holds bytes
     that differ between every pair of sides. The compile and ROM proof of those units still has to be exact."""
-    if not path.endswith(".h") or "VERSION_" not in text or path in snapshot.layout.units:
+    if not config.is_header(path) or "VERSION_" not in text or path in snapshot.layout.units:
         return set()
     return effort.memo(
         ("header-guards", snapshot.digest, path, digest(text)), lambda: _header_guard_lines(snapshot, path, text)
@@ -612,7 +612,7 @@ def _hits(
     """{line: subject} of one rule, the subject being the text that identifies the finding across edits around it."""
     code = scopes["code"]
     if "regex" in rule:
-        if rule.get("files") == "source" and path.endswith(".h"):
+        if rule.get("files") == "source" and config.is_header(path):
             return {}
         scoped = scopes[rule["scope"]]
         number = _numbered(scoped)
@@ -627,7 +627,7 @@ def _hits(
             found = {n: t for n, t in found.items() if n not in allowed}
         return found
     check = rule["check"]
-    if check == "placeholder-record" and path.endswith(".h"):
+    if check == "placeholder-record" and config.is_header(path):
         return {}
     if check in ("fake-type", "pad-view", "placeholder-record", "param-cast", "address-int"):
         found = getattr(typedebt, check.replace("-", "_"))(code)
@@ -789,7 +789,7 @@ def _census_unit(item: tuple[Snapshot, UnitSpec]) -> tuple[Finding, ...]:
     sdk = snapshot.layout.groups[unit.group].sdk
     text = snapshot.read(unit.path).decode()
     # evaluate reads the unit text and the active lines of the unit and its headers: other edits keep the verdict warm
-    files = [unit.path, *(p for p, _ in source.dependencies if p.endswith(".h"))]
+    files = [unit.path, *(p for p, _ in source.dependencies if config.is_header(p))]
     guards = _allowed_guards(snapshot, unit.path, text)
     key = digest(
         (
@@ -892,7 +892,7 @@ def _changed_findings(snapshot: Snapshot, texts: Mapping[str, str], *, baseline:
     group it no longer defines: its old text has no group to classify it by and counts for nothing, so the new text is
     judged strictly. The staged layout itself must be whole."""
     headers: dict[str, Any] = {}
-    if any(p.endswith(".h") for p in texts):
+    if any(config.is_header(p) for p in texts):
         kinds = config.kinds()
         for unit in snapshot.layout.units.values():
             if (
@@ -907,7 +907,7 @@ def _changed_findings(snapshot: Snapshot, texts: Mapping[str, str], *, baseline:
     findings: list[Any] = []
     for path, text in texts.items():
         owner = snapshot.layout.units.get(path)
-        if not path.endswith(".h") and (owner is None or not snapshot.layout.held(owner.members)):
+        if not config.is_header(path) and (owner is None or not snapshot.layout.held(owner.members)):
             continue
         if baseline and owner and owner.group not in snapshot.layout.groups:
             continue
@@ -956,7 +956,7 @@ def census(
         headers: dict[str, Any] = {}
         for _, unit in items:  # a header is judged once, as SDK only when every unit that reads it is
             for path, _ in _view.closure(snapshot, unit, _census_version(snapshot, unit)):
-                if path.endswith(".h"):
+                if config.is_header(path):
                     headers[path] = headers.get(path, True) and snapshot.layout.groups[unit.group].sdk
         found = pool.gather(
             snapshot.config,
@@ -1234,7 +1234,11 @@ def audit_command(params: Json) -> Json:
     sdk_of = {g["name"]: g.get("sdk", False) for g in layout_doc.get("group", ())}
     sdk = {u["path"]: sdk_of.get(u["group"], False) for u in layout_doc.get("unit", ())}
     library = tuple(project.get("library_dirs", ()))
-    names = run("diff", "--name-only", "-z", "--no-renames", against, "--", "*.c", "*.h").decode().split("\0")
+    names = (
+        run("diff", "--name-only", "-z", "--no-renames", against, "--", ":(icase)*.c", ":(icase)*.cpp", ":(icase)*.h")
+        .decode()
+        .split("\0")
+    )
     paths = sorted(p for p in names if p and not any(Path(p).is_relative_to(d) for d in library))
     before: list[Finding] = []
     after: list[Finding] = []

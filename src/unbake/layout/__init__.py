@@ -521,8 +521,9 @@ def unit_path(layout: LayoutMap, group: str, taken: Collection[str]) -> str:
     """The path of the group's next unit: its source, then `<source stem>_2.c`, `_3.c` (CONTRACTS 2.2 step 4)."""
     known = layout.groups.get(group)
     base = known.source if known else f"src/{group}.c"
-    stem = base.removesuffix(".c")
-    return next(p for p in chain([base], (f"{stem}_{k}.c" for k in count(2))) if p not in taken)
+    stem = configuration.source_stem(base)
+    suffix = base[len(stem) :]  # a unit keeps its module's suffix and case: TURRETAI.CPP, TURRETAI_2.CPP
+    return next(p for p in chain([base], (f"{stem}_{k}{suffix}" for k in count(2))) if p not in taken)
 
 
 def _defines(snapshot: Snapshot, unit: UnitSpec) -> tuple[str, ...]:
@@ -893,8 +894,9 @@ def physical(
         def scheme(group: str, path: str) -> bool:
             """Whether a path is one of the file names unit_path gives the module's units."""
             base = unit_path(layout, group, ())
+            stem = configuration.source_stem(base)
             return path == base or bool(
-                re.fullmatch(rf"{re.escape(base.removesuffix('.c'))}_(?:[2-9]|[1-9]\d+)\.c", path)
+                re.fullmatch(rf"{re.escape(stem)}_(?:[2-9]|[1-9]\d+){re.escape(base[len(stem) :])}", path)
             )
 
         def settled(group: Group, landed: set[str]) -> bool:

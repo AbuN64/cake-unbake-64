@@ -91,12 +91,37 @@
     ],
     "additionalProperties": false
    }
+  },
+  "files": {
+   "type": "object",
+   "properties": {
+    "source": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^\\.[a-z0-9]+$"
+     }
+    },
+    "header": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^\\.[a-z0-9]+$"
+     }
+    }
+   },
+   "required": [
+    "source",
+    "header"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [
   "schema",
   "kind",
-  "section"
+  "section",
+  "files"
  ],
  "additionalProperties": false
 }

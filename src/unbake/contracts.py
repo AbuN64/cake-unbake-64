@@ -360,6 +360,7 @@ class Project:
     # proven cuts and its source path is evidenced, e.g. a debug record's __FILE__
     evidence_objects: tuple[Json, ...] = ()
     lattice: tuple[str, ...] = ()  # [flags] lattice: compiler options the project adds to the toolchain's lattice
+    layout: Json = field(default_factory=dict)  # [layout]: rows over repo.toml [layout] (config.layout_rows)
 
 
 @dataclass(frozen=True)

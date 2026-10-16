@@ -103,7 +103,8 @@ def _index(snapshot: Snapshot, version: str) -> _Index:
             rows,
             {r[0]: i for i, r in enumerate(rows)},
             first,
-            digest(rows),
+            digest([(r[0], r[1], r[3], r[4]) for r in rows]),  # where rows lie, not their names: a placement reads
+            # no name, so a move that renames or re-homes a data row keeps every unit's key
             sorted((r[4], r[4] + r[1] - r[0], r[0], r[1]) for r in rows),
             snapshot.versions[version].segments,
         )

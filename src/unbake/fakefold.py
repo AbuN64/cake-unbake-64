@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
+from unbake import config as configuration
 from unbake.contracts import Json
 from unbake.families import typedebt
 
@@ -73,7 +74,9 @@ def reaches(texts: Mapping[str, str], names: Iterable[str]) -> dict[str, dict[st
             indent, storage, name, stars, declarator = m[1], m[2], m[3], m[4], m[5]
             if re.match(r"\s*typedef\b", text[text.rfind("\n", 0, m.start()) + 1 : m.start()]):
                 continue
-            kind = "data" if not indent or storage == "extern" else "member" if path.endswith(".h") else "local"
+            kind = (
+                "data" if not indent or storage == "extern" else "member" if configuration.is_header(path) else "local"
+            )
             found[name][kind]["*" * bool(stars.strip()) + declarator] += 1
         for m in params.finditer(text):
             found[m[1]]["local"]["*" * bool(m[2]) + m[3]] += 1

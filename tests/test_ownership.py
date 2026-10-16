@@ -889,3 +889,26 @@ def test_a_low_half_ref_aligns_to_the_targets_own_instruction_when_the_candidate
     assert ownership._loaded(rom, 0, 8) == 0x800C85EC
     assert ownership._aligned(rom, 0, rom, [(8, 0)]) == [(8, 0)]  # a candidate equal to the target: kept
     assert ownership._aligned(bytes(16), 0, code, [(12, 0)]) == []  # no lo near: the ref forms nothing
+
+
+def test_a_move_that_renames_a_data_row_keeps_the_index_digest_every_ownership_key_reads(monkeypatch):
+    # cutover slow step: one member move renamed or re-homed a data row and the index digest of the whole version
+    # moved, so all 5,446 units' layout.ownership keys went cold (404 s for one move)
+    monkeypatch.setattr(ownership.versions, "rom_view", lambda record: word(1, 2, 3, 4))
+
+    def snapshot(name, digest):
+        rows = [SimpleNamespace(version="a", section=".rodata", rom_start=0, rom_end=8, vram=0x80000000)]
+        moved = [SimpleNamespace(version="a", section=".data", rom_start=8, rom_end=16, vram=0x80000008)]
+        members = {
+            "D_80000000": SimpleNamespace(kind="data", name="D_80000000", placements=rows),
+            name: SimpleNamespace(kind="data", name=name, placements=moved),
+        }
+        record = SimpleNamespace(segments=())
+        return SimpleNamespace(versions={"a": record}, layout=SimpleNamespace(members=members), digest=digest)
+
+    before = ownership._index(snapshot("D_80000008", "one"), "a")
+    after = ownership._index(snapshot("rodata/func_80000010/80000008", "two"), "a")
+    assert before.rows != after.rows and before.digest == after.digest
+    shifted = snapshot("D_80000008", "three")
+    shifted.layout.members["D_80000008"].placements[0].rom_end = 12  # a row cut elsewhere: placements may differ
+    assert ownership._index(shifted, "a").digest != before.digest

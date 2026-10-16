@@ -130,7 +130,7 @@ def make_plan(
 def _credits(path: str) -> bool:
     """Whether a write can move the credit a report shows: the map (units, fuzzy rows, splits) or a source's text,
     which decides its unclean findings."""
-    return path == "layout.toml" or path.endswith((".c", ".h"))
+    return path == "layout.toml" or configuration.is_text(path)
 
 
 _PRESENT: ContextVar[bool] = ContextVar("present", default=True)  # false while admission only asks whether land refuses
@@ -470,7 +470,7 @@ def _option_plan(
     )
     writes.update((p, b) for p, b in folded.items() if p != unit.path)
     with effort.stage("publish.reconcile"):
-        written = {p: b for p, b in writes.items() if p.endswith(".h")}
+        written = {p: b for p, b in writes.items() if configuration.is_header(p)}
         # a name is declared once: a copy in a written header goes to its owner
         writes, reconciled = headers.reconcile(snapshot, _overlay(snapshot, written), writes)
         clashes = _new_clashes(snapshot, written, reconciled)
@@ -499,7 +499,7 @@ def _option_plan(
     overlay = _overlay(snapshot, writes)  # the type map and generated files follow once per drain (generate)
     group = proposed.layout.groups[unit.group]
     affected = {option.path, *extras.keys() & overlay.layout.units.keys()}
-    edited = [p for p, data in writes.items() if p.endswith(".h") and data != snapshot.peek(p)]
+    edited = [p for p, data in writes.items() if configuration.is_header(p) and data != snapshot.peek(p)]
     with effort.stage("publish.consumers"):
         found = headers.consumers(overlay, edited)
         known = [p for p in found if p in snapshot.layout.units]
@@ -544,7 +544,7 @@ def _evaluate(
 ) -> None:
     """The policy findings of every written source, before and after the write."""
     for path, data in writes.items():
-        if Path(path).suffix not in (".c", ".h"):
+        if not configuration.is_text(path):
             continue
         owner = overlay.layout.units.get(path)
         sdk = overlay.layout.groups[owner.group].sdk if owner else group.sdk
@@ -698,7 +698,7 @@ def credit_guard(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> None
 
     with effort.stage("publish.credit_guard"):
         overlay = layout.overlay(snapshot, writes)
-        changed = [p for p in writes if p.endswith(".h") and snapshot.peek(p) is not None]
+        changed = [p for p in writes if configuration.is_header(p) and snapshot.peek(p) is not None]
         affected = {p for p in writes if p in snapshot.layout.units and p in overlay.layout.units}
         if changed:
             affected |= {p for p in headers.consumers(overlay, changed) if p in snapshot.layout.units}

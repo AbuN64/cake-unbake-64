@@ -130,6 +130,37 @@ def library(project: Project, path: str) -> bool:
     return any(Path(path).is_relative_to(folder) for folder in project.library_dirs)
 
 
+@cache
+def _suffixes(role: str) -> tuple[str, ...]:
+    return tuple(load_resource("units.toml")["files"][role])
+
+
+def layout_rows(project: Project) -> Json:
+    """repo.toml [layout] with the project's own [layout] rows over it: where its module sources and headers live and
+    which headers are the shared base (a project may keep its evidence's style, e.g. src/{subsystem}, upper case)."""
+    return {**load_resource("repo.toml")["layout"], **project.layout}
+
+
+def is_source(path: str) -> bool:
+    """Whether a path is a C source (units.toml [files] source, any case: src/AI/ENEMIES/TURRETAI.CPP is one)."""
+    return path.lower().endswith(_suffixes("source"))
+
+
+def is_header(path: str) -> bool:
+    """Whether a path is a header (units.toml [files] header, any case)."""
+    return path.lower().endswith(_suffixes("header"))
+
+
+def is_text(path: str) -> bool:
+    """A source or a header: text the C tools read."""
+    return is_source(path) or is_header(path)
+
+
+def source_stem(path: str) -> str:
+    """A source path without its source suffix: src/AI/ENEMIES/TURRETAI.CPP -> src/AI/ENEMIES/TURRETAI."""
+    return path[: -len(next(s for s in _suffixes("source") if path.lower().endswith(s)))] if is_source(path) else path
+
+
 def kind(name: str) -> Json:
     return _table("units.toml", "kind", name)
 
@@ -361,6 +392,7 @@ def load_project(root: Path, reader: Callable[[str], bytes] | None = None) -> Pr
         readme_map_link=info.get("readme_map_link"),
         evidence_objects=tuple(document.get("evidence", {}).get("object", ())),
         lattice=tuple(document.get("flags", {}).get("lattice", ())),
+        layout=dict(document.get("layout", {})),
     )
 
 

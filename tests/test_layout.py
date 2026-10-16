@@ -1937,3 +1937,12 @@ def test_code_another_version_names_between_the_same_members_takes_its_rows(scen
         ),
     )
     assert layout._versioned(snapshot, {"versioned": 0}) == {}
+
+
+def test_a_units_file_name_keeps_its_module_sources_suffix_and_case() -> None:
+    from unbake.contracts import Group, LayoutMap
+
+    group = Group("m", "main", (), "authored", (), False, "src/AI/ENEMIES/TURRETAI.CPP", "include/AI/ENEMIES.H")
+    lay = LayoutMap({"m": group}, {}, {}, "d", (), {})
+    assert layout.unit_path(lay, "m", ()) == "src/AI/ENEMIES/TURRETAI.CPP"
+    assert layout.unit_path(lay, "m", {"src/AI/ENEMIES/TURRETAI.CPP"}) == "src/AI/ENEMIES/TURRETAI_2.CPP"

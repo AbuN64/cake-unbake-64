@@ -276,3 +276,18 @@ def test_project_evidence_rows_and_lattice_options_load(tmp_path: Path, toolchai
     path.write_text(path.read_text() + "\n" + row + '\n[flags]\nlattice = ["-fno-gcse"]\n')
     project = configuration.load_project(root)
     assert project.evidence_objects[0]["source"] == "AI/ENEMIES/TURRETAI.CPP" and project.lattice == ("-fno-gcse",)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "header", "stem"),
+    [
+        ("src/a.c", True, False, "src/a"),
+        ("src/AI/ENEMIES/TURRETAI.CPP", True, False, "src/AI/ENEMIES/TURRETAI"),
+        ("src/X.C", True, False, "src/X"),
+        ("include/AI/ENEMIES.H", False, True, "include/AI/ENEMIES.H"),
+        ("asm/a.s", False, False, "asm/a.s"),
+    ],
+)
+def test_sources_and_headers_are_known_by_suffix_in_any_case(path: str, source: bool, header: bool, stem: str) -> None:
+    found = (configuration.is_source(path), configuration.is_header(path), configuration.source_stem(path))
+    assert found == (source, header, stem) and configuration.is_text(path) == (source or header)

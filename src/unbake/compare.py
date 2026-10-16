@@ -389,8 +389,8 @@ def _extra(snapshot: Snapshot, spec: Path) -> tuple[str, bytes]:
     target, equals, source = str(spec).partition("=")
     if equals and not spec.exists():
         path = (root / target).resolve()
-        fresh = path.is_relative_to(root / "include") and target.endswith(".h")
-        if target.endswith(".c") and not path.is_file():
+        fresh = path.is_relative_to(root / "include") and configuration.is_header(target)
+        if configuration.is_source(target) and not path.is_file():
             raise Refusal(
                 Finding(
                     "land.request",
@@ -440,7 +440,7 @@ def _proof_set(
     `consumers` (every other unit including a changed header and using a declaration it alters, which must not get
     worse). A change set with no header extra has no consumers. `strict` (recovery)
     proves the primary exactly even alone."""
-    changed_headers = [p for p in extras if p.endswith(".h")]
+    changed_headers = [p for p in extras if configuration.is_header(p)]
     includers = {
         p
         for p in headers.consumers(bound, changed_headers)
@@ -536,7 +536,7 @@ def _prepare(
     unit, bound = bind(
         layout.overlay(snapshot, extras) if extras else snapshot, files[0], params["function"], rewritten
     )
-    for path in (p for p in extras if p.endswith(".h") and snapshot.peek(p) is None):
+    for path in (p for p in extras if configuration.is_header(p) and snapshot.peek(p) is None):
         if not headers.consumers(bound, [path]):
             raise Refusal(
                 Finding("land.request", "the new header is included by no source", path=path, action="include it")

@@ -40,7 +40,10 @@ _SPLITS = 12  # rounds a command spends halving sets one cause blamed; then such
 _REAPPLY = 1  # proof-found boundaries re-apply a batch at most this many times per command: work lands early
 _OPS = ("symbol", "type", "member", "module", "source", "header", "file", "options", "relayout")
 _NAME = re.compile(r"[A-Za-z_]\w*")
-_PATH = {"source": re.compile(r"src/[\w+.-]+(/[\w+.-]+)*\.c"), "header": re.compile(r"include/[\w+.-]+(/[\w+.-]+)*\.h")}
+_PATH = {  # any case: a project keeps the names its evidence gives (src/AI/ENEMIES/TURRETAI.CPP)
+    "source": re.compile(r"src/[\w+.-]+(/[\w+.-]+)*\.(?i:c|cpp)"),
+    "header": re.compile(r"include/[\w+.-]+(/[\w+.-]+)*\.(?i:h)"),
+}
 
 
 def _flag_set(text: str) -> Json | None:
@@ -58,27 +61,25 @@ def _flag_set(text: str) -> Json | None:
     return {"add": list(lists[0]), "omit": list(lists[1])}
 
 
-def _placement(source: str) -> tuple[str, str]:
-    """(subsystem, library) a module's source path places it in (repo.toml [layout] subsystem_source,
-    library_source): src/sdk/libgultra/getsr.c is library libgultra, src/game/main/actor/x.c subsystem main/actor."""
-    rows = configuration.load_resource("repo.toml")["layout"]
+def _placement(source: str, rows: Json) -> tuple[str, str]:
+    """(subsystem, library) a module's source path places it in (config.layout_rows subsystem_source,
+    library_source): src/sdk/libgultra/getsr.c is library libgultra, src/game/main/actor/x.c subsystem main/actor.
+    A library folder is never a subsystem, also when the subsystem prefix holds it (src/{subsystem} over src/sdk)."""
     folder = source.rpartition("/")[0]
     library = rows["library_source"].split("{library}")[0]
     subsystem = rows["subsystem_source"].split("{subsystem}")[0]
-    return (
-        folder.removeprefix(subsystem) if folder.startswith(subsystem) else "",
-        folder.removeprefix(library).split("/")[0] if folder.startswith(library) else "",
-    )
+    if folder.startswith(library):
+        return "", folder.removeprefix(library).split("/")[0]
+    return (folder.removeprefix(subsystem) if folder.startswith(subsystem) else "", "")
 
 
-def _header_ok(group: Group, target: str, groups: dict[str, Group]) -> bool:
+def _header_ok(group: Group, target: str, groups: dict[str, Group], rows: Json) -> bool:
     """Whether `target` may be the header of a module (paths from repo.toml [layout]): its subsystem's or library's
     header, a shared one, or a header no other module is bound to. A module a recipe has not placed yet (no subsystem
     or library, by field or by its source path) is limited to the last two, so it cannot take another module's
     header."""
-    rows = configuration.load_resource("repo.toml")["layout"]
     if not (group.subsystem or group.library):
-        placed, library = _placement(group.source)
+        placed, library = _placement(group.source, rows)
         group = replace(group, subsystem=placed, library=library)
     own = {
         *([rows["subsystem_header"].format(subsystem=group.subsystem)] if group.subsystem else []),
@@ -268,6 +269,7 @@ def edit(
     the edit accepts are what it accepts without the refused ones (one pass judges a stream)."""
     with effort.stage("move.edit"):
         lay, project = snapshot.layout, snapshot.config.project
+        rows = configuration.layout_rows(project)
         library = tuple(f.rstrip("/") + "/" for f in project.library_dirs)
         groups, table = dict(lay.groups), symbols.edit(snapshot)
         known = set(lay.members)
@@ -406,7 +408,7 @@ def edit(
                 if clash and clash.group != subject:
                     reject(move, "move.exists", f"{target} belongs to another module", path=target)
                     continue
-                sub, lib = _placement(target)  # where its source sits places the module
+                sub, lib = _placement(target, rows)  # where its source sits places the module
                 bind(replace(groups[subject], source=target, subsystem=sub, library=lib))
                 touch.add(subject)
             elif op in ("header", "file") and path_ok(move, "header"):
@@ -414,7 +416,7 @@ def edit(
                 old = named.header if named else subject
                 # a shared header (repo.toml [layout]) is the base the other headers build on: a module bound to it
                 # takes only its own names away, and the header itself moves into no other
-                base = old in configuration.load_resource("repo.toml")["layout"]["shared_headers"]
+                base = old in rows["shared_headers"]
                 if base and not (named and named.members):
                     reject(move, "move.shared", f"{old} is a shared header: it moves into no other header", path=old)
                     continue
@@ -423,7 +425,7 @@ def edit(
                     names = frozenset(named.members) if named and (shared or base) else frozenset()
                     events.append(("names" if names else "file", old, target, names))
                 affected = [named] if named and (shared or base) else [g for g in groups.values() if g.header == old]
-                if bad_header := [g for g in affected if not _header_ok(g, target, groups)]:
+                if bad_header := [g for g in affected if not _header_ok(g, target, groups, rows)]:
                     reject(move, "move.name", f"{target} is not the header of {bad_header[0].name}", path=target)
                     continue
                 for g in affected:
@@ -1019,7 +1021,7 @@ def _fold_includes(types: _Types, mine: str, theirs: str) -> None:
     def reaches(start: str, goal: str) -> bool:
         return bool(types.ask(("reaches", start, goal), lambda: headers.reaches(snapshot, start, goal)))
 
-    home = next((p for p in types.ask(("definers", new), lambda: definers(new)) if p.endswith(".h")), None)
+    home = next((p for p in types.ask(("definers", new), lambda: definers(new)) if configuration.is_header(p)), None)
     for path in types.ask(("definers", old), lambda: definers(old)) if home else ():
         assert home is not None
         if path == home or reaches(path, home):
@@ -1045,7 +1047,9 @@ def _shape(snapshot: Snapshot, files: Mapping[str, str | None], edited: Edited) 
                 out[path] = shaped
     for paths, renames, spelled in edited.accesses:
         # a relayout may compose a source's text into a new unit: every composed unit spelling the type is one too
-        composed = (p for p, t in files.items() if p.endswith(".c") and t and spelled & set(re.findall(r"\w+", t)))
+        composed = (
+            p for p, t in files.items() if configuration.is_source(p) and t and spelled & set(re.findall(r"\w+", t))
+        )
         for path in dict.fromkeys((*paths, *composed)):
             if (now := text(path)) is not None:
                 out[path] = _renamed(now, renames)
@@ -1099,8 +1103,8 @@ def _file_moves(before: Snapshot, after: Snapshot, edited: Edited, moves: Sequen
     return spelled or _header_moves(edited, moves, path, path) or list(moves)
 
 
-_HEADER_AT = re.compile(r"([\w./+-]+\.h):\d+")
-_INCLUDED_AT = re.compile(r"(?:In file included|^\s+) from ([\w./+-]+\.h):(\d+)", re.M)
+_HEADER_AT = re.compile(r"([\w./+-]+\.(?i:h)):\d+")
+_INCLUDED_AT = re.compile(r"(?:In file included|^\s+) from ([\w./+-]+\.(?i:h)):(\d+)", re.M)
 _INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 
 
@@ -1435,7 +1439,7 @@ def _policy_units(overlay: Snapshot, path: str) -> list[UnitSpec | None]:
     """The units a policy finding belongs to: the unit at its path, or the units that include the header."""
     if path in overlay.layout.units:
         return [overlay.layout.units[path]]
-    if path.endswith(".h"):
+    if configuration.is_header(path):
         return [overlay.layout.units.get(p) for p in headers.consumers(overlay, [path])]
     return [None]
 
@@ -2185,7 +2189,7 @@ def _apply(
                     (b or b"").decode(errors="replace"),
                 )
                 for p, b in writes.items()
-                if p.endswith((".c", ".h"))
+                if configuration.is_text(p)
             }
             with effort.stage("move.policy"):
                 try:

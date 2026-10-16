@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from unbake import compare, effort, headers, land, layout, policy, pool, store
+from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Refusal, Snapshot, digest
 from unbake.families import typedebt
 
@@ -310,7 +311,7 @@ def plan(
     parameter index) pairs not to retype; `touches` gives per retyped pair the files its writes reach."""
     with effort.stage("retype.scopes"):
         codes = {p: _code(t) for p, t in texts.items()}
-    units = [p for p in codes if p.startswith("src/") and p.endswith(".c")]
+    units = [p for p in codes if p.startswith("src/") and configuration.is_source(p)]
     landed = [p for p in units if not p.startswith("src/fuzzy/")]
     rows: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
     with effort.stage("retype.parameters"):
@@ -761,7 +762,7 @@ def run(config: Config, params: Json) -> Json:
     snapshot = layout.capture(config)
     paths = [*headers.sources(snapshot, "src", ".c"), *headers.sources(snapshot)]
     texts = {p: snapshot.read(p).decode(errors="replace") for p in paths}
-    declared = {name: row[0] for name, row in headers.catalog(snapshot).items() if row[0].endswith(".h")}
+    declared = {name: row[0] for name, row in headers.catalog(snapshot).items() if configuration.is_header(row[0])}
     reaches = _reaches(texts)
 
     def owner(name: str) -> str | None:  # the unit file of a member a refusal names
@@ -783,7 +784,7 @@ def run(config: Config, params: Json) -> Json:
         result, judged = converge(planner, lambda writes: new_debt(config, snapshot, writes), exclude)
         rounds += judged
         writes, touches, parts = result.pop("writes"), result.pop("touches"), result.pop("parts")
-        sources = sorted(p for p in writes if p.endswith(".c"))
+        sources = sorted(p for p in writes if configuration.is_source(p))
         if sources:
             for path, text in writes.items():
                 store.write(out / path, text.encode())
@@ -850,7 +851,7 @@ def _prove_halves(
     groups: list[list[Path]] = []
     for n, half in enumerate(halves):
         writes = compose(texts, parts, half)
-        sources = sorted(p for p in writes if p.endswith(".c"))
+        sources = sorted(p for p in writes if configuration.is_source(p))
         if not sources:
             groups.append([])
             continue

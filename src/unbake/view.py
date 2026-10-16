@@ -472,7 +472,7 @@ def diagnostic(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe,
             raw = None if path.endswith(".i") else snapshot.peek(path)
             lengths[path] = None if raw is None else raw.count(b"\n") + (not raw.endswith(b"\n") and bool(raw))
         size = lengths[path]
-        if not path.endswith((".i", ".h")) or (size is not None and line <= size):
+        if not (path.endswith(".i") or configuration.is_header(path)) or (size is not None and line <= size):
             return f"{path}:{line}"
         if not origins:
             source = get(snapshot, unit, version, recipe)
