@@ -28,6 +28,7 @@ from unbake.contracts import (
 
 @pytest.fixture
 def lane(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish.moved, "extras", Mock(side_effect=lambda snapshot, changes, base: dict(changes)))
     monkeypatch.setattr(publish, "credit_guard", lambda s, w: None)  # judged on its own below
     config = fixture.bare_config(tmp_path, memory=1000)
     unit = UnitSpec("src/f.c", "c", "group", ("f",), "gcc-test", {"add": [], "omit": []})
@@ -1187,3 +1188,27 @@ def test_accept_each_checks_every_bulk_candidate_in_one_dispatch_with_its_own_ve
     assert verdicts[:15] == [()] * 15 and verdicts[15] == (refusal,)
     assert present == [False] * 16 and publish._PRESENT.get()  # admission plans carry no progress block
     assert publish.accept_each(Mock(), []) == [] and dispatches == [("publish.accept", 16)]
+
+
+def test_land_normalizes_the_whole_extra_set_before_any_overlay(lane, monkeypatch):
+    entry = _change_set(lane, {"include/retired.h": b"old pending bytes"})
+    normalized = {"include/CURRENT.H": b"rebased and merged bytes"}
+    publish.moved.extras.return_value = normalized
+    publish.moved.extras.side_effect = None
+    publish.land(lane["config"], entry)
+    publish.moved.extras.assert_called_once_with(
+        publish.layout.capture.return_value, {"include/retired.h": b"old pending bytes"}, entry.base
+    )
+    writes = publish.journal.apply.call_args.args[1].writes
+    assert writes["include/CURRENT.H"] == normalized["include/CURRENT.H"] and "include/retired.h" not in writes
+    assert all("include/retired.h" not in call.args[1] for call in publish.layout.overlay.call_args_list)
+
+
+def test_land_rebase_conflict_never_binds_or_mutates_any_file(lane):
+    entry = _change_set(lane, {"include/old.h": b"conflicting"})
+    publish.moved.extras.side_effect = Refusal(Finding("land.rebase", "ambiguous merged destination"))
+    with pytest.raises(Refusal, match="ambiguous"):
+        publish.land(lane["config"], entry)
+    publish.compare.bind.assert_not_called()
+    publish.layout.overlay.assert_not_called()
+    publish.journal.apply.assert_not_called()

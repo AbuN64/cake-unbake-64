@@ -1954,3 +1954,17 @@ def test_a_variants_row_carries_its_own_flag_set_and_function(tmp_path):
     assert (plain["flag"], plain["function"]) == (["-g"], None)  # the command's own set stands
     with pytest.raises(Refusal):
         compare._variant_params({}, {"file": "a.c", "flags": "-ffast-math"})
+
+
+def test_bind_resolves_an_explicit_function_name_renamed_after_submission(cfg, tmp_path, monkeypatch):
+    u = unit("new_fn")
+    s = snap(cfg, {"new_fn": member("new_fn")}, (u,))
+    moved.record(cfg, [("symbol", "old_fn", "new_fn")], "after")
+    source = tmp_path / "old_fn.c"
+    source.write_bytes(b"int old_fn(void) { return 1; }\n")
+    writes = []
+    monkeypatch.setattr(compare.layout, "overlay", lambda snapshot, changed: writes.append(changed) or snapshot)
+    notes = []
+    assert compare.bind(s, source, "old_fn", notes)[0] == u
+    assert b"int new_fn(void)" in writes[0][u.path]
+    assert "old_fn->new_fn" in notes

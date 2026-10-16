@@ -336,6 +336,12 @@ def bind(
         )
     member = function or named[0]
     if member not in snapshot.layout.members:
+        current_name = moved.table(snapshot.config)[1].get(member, member)
+        if current_name != member and current_name in snapshot.layout.members:
+            if notes is not None:
+                notes.append(f"{member}->{current_name}")
+            member = current_name
+    if member not in snapshot.layout.members:
         raise Refusal(
             Finding("land.request", reason=f"{member} is not a member of the layout", action="pass --function NAME")
         )
@@ -531,11 +537,12 @@ def _prepare(
     snapshot: Snapshot, files: Sequence[Path], params: Json
 ) -> tuple[dict[str, bytes], UnitSpec, Snapshot, list[str]]:
     """The candidate bound over its change set: its extras, unit, bound tree state and respelled names."""
-    extras = dict(_extra(snapshot, f) for f in files[1:])
+    extras = moved.extras(snapshot, dict(_extra(snapshot, f) for f in files[1:]))
     rewritten: list[str] = []
     unit, bound = bind(
         layout.overlay(snapshot, extras) if extras else snapshot, files[0], params["function"], rewritten
     )
+    moved.check_primary(bound, unit.path, extras)
     for path in (p for p in extras if configuration.is_header(p) and snapshot.peek(p) is None):
         if not headers.consumers(bound, [path]):
             raise Refusal(
@@ -1144,7 +1151,7 @@ def _score_variants(config: Config, params: Json) -> Json:
 
 def _score_one(snapshot: Snapshot, params: Json) -> Json:
     config = snapshot.config
-    extras = dict(_extra(snapshot, Path(spec)) for spec in params.get("extras") or ())  # overlaid, never written
+    extras = moved.extras(snapshot, dict(_extra(snapshot, Path(spec)) for spec in params.get("extras") or ()))
     rewritten: list[str] = []
     unit, bound = bind(
         layout.overlay(snapshot, extras) if extras else snapshot, Path(params["file"]), params["function"], rewritten

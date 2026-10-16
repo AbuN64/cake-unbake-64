@@ -678,6 +678,7 @@ def _accept(
     ):
         raise Refusal(Finding("land.duplicate", f"{member} is already landed in {unit.path}", unit=member))
     unit, proposed, _ = admit(_changed(snapshot, extras), request, partial)
+    moved.check_primary(proposed, unit.path, extras)
     touched = (
         *unit.members,
         *(m for p in extras if p in snapshot.layout.units for m in snapshot.layout.units[p].members),
@@ -712,7 +713,11 @@ def land(config: Config, submission: Submission) -> Receipt:
         snapshot = layout.capture(config)
         if submission.operation != "publish":
             raise Refusal(Finding("land.request", "Unknown submission operation.", unit=submission.member))
-        extras = {path: (config.project.root / copy).read_bytes() for path, copy in submission.extras.items()}
+        extras = moved.extras(
+            snapshot,
+            {path: (config.project.root / copy).read_bytes() for path, copy in submission.extras.items()},
+            submission.base,
+        )
         request = {
             "file": str(config.project.root / submission.source),
             "function": submission.function or submission.member,
