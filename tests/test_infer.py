@@ -736,3 +736,44 @@ segments:
         assert provider["path"] not in after.layout.units
         assert after.layout.units[code["path"]].members == ("f0", "data/f0/80000410")
     assert not infer._plan(after).writes
+
+
+@pytest.mark.usefixtures("toolchains")
+@pytest.mark.parametrize(
+    "change", ["unchanged", "source", "header", "new-header", "source-overlay", "header-overlay", "deleted-header"]
+)
+def test_plan_reuses_only_the_captured_source_tree(tmp_path, monkeypatch, change):
+    from unittest.mock import Mock
+
+    snapshot = snap(
+        tmp_path,
+        functions={"f0": {"a": (0x1000, blob(*LEAF))}},
+        versions=("a",),
+        sources={"f0.c": "int f0(void) { return 1; }"},
+        headers={"reached.h": "typedef int Value;"},
+    )
+    fingerprint = infer._tree(snapshot)
+    after = snapshot
+    root = snapshot.config.project.root
+    if change == "source":
+        (root / "src/f0.c").write_text("int f0(void) { return 2; }")
+    elif change == "header":
+        (root / "include/reached.h").write_text("typedef long Value;")
+    elif change == "new-header":
+        (root / "include/new.h").write_text("typedef int Added;")
+    elif change == "deleted-header":
+        after = layout.overlay(snapshot, {"include/reached.h": None})
+    elif change.endswith("overlay"):
+        path = "src/f0.c" if change == "source-overlay" else "include/reached.h"
+        after = layout.overlay(snapshot, {path: b"changed overlay bytes"})
+    planned = Mock(return_value="plan")
+    monkeypatch.setattr(infer, "_plan", planned)
+    monkeypatch.setattr(infer.store, "cached_object", lambda cfg, kind, key, produce: produce())
+    prior = infer.ownership.LocatedBatch(snapshot, None, fingerprint, (), infer.effort.invocation())
+    expected_tree = infer._tree(after)
+    tree = Mock(wraps=infer._tree)
+    monkeypatch.setattr(infer, "_tree", tree)
+    assert infer.plan(after, reuse=prior) == "plan"
+    assert planned.call_args.args[:2] == (after, prior if change == "unchanged" else None)
+    assert planned.call_args.args[2] == expected_tree
+    tree.assert_called_once_with(after)

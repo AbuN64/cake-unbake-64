@@ -947,15 +947,15 @@ def test_an_overlay_pass_locates_only_the_units_the_writes_reach_and_keeps_the_r
     seen.clear()
     old = ownership.claims(before)[1]
     assert seen == [["src/a.c", "src/b.c", "src/c.c"]]
-    new = ownership.claims(snap("after-2", changed), reuse=(before, {"src/b.c"}))[1]
+    new = ownership.claims(snap("after-2", changed), reuse=(ownership.context(before), {"src/b.c"}))[1]
     assert seen[1] == ["src/b.c", "src/c.c"]  # b is reached, c's spec changed, a keeps its placements
     assert new == full and old
     digests["after"] = INDEXES["b"]._replace(digest="moved rows")  # a data row moved: nothing is kept
-    ownership.claims(snap("after-3", changed), reuse=(before, set()))
+    ownership.claims(snap("after-3", changed), reuse=(ownership.context(before), set()))
     assert seen[2] == ["src/a.c", "src/b.c", "src/c.c"]
     moved = {**MEMBERS, "f": replace(MEMBERS["f"], state="c")}  # a member's record changed: its units go again
     digests["after"] = INDEXES["a"]
-    ownership.claims(snap("after-4", units, moved), reuse=(before, set()))
+    ownership.claims(snap("after-4", units, moved), reuse=(ownership.context(before), set()))
     assert seen[3] == ["src/a.c", "src/b.c", "src/c.c"]
 
 
@@ -1160,3 +1160,243 @@ def test_real_provider_keeps_residual_rows_and_source_when_a_literal_is_claimed(
     assert out[provider.path] == replace(provider, members=expected, withheld=("us",))
     assert not any(f.blocking for f in findings)
     assert [(c.unit, c.start, c.end) for c in claims] == [(code.path, start, end)]
+
+
+@pytest.mark.parametrize(
+    "change,reused",
+    [
+        ("unrelated-symbol", True),
+        ("withheld", True),
+        ("unchanged", True),
+        ("referenced-symbol", False),
+        ("classification", False),
+        ("rom", False),
+        ("segments", False),
+        ("index", False),
+        ("placement", False),
+        ("state", False),
+        ("members", False),
+        ("options", False),
+        ("toolchain", False),
+        ("config", False),
+        ("tools", False),
+        ("reached", False),
+    ],
+)
+def test_location_reuse_follows_the_existing_unit_key_inputs(monkeypatch, change, reused):
+    from pathlib import Path
+
+    from unbake.contracts import Version
+
+    spec = unit("f")
+    before_version = Version(
+        "a", Path("rom"), "rom-sha", "split", "symbols", {"used": 16, "unused": 32}, (), frozenset({"f"})
+    )
+    after_version = before_version
+    cfg = SimpleNamespace(project=SimpleNamespace(names_from="a"), tools={"cc": "compiler"})
+    new_cfg, new_spec, new_members = cfg, spec, MEMBERS
+    if change in ("unrelated-symbol", "referenced-symbol"):
+        name = "unused" if change == "unrelated-symbol" else "used"
+        after_version = replace(before_version, symbols={**before_version.symbols, name: 64})
+    elif change == "classification":
+        after_version = replace(before_version, code=frozenset({"f", "used"}))
+    elif change == "rom":
+        after_version = replace(before_version, rom_sha256="new ROM")
+    elif change == "segments":
+        after_version = replace(before_version, segments=(("main", 0, 12, 256),))
+    elif change == "placement":
+        new_members = {**MEMBERS, "f": replace(MEMBERS["f"], placements=(Placement("a", ".text", 0, 8, 256),))}
+    elif change == "state":
+        new_members = {**MEMBERS, "f": replace(MEMBERS["f"], state="c")}
+    elif change == "members":
+        new_spec = replace(spec, members=("f", "row"))
+    elif change == "options":
+        new_spec = replace(spec, options={"add": ["-O1"], "omit": []})
+    elif change == "toolchain":
+        new_spec = replace(spec, toolchain="other compiler")
+    elif change == "withheld":
+        new_spec = replace(spec, withheld=("a",))
+    elif change in ("config", "tools"):
+        new_cfg = SimpleNamespace(
+            project=cfg.project, tools={"cc": "new compiler"} if change == "tools" else cfg.tools, changed=True
+        )
+
+    def snap(name, config, record, u, members):
+        return SimpleNamespace(
+            config=config, versions={"a": record}, layout=LayoutMap({}, members, {u.path: u}, name, (), {}), digest=name
+        )
+
+    before = snap("before", cfg, before_version, spec, MEMBERS)
+    after = snap("after", new_cfg, after_version, new_spec, new_members)
+    batches = []
+
+    def run(config, stage, fn, items, key=None):
+        batches.append([item[1].path for item in items])
+        return [{"a": {".rodata": [[4, 8]]}} for _ in items]
+
+    monkeypatch.setattr(ownership.pool, "map", run)
+    monkeypatch.setattr(
+        ownership,
+        "_index",
+        lambda s, v: INDEXES[v]._replace(digest="changed") if s is after and change == "index" else INDEXES[v],
+    )
+    monkeypatch.setattr(ownership.native.view, "names", lambda *args: frozenset({"f", "used"}))
+    ownership.claims(before)
+    ownership.claims(after, reuse=(ownership.context(before), {spec.path} if change == "reached" else ()))
+    assert batches == [[spec.path], [] if reused else [spec.path]]
+
+
+def test_location_reuse_does_not_prime_an_absent_old_batch(monkeypatch):
+    cfg = SimpleNamespace(project=SimpleNamespace(names_from="a"))
+    spec = unit("f")
+    before = SimpleNamespace(
+        config=cfg,
+        versions={"a": None},
+        layout=LayoutMap({}, MEMBERS, {spec.path: spec}, "d", (), {}),
+        digest="unrecorded",
+    )
+    after = SimpleNamespace(**{**vars(before), "digest": "new"})
+    calls = []
+    monkeypatch.setattr(
+        ownership.pool, "map", lambda cfg, stage, fn, items, key=None: calls.extend(items) or [{"a": {}} for _ in items]
+    )
+    monkeypatch.setattr(ownership, "_index", lambda s, v: INDEXES[v])
+    assert ownership.context(before) is None
+    ownership.claims(after)
+    assert len(calls) == 1 and calls[0][0] is after
+
+
+def test_reused_compile_failure_is_judged_against_current_withholding(monkeypatch):
+    cfg = SimpleNamespace(project=SimpleNamespace(names_from="a"))
+    old = unit("f", withheld=("a",))
+    before = SimpleNamespace(
+        config=cfg,
+        versions={"a": None},
+        layout=LayoutMap({}, MEMBERS, {old.path: old}, "d", (), {}),
+        digest="failure-before",
+    )
+    after = SimpleNamespace(
+        **{
+            **vars(before),
+            "digest": "failure-after",
+            "layout": replace(before.layout, units={old.path: replace(old, withheld=())}),
+        }
+    )
+    batches = []
+    monkeypatch.setattr(
+        ownership.pool,
+        "map",
+        lambda cfg, stage, fn, items, key=None: (
+            batches.append(len(items)) or [{"a": "compile.error: bad source"} for _ in items]
+        ),
+    )
+    monkeypatch.setattr(ownership, "_index", lambda s, v: INDEXES[v])
+    assert not any(f.blocking for f in ownership.claims(before)[2])
+    assert any(
+        f.blocking and f.key == "compile.error"
+        for f in ownership.claims(after, reuse=(ownership.context(before), ()))[2]
+    )
+    assert batches == [1, 0]
+
+
+@pytest.mark.parametrize("changed", ["source", "header"])
+def test_located_batches_bind_source_state_and_keep_older_contexts_immutable(tmp_path, monkeypatch, changed):
+    from unbake import infer
+
+    effort = ownership.effort
+    source = tmp_path / "src/f.c"
+    header = tmp_path / "include/h.h"
+    source.parent.mkdir()
+    header.parent.mkdir()
+    source.write_text('#include "h.h"\n')
+    header.write_text("header")
+    control = source if changed == "source" else header
+    control.write_text("A")
+    spec = unit("f")
+    snapshot = SimpleNamespace(
+        config=SimpleNamespace(project=SimpleNamespace(root=tmp_path, names_from="a")),
+        layout=LayoutMap({}, MEMBERS, {spec.path: spec}, "layout", (), {}),
+        versions={"a": None},
+        digest="same-map-source-can-change",
+        overlays={},
+        peek=lambda p: (tmp_path / p).read_bytes(),
+    )
+    calls = []
+
+    def run(cfg, stage, fn, items, key=None):
+        calls.append(len(items))
+        start = 4 if control.read_text() == "A" else 8
+        return [{"a": {".rodata": [[start, start + 4]]}} for _ in items]
+
+    monkeypatch.setattr(ownership.pool, "map", run)
+    monkeypatch.setattr(ownership, "_index", lambda s, v: INDEXES[v])
+    tree_a = infer._tree(snapshot)
+    claims_a = ownership.claims(snapshot, source_tree=tree_a)[1]
+    batch_a = ownership.context(snapshot)
+    assert batch_a is not None
+    with pytest.raises(AttributeError):
+        batch_a.source_tree = "cannot mutate captured identity"
+    control.write_text("B")
+    tree_b = infer._tree(snapshot)
+    assert tree_a != tree_b
+    claims_b = ownership.claims(snapshot, source_tree=tree_b)[1]
+    batch_b = ownership.context(snapshot)
+    assert batch_b is not None and batch_b is not batch_a and claims_a != claims_b
+    assert ownership.claims(snapshot, reuse=(batch_b, ()), source_tree=tree_b)[1] == claims_b
+    assert ownership.claims(snapshot, reuse=(batch_a, ()), source_tree=tree_b)[1] == claims_b
+    control.write_text("A")
+    assert infer._tree(snapshot) == tree_a
+    assert ownership.claims(snapshot, reuse=(batch_a, ()), source_tree=tree_a)[1] == claims_a
+    assert ownership.claims(snapshot, reuse=(batch_b, ()), source_tree=tree_a)[1] == claims_a
+    assert calls == [1, 1, 0, 1, 0, 1]
+    assert batch_a.source_tree == tree_a and batch_b.source_tree == tree_b
+    assert effort.peek(("ownership.located", snapshot.digest, None)) is not batch_b
+
+
+def test_location_context_requires_the_same_holder_selection(monkeypatch):
+    spec = unit("f")
+    snapshot = SimpleNamespace(
+        config=SimpleNamespace(project=SimpleNamespace(names_from="a")),
+        layout=LayoutMap({}, MEMBERS, {spec.path: spec}, "map", (), {}),
+        versions={"a": None},
+        digest="holder-selection",
+    )
+    batches = []
+    monkeypatch.setattr(
+        ownership.pool,
+        "map",
+        lambda cfg, stage, fn, items, key=None: batches.append(len(items)) or [{"a": {}} for _ in items],
+    )
+    monkeypatch.setattr(ownership, "_index", lambda s, v: INDEXES[v])
+    ownership.claims(snapshot, version="a")
+    prior = ownership.context(snapshot, "a")
+    assert prior is not None
+    ownership.claims(snapshot, reuse=(prior, ()))
+    assert batches == [1, 1]
+
+
+def test_location_context_cannot_reuse_a_previous_commands_tool_state(monkeypatch):
+    spec = unit("f")
+    snapshot = SimpleNamespace(
+        config=SimpleNamespace(project=SimpleNamespace(names_from="a")),
+        layout=LayoutMap({}, MEMBERS, {spec.path: spec}, "map", (), {}),
+        versions={"a": None},
+        digest="same-input-map",
+    )
+    batches = []
+    start = 4
+
+    def run(cfg, stage, fn, items, key=None):
+        batches.append(len(items))
+        return [{"a": {".rodata": [[start, start + 4]]}} for _ in items]
+
+    monkeypatch.setattr(ownership.pool, "map", run)
+    monkeypatch.setattr(ownership, "_index", lambda s, v: INDEXES[v])
+    with ownership.effort.command("first-command", ()):
+        ownership.claims(snapshot)
+        prior = ownership.context(snapshot)
+    assert prior is not None
+    start = 8  # the next command must read the current tools, even when configuration paths are unchanged
+    with ownership.effort.command("next-command", ()):
+        claims = ownership.claims(snapshot, reuse=(prior, ()))[1]
+    assert batches == [1, 1] and [(c.start, c.end) for c in claims] == [(8, 12)]

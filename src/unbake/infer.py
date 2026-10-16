@@ -664,20 +664,19 @@ def _correspondences(snapshot: Snapshot, member: str | None) -> tuple[tuple[str,
 def _tree(snapshot: Snapshot) -> str:
     """The plan compiles every unit, so it depends on every source and header, not only on the layout and symbols."""
     root = snapshot.config.project.root
-    return digest(
-        [
-            (str(p), p.read_bytes())
-            for place in ("src", "include")
-            for p in sorted((root / place).rglob("*"))
-            if p.is_file()
-        ]
-    )
+    paths = {
+        p.relative_to(root).as_posix() for place in ("src", "include") for p in (root / place).rglob("*") if p.is_file()
+    } | {p for p in snapshot.overlays if p.startswith(("src/", "include/"))}
+    return digest([(str(root / p), data) for p in sorted(paths) if (data := snapshot.peek(p)) is not None])
 
 
-def plan(snapshot: Snapshot) -> Plan:
+def plan(snapshot: Snapshot, *, reuse: ownership.LocatedBatch | None = None) -> Plan:
+    """Plan this state; convergence may reuse an earlier batch only under its captured source-tree fingerprint."""
     with effort.stage("infer.plan"):
-        key = digest((snapshot.digest, code_identity(_plan), _tree(snapshot), _catalog(snapshot)[1]))
-        return store.cached_object(snapshot.config, "infer", key, lambda: _plan(snapshot))
+        tree = _tree(snapshot)
+        prior = reuse if reuse is not None and reuse.source_tree == tree else None
+        key = digest((snapshot.digest, code_identity(_plan), tree, _catalog(snapshot)[1]))
+        return store.cached_object(snapshot.config, "infer", key, lambda: _plan(snapshot, prior, tree))
 
 
 def _neighbour_group(
@@ -710,7 +709,7 @@ def _neighbour_group(
     return own
 
 
-def _plan(snapshot: Snapshot) -> Plan:
+def _plan(snapshot: Snapshot, reuse: ownership.LocatedBatch | None = None, source_tree: str | None = None) -> Plan:
     original_map = snapshot.read("layout.toml")
     identified = sdk(snapshot)
     base, inferred = snapshot.digest, groups(snapshot, identified)
@@ -734,7 +733,9 @@ def _plan(snapshot: Snapshot) -> Plan:
             updated[g.name] = replace(current or g, members=(*current.members, *data) if current else data)
     memberships = {n: g.name for g in updated.values() for n in g.members}
     # a unit owns the data it emits
-    assigned, claimed, found = ownership.claims(snapshot, units=dict(snapshot.layout.units))
+    assigned, claimed, found = ownership.claims(
+        snapshot, reuse=(reuse, ()) if reuse is not None else None, source_tree=source_tree
+    )
     cut_writes: dict[str, bytes | None] = {}
     for _ in range(_PASSES):  # its rows are generated from its claims: write them now, and plan on the rows they give,
         if any(f.blocking for f in found):  # never recapture a new compile regression as existing withholding
@@ -749,7 +750,7 @@ def _plan(snapshot: Snapshot) -> Plan:
         snapshot = layout.overlay(
             snapshot, {**rows, "layout.toml": layout.dump_map(replace(snapshot.layout, units=assigned))}
         )
-        assigned, claimed, found = ownership.claims(snapshot, units=dict(snapshot.layout.units))
+        assigned, claimed, found = ownership.claims(snapshot, source_tree=source_tree)
     else:
         raise Refusal(
             Finding(

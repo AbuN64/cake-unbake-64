@@ -391,7 +391,7 @@ def setup_case(snapshot, monkeypatch, warm):
     monkeypatch.setattr(repo.build, "extract", lambda c, v: fixture.native_result())
     planned = []  # the first plan writes the layout, the plan on what it wrote writes nothing
 
-    def infer_plan(s):
+    def infer_plan(s, **kwargs):
         planned.append(s)
         return plan({} if len(planned) > 1 else {"layout.toml": b"inferred"}, message="infer")
 
@@ -661,13 +661,13 @@ def test_setup_drops_the_facts_of_a_stale_extraction_before_reading_them(setup_c
 def test_setup_refuses_when_landed_c_does_not_compile_and_reports_the_debt_otherwise(setup_case, monkeypatch):
     snapshot, _stages, _events, plans, plan, _ = setup_case
     broken = Finding("compile.error", "1 unit holders do not compile", missing=("src/f.c a boom",))
-    monkeypatch.setattr(repo.infer, "plan", lambda s: replace(plan({}), blocking=(broken,)))
+    monkeypatch.setattr(repo.infer, "plan", lambda s, **kwargs: replace(plan({}), blocking=(broken,)))
     with pytest.raises(Refusal) as caught:
         repo.setup(snapshot.config, {})
     assert caught.value.findings == (broken,) and plans == []
     debt = Finding("layout.ownership", "2 unit holders are withheld: label table", blocking=False)
     writes = iter([{"layout.toml": b"x"}])  # written once, then settled
-    monkeypatch.setattr(repo.infer, "plan", lambda s: replace(plan(next(writes, {})), debt=(debt,)))
+    monkeypatch.setattr(repo.infer, "plan", lambda s, **kwargs: replace(plan(next(writes, {})), debt=(debt,)))
     assert repo.setup(snapshot.config, {})["debt"] == [debt.reason]
 
 
@@ -791,7 +791,7 @@ def test_setup_converge_recaptures_only_stale_inputs_once(setup_case, monkeypatc
     monkeypatch.setattr(repo.layout, "capture", captures)
     monkeypatch.setattr(repo, "_prove", proof)
 
-    def infer(current):
+    def infer(current, **kwargs):
         assert plans == []  # no stale plan was written
         planned.append(current)
         if len(planned) <= failures:

@@ -19,7 +19,7 @@ from elftools.elf.enums import ENUM_RELOC_TYPE_MIPS
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
-from unbake import config, effort, layout, native, pool, recipes, store, versions
+from unbake import config, effort, layout, native, pool, recipes, store, versions, view
 from unbake.contracts import Claim, Finding, Placement, Recipe, Refusal, Snapshot, UnitSpec, code_identity, digest
 
 _WORD = 0xFFFFFFFF
@@ -556,23 +556,39 @@ def _residuals(
     return {path: tuple(dict.fromkeys(names)) for path, names in remaining.items()}
 
 
+class LocatedBatch(NamedTuple):
+    """One completed location pass, bound to its producer state; an older context never follows a newer memo slot."""
+
+    snapshot: Snapshot
+    version: str | None
+    source_tree: str | None
+    located: tuple[tuple[UnitSpec, Mapping[str, Located | str]], ...]
+    invocation: str
+
+
+def context(snapshot: Snapshot, version: str | None = None) -> LocatedBatch | None:
+    """The latest whole-map pass of this snapshot, if this command actually ran one. Capture before another pass."""
+    return cast(LocatedBatch | None, effort.peek(("ownership.located", snapshot.digest, version)))
+
+
 def claims(
     snapshot: Snapshot,
     version: str | None = None,
     units: Mapping[str, UnitSpec] | None = None,
     *,
-    reuse: tuple[Snapshot, Collection[str]] | None = None,
+    reuse: tuple[LocatedBatch, Collection[str]] | None = None,
+    source_tree: str | None = None,
 ) -> tuple[dict[str, UnitSpec], tuple[Claim, ...], list[Finding]]:
     """The one place that decides who owns which ROM bytes: each compiled unit's object is followed to the ROM ranges
     its data occupies in each holder. Returns the units with their claims' rows and withheld holders, the claims,
-    and findings. `reuse` = (an earlier snapshot, the units its writes reach): every other unit that reads the same
-    there takes the earlier pass's placements, so only the reached units are keyed and located again."""
+    and findings. `reuse` = (a captured earlier batch, the units its writes reach): unchanged units keep that batch's
+    placements. Inference supplies its already captured source-tree fingerprint; moves supply their write reach."""
     with effort.stage("layout.ownership") as span:
         wanted = dict(snapshot.layout.units if units is None else units)
         phases = config.kinds()
         todo = sorted((u for u in wanted.values() if "compile" in phases[u.kind]["phases"]), key=_unowned)
-        earlier = _earlier(snapshot, version, reuse) if reuse and units is None else {}
-        fresh = [u for u in todo if earlier.get(u.path, (None,))[0] != u]
+        earlier = _earlier(snapshot, version, reuse, source_tree) if reuse and units is None else {}
+        fresh = [u for u in todo if u.path not in earlier or replace(earlier[u.path][0], withheld=u.withheld) != u]
         jobs = [(snapshot, u, version, False, None) for u in fresh]
         located = dict(
             zip(
@@ -582,9 +598,13 @@ def claims(
             )
         )
         results = [located[u.path] if u.path in located else earlier[u.path][1] for u in todo]
-        if units is None:  # kept for a later pass over an overlay of this snapshot
-            pairs = dict(zip((u.path for u in todo), zip(todo, results, strict=True), strict=True))
-            effort.memo(("ownership.located", snapshot.digest, version), lambda: pairs)
+        if units is None:  # replace the slot, never the captured batch: the map digest alone excludes live C/headers
+            batch = LocatedBatch(
+                snapshot, version, source_tree, tuple(zip(todo, results, strict=True)), effort.invocation()
+            )
+            effort.memo_valid(
+                ("ownership.located", snapshot.digest, version), lambda: batch, lambda kept: kept is batch
+            )
         if reuse:
             with effort.stage("layout.ownership.reused") as taken_over:  # units this pass took from the earlier one
                 taken_over.add(items=len(todo) - len(fresh))
@@ -649,26 +669,44 @@ def claims(
 
 
 def _earlier(
-    after: Snapshot, version: str | None, reuse: tuple[Snapshot, Collection[str]]
-) -> dict[str, tuple[UnitSpec, dict[str, Located | str]]]:
+    after: Snapshot, version: str | None, reuse: tuple[LocatedBatch, Collection[str]], source_tree: str | None
+) -> dict[str, tuple[UnitSpec, Mapping[str, Located | str]]]:
     """The earlier pass's (unit, placements) of every unit whose placements cannot differ in `after`: not reached by
     the writes, the same spec, members and version facts, and every data row index it locates against unchanged
     (row places only, so renames keep it). Anything else that differs gives nothing back."""
-    before, reached = reuse
-    if before.versions != after.versions or before.config != after.config:
+    batch, reached = reuse
+    before = batch.snapshot
+    if (
+        batch.invocation != effort.invocation()
+        or before.config != after.config
+        or batch.version != version
+        or batch.source_tree != source_tree
+    ):
         return {}
-    kept = effort.peek(("ownership.located", before.digest, version))
-    if kept is None:
-        claims(before, version)
-        kept = effort.peek(("ownership.located", before.digest, version)) or {}
-    same = {v for v in after.versions if _index(before, v).digest == _index(after, v).digest}
+    unchanged = {v for v, new in after.versions.items() if v in before.versions and before.versions[v] == new}
+    same = {
+        v
+        for v, new in after.versions.items()
+        if v in before.versions
+        and (v in unchanged or replace(before.versions[v], symbols=new.symbols, code=new.code) == new)
+        and _index(before, v).digest == _index(after, v).digest
+    }
+
+    def facts(unit: UnitSpec) -> bool:
+        for v in after.layout.held(unit.members) - unchanged:
+            names = view.names(before, unit, v)
+            if versions.facts_of(before.versions[v], names) != versions.facts_of(after.versions[v], names):
+                return False
+        return True
+
     old, new = before.layout.members, after.layout.members
     return {
-        path: (unit, located)
-        for path, (unit, located) in kept.items()
-        if path not in reached
+        unit.path: (unit, located)
+        for unit, located in batch.located
+        if unit.path not in reached
         and all(old.get(n) == new.get(n) for n in unit.members)
         and after.layout.held(unit.members) <= same
+        and facts(unit)
     }
 
 

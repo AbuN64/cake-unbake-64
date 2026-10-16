@@ -30,6 +30,7 @@ from unbake import (
     layout,
     libasm,
     native,
+    ownership,
     pool,
     present,
     process,
@@ -615,9 +616,12 @@ def setup(config: Config, params: Json) -> Json:
                     table, read
                 )
                 writes, message = dict(mapped.writes), mapped.message
+                reuse = None
                 if found:  # plan again on the table the readings give, so the same plan holds the layout it implies
                     writes.update(_changed(snapshot, symbols.files(table, _paths(project))))
-                    settled = infer.plan(layout.overlay(snapshot, writes))
+                    candidate = layout.overlay(snapshot, writes)
+                    settled = infer.plan(candidate)
+                    reuse = ownership.context(candidate)
                     writes.update(settled.writes)
                     message = f"{settled.message}; {found} symbols read from the ROM"
                 if not writes:
@@ -631,7 +635,7 @@ def setup(config: Config, params: Json) -> Json:
                 joined += found
                 if planned is not None and snapshot.digest == planned:  # the plan is its own fixpoint
                     return replace(mapped, writes={})
-                again = infer.plan(snapshot)  # extraction told something else: the layout must still hold under it
+                again = infer.plan(snapshot, reuse=reuse)  # extraction changed facts: still verify the whole map
                 again = replace(again, debt=(*again.debt, *misnamed))
                 if again.writes:
                     raise Refusal(
