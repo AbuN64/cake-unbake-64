@@ -5,7 +5,7 @@ game assembly."""
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -218,7 +218,8 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
     """The writes that turn each unlanded foreign or hand-written (splat `hasm`) assembly function into library
     assembly: one `.s` per run of the module (`_runs`: routines the same versions hold, contiguous in ROM), the first
     at the module's own path, the others named by their first routine; its split rows turned to compiled and its
-    units in the layout map; and the findings for the functions that cannot be."""
+    units in the layout map; every library unit already mapped whose file an older render wrote, written again
+    (`_refresh`); and the findings for the functions that cannot be."""
     project = snapshot.config.project
     with effort.stage("libasm.plan"):
         compiled, assembly, _ = layout._kinds()
@@ -267,9 +268,35 @@ def plan(snapshot: Snapshot) -> tuple[dict[str, bytes | None], tuple[Finding, ..
                         )
                 done = tuple(name for name, _ in piece)
                 units[target] = UnitSpec(target, assembly, group, done, project.toolchain, {"add": [], "omit": []})
-        if writes:
+        if units != snapshot.layout.units:
             writes["layout.toml"] = layout.dump_map(replace(snapshot.layout, units=units))
+        writes.update(_refresh(snapshot, writes.keys()))
         return writes, tuple(findings)
+
+
+def _refresh(snapshot: Snapshot, planned: Collection[str]) -> dict[str, bytes | None]:
+    """The library assembly units already in the map whose file differs from what `render` writes now: an older
+    render left them stale (a `.set` line it lacked, an operand it spelled differently), so they are written again
+    from the ROM words. A unit with a routine that no longer renders is left as it is."""
+    assembly = layout._kinds()[1]
+    members = snapshot.layout.members
+    writes: dict[str, bytes | None] = {}
+    for unit in snapshot.layout.units.values():
+        if (
+            unit.path in planned
+            or unit.kind != assembly
+            or not unit.members
+            or not config.library(snapshot.config.project, unit.path)
+            or any(m not in members or members[m].kind != "function" for m in unit.members)
+        ):
+            continue
+        texts = [_text(snapshot, m) for m in unit.members]
+        if any(isinstance(t, Finding) for t in texts):
+            continue
+        text = "".join(str(t) for t in texts).encode()
+        if snapshot.peek(unit.path) != text:
+            writes[unit.path] = text
+    return writes
 
 
 def outside(snapshot: Snapshot) -> tuple[str, ...]:

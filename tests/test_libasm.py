@@ -183,8 +183,10 @@ def test_plan_writes_nothing_for_a_module_mixing_compiler_output_and_says_so(cas
     assert writes == {} and [(f.key, f.unit) for f in findings] == [("library-asm.mixed", "osGetSR")]
 
 
-def test_plan_skips_functions_already_in_a_unit_or_not_assembly(case):
+def test_plan_skips_functions_already_in_a_unit_or_not_assembly(case, tmp_path):
     unit = UnitSpec("src/libultra/g.s", "asm", "g", ("osGetSR",), "test", {})
+    (tmp_path / "src/libultra").mkdir(parents=True)
+    (tmp_path / "src/libultra/g.s").write_text(libasm.render("osGetSR", GET_SR, 0x80001000, {}))
     assert libasm.plan(case({"osGetSR": GET_SR}, units=[unit])) == ({}, ())
     assert libasm.plan(case({"osGetSR": GET_SR}, state="c")) == ({}, ())
 
@@ -295,3 +297,54 @@ def test_plan_labels_are_local_to_each_routine_so_one_module_assembles(case):
 def test_render_assembles_64_bit_code_with_64_bit_registers(word, wide):
     text = libasm.render("handler", [word, 0x03E00008, 0], 0x80000400, {})
     assert (".set gp=64\n.set fp=64\n" in text) == wide
+
+
+SAVE_CONTEXT = [0xFF420008, 0xDF480178, JR, NOP]  # sd $v0, 0x8($k0); ld $t0, 0x178($k0): a context save
+
+
+def test_plan_rewrites_a_library_unit_an_older_render_wrote(case, tmp_path):
+    # real case: T 423d539 wrote the exception handlers' .s without `.set gp=64`/`.set fp=64`; after cc6dec6 changed
+    # render, plan skipped them as landed and fix_wide_asm.py had to patch the files by hand
+    now = libasm.render("osHandler", SAVE_CONTEXT, 0x80001000, {})
+    old = now.replace(".set gp=64\n.set fp=64\n", "")
+    assert old != now
+    (tmp_path / "src/libultra").mkdir(parents=True)
+    (tmp_path / "src/libultra/g.s").write_text(old)
+    unit = UnitSpec("src/libultra/g.s", "asm", "g", ("osHandler",), "test", {})
+    writes, findings = libasm.plan(case({"osHandler": SAVE_CONTEXT}, units=[unit], state="c"))
+    assert writes == {"src/libultra/g.s": now.encode()} and findings == ()  # no split or map edit: only the text
+    (tmp_path / "src/libultra/g.s").write_text(now)
+    assert libasm.plan(case({"osHandler": SAVE_CONTEXT}, units=[unit], state="c")) == ({}, ())
+
+
+def test_plan_rewrites_a_missing_library_unit_in_member_order(case):
+    unit = UnitSpec("src/libultra/g.s", "asm", "g", ("osGetSR", "osCache"), "test", {})
+    writes, _ = libasm.plan(case({"osGetSR": GET_SR, "osCache": CACHE_LOOP}, units=[unit], state="c"))
+    assert writes == {
+        "src/libultra/g.s": (
+            libasm.render("osGetSR", GET_SR, 0x80001000, {}) + libasm.render("osCache", CACHE_LOOP, 0x8000100C, {})
+        ).encode()
+    }
+
+
+def test_plan_refresh_leaves_game_units_compiled_units_and_routines_that_no_longer_render(case):
+    game = UnitSpec("src/game/a.s", "asm", "g", ("osGetSR",), "test", {})
+    compiled = UnitSpec("src/libultra/b.c", "c", "g", ("osCache",), "test", {})
+    unnamed = UnitSpec("src/libultra/c.s", "asm", "g", ("osJump",), "test", {})
+    routines = {"osGetSR": GET_SR, "osCache": CACHE_LOOP, "osJump": JUMP_OUT}
+    assert libasm.plan(case(routines, units=[game, compiled, unnamed], state="c")) == ({}, ())
+
+
+def test_plan_refreshes_mapped_units_beside_a_new_one(case, tmp_path):
+    # a setup that lands one module and finds another stale writes both in the same plan
+    landed = UnitSpec("src/libultra/osGetSR.s", "asm", "g", ("osGetSR",), "test", {})
+    snapshot = case({"osGetSR": GET_SR, "osCache": CACHE_LOOP}, units=[landed])
+    members = {**snapshot.layout.members, "osGetSR": replace(snapshot.layout.members["osGetSR"], group="other")}
+    groups = {"g": replace(snapshot.layout.groups["g"], members=("osCache",))}
+    snapshot = replace(snapshot, layout=replace(snapshot.layout, members=members, groups=groups))
+    writes, findings = libasm.plan(snapshot)
+    assert (
+        findings == () and writes["src/libultra/osGetSR.s"] == libasm.render("osGetSR", GET_SR, 0x80001000, {}).encode()
+    )
+    assert writes["src/libultra/g.s"].decode() == libasm.render("osCache", CACHE_LOOP, 0x8000100C, {})
+    assert writes["layout.toml"] == b"map:src/libultra/g.s,src/libultra/osGetSR.s"
