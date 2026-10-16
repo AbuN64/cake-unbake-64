@@ -622,8 +622,7 @@ def _debt_job(item: tuple[Snapshot, Snapshot, str]) -> tuple[tuple[Finding, ...]
 
 
 def new_debt(config: Config, snapshot: Snapshot, writes: Mapping[str, str]) -> tuple[Finding, ...]:
-    """The blocking rows the writes add, judged as a submission of them would judge them, on all cores, and the
-    consumers a header write would break through the include its landing adds (`exposed`)."""
+    """The blocking rows the writes add, judged as a submission of them would judge them, on all cores."""
     if not writes:
         return ()
     overlay = layout.overlay(snapshot, {p: t.encode() for p, t in writes.items()})
@@ -632,91 +631,7 @@ def new_debt(config: Config, snapshot: Snapshot, writes: Mapping[str, str]) -> t
         judged = pool.map(config, "retype.debt", _debt_job, jobs)
     before = [f for b, _ in judged for f in b]
     after = [f for _, a in judged for f in a]
-    with effort.stage("retype.exposed"):
-        broken = exposed(snapshot, overlay, writes)
-    return (*policy.scope(before, after, writes)[0], *broken)
-
-
-_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
-_DEFINE = re.compile(r"^\s*#\s*define\s+(\w+)", re.M)
-
-
-def _closure(text: Callable[[str], str | None], starts: Collection[str]) -> set[str]:
-    """Every file the starts include, directly or through others, and the starts themselves."""
-    seen: set[str] = set()
-    pending = list(starts)
-    while pending:
-        path = pending.pop()
-        code = None if path in seen else text(path)
-        if code is None:
-            continue
-        seen.add(path)
-        pending += [
-            posixpath.normpath(f"{b}/{n}") for n in _INCLUDE.findall(code) for b in ("include", posixpath.dirname(path))
-        ]
-    return seen
-
-
-def exposed(snapshot: Snapshot, overlay: Snapshot, writes: Mapping[str, str]) -> tuple[Finding, ...]:
-    """The consumers a header write breaks through its landing: landing reconciles every written header
-    (`headers.reconcile`), which drops a declaration another header owns and includes that owner instead. A unit
-    that includes the written header then also reaches every header the owner reaches; where one of those defines a
-    macro the unit names and nothing it reached before defines, or declares a name the unit declares itself with
-    another type, the unit no longer compiles. One finding per written header, at its path, so the retypes writing
-    it are the ones dropped."""
-    edited = {p: t.encode() for p, t in writes.items() if p.endswith(".h")}
-    if not edited:
-        return ()
-    try:
-        landed = headers.reconcile(snapshot, overlay, dict(edited))[0]
-    except Refusal:  # a conflict reconcile names is the submit's own refusal, judged there
-        return ()
-    texts: dict[str, str | None] = {}
-
-    def text(path: str) -> str | None:
-        if path not in texts:
-            data = overlay.peek(path)
-            texts[path] = None if data is None else data.decode(errors="replace")
-        return texts[path]
-
-    defines = functools.cache(lambda path: frozenset(_DEFINE.findall(text(path) or "")))
-    found: list[Finding] = []
-    for path, written in sorted(edited.items()):
-        after = (landed.get(path) or written).decode(errors="replace")
-        added = set(_INCLUDE.findall(after)) - set(_INCLUDE.findall(written.decode(errors="replace")))
-        if not added:
-            continue
-        owners = [posixpath.normpath(f"{b}/{n}") for n in sorted(added) for b in ("include", posixpath.dirname(path))]
-        reached = _closure(text, owners)
-        units = sorted(headers.consumers(overlay, [path]))
-        befores = {u: _closure(text, [u]) for u in units}
-        units = [u for u in units if reached - befores[u]]
-        news = sorted(set().union(*(reached - befores[u] for u in units)))
-        spelled = headers.declared_spellings(overlay, [*news, *units])
-        clashes: list[str] = []
-        for unit in units:
-            new = reached - befores[unit]
-            words = set(re.findall(r"\w+", _code(text(unit) or "")))
-            old = set().union(*map(defines, befores[unit]))
-            named = sorted((words & set().union(*map(defines, new))) - old)
-            named += [
-                name
-                for name, spelling in sorted(spelled[unit].items())
-                if any(name in spelled[p] and spelled[p][name] != spelling for p in new)
-            ]
-            clashes += [f"{unit} ({', '.join(named[:3])})"] if named else []
-        if clashes:
-            found.append(
-                Finding(
-                    "land.breaks_dependent",
-                    f"landing {path} includes {', '.join(sorted(added))}, which breaks {'; '.join(clashes[:3])}",
-                    path=path,
-                    unit=clashes[0].split(" ")[0],
-                    missing=tuple(clashes),
-                    action="leave the header unwritten, or make the consumers agree with what it reaches",
-                )
-            )
-    return tuple(found)
+    return policy.scope(before, after, writes)[0]
 
 
 def converge(

@@ -380,6 +380,62 @@ def declared_spellings(snapshot: Snapshot, paths: Sequence[str]) -> dict[str, di
     return found
 
 
+_QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
+_DEFINE = re.compile(r"^\s*#\s*define\s+(\w+)", re.M)
+
+
+def include_breaks(snapshot: Snapshot, path: str, added: Collection[str]) -> list[str]:
+    """The units an include of each of `added` in the header at path would stop compiling, each with the names that
+    break it: a unit including the header then reaches every header the added ones reach, and where one of those
+    defines a macro the unit names that nothing it reached before defines, or declares a name the unit declares
+    itself with another type, the unit fails (an include drags one version's names into every version's consumers)."""
+    if not added:
+        return []
+    texts: dict[str, str | None] = {}
+
+    def text(name: str) -> str | None:
+        if name not in texts:
+            data = snapshot.peek(name)
+            texts[name] = None if data is None else data.decode(errors="replace")
+        return texts[name]
+
+    def closure(starts: Collection[str]) -> set[str]:
+        seen: set[str] = set()
+        pending = list(starts)
+        while pending:
+            at = pending.pop()
+            code = None if at in seen else text(at)
+            if code is not None:
+                seen.add(at)
+                pending += [
+                    posixpath.normpath(f"{b}/{n}")
+                    for n in _QUOTED_INCLUDE.findall(code)
+                    for b in ("include", posixpath.dirname(at))
+                ]
+        return seen
+
+    defines = cache(lambda name: frozenset(_DEFINE.findall(text(name) or "")))
+    reached = closure(
+        [posixpath.normpath(f"{b}/{n}") for n in sorted(added) for b in ("include", posixpath.dirname(path))]
+    )
+    units = sorted(consumers(snapshot, [path]))
+    befores = {u: closure([u]) for u in units}
+    units = [u for u in units if reached - befores[u]]
+    spelled = declared_spellings(snapshot, [*sorted(set().union(*(reached - befores[u] for u in units))), *units])
+    broken: list[str] = []
+    for unit in units:
+        new = reached - befores[unit]
+        words = set(re.findall(r"\w+", _blank(text(unit) or "")))
+        named = sorted((words & set().union(*map(defines, new))) - set().union(*map(defines, befores[unit])))
+        named += [
+            name
+            for name, spelling in sorted(spelled[unit].items())
+            if any(name in spelled[p] and spelled[p][name] != spelling for p in new)
+        ]
+        broken += [f"{unit} ({', '.join(named[:3])})"] if named else []
+    return broken
+
+
 def definers(snapshot: Snapshot) -> dict[str, set[str]]:
     """Per name the landed sources that define it at file scope, a function or storage, static or not."""
     found: dict[str, set[str]] = defaultdict(set)
@@ -2451,6 +2507,16 @@ def reconcile(
     out = dict(writes)
     for path, names in drops.items():
         text, owners = overlay.read(path).decode(), set()
+        wanted = {keeper.removeprefix("include/") for _, keeper in names.values()}
+        if breaks := include_breaks(overlay, path, wanted - set(_QUOTED_INCLUDE.findall(text))):
+            # the include a drop needs would break a consumer: a copy that agrees stays, one that disagrees refuses
+            reason = f"including the owner breaks {'; '.join(breaks[:3])}"
+            findings += [
+                Finding("headers.conflict", path=path, reason=f"{clash}: {reason}")
+                for clash, _ in names.values()
+                if clash
+            ]
+            continue
         for start, end, statement in reversed(list(statements(text))):
             found = _declared(statement)
             if len(found) == 1 and found[0][0] in names:

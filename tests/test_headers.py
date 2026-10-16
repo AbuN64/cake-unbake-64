@@ -29,7 +29,8 @@ def snap(tmp_path: Path, files: dict[str, str]):
         config=SimpleNamespace(project=SimpleNamespace(root=root, toolchain="t")),
         overlays={},
         tree=False,
-        layout=SimpleNamespace(groups={"g": group}),
+        layout=SimpleNamespace(groups={"g": group}, units={}),
+        digest=str(root),
         read=lambda p: (root / p).read_bytes(),
         peek=lambda p: (root / p).read_bytes() if (root / p).exists() else None,
     )
@@ -728,6 +729,45 @@ def test_reconcile_refuses_a_written_header_that_conflicts_with_an_unwritable_on
     _, findings = headers.reconcile(s, s, {"include/w.h": s.read("include/w.h")})
     assert [f.key for f in findings] == ["headers.conflict"]
     assert "include/w.h:1" in findings[0].reason and "include/own.h:2" in findings[0].reason
+
+
+# real cases (G 714f3873e): writing code_8024BA6C.h (retype r037) or code_80405DC0.h (fold c003) made reconcile drop
+# a duplicate extern and include its owner span_C76B0/data.h, whose chain #defines D_80146894 and declares names some
+# de/eu consumers declare themselves: "parse error before `.'" and "conflicting types" (land.breaks_dependent)
+_BREAK = {
+    "include/types.h": "typedef int s32;\n",
+    "include/span_C76B0/data.h": '#include "shared/menu_match_globals.h"\nextern float D_800C3B7C;\n',
+    "include/shared/menu_match_globals.h": "#define D_80146894 D_80145088.status[7]\nextern long D_800CBC90;\n",
+    "include/w.h": '#include "types.h"\nextern float D_800C3B7C;\nextern s32 f(s32 a);\n',
+}
+
+
+@pytest.mark.parametrize(
+    "consumer, broken",
+    [
+        ("extern unsigned int D_80146894;\nint g(void) { return D_80146894; }\n", "D_80146894"),  # macro it names
+        ("extern int D_800CBC90;\n", "D_800CBC90"),  # a name it declares itself with another type
+        ("extern long D_800CBC90;\nint g(void) { return 0; }\n", None),  # the same spelling: still compiles
+    ],
+)
+def test_reconcile_keeps_a_duplicate_whose_owner_include_would_break_a_consumer(
+    tmp_path, no_types, monkeypatch, consumer, broken
+):
+    monkeypatch.setattr(headers, "consumers", lambda snapshot, changed: ("src/use.c",))  # the include graph's answer
+    s = snap(tmp_path, {**_BREAK, "src/use.c": '#include "w.h"\n' + consumer})
+    out, findings = headers.reconcile(s, s, {"include/w.h": s.read("include/w.h")})
+    assert findings == []
+    assert (b"D_800C3B7C" in out["include/w.h"]) == bool(broken)  # kept, or dropped for the owner's include
+    assert (b'#include "span_C76B0/data.h"' in out["include/w.h"]) != bool(broken)
+    found = headers.include_breaks(s, "include/w.h", ["span_C76B0/data.h"])
+    assert [b.split(" ")[0] for b in found] == (["src/use.c"] if broken else []) and (not found or broken in found[0])
+
+
+def test_a_consumer_already_reaching_what_the_include_adds_breaks_nothing(tmp_path, no_types, monkeypatch):
+    monkeypatch.setattr(headers, "consumers", lambda snapshot, changed: ("src/use.c",))
+    use = '#include "span_C76B0/data.h"\n#include "w.h"\nint g(void) { return D_80146894; }\n'
+    s = snap(tmp_path, {**_BREAK, "src/use.c": use})
+    assert headers.include_breaks(s, "include/w.h", ["span_C76B0/data.h"]) == []
 
 
 def test_a_multi_line_macro_is_no_declaration_and_takes_no_include():
