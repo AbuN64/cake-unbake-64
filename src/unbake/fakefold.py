@@ -1,7 +1,8 @@
 """The fold plan of every invented per-function record (rule fake-type): one `unbake move -` row per record, by class.
 
-a  its laid members fit exactly one real (non-invented) record at the same offsets, or a typedef names it as one:
-   fold into that record.
+a  its laid members fit exactly one real (non-invented) record at the same offsets, or a typedef names it as one,
+   or it is a full copy of exactly one real record (same size, every member at the same path, offset and width,
+   unions of views included, pointees aside): fold into that record. A copy of several real records is reported.
 b  several invented records share one layout: fold them into one shared record named from the declarators that
    reach them (dispatch-group rule).
 c  one data symbol is all that reaches it: rename it to the symbol's owner-local record (Data<addr>[Ptr] or
@@ -235,23 +236,94 @@ def _pad(name: str, kind: str) -> bool:
     return bool(_PLACE.match(name)) and "[" in kind
 
 
-def fits(mine: Mapping[str, Any], theirs: Mapping[str, Any]) -> int:
-    """How many of `mine`'s non-pad members `theirs` holds at the same offset, width and type (a `void *` takes any
-    pointer), -1 when one of them overlaps a member of another shape or runs past `theirs`' end."""
-    if mine.get("size", 0) > theirs.get("size", 0):
+class _Index:
+    """One real record's field rows, built once per plan: by (offset, width), and all of them for the overlap test."""
+
+    __slots__ = ("rows", "same", "size")
+
+    def __init__(self, layout: Mapping[str, Any]) -> None:
+        self.size = layout.get("size", 0)
+        self.rows = _fields(layout)
+        self.same: dict[tuple[int, int], list[str]] = defaultdict(list)
+        for offset, size, kind, _ in self.rows:
+            self.same[offset, size].append(kind)
+
+
+def _named(mine: Mapping[str, Any]) -> list[tuple[int, int, str, str]]:
+    return [f for f in _fields(mine) if not _pad(f[3], f[2])]
+
+
+def _fits(named: Sequence[tuple[int, int, str, str]], size: Any, theirs: _Index) -> int:
+    if size > theirs.size:
         return -1
-    rows = _fields(theirs)
     hits = 0
-    for offset, size, kind, name in _fields(mine):
-        if _pad(name, kind):
-            continue
-        same = [r for r in rows if r[0] == offset and r[1] == size]
-        if any(r[2] == kind or ("*" in kind and "*" in r[2] and "void *" in (kind, r[2])) for r in same):
+    for offset, width, kind, _ in named:
+        if any(
+            k == kind or ("*" in kind and "*" in k and "void *" in (kind, k))
+            for k in theirs.same.get((offset, width), ())
+        ):
             hits += 1
             continue
-        if any(r[0] < offset + size and offset < r[0] + r[1] and not _pad(r[3], r[2]) for r in rows):
+        if any(r[0] < offset + width and offset < r[0] + r[1] and not _pad(r[3], r[2]) for r in theirs.rows):
             return -1
     return hits
+
+
+def fits(mine: Mapping[str, Any], theirs: Mapping[str, Any], index: _Index | None = None) -> int:
+    """How many of `mine`'s non-pad members `theirs` holds at the same offset, width and type (a `void *` takes any
+    pointer), -1 when one of them overlaps a member of another shape or runs past `theirs`' end. `index` is
+    `theirs`' rows built once."""
+    return _fits(_named(mine), mine.get("size", 0), index or _Index(theirs))
+
+
+def _anonymous(field: Mapping[str, Any]) -> bool:
+    return bool(re.match(r"(?:struct|union) \{", field["type"])) and bool(field.get("fields"))
+
+
+def _copied(mine: Mapping[str, Any], theirs: Mapping[str, Any], spell: Callable[[str], str]) -> bool:
+    """Whether `mine` is a full copy of `theirs`: one size; every named member of `mine`, at any depth of its
+    unnamed unions and structs, is the member of `theirs` at the same path, offset and width, of the same type once
+    `spell` names `mine` as `theirs` (two pointers of differing pointee pass: the fold settles them); and `theirs`
+    names no top-level member `mine` lacks except in bytes `mine` leaves unnamed."""
+    if mine.get("size") != theirs.get("size"):
+        return False
+
+    def same(ours: Sequence[Mapping[str, Any]], other: Sequence[Mapping[str, Any]]) -> bool:
+        at = {(f["name"], f["offset"]): f for f in other}
+        for f in ours:
+            if _pad(f["name"], f["type"]):
+                continue
+            g = at.get((f["name"], f["offset"]))
+            if g is None or g["width"] != f["width"]:
+                return False
+            if _anonymous(f) or _anonymous(g):
+                if not (_anonymous(f) and _anonymous(g) and f["type"].split()[0] == g["type"].split()[0]):
+                    return False
+                if not same(f["fields"], g["fields"]):
+                    return False
+            elif spell(f["type"]) != g["type"] and not ("*" in f["type"] and "*" in g["type"]):
+                return False
+        return True
+
+    ours = [f for f in mine.get("fields", ()) if not _pad(f["name"], f["type"])]
+    if not ours or not same(ours, theirs.get("fields", ())):
+        return False
+    held = {(f["name"], f["offset"]) for f in ours}
+    spans = [(f["offset"], f["offset"] + f["width"]) for f in ours]
+    return all(
+        (g["name"], g["offset"]) in held or not any(a < g["offset"] + g["width"] and g["offset"] < b for a, b in spans)
+        for g in theirs.get("fields", ())
+        if not _pad(g["name"], g["type"])
+    )
+
+
+def _respell(pattern: re.Pattern[str], name: str) -> Callable[[str], str]:
+    """A type spelling with the record `pattern` matches named `name` instead."""
+
+    def spell(kind: str) -> str:
+        return pattern.sub(name, kind)
+
+    return spell
 
 
 def _chosen(tops: list[str], role: str, size: Any, real: Mapping[str, Mapping[str, Any]]) -> str:
@@ -293,6 +365,11 @@ def plan(
     target: dict[str, str] = {}
     census: list[Json] = []
     why: dict[str, tuple[str, str]] = {}
+    ties: dict[str, tuple[str, str]] = {}  # full copies of several real records: unplanned, reported
+    index = {n: _Index(lay) for n, lay in real.items()}  # each real record's rows, built once
+    sized: dict[Any, list[str]] = defaultdict(list)
+    for n, lay in real.items():
+        sized[lay.get("size")].append(n)
 
     def own(name: str) -> str:
         return aliases.get(name, name)
@@ -311,15 +388,25 @@ def plan(
         if "fields" not in lay:
             why[name] = ("d", f"cannot be laid: {lay.get('conflict', 'no layout')}")
             continue
-        scored = [(fits(lay, other), name2) for name2, other in real.items()]
+        mine, size = _named(lay), lay.get("size", 0)
+        # a real record smaller than this one scores -1: it never makes a top, so it is never scored
+        scored = [(_fits(mine, size, index[name2]), name2) for name2 in real if index[name2].size >= size]
         best = max((s for s, _ in scored), default=-1)
-        named = sum(1 for o, s, k, n in _fields(lay) if not _pad(n, k))
+        named = len(mine)
         tops = sorted(n2 for s, n2 in scored if s == best and best > 0)
         pick = _chosen(tops, re.split(r"_?func_", name)[0], lay.get("size"), real)
         if best > 0 and best == named and pick:
             target[name] = pick
             why[name] = ("a", f"its {named} members fit {pick}")
             continue
+        self_name = re.compile(rf"\b{re.escape(name)}\b")
+        copies = sorted(n2 for n2 in sized.get(size, ()) if _copied(lay, real[n2], _respell(self_name, n2)))
+        if len(copies) == 1:
+            target[name] = copies[0]
+            why[name] = ("a", f"a full copy of {copies[0]}")
+            continue
+        if copies:
+            ties[name] = ("d", f"a full copy of {len(copies)} real records equally: {', '.join(copies[:3])}")
         if name in local:  # a source's own record moves only into a header record (flow below)
             why[name] = ("d", "a source record no header record fits")
             continue
@@ -365,7 +452,12 @@ def plan(
             via = f"reached as {words.most_common(1)[0][0]}" if pick != role else f"all in role {role}"
             why[n] = ("b", f"one of {len(group)} same-layout records {via}")
     edges = [*edges, *joined]
-    seeds, components = _flow_classes(layouts, real, local, edges, target, why, own, reached, taken, modules or {})
+    seeds, components = _flow_classes(
+        layouts, real, local, edges, target, why, own, reached, taken, modules or {}, index
+    )
+    for name, tie in ties.items():  # a tie flow did not settle stays unplanned and says which records tie
+        if name not in target:
+            why[name] = tie
     for name in fakes:
         alias = own(name)
         if alias != name and (invented(alias) or alias in local):
@@ -405,6 +497,7 @@ def _flow_classes(
     reached: Mapping[str, Mapping[str, Counter[str]]],
     taken: set[str],
     modules: Mapping[str, str],
+    index: Mapping[str, _Index],
 ) -> tuple[set[str], dict[str, int]]:
     """Class e: union-find over the flow edges, each name standing as the record it already folds into. Moves the d
     records of each component (in `target` and `why`); returns the seeds a new shared record is renamed from and the
@@ -449,7 +542,7 @@ def _flow_classes(
         if len(reals) > 1:  # each record takes the one real record its own pointer flows into and fits whole
             for n in open_:
                 named = sum(1 for f in _fields(layouts[n]) if not _pad(f[3], f[2]))
-                fit = [r for r in sorted(near[n] & set(reals)) if fits(layouts[n], real[r]) == named]
+                fit = [r for r in sorted(near[n] & set(reals)) if fits(layouts[n], real[r], index[r]) == named]
                 if len(fit) == 1:
                     target[n] = fit[0]
                     why[n] = ("e", f"its pointer flows into {fit[0]}, which it fits")
@@ -459,7 +552,7 @@ def _flow_classes(
         if reals:
             home = reals[0]
             _, conflict = _members([*lays, real[home]])
-            bad = next((n for n in open_ if fits(layouts[n], real[home]) < 0), "")
+            bad = next((n for n in open_ if fits(layouts[n], real[home], index[home]) < 0), "")
             if conflict or bad:
                 reason = conflict or f"{bad} does not fit {home}"
                 for n in open_:

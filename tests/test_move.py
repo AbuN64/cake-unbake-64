@@ -1599,6 +1599,12 @@ def test_a_type_folded_into_a_record_its_header_includes_keeps_one_typedef(tmp_p
     assert sum(t.count("typedef struct New New;") for t in spelled.values()) == 1  # gcc 2 refuses a repeated typedef
 
 
+_UNION = (
+    "union { struct { char pad[0x3]; u8 team; } view3_2; struct { char pad[0x8]; f32 unk8[3]; } view8_2; } views0;"
+    " s32 k;"
+)
+
+
 def _viewed(tmp_path: Path, old: str, new: str, use: str) -> Any:
     """_typed with the base typedefs a header of the project declares and Old's users reading members."""
     cfg = _typed(tmp_path, old, new, use="Old *p;\nvoid h(void) { " + use + " }\n")
@@ -1621,6 +1627,15 @@ def _viewed(tmp_path: Path, old: str, new: str, use: str) -> Any:
         ("s32 w[2];", "s32 a; f32 b;", "p->w[1] = 0;", ("its w[1] (int) and b (float) differ in type",)),
         ("s32 w[2];", "s32 a; s32 b;", "p->w[k] = 0;", ("its w at 0x0 (width 8) overlaps a (int), b (int)",)),
         ("s32 a;", "char x[2]; s32 a;", "p->a = 0;", ("its a at 0x0 is not New's a",)),
+        # no view of New's union holds it: the union is named
+        ("char pad0[8]; s32 hp;", _UNION, "p->hp = 0;", ("its hp at 0x8 (width 4) overlaps views0",)),
+        # a view of Old's union that New's lacks
+        (
+            "union { struct { char pad[0x8]; f32 other[3]; } view8_9; } views0; s32 k;",
+            _UNION,
+            "p->views0.view8_9.other[0] = 0;",
+            ("its views0.view8_9 at 0x0 is no member of New's views0",),
+        ),
     ],
 )
 def test_a_type_fold_by_offset_is_refused_for_a_member_whose_type_differs_or_overlaps(
@@ -1701,6 +1716,25 @@ def _landed(seen: Any, cfg: Any, path: str) -> str:
         ("s32 *keys;", "void *unk0;", "p->keys = 0;", "s32 *keys;", "p->keys = 0;"),
         # a void * of Old reads New's typed pointer as it is
         ("void *keys;", "s32 *keys;", "p->keys = 0;", "s32 *keys;", "p->keys = 0;"),
+        # a member at a union of views of New is the member of the view at its offset (RW-AROUND GAPS 17:20: the
+        # unk8 at 0x8 of func_802165F8_S1 is SharedPlayer's views0.view8_2.unk8)
+        (
+            "char pad0[8]; f32 unk8[3]; s32 k;",
+            _UNION,
+            "p->unk8[1] = p->k;",
+            _UNION,
+            "p->views0.view8_2.unk8[1] = p->k;",
+        ),
+        # one only view holds its offset and type: its name follows the view
+        ("char pad0[3]; u8 side;", _UNION, "p->side = 1;", _UNION, "p->views0.view3_2.team = 1;"),
+        # a union of views of Old folds onto New's when the members its users read sit at the same path
+        (
+            "union { struct { char pad[0x8]; f32 unk8[3]; } view8_2; } views0; s32 k;",
+            _UNION,
+            "p->views0.view8_2.unk8[0] = p->k;",
+            _UNION,
+            "p->views0.view8_2.unk8[0] = p->k;",
+        ),
     ],
 )
 def test_a_partial_view_fold_inserts_missing_members_into_unknown_bytes_and_maps_arrays_by_element(

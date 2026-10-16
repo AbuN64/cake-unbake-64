@@ -259,3 +259,104 @@ def test_a_component_takes_the_module_of_its_lowest_function_with_a_known_module
     layouts = {a: lay(4, (0, 4, "s32", "x")), b: lay(4, (0, 4, "s32", "x"), (4, 4, "f32", "y"))}
     rows, _ = fakefold.plan(layouts, {}, {}, set(layouts), edges=[(a, b)], modules={"func_80267D70": "code_802661FC"})
     assert {r["target"] for r in rows} == {"ShapeCode802661FC"}
+
+
+def field(offset, width, kind, name, *sub):
+    return {"offset": offset, "width": width, "type": kind, "name": name, "fields": list(sub)}
+
+
+def player(name, *, extra=True, rider="struct RiderRecAt130V1 *", arm="unk8"):
+    """A SharedPlayer-shaped record (RW-AROUND GAPS 17:20): a union of views at 0x0, a self pointer in a view at
+    0x1D8 and a pointee that differs between the clones; SharedPlayer alone names turnAccumulator at 0x16C0, where the
+    clones hold padding, and one more arm (navigationTrack) at 0x18."""
+    vec = "struct { float; float; float; }"
+    views0 = field(
+        0,
+        20,
+        f"union {{ struct {{ char [8]; {vec}; }}; }}",
+        "views0",
+        field(
+            0, 20, f"struct {{ char [8]; {vec}; }}", "view8_2", field(0, 8, "char [8]", "pad"), field(8, 12, vec, arm)
+        ),
+    )
+    arms = [field(0, 4, "char *", "track")] + (
+        [field(0, 4, "struct NavigationTrack *", "navigationTrack")] if extra else []
+    )
+    views18 = field(0x18, 4, "union { char *; }", "views18", *arms)
+    self = field(0x1D8, 4, f"union {{ struct {name} *; }}", "views1D8", field(0, 4, f"struct {name} *", "self"))
+    tail = (
+        [field(0x1600, 0xC0, "char [192]", "pad1600"), field(0x16C0, 4, "float", "turnAccumulator")]
+        if extra
+        else [field(0x1600, 0xD4, "char [212]", "pad1600")]
+    )
+    return {"size": 0x16E8, "fields": [views0, views18, self, field(0x5D8, 4, rider, "rider"), *tail]}
+
+
+def test_a_full_copy_of_one_real_record_folds_into_it_before_its_ambiguous_flow():
+    clone = "SharedPlayer_func_80209CD8_de"
+    layouts = {
+        "SharedPlayer": player("SharedPlayer"),
+        "Rider": lay(8, (0, 4, "s32", "id")),
+        "View": lay(8, (0, 4, "s32", "key")),
+        clone: player(clone, extra=False, rider="struct Rider *"),
+    }
+    assert fakefold.fits(layouts[clone], layouts["SharedPlayer"]) == -1  # the union types differ: class a misses it
+    edges = [(clone, "Rider"), (clone, "View")]  # its flow joins 2 real records
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts), edges=edges)
+    assert rows == [{"op": "type", "subject": clone, "target": "SharedPlayer"}]
+    assert census[0]["class"] == "a" and census[0]["reason"] == "a full copy of SharedPlayer"
+
+
+def test_a_full_copy_of_several_real_records_stays_unplanned_and_names_them():
+    clone = "SharedPlayer_func_80209CD8_de"
+    layouts = {
+        "SharedPlayer": player("SharedPlayer"),
+        "PlayerTwin": player("PlayerTwin"),
+        "View": lay(8, (0, 4, "s32", "key")),
+        clone: player(clone, extra=False),
+    }
+    edges = [(clone, "SharedPlayer"), (clone, "View")]
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts), edges=edges)
+    assert rows == []
+    row = next(c for c in census if c["record"] == clone)
+    assert row["class"] == "d" and row["reason"] == "a full copy of 2 real records equally: PlayerTwin, SharedPlayer"
+
+
+@pytest.mark.parametrize(
+    "clone",
+    [
+        player("SharedPlayer_func_80209CD8_de", extra=False, arm="pos"),  # a view member another name holds
+        {**player("SharedPlayer_func_80209CD8_de", extra=False), "size": 0x16F0},  # another size
+        {  # a member of its own where SharedPlayer names turnAccumulator
+            **player("SharedPlayer_func_80209CD8_de", extra=False),
+            "fields": [*player("x", extra=False)["fields"][:-1], field(0x16C0, 4, "s32", "spin")],
+        },
+    ],
+)
+def test_a_record_that_is_no_full_copy_is_not_folded_as_one(clone):
+    layouts = {"SharedPlayer": player("SharedPlayer"), "SharedPlayer_func_80209CD8_de": clone}
+    rows, census = fakefold.plan(layouts, {}, {}, set(layouts))
+    assert rows == [] and "full copy" not in census[0]["reason"]
+
+
+def test_plan_builds_each_real_records_rows_once_and_never_scores_one_too_small(monkeypatch):
+    built, scored = Counter(), []
+    index, score = fakefold._Index, fakefold._fits
+
+    class Counted(index):
+        def __init__(self, layout):
+            built[id(layout)] += 1
+            super().__init__(layout)
+
+    def spy(named, size, theirs):
+        scored.append((size, theirs.size))
+        return score(named, size, theirs)
+
+    monkeypatch.setattr(fakefold, "_Index", Counted)
+    monkeypatch.setattr(fakefold, "_fits", spy)
+    reals = {f"Real{i}": lay(4 * i, (0, 4, "s32", f"r{i}")) for i in range(1, 6)}
+    fakes = {f"Rec_func_8010000{i}_de": lay(12, (0, 4, "s32", f"v{i}"), (8, 4, "f32", "w")) for i in range(6)}
+    fakefold.plan({**reals, **fakes}, {}, {}, set(reals) | set(fakes))
+    assert sorted(built.values()) == [1] * 5 and set(built) == {id(r) for r in reals.values()}
+    assert scored and all(mine <= theirs for mine, theirs in scored)  # Real1, Real2 (4, 8 bytes) are never scored
+    assert len(scored) == 6 * 3

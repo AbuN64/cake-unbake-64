@@ -570,6 +570,41 @@ def _probe_layouts(types: _Types, rows: dict[str, str]) -> dict[str, Any] | str:
     return "its records nest too deep to lay alone"
 
 
+def _anonymous(field: Mapping[str, Any]) -> bool:
+    """Whether a member is an unnamed record type laid in place (a union of views, or one view of it)."""
+    return bool(re.match(r"(?:struct|union) \{", field["type"])) and bool(field.get("fields"))
+
+
+def _same_kind(ours: str, theirs: str) -> bool:
+    """Whether two member types are one type for a fold (a `void *` takes any pointer)."""
+    return ours == theirs or ("*" in ours and "*" in theirs and "void *" in (ours, theirs))
+
+
+def _leaves(fields: Sequence[Mapping[str, Any]], base: int = 0, path: str = "") -> list[tuple[str, int, int, str]]:
+    """(dotted path, offset, width, type) of every member an access can name inside unnamed record members."""
+    out: list[tuple[str, int, int, str]] = []
+    for f in fields:
+        at, here = base + f["offset"], f"{path}{f['name']}"
+        out.append((here, at, f["width"], f["type"]))
+        if _anonymous(f):
+            out += _leaves(f["fields"], at, here + ".")
+    return out
+
+
+def _view_path(fields: Sequence[Mapping[str, Any]], name: str, at: int, width: int, kind: str) -> str | None:
+    """The dotted path of the member of a view (an arm of an unnamed union member, at any depth) of `fields` that
+    sits at `at` with `width` and `kind`: the one named `name` first, else the only one; None when there is none."""
+    hits = [
+        p
+        for f in fields
+        if _anonymous(f) and f["offset"] <= at and at + width <= f["offset"] + f["width"]
+        for p, o, w, k in _leaves(f["fields"], f["offset"], f["name"] + ".")
+        if (o, w) == (at, width) and _same_kind(kind, k) and not _PAD.match(p.rsplit(".", 1)[1])
+    ]
+    named = [p for p in hits if p.rsplit(".", 1)[1] == name]
+    return (named or hits)[0] if len(named) == 1 or len(hits) == 1 else None
+
+
 def _element(field: Mapping[str, Any]) -> tuple[str, int] | None:
     """(element type, element width) of a one-dimensional array member; None for any other member."""
     found = re.fullmatch(r"([^\[\]]*?) ?\[(\d+)\]", field["type"])
@@ -624,7 +659,10 @@ def _view_fold(types: _Types, subject: str, target: str, mine: str, theirs: str)
     the real name instead, never the reverse), or an element of an array of `theirs` of its type (the access indexes
     it). A member `theirs` lacks is inserted at its offset where `theirs` holds padding or unknown bytes (a padding or
     placeholder byte array no user of `theirs` reads), or past its end. An array the users index only by constants
-    folds element by element. A `void *` on either side takes the other's pointee. A member whose type or pointee
+    folds element by element. A member at the offset of an unnamed union of views of `theirs` is the member of the
+    view (at any depth) of its offset, width and type (the access takes its dotted path), and a union of views of
+    `mine` folds onto the one of `theirs` at its offset when every member its users read sits at the same path. A
+    `void *` on either side takes the other's pointee. A member whose type or pointee
     differs (a cast would be needed) or that overlaps named members refuses the fold, naming both."""
 
     def refuse(reason: str) -> Finding:
@@ -681,7 +719,11 @@ def _view_fold(types: _Types, subject: str, target: str, mine: str, theirs: str)
     def place(name: str, key: str, at: int, width: int, kind: str, declaration: str, whole: bool) -> str | None:
         """Places one member (or one element of it, not `whole`) the users read at `at`, or says why it cannot be
         placed (and changes nothing)."""
-        same = [g for g in fields if (g["offset"], g["width"]) == (at, width) and not _PAD.match(g["name"])]
+        same = [
+            g
+            for g in fields
+            if (g["offset"], g["width"]) == (at, width) and not _PAD.match(g["name"]) and not _anonymous(g)
+        ]
         if same:
             g = next((g for g in same if g["type"] == kind), same[0])
             if g["type"] != kind:
@@ -717,6 +759,10 @@ def _view_fold(types: _Types, subject: str, target: str, mine: str, theirs: str)
                 if not rest and width == element[1]:
                     renames[key] = f"{g['name']}[{step}]"
                     return None
+        if (path := _view_path(fields, name, at, width, kind)) is not None:  # a member of one of its views
+            if key != path:
+                renames[key] = path
+            return None
         if whole and name in names:
             return f"its {name} at 0x{at:X} is not {target}'s {name}"
         holds = [g for g in fields if g["offset"] <= at and at + width <= g["offset"] + g["width"] and unknown(g)]
@@ -753,9 +799,32 @@ def _view_fold(types: _Types, subject: str, target: str, mine: str, theirs: str)
             return None
         return "no array"
 
+    def viewed(f: Mapping[str, Any]) -> str | None:
+        """Folds an unnamed record member of `mine` (a union of views) onto the one of `theirs` at its offset and
+        width, of the same kind and holding every member the users read at the same path; or says why it cannot."""
+        g = next((g for g in fields if (g["offset"], g["width"]) == (f["offset"], f["width"]) and _anonymous(g)), None)
+        if g is None or g["type"].split()[0] != f["type"].split()[0]:
+            return None
+        theirs_at = {p.split(".", 1)[1]: (o, w, k) for p, o, w, k in _leaves(g["fields"], g["offset"], "_.")}
+        for p, o, w, k in _leaves(f["fields"], f["offset"], "_."):
+            p = p.split(".", 1)[1]
+            hit = theirs_at.get(p)
+            if p.rsplit(".", 1)[-1] not in used or (hit and hit[:2] == (o, w) and _same_kind(k, hit[2])):
+                continue
+            if hit is None:
+                return f"its {f['name']}.{p} at 0x{o:X} is no member of {target}'s {g['name']}"
+            return f"its {f['name']}.{p} ({k}) and {g['name']}.{p} ({hit[2]}) differ"
+        if g["name"] != f["name"]:
+            renames[f["name"]] = g["name"]
+        return ""
+
     for name in sorted(used & olds.keys(), key=lambda n: (olds[n]["offset"], n)):
         f = olds[name]
         at, width = f["offset"], f["width"]
+        if _anonymous(f) and (why := viewed(f)) is not None:
+            if why:
+                return refuse(why)
+            continue
         why = place(name, name, at, width, f["type"], f["declaration"], True)
         if why is None:
             continue
