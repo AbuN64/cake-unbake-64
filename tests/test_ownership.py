@@ -736,6 +736,8 @@ def test_job_propagates_stale_inputs_but_keeps_compile_debt(monkeypatch, tmp_pat
     refusal = Refusal(Finding(key, "source moved"))
     monkeypatch.setattr(ownership.store, "work", lambda cfg: nullcontext(tmp_path))
     monkeypatch.setattr(ownership.native, "objects", Mock(side_effect=refusal))
+    monkeypatch.setattr(ownership, "_built_key", lambda snap, u, v, recipe: f"built-{v}")
+    monkeypatch.setattr(ownership.store, "cached_object", lambda cfg, kind, key, produce: produce())
     item = (snapshot, spec, "a", False, object())
     if key == "journal.changed":
         with pytest.raises(Refusal) as caught:
@@ -968,3 +970,28 @@ def test_the_job_key_names_only_the_code_that_follows_an_object_to_the_rom(monke
     monkeypatch.setattr(ownership, "code_identity", lambda *f: "placement code two")
     assert ownership._job_key(item) != first  # an edit of the placement code moves it
     assert asked[0]["code"] is False and ownership._job_key.coded  # the tool's build code and pool add nothing
+
+
+def test_a_changed_data_row_relocates_every_unit_from_its_cached_build_without_building_again(monkeypatch, tmp_path):
+    spec = unit("f")
+    snapshot = SimpleNamespace(config=object(), layout=LayoutMap({}, MEMBERS, {spec.path: spec}, "d", (), {}))
+    cache: dict[tuple[str, str], object] = {}
+
+    def cached_object(cfg, kind, key, produce):
+        if (kind, key) not in cache:
+            cache[kind, key] = produce()
+        return cache[kind, key]
+
+    built = Mock(return_value=({".rodata": (word(7), {}, [])}, None))
+    monkeypatch.setattr(ownership, "_built", built)
+    monkeypatch.setattr(ownership, "_built_key", lambda snap, u, v, recipe: f"built-{v}")
+    monkeypatch.setattr(ownership.store, "cached_object", cached_object)
+    rows = [index(word(0, 7, 0, 7), [(4, 8, "rodata/a", ".rodata", 0x80000004)])]
+    monkeypatch.setattr(ownership, "_index", lambda snap, version: rows[0])
+    item = (snapshot, spec, "a", False, object())
+    assert ownership._job(item) == {"a": {".rodata": [[4, 8]]}}
+    before = ownership._job_key(item)
+    rows[0] = index(word(0, 7, 0, 7), [(12, 16, "rodata/b", ".rodata", 0x8000000C)])._replace(digest="moved")
+    assert ownership._job_key(item) != before  # the placement is located again on the new rows
+    assert ownership._job(item) == {"a": {".rodata": [[12, 16]]}}
+    assert built.call_count == 1  # from the object built before: the rows never reach the build

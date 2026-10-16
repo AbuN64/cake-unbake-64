@@ -9,6 +9,7 @@ from bisect import bisect_left, bisect_right, insort
 from collections import OrderedDict, defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
@@ -25,6 +26,8 @@ _WORD = 0xFFFFFFFF
 _MANY = 16  # more equal ranges than this are ambiguous without counting them all
 _Row = tuple[int, int, str, str, int]  # rom start, rom end, member, section, vram
 Located = dict[str, list[list[int]] | dict[str, str]]  # per emitted section its ROM ranges, or why it has none
+Emitted = dict[str, tuple[bytes, dict[int, bool], list[tuple[int, int]]]]  # per output section bytes, relocs, refs
+Built = tuple[Emitted, tuple[int, int] | None]  # a holder's emitted sections and its text's (vram, ROM offset)
 
 
 class _Index(NamedTuple):
@@ -49,7 +52,7 @@ def _classes() -> dict[str, str]:
     }
 
 
-def emitted(blob: bytes) -> dict[str, tuple[bytes, dict[int, bool], list[tuple[int, int]]]]:
+def emitted(blob: bytes) -> Emitted:
     """Per output section the ld-concatenated bytes, relocated word offsets (True = to .text), .text low-half refs."""
     elf, classes = ELFFile(io.BytesIO(blob)), _classes()
     sections = list(elf.iter_sections())
@@ -263,10 +266,15 @@ def locate(index: _Index, blob: bytes, text: tuple[int, int] | None, loose: bool
     """Per emitted section the ROM ranges [start, end) holding its bytes (relocated .text words shifted by the unit's
     text vram), or the reason instead. The place the unit's own code names decides; else every holder, narrowed by
     the addresses the code forms."""
+    return place(index, emitted(blob), text, loose)
+
+
+def place(index: _Index, sections: Emitted, text: tuple[int, int] | None, loose: bool = False) -> Located:
+    """`locate` on sections already read out of the object: a built object is cached apart from the rows it lands on."""
     rom, segments = index.rom, index.segments
     vram, base = text or (None, 0)
     out: Located = {}
-    for section, (data, words, refs) in emitted(blob).items():
+    for section, (data, words, refs) in sections.items():
         at = _placed(index, data, words, refs, text, loose) if text else None
         starts = [at] if at is not None else _content(index, data, words, vram)
         if len(starts) > 1 and text:
@@ -304,10 +312,10 @@ def _job_key(item: tuple[Any, ...]) -> str:
     held = sorted(snapshot.layout.held(unit.members) & ({only} if only else set(snapshot.versions)))
     return digest(
         (
-            [native.stamp(snapshot, unit, v, recipe, pinned=True, code=False) for v in held],
+            [_built_key(snapshot, unit, v, recipe) for v in held],
             [_index(snapshot, v).digest for v in held],
             loose,
-            code_identity(locate, emitted, versions.undefined, versions.resolve),
+            code_identity(place),
         )
     )
 
@@ -315,34 +323,56 @@ def _job_key(item: tuple[Any, ...]) -> str:
 _job_key.coded = True  # type: ignore[attr-defined]  # the key names the code it depends on: pool adds none
 
 
+def _built_key(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe | None) -> str:
+    """What one holder's object says about where it lands, without the rows: an edit of any data row of the version
+    (a relabel, a split) moves the job key of every unit there, while their objects stay built."""
+    return digest(
+        (
+            native.stamp(snapshot, unit, version, recipe, pinned=True, code=False),
+            code_identity(emitted, versions.undefined, versions.resolve),
+        )
+    )
+
+
+def _built(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> Built | str:
+    """The holder's emitted sections and the place of its text, or why it has none (a refusal replays as text)."""
+    cfg = snapshot.config
+    code = replace(unit, members=tuple(n for n in unit.members if snapshot.layout.members[n].kind == "function"))
+    try:
+        with store.work(cfg) as work:
+            obj = native.objects(snapshot, unit, version, recipe, work)[0]
+            blob = obj.read_bytes()
+            unresolved = versions.resolve(snapshot.versions[version], versions.undefined(obj), unit.path)
+        if unresolved:  # the link would fail: the holder is withheld like any compile failure
+            raise Refusal(
+                replace(
+                    unresolved[0],
+                    reason=f"{unresolved[0].missing[0]} has no address in {version} ({len(unresolved)} unresolved)",
+                )
+            )
+        held = next((p for p in native.sections(snapshot, code, version) if p.section == ".text"), None)
+    except Refusal as refusal:
+        if any(f.key == "journal.changed" for f in refusal.findings):
+            raise
+        return f"{refusal.findings[0].key}: {refusal.findings[0].reason}"
+    return emitted(blob), (held.vram, held.rom_start) if held else None
+
+
 def _job(item: tuple[Any, ...]) -> dict[str, Located | str]:
     snapshot, unit, only, loose, recipe = item
     cfg = snapshot.config
     out: dict[str, Located | str] = {}
     recipe = recipe or recipes.resolve(cfg, unit, {})
-    code = replace(unit, members=tuple(n for n in unit.members if snapshot.layout.members[n].kind == "function"))
     for version in sorted(snapshot.layout.held(unit.members)):
         if only not in (None, version):
             continue
-        try:
-            with store.work(cfg) as work:
-                obj = native.objects(snapshot, unit, version, recipe, work)[0]
-                blob = obj.read_bytes()
-                unresolved = versions.resolve(snapshot.versions[version], versions.undefined(obj), unit.path)
-            if unresolved:  # the link would fail: the holder is withheld like any compile failure
-                raise Refusal(
-                    replace(
-                        unresolved[0],
-                        reason=f"{unresolved[0].missing[0]} has no address in {version} ({len(unresolved)} unresolved)",
-                    )
-                )
-            held = next((p for p in native.sections(snapshot, code, version) if p.section == ".text"), None)
-        except Refusal as refusal:
-            if any(f.key == "journal.changed" for f in refusal.findings):
-                raise
-            out[version] = f"{refusal.findings[0].key}: {refusal.findings[0].reason}"
-            continue
-        out[version] = locate(_index(snapshot, version), blob, (held.vram, held.rom_start) if held else None, loose)
+        built = store.cached_object(
+            cfg,
+            "ownership.built",
+            _built_key(snapshot, unit, version, item[4]),
+            partial(_built, snapshot, unit, version, recipe),
+        )
+        out[version] = built if isinstance(built, str) else place(_index(snapshot, version), *built, loose)
     return out
 
 
