@@ -2029,12 +2029,12 @@ def test_partial_refuses_only_the_one_move_that_breaks_a_unit_seventeen_type_mov
         return ({s: [broken] for s in subjects if s in touching} if "AL5" in subjects else {}), False
 
     applied = _rounds(monkeypatch, refuse)
-    rows = [{"op": "type", "subject": s, "target": f"{s}T"} for s in touching + ["x0", "x1", "x2"]]
+    rows = [{"op": "type", "subject": s, "target": f"{s}T"} for s in [*touching, "x0", "x1", "x2"]]
     stdin(monkeypatch, json.dumps(rows))
     result = move.run(world(tmp_path), {"op": "-", "partial": "1"})
     assert [r["index"] for r in result["refused"]] == [5]
-    assert sorted(result["files"]) == sorted(f"src/{s}.c" for s in touching + ["x0", "x1", "x2"] if s != "AL5")
-    assert result["rounds"] <= 1 + 2 * 5 and applied[0] == touching + ["x0", "x1", "x2"]
+    assert sorted(result["files"]) == sorted(f"src/{s}.c" for s in [*touching, "x0", "x1", "x2"] if s != "AL5")
+    assert result["rounds"] <= 1 + 2 * 5 and applied[0] == [*touching, "x0", "x1", "x2"]
 
 
 def test_partial_retries_alone_a_move_the_plan_refused_beside_others(
@@ -2290,3 +2290,15 @@ def test_another_stream_or_a_changed_tree_starts_afresh(tmp_path: Path, seen: An
     assert killed("f3", stop_at=2) == [[], ["src/u1.c"]]  # another stream: found u1 afresh
     (cfg.project.root / "src/f9.c").write_text("int f9;\n")  # the tree moved under the journal
     assert killed("f3")[0] == []
+
+
+def test_a_refused_move_changes_nothing_the_moves_after_it_see(tmp_path: Path, seen: Any) -> None:
+    # report.fakes.movable edited twice (7 s each) to judge the rows after a refused one again; one pass suffices
+    cfg = _typed(tmp_path, "s32 a;")
+    snap = move.layout.capture(cfg)
+    refused = [Move(0, "type", "Nope", "X"), Move(1, "type", "Old", "f2"), Move(2, "symbol", "f1", "1bad")]
+    accepted = [Move(3, "type", "Old", "Renamed")]
+    both = move.edit(snap, [*refused, *accepted])
+    alone = move.edit(snap, accepted)
+    assert sorted(m.index for m, _ in both.bad) == [0, 1, 2] and alone.bad == []
+    assert both.writes == alone.writes

@@ -8,7 +8,7 @@ import posixpath
 import re
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
@@ -103,6 +103,13 @@ class _Types:
         self.shaped: dict[str, list[tuple[str, list[str]]]] = defaultdict(list)
         self.accesses: list[tuple[tuple[str, ...], dict[str, str], frozenset[str]]] = []
         self.includes: dict[str, set[str]] = defaultdict(set)
+        self.seen: dict[tuple[str, ...], Any] = {}  # what the snapshot answers (definers, reaches): fixed for the batch
+
+    def ask(self, key: tuple[str, ...], produce: Callable[[], Any]) -> Any:
+        """The snapshot's answer to key, produced once per batch: every fold asks it again for the same records."""
+        if key not in self.seen:
+            self.seen[key] = produce()
+        return self.seen[key]
 
     def spelled(self, text: str) -> str:
         """The text with every name the batch renamed or folded spelled as it now is."""
@@ -235,7 +242,8 @@ def edit(
     """The map after the moves in order, the text files that follow (symbols, split rows, config) and which move
     touched which member or module. Moves the map refuses are all collected in `bad`. `boundaries` are members a
     file starts at that this apply's proofs found, kept in the map beside its own; `keep` are old units whose proof
-    failed this command: they stay as they are."""
+    failed this command: they stay as they are. A refused move changes nothing the moves after it see, so the moves
+    the edit accepts are what it accepts without the refused ones (one pass judges a stream)."""
     with effort.stage("move.edit"):
         lay, project = snapshot.layout, snapshot.config.project
         library = tuple(f.rstrip("/") + "/" for f in project.library_dirs)
@@ -289,6 +297,8 @@ def edit(
                     bad.append((move, found))
                     continue
                 touch |= {subject, target, *_type_users(snapshot, origin)}
+            elif op == "symbol" and locked(subject):  # judged before anything is renamed: a refusal changes nothing
+                reject(move, "move.library", f"{subject} belongs to a library unit", unit=subject)
             elif op == "symbol":
                 for vid, record in snapshot.versions.items():  # a generated name (D_auto_...) is a fact of its version
                     if subject in record.symbols:
@@ -302,8 +312,6 @@ def edit(
                     found = refusal.findings[0]
                     reject(move, found.key.replace("symbols.", "move."), found.reason, unit=found.unit)
                     continue
-                if locked(subject):
-                    reject(move, "move.library", f"{subject} belongs to a library unit", unit=subject)
                 groups = {
                     k: replace(g, members=tuple(layout.renamed(n, {subject: target}) for n in g.members))
                     for k, g in groups.items()
@@ -803,12 +811,15 @@ def _fold_includes(types: _Types, mine: str, theirs: str) -> None:
         body = re.compile(rf"\b(?:struct|union)\s+{re.escape(tag)}\s*\{{")
         return [p for p in (*heads, *sources) if body.search(snapshot.read(p).decode("latin-1"))]
 
-    home = next((p for p in definers(new) if p.endswith(".h")), None)
-    for path in definers(old) if home else ():
+    def reaches(start: str, goal: str) -> bool:
+        return bool(types.ask(("reaches", start, goal), lambda: headers.reaches(snapshot, start, goal)))
+
+    home = next((p for p in types.ask(("definers", new), lambda: definers(new)) if p.endswith(".h")), None)
+    for path in types.ask(("definers", old), lambda: definers(old)) if home else ():
         assert home is not None
-        if path == home or headers.reaches(snapshot, path, home):
+        if path == home or reaches(path, home):
             continue
-        for user in headers.spelled_in(snapshot, old)[0] if headers.reaches(snapshot, home, path) else [path]:
+        for user in headers.spelled_in(snapshot, old)[0] if reaches(home, path) else [path]:
             types.includes[user].add(home.removeprefix("include/"))
 
 
