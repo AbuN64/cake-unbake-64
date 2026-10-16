@@ -1307,6 +1307,34 @@ def test_prove_groups_measures_every_alternative_in_one_dispatch(monkeypatch):
     assert calls == [2] and found[0] == () and [f.unit for f in found[1]] == ["b"]
 
 
+def test_prove_groups_proves_the_head_of_every_set_in_one_baseline_before_any_gate(monkeypatch):
+    # one baseline per set re-derived and re-measured the same consumers per alternative: a bisect level crawled
+    NS = SimpleNamespace
+    units = {p: NS(path=p, members=(p[4],)) for p in ("src/a.c", "src/b.c", "src/c.c", "src/d.c")}
+    held = NS(holders=lambda: ("eu",))
+    bound = NS(layout=NS(units=units, members={m: held for m in "abcd"}))
+    monkeypatch.setattr(compare, "_prepare", lambda s, g, p: ({}, units[str(g[0])], bound, []))
+    monkeypatch.setattr(compare.ownership, "derive_pairs", lambda pairs, recipe: list(pairs))
+    monkeypatch.setattr(compare.recipes, "resolve", lambda c, u, o: None)
+    consumers = {"src/a.c": ["src/c.c"], "src/b.c": ["src/d.c", "src/c.c"]}
+    monkeypatch.setattr(
+        compare,
+        "_proof_set",
+        lambda s, b, u, e, strict, every=False: {"changed": [u.path], "consumers": consumers[u.path], "proving": True},
+    )
+    monkeypatch.setattr(
+        compare,
+        "measure_bound",
+        lambda config, pairs, overrides: [(fixture.proof(u.path, u.members[0], "eu", True),) for _, u in pairs],
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(compare, "_baseline", lambda s, paths, o: calls.append(list(paths)) or ())
+    monkeypatch.setattr(compare.layout, "unit_of", lambda s, m: units[f"src/{m}.c"])
+    monkeypatch.setattr(compare, "_source_rules", lambda s, done: ())
+    compare.prove_groups(None, NS(), [[Path("src/a.c")], [Path("src/b.c")]], {})
+    assert calls[0] == ["src/c.c", "src/d.c"]  # the union of both sets' consumers, first and once
+
+
 def test_bind_spells_a_draft_copy_defining_an_older_address_name_as_its_member(
     cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
