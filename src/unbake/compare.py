@@ -351,7 +351,10 @@ def bind(
     )
     if shared is not None:
         unit, writes = shared
-    elif landed and Path(landed.path).suffix == file.suffix:
+    elif landed and (
+        (configuration.is_source(str(file)) and configuration.is_source(configuration.kind(landed.kind)["suffix"]))
+        or file.suffix == configuration.kind(landed.kind)["suffix"]
+    ):
         unit, writes = landed, {landed.path: content}
     else:  # a source of another language than the landed unit's (C for library assembly) takes a unit of its own
         options = layout.unit_options(snapshot, member, content)

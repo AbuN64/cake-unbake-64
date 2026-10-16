@@ -111,19 +111,21 @@ def test_bind_known_unit(cfg: Config) -> None:
     assert compare.bind(s, file, None) == (u, s)
 
 
+@pytest.mark.parametrize("suffix", [".c", ".C", ".cpp", ".CPP"])
+@pytest.mark.parametrize("candidate_suffix", [".c", ".CPP"])
 def test_bind_new_text_for_a_landed_member_replaces_its_unit_file(
-    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str, candidate_suffix: str
 ) -> None:
-    u = unit("f", "g", path="src/a.c")
+    u = unit("f", "g", path=f"src/a{suffix}")
     s = snap(cfg, {"f": member("f"), "g": member("g")}, (u,))
-    file = tmp_path / "f.c"
+    file = tmp_path / f"f{candidate_suffix}"
     file.write_bytes(b"int f;")
     over = replace(s, digest="overlaid")
     writes = []
     monkeypatch.setattr(compare.layout, "overlay", lambda snapshot, w: writes.append(w) or over)
     monkeypatch.setattr(compare.layout, "unit_options", lambda *a: pytest.fail("a landed member needs no new unit"))
     assert compare.bind(s, file, None) == (u, over)
-    assert writes == [{"src/a.c": b"int f;"}]
+    assert writes == [{u.path: b"int f;"}]
 
 
 def test_bind_respells_a_candidate_written_before_a_move_through_the_chains(
@@ -228,12 +230,13 @@ def test_bind_no_options_refused(cfg: Config, tmp_path: Path, monkeypatch: pytes
     assert "no standalone unit option" in error.value.findings[0].reason
 
 
+@pytest.mark.parametrize("candidate_suffix", [".c", ".CPP"])
 def test_bind_a_c_source_never_takes_a_landed_assembly_unit(
-    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, candidate_suffix: str
 ) -> None:
     asm = UnitSpec("src/sdk/f.s", "asm", "g", ("f",), "gcc-test", {})
     s = snap(cfg, {"f": member("f")}, (asm,))
-    file = tmp_path / "f.c"
+    file = tmp_path / f"f{candidate_suffix}"
     file.write_bytes(b"void f(void) {}")
     own = unit("f", path="src/f.c")
     over = replace(s, digest="overlaid")
