@@ -2165,6 +2165,40 @@ def test_a_files_changed_lines_blame_the_moves_they_spell() -> None:
     assert move._file_moves(before, after, edited, moves, "include/a.h") == [moves[1]]  # type: ignore[arg-type]
 
 
+def test_a_kept_unit_failing_through_an_added_include_blames_the_moves_that_added_it_not_the_chain() -> None:
+    # the 2026-10-15 leftover-rows rerun, round 3: kept src/code_802BAC64.c failed through the chain
+    # model_instance.h -> types_*.h -> code_802BAC64.h and its module header's new include of a types header made a
+    # cycle; blaming every move spelled in a chain header's changed lines refused 741 of 751 rows
+    types = "".join(f"typedef struct Rec{i} Name{i};\n" for i in range(40))
+    old = {
+        "include/code_802BAC64.h": '#include "shared/model_instance.h"\nvoid f(void *p);\n',
+        "include/common/types_1dc.h": "#ifndef T\n#define T\n" + types + "#endif\n",
+    }
+    new = {
+        "include/code_802BAC64.h": '#include "shared/model_instance.h"\n#include "common/types_1dc.h"\n'
+        "void f(Name7 *p);\n",
+        "include/common/types_1dc.h": '#ifndef T\n#define T\n#include "code_802BAC64.h"\n'
+        + types.replace("Rec", "Moved")
+        + "#endif\n",
+    }
+    before = SimpleNamespace(peek=lambda p: old[p].encode() if p in old else None)
+    after = SimpleNamespace(peek=lambda p: new[p].encode() if p in new else None)
+    moves = [Move(i, "type", f"Rec{i}", f"Moved{i}") for i in range(40)] + [Move(40, "type", "Old7", "Name7")]
+    said = (
+        "version de: compile.error: In file included from build/views/a6/include/shared/model_instance.h:4,\n"
+        "                 from /root/include/common/types_1dc.h:3,\n"
+        "                 from include/code_802BAC64.h:2,\n"
+        "                 from src/code_802BAC64.c:1,\n"
+        "include/acmd.h:8: parse error before `Vector4f'\n"
+    )
+    changed = set(new)
+    blamed = move._edge_moves(before, after, moves, said, "/root/", changed)  # type: ignore[arg-type]
+    assert blamed == [moves[40]]  # the move that spelled Name7 into the module header, which added the include
+    edited = SimpleNamespace(layout=SimpleNamespace(groups={}), touched={})
+    chain = move._file_moves(before, after, edited, moves, "include/common/types_1dc.h")  # type: ignore[arg-type]
+    assert len(chain) == 41  # what the chain blame refused before: every move
+
+
 def _cascade(monkeypatch: Patch, stop_at: int = 0) -> list[list[str]]:
     """_apply replaced by the unit-by-unit cascade of the cutover trace; raises KeyboardInterrupt on call `stop_at`."""
     order, calls = ["src/u1.c", "src/u2.c", "src/u3.c"], []

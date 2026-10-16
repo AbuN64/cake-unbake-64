@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import sys
 from collections import Counter, defaultdict
@@ -882,6 +883,38 @@ def _file_moves(before: Snapshot, after: Snapshot, edited: Edited, moves: Sequen
 
 
 _HEADER_AT = re.compile(r"([\w./+-]+\.h):\d+")
+_INCLUDED_AT = re.compile(r"(?:In file included|^\s+) from ([\w./+-]+\.h):(\d+)", re.M)
+_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
+
+
+def _edge_moves(
+    before: Snapshot, after: Snapshot, moves: Sequence[Move], said: str, root: str, changed: Collection[str]
+) -> list[Move]:
+    """The moves that added an include edge the compiler's include chain runs through: a changed header whose chain
+    line is an #include it did not have before now pulls in a header because a move spelled one of that header's
+    names into it. Those moves (their names spelled both in the includer's new lines and in the included header) made
+    the cycle or the order that breaks the unit, never every move touching a header on the chain (one kept unit's
+    chain refused 741 of 751 rows on 2026-10-15)."""
+    hit: dict[int, Move] = {}
+    for at, line in sorted({(_VIEWS.sub("", p.removeprefix(root)), int(n)) for p, n in _INCLUDED_AT.findall(said)}):
+        if at not in changed:
+            continue
+        lines = (after.peek(at) or b"").decode(errors="replace").splitlines()
+        old = set((before.peek(at) or b"").decode(errors="replace").splitlines())
+        added = _INCLUDE.match(lines[line - 1]) if 0 < line <= len(lines) and lines[line - 1] not in old else None
+        if added is None:
+            continue
+        found = (posixpath.normpath(f"{b}/{added[1]}") for b in (posixpath.dirname(at), "include"))
+        target = next((t for t in found if after.peek(t) is not None), None)
+        if target is None:
+            continue
+        both = symbols.tokens("\n".join(set(lines) - old)) & symbols.tokens(
+            (after.peek(target) or b"").decode(errors="replace")
+        )
+        hit.update((m.index, m) for m in moves if {m.subject, m.target} & both)
+    return [hit[i] for i in sorted(hit)]
+
+
 _VIEWS = re.compile(r"^(?:.*/)?build/views/[0-9a-f]+/")
 _SAID = 1500  # chars of a compiler message a finding keeps: the head names the error and the include chain
 
@@ -1818,8 +1851,9 @@ def _apply(
             return _result(moves, snapshot)
 
         def stuck(failing: Mapping[str, Sequence[Finding]]) -> list[Move]:
-            """Kept units that still fail read a changed header: the moves that changed the changed headers their
-            compiler messages name (the error's file and its include chain), else every changed header they reach."""
+            """Kept units that still fail read a changed header: the moves that added an include on the chain their
+            compiler message names (`_edge_moves`), else the moves that changed the changed headers it names (the
+            error's file and its include chain), else every changed header they reach."""
             after = layout.overlay(snapshot, writes)
             changed = {p for p, b in writes.items() if p.startswith("include/") and b is not None}
             root = str(config.project.root.resolve()) + "/"
@@ -1827,6 +1861,9 @@ def _apply(
             for unit, found in failing.items():
                 reach = headers._closure(after, [unit]) & changed
                 said = "\n".join(t for f in found for t in (f.reason, *f.missing))
+                if edges := _edge_moves(snapshot, after, live, said, root, reach):
+                    hit.update((m.index, m) for m in edges)  # the include a move added, not the whole chain
+                    continue
                 named = {_VIEWS.sub("", h.removeprefix(root)) for h in _HEADER_AT.findall(said)} & reach
                 for p in sorted(named or reach):
                     hit.update((m.index, m) for m in _file_moves(snapshot, after, edited, live, p))
