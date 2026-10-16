@@ -675,7 +675,10 @@ def plan(snapshot: Snapshot, *, reuse: ownership.LocatedBatch | None = None) -> 
     with effort.stage("infer.plan"):
         tree = _tree(snapshot)
         prior = reuse if reuse is not None and reuse.source_tree == tree else None
-        key = digest((snapshot.digest, code_identity(_plan), tree, _catalog(snapshot)[1]))
+        # The delta depends on the original spelling: equal semantic maps may still need normalization.
+        key = digest(
+            (snapshot.digest, sha256(snapshot.read("layout.toml")), code_identity(_plan), tree, _catalog(snapshot)[1])
+        )
         return store.cached_object(snapshot.config, "infer", key, lambda: _plan(snapshot, prior, tree))
 
 

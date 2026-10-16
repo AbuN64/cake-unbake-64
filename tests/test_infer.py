@@ -777,3 +777,51 @@ def test_plan_reuses_only_the_captured_source_tree(tmp_path, monkeypatch, change
     assert planned.call_args.args[:2] == (after, prior if change == "unchanged" else None)
     assert planned.call_args.args[2] == expected_tree
     tree.assert_called_once_with(after)
+
+
+@pytest.mark.usefixtures("toolchains")
+@pytest.mark.parametrize("spelling", ["empty-fuzzy", "comment"])
+@pytest.mark.parametrize("first", ["noncanonical", "canonical"])
+def test_plan_cache_binds_raw_layout_delta(tmp_path, monkeypatch, spelling, first):
+    snapshot = snap(tmp_path, functions={"f0": both(0x1000, blob(*LEAF))}, groups=[module()])
+    initial = infer._plan(snapshot)
+    snapshot = layout.overlay(snapshot, initial.writes)
+    canonical = layout.dump_map(snapshot.layout)
+    snapshot = replace(snapshot, overlays={**snapshot.overlays, "layout.toml": canonical})
+    assert not infer._plan(snapshot).writes
+    raw = (
+        canonical.replace(b"schema = 5\n", b"schema = 5\nfuzzy = []\n", 1)
+        if spelling == "empty-fuzzy"
+        else b"# Equivalent map spelling\n" + canonical
+    )
+    # These inputs parse to one map, but one still needs a file normalization delta.
+    parsed = layout.load_map(snapshot.config, snapshot.versions, raw, snapshot.read)
+    assert parsed.digest == layout.load_map(snapshot.config, snapshot.versions, canonical, snapshot.read).digest
+    noncanonical = replace(snapshot, overlays={**snapshot.overlays, "layout.toml": raw})
+    real = infer.store.cached_object
+    cached, produced, requested = {}, [], []
+
+    def cache(cfg, kind, key, produce):
+        if kind != "infer":
+            return real(cfg, kind, key, produce)
+        requested.append(key)
+        if key not in cached:
+            produced.append(key)
+            cached[key] = produce()
+        return cached[key]
+
+    monkeypatch.setattr(infer.store, "cached_object", cache)
+    order = [noncanonical, snapshot] if first == "noncanonical" else [snapshot, noncanonical]
+    for current in [*order, *reversed(order), noncanonical, snapshot]:
+        result = infer.plan(current)
+        assert result.writes == ({"layout.toml": canonical} if current is noncanonical else {})
+    assert len(produced) == 2
+    assert len(set(requested)) == 2
+    # A semantic edit must also invalidate the plan; replay of that changed input is warm.
+    changed_text = canonical.replace(b"schema = 5\n", b'schema = 5\nboundaries = ["f0"]\n', 1)
+    changed = layout.overlay(snapshot, {"layout.toml": changed_text})
+    assert changed.digest != snapshot.digest
+    result = infer.plan(changed)
+    assert result.base == changed.digest
+    assert infer.plan(changed) == result
+    assert len(produced) == 3
