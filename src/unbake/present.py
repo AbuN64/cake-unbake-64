@@ -22,12 +22,16 @@ def map_path(version: str) -> str:
     return f"docs/memory-map-{version}.svg"
 
 
+def overview_path(version: str) -> str:
+    return f"docs/overview-{version}.svg"
+
+
 def symbols_path(version: str) -> str:
     return f"versions/{version}/symbols.json"
 
 
 def paths(versions: Iterable[str]) -> list[str]:
-    return [PROGRESS, *(p for v in versions for p in (map_path(v), symbols_path(v)))]
+    return [PROGRESS, *(p for v in versions for p in (map_path(v), overview_path(v), symbols_path(v)))]
 
 
 def _dump(document: Json) -> bytes:
@@ -156,6 +160,97 @@ def memory_map(snapshot: Snapshot, version: str) -> bytes:
     return "\n".join([head, *lines, "</svg>"]).encode() + b"\n"
 
 
+# overview geometry: made to be shown 720 px wide, 64 KiB per row, one block per run of one status
+OVERVIEW_WIDTH = 720
+OVERVIEW_ROW = 0x10000
+OVERVIEW_LEFT = 64
+OVERVIEW_BAR = OVERVIEW_WIDTH - OVERVIEW_LEFT - 8
+OVERVIEW_HEIGHT = 13
+OVERVIEW_PITCH = 17
+OVERVIEW_JOIN = 32  # functions this close count as touching: alignment padding does not split a run
+FUZZY_HIGH = 0.5
+_TONES = (("q10", "exact"), ("q7", "fuzzy high"), ("q3", "fuzzy low"), ("q0", "none"))
+_LEGEND = (28, 72, 72, 28)  # block widths of the legend bar: none, fuzzy low, fuzzy high, exact
+_OVERVIEW_STYLE = _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "")
+
+
+def _num1(value: float) -> str:
+    text = f"{value:.1f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _tone(score: float, exact: bool) -> int:
+    """0 exact, 1 fuzzy high (half or more), 2 fuzzy low, 3 none."""
+    if exact:
+        return 0
+    return 3 if score <= 0 else 1 if score >= FUZZY_HIGH else 2
+
+
+def overview(snapshot: Snapshot, version: str) -> bytes:
+    """The ROM of one version as a picture that reads at 720 px: rows of 64 KiB in ROM order (rows without code left
+    out), runs of adjacent functions of one status merged into one block, and a legend of the four statuses."""
+    pieces = sorted(
+        (p.rom_start, p.size, _tone(credit.score, credit.exact))
+        for credit in report.credits(snapshot)
+        if credit.version == version and credit.member.kind == "function"
+        for p in credit.member.placements
+        if p.version == version and p.section == ".text" and p.size > 0
+    )
+    runs: list[list[int]] = []  # [start, end, tone]
+    for start, size, tone in pieces:
+        if runs and runs[-1][2] == tone and start - runs[-1][1] <= OVERVIEW_JOIN:
+            runs[-1][1] = max(runs[-1][1], start + size)
+        else:
+            runs.append([start, start + size, tone])
+    rows: set[int] = set()
+    drawn: list[list[tuple[float, int, float]]] = [
+        [],
+        [],
+        [],
+        [],
+    ]  # per tone the outlines of its blocks: one path each keeps the file small
+    scale = OVERVIEW_BAR / OVERVIEW_ROW
+    for start, end, tone in runs:
+        at = start
+        while at < end:
+            row = at // OVERVIEW_ROW
+            until = min(end, (row + 1) * OVERVIEW_ROW)
+            rows.add(row)
+            drawn[tone].append((OVERVIEW_LEFT + (at - row * OVERVIEW_ROW) * scale, row, max((until - at) * scale, 1)))
+            at = until
+    order = {row: n for n, row in enumerate(sorted(rows))}
+    lines = [
+        f'<text x="0" y="{n * OVERVIEW_PITCH + OVERVIEW_HEIGHT - 3}">0x{row * OVERVIEW_ROW:06X}</text>'
+        for row, n in order.items()
+    ]
+    for (cls, _), blocks in zip(_TONES, drawn, strict=True):
+        if blocks:
+            shapes = "".join(
+                f"M{_num1(x)} {order[row] * OVERVIEW_PITCH}h{_num1(w)}v{OVERVIEW_HEIGHT}h-{_num1(w)}z"
+                for x, row, w in blocks
+            )
+            lines.append(f'<path class="{cls}" d="{shapes}"/>')
+    top = len(order) * OVERVIEW_PITCH + 6
+    legend, x = [], OVERVIEW_LEFT
+    for cls, width in zip(("q0", "q3", "q7", "q10"), _LEGEND, strict=True):  # none, fuzzy low, fuzzy high, exact
+        legend.append(f'<rect class="{cls}" x="{x}" y="{top}" width="{width}" height="6"/>')
+        x += width + 2
+    end, middle = x - 2, (OVERVIEW_LEFT + x - 2) // 2
+    label = top + 17
+    legend += [
+        f'<text x="{OVERVIEW_LEFT}" y="{label}">none</text>',
+        f'<text x="{middle}" y="{label}" text-anchor="middle">fuzzy</text>',
+        f'<text x="{end}" y="{label}" text-anchor="end">exact</text>',
+        f'<text x="{OVERVIEW_LEFT}" y="{label + 16}">one block per run of functions \u00b7 one row per 64 KiB</text>',
+    ]
+    height = label + 20
+    head = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OVERVIEW_WIDTH} {height}" '
+        f'width="{OVERVIEW_WIDTH}" height="{height}"><style>{_OVERVIEW_STYLE}</style>'
+    )
+    return "\n".join([head, *lines, "".join(legend), "</svg>"]).encode() + b"\n"
+
+
 _DEFINITION = r"^(?:[A-Za-z_][^;{{}}()#]*?[\s*])?{name}\s*\("  # at column 0, after a return type if any
 
 
@@ -215,16 +310,19 @@ def files(snapshot: Snapshot, current: Json) -> dict[str, bytes]:
     """Every presentation file of the tree, from the report rows the README shows."""
     with effort.stage("present.files"):
         out = {PROGRESS: progress(snapshot, current)}
-        jobs = [(snapshot, v, kind) for v in snapshot.config.project.versions for kind in ("map", "symbols")]
+        jobs = [
+            (snapshot, v, kind) for v in snapshot.config.project.versions for kind in ("map", "overview", "symbols")
+        ]
         made = pool.map(snapshot.config, "present.files", _file_job, jobs)  # every version's files on all cores
         for (_, v, kind), blob in zip(jobs, made, strict=True):
-            out[map_path(v) if kind == "map" else symbols_path(v)] = blob
+            out[{"map": map_path, "overview": overview_path, "symbols": symbols_path}[kind](v)] = blob
         return out
 
 
 def _file_job(item: tuple[Snapshot, str, str]) -> bytes:
     snapshot, version, kind = item
-    return memory_map(snapshot, version) if kind == "map" else symbols(snapshot, version)
+    make = {"map": memory_map, "overview": overview, "symbols": symbols}[kind]
+    return make(snapshot, version)
 
 
 def recomp(title: str) -> bytes:

@@ -1,6 +1,7 @@
 """The files a site reads live: golden progress.json, memory map and symbol lines of a small fake project."""
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -149,3 +150,40 @@ def test_recomp_starter_names_the_title_only():
         "system": "N64",
         "type": "decomp",
     }
+
+
+def test_the_overview_merges_adjacent_functions_of_one_status_and_leaves_out_empty_rows(project):
+    svg = present.overview(project, "us").decode()
+    # exact f_exact, fuzzy high f_draft, none f_asm and f_late (rows 0 and 2)
+    assert svg.count("M") == 4  # one block each: f_exact, f_draft, f_asm and f_late
+    assert svg.count('<path class="') == 3 and svg.count("<rect") == 4  # three tones in use, four legend blocks
+    assert svg.count(">0x") == 2  # rows 0x000000 and 0x020000 only
+    assert all(word in svg for word in (">none<", ">fuzzy<", ">exact<", "one row per 64 KiB"))
+    assert "<title>" not in svg and 'viewBox="0 0 720 ' in svg
+
+
+@pytest.mark.parametrize("size, rows", [(1, 1), (0x10000, 1), (0x10001, 2), (0x30000, 3)])
+def test_the_overview_row_count_fits_the_span(snapshot_factory, size, rows):  # noqa: F811
+    snapshot = snapshot_factory([_function("only", 0x100000, size, ("us",))], versions=("us",))
+    svg = present.overview(snapshot, "us").decode()
+    assert svg.count(">0x") == rows
+
+
+def test_the_readme_image_is_the_overview_not_the_detailed_map():
+    assert present.overview_path("us") == "docs/overview-us.svg" and present.map_path("us") == "docs/memory-map-us.svg"
+
+
+def test_the_overview_merges_touching_functions_of_one_status_into_one_block(snapshot_factory):  # noqa: F811
+    members = [_function(n, 0x1000 + i * 0x40, 0x40, ("us",)) for i, n in enumerate("abc")]
+    snapshot = snapshot_factory(members, versions=("us",))
+    assert present.overview(snapshot, "us").decode().count("M") == 1
+
+
+def test_every_tone_the_overview_uses_has_a_light_and_a_dark_rule(project):
+    svg = present.overview(project, "us").decode()
+    light, dark = svg.split("<style>")[1].split("</style>")[0].split("@media (prefers-color-scheme:dark){")
+    used = set(re.findall(r'class="(q\d+)"', svg))
+    assert used == {"q0", "q3", "q7", "q10"}  # the four tones, in the map and in the legend
+    for tone in used:
+        assert f".{tone}{{fill:" in light and f".{tone}{{fill:" in dark
+    assert dark.count(".q0{fill:#4a463d}") == 1  # the dark none is not the light exact

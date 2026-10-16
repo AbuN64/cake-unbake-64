@@ -572,7 +572,7 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
         ]
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
-            image = f'<img src="{present.map_path(project.readme_map)}" width="{settings["map_width"]}">'
+            image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
             link, cartridge = (
                 project.readme_map_link,
                 project.version_files[project.readme_map].meta.get("cartridge_id"),

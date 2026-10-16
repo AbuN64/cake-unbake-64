@@ -535,7 +535,7 @@ def test_readme_shows_one_sized_memory_map_between_the_bars_and_the_tables_linke
     project = replace(snapshot.config.project, readme_map=version, readme_map_link=link)
     mapped = replace(snapshot, config=replace(snapshot.config, project=project))
     bars, tables = plain.split("</pre>\n\n", 1)
-    image = f'<img src="docs/memory-map-{version}.svg" width="720">'
+    image = f'<img src="docs/overview-{version}.svg" width="720">'
     shown = f'<a href="{href}">{image}</a>' if href else image
     assert report.readme(plain, mapped, current) == f"{bars}</pre>\n\n{shown}\n\n{tables}"
 
