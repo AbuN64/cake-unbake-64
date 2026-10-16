@@ -99,8 +99,8 @@ def splat_rows(cfg: Any) -> None:
 
 
 @pytest.fixture
-def seen(monkeypatch: Patch, toolchains: Any) -> SimpleNamespace:
-    """Every boundary the engine crosses, replaced and counted."""
+def seen(monkeypatch: Patch, toolchains: Any, warm: Any) -> SimpleNamespace:
+    """Every boundary the engine crosses, replaced and counted; its pool dispatches run on warm workers."""
     w = SimpleNamespace(measured=[], plans=[], extracted=[], files=0, claims=0, exact=True, folded=[])
 
     def proofs(snapshot: Any, affected: Any) -> Any:
@@ -138,7 +138,6 @@ def seen(monkeypatch: Patch, toolchains: Any) -> SimpleNamespace:
     monkeypatch.setattr(move.build, "extract", lambda config, version: w.extracted.append(version))
     monkeypatch.setattr(move.headers, "fold", fold)
     w.views = []
-    monkeypatch.setattr(move.pool, "map", lambda config, name, fn, items, key=None: [fn(i) for i in items])
     monkeypatch.setattr(move.view, "get", lambda *a, **k: (w.views.append(a[1].path), _view())[1])
     monkeypatch.setattr(move.view, "stored", lambda config, unit, version, key: _view())  # a view get kept
     monkeypatch.setattr(move.recipes, "resolve", lambda *a: None)
@@ -150,8 +149,16 @@ def seen(monkeypatch: Patch, toolchains: Any) -> SimpleNamespace:
         first = w.broken(snapshot, header)
         return {"header": header, "errors": len(first), "first": first}
 
-    monkeypatch.setattr(move.headers, "_probe_job", probe)
+    _STUBS["probe"] = probe
+    monkeypatch.setattr(move.headers, "_probe_job", _probe_stub)  # module level: the warm workers unpickle it
     return w
+
+
+_STUBS: dict[str, Any] = {}  # the fakes a `seen` test's jobs call: its workers run in this process
+
+
+def _probe_stub(item: Any) -> dict[str, Any]:
+    return _STUBS["probe"](item)
 
 
 def _view(dependencies: tuple[tuple[str, str], ...] = ()) -> SourceView:
@@ -211,7 +218,7 @@ def test_malformed_input_refuses_whole_with_the_index(params: Any, data: bytes, 
 
 
 def test_a_symbol_move_writes_every_place_the_name_is_spelled_and_extracts_each_changed_version(
-    tmp_path: Path, seen: Any
+    tmp_path: Path, seen: Any, warm: Any
 ) -> None:
     extra = '[[project.version_differences]]\nfunction = "f1"\nsides = [["a"], ["b"]]\n'
     cfg = world(tmp_path, extra="", data={"f1_padding_1": both(0x1110)})
@@ -233,6 +240,8 @@ def test_a_symbol_move_writes_every_place_the_name_is_spelled_and_extracts_each_
     assert "g1]" in text(plan, "versions/a/Game.yaml") and "f1_padding_1" in text(plan, "versions/a/Game.yaml")
     assert 'function = "g1"' in text(plan, "config.toml") and "int g1(void)" in text(plan, "src/f1.c")
     assert '"g1"' in text(plan, "layout.toml") and sorted(seen.extracted) == ["a", "b"]
+    # one warm pool ran the views, folds and probes: forked once, it laid the move's overlays as they changed
+    assert warm.forks == 1 and warm.dispatches >= 2 and len(warm.laid) >= 2
     assert result["applied"]["symbol"] == 1 and result["extracted"] == ["a", "b"] and seen.measured == [["src/f1.c"]]
 
 

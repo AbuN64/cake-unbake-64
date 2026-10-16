@@ -319,8 +319,9 @@ def test_files_contents(snapshot, monkeypatch, existing):
 
 
 @pytest.fixture
-def setup_case(snapshot, monkeypatch):
+def setup_case(snapshot, monkeypatch, warm):
     stages, events, plans = [], [], []
+    real_map = lambda c, n, f, jobs, key=None: repo.pool.gather(c, [(n, f, jobs)])[0]  # noqa: E731  (keys: own test)
     monkeypatch.setattr(repo, "_splat_version", lambda tool, root: b"splat test-version")
     root, cfg = snapshot.config.project.root, snapshot.config
     for vf in cfg.project.version_files.values():
@@ -345,7 +346,8 @@ def setup_case(snapshot, monkeypatch):
 
     @contextmanager
     def stage(name):
-        stages.append(name)
+        if not name.startswith(("pool.", "job")):  # the warm pool's own stages are not setup's
+            stages.append(name)
         yield
 
     def plan(writes, operation="layout", message="map"):
@@ -362,10 +364,10 @@ def setup_case(snapshot, monkeypatch):
             target.write_bytes(data)
         return tuple(proposed.writes)
 
-    def pool_map(config, name, function, jobs, key=None):
+    def pool_map(config, name, function, jobs, key=None):  # every dispatch on the warm workers, as setup runs them
         assert config == cfg
         events.append((name, list(jobs)))
-        return [function(job) for job in jobs]
+        return real_map(config, name, function, jobs, key)
 
     def prove(s, unit, version, recipe, work):
         assert s == snapshot and work == root / ".unbake/work"
@@ -433,9 +435,10 @@ def test_setup_refuses_a_split_yaml_that_would_let_splat_write_c_files(setup_cas
     assert ("toolchain", 0) not in events and not [e for e in events if isinstance(e, tuple)]
 
 
-def test_setup_stage_order(setup_case):
+def test_setup_stage_order(setup_case, warm):
     snapshot, stages, events, plans, *_ = setup_case
     repo.setup(snapshot.config, {})
+    assert warm.forks == 1 and warm.dispatches >= 2  # every stage's dispatch on one warm pool
     assert stages == [
         "repo.setup",
         *[f"repo.setup.{s}" for s in ("toolchains", "extract", "prove", "map", "boundary", "library", "files", "make")],
