@@ -1644,3 +1644,50 @@ def test_a_spilled_tree_carries_the_parents_indexes_so_warm_workers_never_build_
         pool._Unpickler(io.BytesIO(blobs[1])).load()
         assert built == [] and pool._carried["scans"] == {"text-1": "scan-1", "text-2": "scan-2"}
     pool._forget_spills()
+
+
+def _laid_tree(item):
+    snapshot, _ = item
+    return snapshot.digest, dict(snapshot.overlays)
+
+
+@pytest.mark.parametrize(
+    "change", ["relaid", "new_capture", "same_writes_new_base", "new_middle", "large_writes", "unchanged"]
+)
+def test_every_tree_change_between_two_dispatches_reaches_the_warm_workers(tmp_path, monkeypatch, warm, change):
+    """The shared pool's callers (setup, report, move, retype, land) change the tree between dispatches in these ways;
+    the second dispatch must run on exactly the parent's tree on the same warm workers, never on what a worker held."""
+    from unbake import layout
+
+    real = layout._overlay
+    monkeypatch.setattr(pool, "_SHARED", {})
+    monkeypatch.setattr(pool, "_laid", [])
+    config = _config(tmp_path)
+    with effort.command("check", []):
+        base = _snapshot(tmp_path, "one")
+        first = layout.overlay(base, {"src/a.c": b"int a;"})  # in the parent's memo when the workers fork
+        warmup = layout.overlay(base, {"src/z.c": b"int z;"})
+        assert pool.map(config, "units", _laid_tree, [(warmup, i) for i in range(3)])[0][0] == warmup.digest
+        if change == "relaid":  # setup rewrote what the overlay reads: the same base and writes lay another tree
+            effort.forget("overlay")
+
+            def relay(under, writes):
+                effort.memo(("parent", "relaid"), lambda: (under, dict(writes)))  # as the real _overlay records it
+                return replace(real(under, writes), digest="relaid")
+
+            monkeypatch.setattr(layout, "_overlay", relay)
+            second = layout.overlay(base, {"src/a.c": b"int a;"})
+        elif change == "new_capture":  # the next round captures the tree again
+            second = _snapshot(tmp_path, "two")
+        elif change == "same_writes_new_base":
+            second = layout.overlay(_snapshot(tmp_path, "two"), {"src/a.c": b"int a;"})
+        elif change == "new_middle":  # a wave's overlay laid over the one before
+            second = layout.overlay(layout.overlay(base, {"src/b.c": b"int b;"}), {"src/a.c": b"int a;"})
+        elif change == "large_writes":  # writes over the inline limit travel in a spill file
+            second = layout.overlay(base, {f"src/{i}.c": b"int x%d;" % i * 4000 for i in range(4)})
+        else:
+            second = first
+        got = pool.map(config, "units", _laid_tree, [(second, i) for i in range(3)])
+    assert got == [(second.digest, dict(second.overlays))] * 3  # never a tree a worker held from before
+    assert warm.forks == 1 and warm.dispatches == 6  # both dispatches on the same warm workers
+    pool._forget_spills()

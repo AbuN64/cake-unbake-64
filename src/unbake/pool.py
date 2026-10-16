@@ -33,6 +33,7 @@ from unbake import effort, store
 from unbake.contracts import Config, Finding, Host, Json, Refusal, Snapshot, code_identity, digest, sha256
 
 _KEYS_INLINE = 1  # keys of up to this many items per worker are computed here: a dispatch costs more than they do
+_INLINE_AT = 1  # a gather of up to this many chunks runs here: a dispatch costs more than one chunk does
 _REBALANCE = 0.5  # seconds between looks at the other commands while a pool works
 _executor: ProcessPoolExecutor | None = None
 _host_digest: str | None = None
@@ -772,6 +773,10 @@ class _Unpickler(pickle.Unpickler):
                         effort.release(gone.digest)
                 _laid[:] = [k for k in _laid if k in keep]
                 effort.trim_to_fork(keep=(*KEEP, *WARM), digests={_SHARED[k].digest for k in keep if k in _SHARED})
+                # an overlay this worker laid for an earlier dispatch is never laid from its memo: the same base and
+                # writes may lay another one now (the files it reads changed on disk between dispatches, as setup
+                # writes them), and the parent's digest is the one that holds
+                effort.forget("overlay")
             return _lay(pid)
         return _SHARED[pid]
 
@@ -973,7 +978,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
         try:
             _resolve(config, runs)
             total = sum(len(r.todo) for r in runs)
-            inline = total <= 1 or _in_worker  # nothing to fan out: the jobs run here, one at a time
+            inline = total <= _INLINE_AT or _in_worker  # nothing to fan out: the jobs run here, one at a time
             width = 1
             floor = config.host.serial_seconds
             fan = max(1, min(config.host.workers, _budget(config.host)))

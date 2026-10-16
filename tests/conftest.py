@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
@@ -88,3 +89,57 @@ def _no_recorded_clones(monkeypatch: pytest.MonkeyPatch) -> None:
     from unbake import recovery
 
     monkeypatch.setattr(recovery, "clones", lambda snapshot: {})
+
+
+class WarmWorkers:
+    """The host's worker pool as warm workers living across every dispatch of a test, inside this process: each holds
+    its own memo, snapshots and laid overlays, forked from the parent's state once, and unpickles and runs every
+    chunk as a forked worker would. Every command a test drives thus meets its pool warm, with the trees and overlays
+    it changes between dispatches (the class of the 2026-10-15 setup regression: a worker served an overlay it was
+    forked holding after the parent laid the same writes to another tree)."""
+
+    def __init__(self, count: int = 2) -> None:
+        self._processes: dict[int, Any] = {}  # none to census: the gather never sees a stalled worker
+        self.count, self.forks, self.dispatches, self.turn = count, 0, 0, 0
+        self.states: list[dict[str, Any]] = []
+        self.laid: set[str] = set()  # every snapshot key a worker laid or read from a spill file (not forked with)
+
+    def __call__(self, **kwargs: Any) -> WarmWorkers:  # ProcessPoolExecutor(...): the fork
+        self.forks += 1
+        self.states = [
+            {"memo": dict(effort._memo), "inherited": frozenset(effort._memo), "shared": dict(pool._SHARED), "laid": []}
+            for _ in range(self.count)
+        ]
+        return self
+
+    def submit(self, function: Any, *args: Any) -> Future[Any]:
+        future: Future[Any] = Future()
+        if function is not pool._dispatch:  # the fork's first job
+            future.set_result(function(*args))
+            return future
+        state = self.states[self.turn % self.count]
+        self.turn += 1
+        self.dispatches += 1
+        saved = (effort._memo, effort._inherited, pool._SHARED, pool._laid, pool._in_worker)
+        effort._memo, effort._inherited = state["memo"], state["inherited"]
+        pool._SHARED, pool._laid, pool._in_worker = state["shared"], state["laid"], True
+        try:
+            future.set_result(function(*args))
+        except BaseException as exc:  # an unpickling failure: the gather maps it to worker.crash
+            future.set_exception(exc)
+        finally:
+            self.laid.update(pool._laid)
+            effort._memo, effort._inherited, pool._SHARED, pool._laid, pool._in_worker = saved
+        return future
+
+    def shutdown(self, **kwargs: Any) -> None:
+        self.states = []
+
+
+@pytest.fixture
+def warm(monkeypatch: pytest.MonkeyPatch) -> WarmWorkers:
+    """Every gather of the test, even of one chunk, runs on one pool of warm in-process workers."""
+    workers = WarmWorkers()
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", workers)
+    monkeypatch.setattr(pool, "_INLINE_AT", 0)
+    return workers
