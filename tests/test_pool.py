@@ -1732,3 +1732,32 @@ def test_fresh_holds_while_every_watched_file_reads_as_the_snapshot_read_it(tmp_
     assert not layout.fresh(snapshot)  # appeared since
     snapshot.reads["layout.toml"] = sha256(b"map")
     assert layout.fresh(snapshot)
+
+
+def _versions_read(item):
+    return effort.memo(("versions.read", "split"), lambda: "read now")
+
+
+def test_a_warm_worker_forgets_what_the_parent_forgot_before_the_next_dispatch(tmp_path, monkeypatch, warm):
+    # setup's extract rewrote the asm and forgot versions.read in the parent; warm workers kept the facts they read
+    # before and laid the next plan's overlays from them: 'an overlay laid again in a worker has digest'.
+    config = _config(tmp_path)
+    monkeypatch.setattr(effort, "_epochs", {})
+    with effort.command("check", []):
+        effort.memo(("versions.read", "split"), lambda: "before extract")  # in the memo the workers fork holding
+        assert pool.map(config, "units", _versions_read, [1, 2]) == ["before extract"] * 2
+        effort.forget("versions.read")  # extract: the files these values were read from are rewritten
+        assert pool.map(config, "units", _versions_read, [1, 2]) == ["read now"] * 2
+        assert pool.map(config, "units", _versions_read, [1, 2]) == ["read now"] * 2  # one forget, followed once
+    assert warm.forks == 1 and warm.dispatches == 6
+
+
+def test_follow_forgets_only_the_kinds_the_parent_forgot_since(monkeypatch):
+    monkeypatch.setattr(effort, "_memo", {("a", 1): 1, ("b", 1): 1})
+    monkeypatch.setattr(effort, "_epochs", {"a": 2, "b": 1})
+    monkeypatch.setattr(effort, "_applied", {"a": 2, "b": 0})
+    effort.follow({"a": 2, "b": 1})
+    assert effort._memo == {("a", 1): 1} and effort._applied == {"a": 2, "b": 1}
+    effort._memo[("b", 2)] = 1
+    effort.follow({"a": 2, "b": 1})  # nothing new: nothing forgotten
+    assert ("b", 2) in effort._memo

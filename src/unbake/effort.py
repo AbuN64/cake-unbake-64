@@ -84,10 +84,30 @@ def memo_valid[T](key: object, produce: Callable[[], T], valid: Callable[[T], bo
     return value
 
 
+_epochs: dict[str, int] = {}  # kind -> how often this process forgot it
+_applied: dict[str, int] = {}  # in a worker: the parent's forget counts it has followed (the fork's, then each sent)
+
+
 def forget(*kinds: str) -> None:
     """Drops the memoised values of these kinds: the files they read were rewritten by this command."""
     for key in [k for k in _memo if isinstance(k, tuple) and k[0] in kinds]:
         del _memo[key]
+    for kind in kinds:
+        _epochs[kind] = _epochs.get(kind, 0) + 1
+
+
+def epochs() -> dict[str, int]:
+    """How often this process forgot each kind: a dispatch sends it, so warm workers forget what the parent did."""
+    return dict(_epochs)
+
+
+def follow(parent: Mapping[str, int]) -> None:
+    """In a warm worker: forget every kind the parent forgot since the fork or the last dispatch. A forked worker
+    started from the parent's memo after its forgets; a warm one keeps values read from files rewritten since."""
+    stale = [kind for kind, count in parent.items() if count > _applied.get(kind, 0)]
+    if stale:
+        forget(*stale)
+    _applied.update(parent)
 
 
 def release(digest_: str) -> int:
@@ -142,9 +162,10 @@ _fork_budget = 0  # the growth a worker plans to stay within (host memory_worker
 def mark_fork(data: int, budget: int = 0) -> None:
     """A forked worker records the data segment it inherited: its pressure counts only growth past it, against the
     planned budget (the hard data limit sits above it, so a job over budget trims its memo before it is refused)."""
-    global _fork_data, _fork_budget, _inherited
+    global _fork_data, _fork_budget, _inherited, _applied
     _fork_data, _fork_budget = data, budget
     _inherited = frozenset(_memo)
+    _applied = dict(_epochs)  # the parent's forgets so far are in the memo it was forked holding
 
 
 def _status_kib(field: str) -> int:

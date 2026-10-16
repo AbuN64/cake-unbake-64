@@ -107,7 +107,14 @@ class WarmWorkers:
     def __call__(self, **kwargs: Any) -> WarmWorkers:  # ProcessPoolExecutor(...): the fork
         self.forks += 1
         self.states = [
-            {"memo": dict(effort._memo), "inherited": frozenset(effort._memo), "shared": dict(pool._SHARED), "laid": []}
+            {
+                "memo": dict(effort._memo),
+                "inherited": frozenset(effort._memo),
+                "shared": dict(pool._SHARED),
+                "laid": [],
+                "epochs": dict(effort._epochs),
+                "applied": dict(effort._epochs),
+            }
             for _ in range(self.count)
         ]
         return self
@@ -121,7 +128,9 @@ class WarmWorkers:
         self.turn += 1
         self.dispatches += 1
         saved = (effort._memo, effort._inherited, pool._SHARED, pool._laid, pool._in_worker)
+        counts = (effort._epochs, effort._applied)
         effort._memo, effort._inherited = state["memo"], state["inherited"]
+        effort._epochs, effort._applied = state["epochs"], state["applied"]
         pool._SHARED, pool._laid, pool._in_worker = state["shared"], state["laid"], True
         try:
             future.set_result(function(*args))
@@ -130,6 +139,7 @@ class WarmWorkers:
         finally:
             self.laid.update(pool._laid)
             effort._memo, effort._inherited, pool._SHARED, pool._laid, pool._in_worker = saved
+            effort._epochs, effort._applied = counts
         return future
 
     def shutdown(self, **kwargs: Any) -> None:

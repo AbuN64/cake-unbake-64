@@ -827,7 +827,9 @@ def _chunk(
 
 def _dispatch(blob: bytes, floor: float) -> list[tuple[bool, Any, Json]]:
     """One chunk travels as its own pickle, so a worker only unpacks the items it runs and stores their results."""
-    function, items, sink = _Unpickler(io.BytesIO(blob)).load()
+    stream = io.BytesIO(blob)
+    effort.follow(pickle.load(stream))  # first: the items lay overlays from the memo
+    function, items, sink = _Unpickler(stream).load()
     return _chunk(function, items, floor, sink)
 
 
@@ -999,8 +1001,10 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             if not inline:  # the snapshots in the items are known before the workers are forked
                 writes: dict[str, Any] = {}  # an overlay's writes are pickled once for every task of this dispatch
                 ship = _warm(config)  # workers up: what they lack travels to them, they never fork again
+                forgotten = pickle.dumps(effort.epochs(), protocol=5)  # read by each worker before its items
                 for n, (run, picked) in enumerate(tasks):
-                    stream = io.BytesIO()
+                    stream = io.BytesIO(forgotten)
+                    stream.seek(0, io.SEEK_END)
                     pickler = _Pickler(stream, needed, writes, ship)
                     pickler.dump((run.function, [run.items[i] for i in picked], run.sink(config, picked)))
                     blobs[n] = stream.getvalue()
