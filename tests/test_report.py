@@ -1329,7 +1329,7 @@ def test_the_fake_plan_keeps_only_rows_move_accepts_and_says_why_for_the_rest(mo
 
     monkeypatch.setattr(move, "edit", edit)
     kept = report._movable(None, rows, census)
-    assert [r["subject"] for r in kept] == ["B_func_80000010"] and len(calls) == 2
+    assert [r["subject"] for r in kept] == ["B_func_80000010"] and len(calls) == 1  # a refusal changes nothing
     assert census[0]["class"] == "d" and "differ in pointee" in census[0]["reason"] and census[1]["class"] == "a"
 
 
