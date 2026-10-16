@@ -2010,3 +2010,62 @@ def test_physical_refuses_a_lost_existing_data_owner_before_proof(scene, monkeyp
         layout.physical(snapshot, snapshot.layout)
     assert caught.value.findings[0].key == "layout.map"
     assert caught.value.findings[0].missing == (pool,)
+
+
+@pytest.mark.parametrize("named_owner", ["fa", "old_unit_alias"])
+@pytest.mark.parametrize("reverse_groups", [False, True])
+def test_structural_pool_carrier_is_global_and_independent_of_group_iteration(scene, named_owner, reverse_groups):
+    pool = f"rodata/{named_owner}/80000410"
+    snapshot = scene(
+        (("fa", "c", RETURN), ("fb", "c", RETURN), (pool, ".rodata", (1,))), units=(_unit(("fb", "fa", pool)),)
+    )
+    base = snapshot.layout.groups["grp"]
+    groups = [
+        replace(base, name="left", members=("fb",), source="src/left.c"),
+        replace(base, name="right", members=("fa",), source="src/right.c"),
+    ]
+    if reverse_groups:
+        groups.reverse()
+    mapped = replace(snapshot.layout, groups={g.name: g for g in groups})
+    result = layout.physical(snapshot, mapped, reflow=set(mapped.groups))
+    owner = next(u for u in result.values() if pool in u.members)
+    assert sum(pool in u.members for u in result.values()) == 1
+    assert owner.group == ("right" if named_owner == "fa" else "left")
+    assert {n for u in result.values() for n in u.members} == {"fa", "fb", pool}
+
+
+def test_pool_fallback_uses_a_landed_member_when_named_owner_is_not_compiled(scene):
+    pool = "rodata/fa/80000410"
+    snapshot = scene(
+        (("fa", "asm", RETURN), ("fb", "c", RETURN), (pool, ".rodata", (1,))), units=(_unit(("fb", pool)),)
+    )
+    base = snapshot.layout.groups["grp"]
+    mapped = replace(
+        snapshot.layout,
+        groups={
+            "left": replace(base, name="left", members=("fb",), source="src/left.c"),
+            "right": replace(base, name="right", members=("fa",), source="src/right.c"),
+        },
+    )
+    result = layout.physical(snapshot, mapped, reflow=set(mapped.groups))
+    assert len(result) == 1 and next(iter(result.values())).members == ("fb", pool)
+
+
+def test_unrelated_structural_reflow_retains_existing_disjoint_holder_pool_units(scene):
+    pool = "rodata/fa/80000410"
+    code = replace(_unit(("fa", pool)), withheld=("b",))
+    provider = replace(_unit((pool,), "src/provider.c"), kind="data", withheld=("a",))
+    other = replace(_unit(("fb",), "src/other.c"), group="other")
+    snapshot = scene((("fa", "c", RETURN), ("fb", "c", RETURN), (pool, ".rodata", (1,))), units=(code, provider, other))
+    base = snapshot.layout.groups["grp"]
+    mapped = replace(
+        snapshot.layout,
+        groups={
+            "grp": replace(base, members=("fa",)),
+            "other": replace(base, name="other", members=("fb",), source="src/changed.c"),
+        },
+    )
+    result = layout.physical(snapshot, mapped, reflow={"other"})
+    assert result[code.path] == code and result[provider.path] == provider
+    assert result["src/changed.c"].members == ("fb",)
+    assert sum(pool in u.members for u in result.values()) == 2

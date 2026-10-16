@@ -888,6 +888,15 @@ def physical(
         # a member several groups list joins one unit, never one per group (its bytes would link twice): the group
         # its unit names today, else the first that lists it
         home = {n: old[n].group if n in old and old[n].group in gs else gs[0] for n, gs in listing.items()}
+        # Resolve each unlisted owned row once. Its named owner may land in another group; an old-unit alias
+        # instead follows the first actually landed member of that original unit, never one fallback per group.
+        landed_names = old.keys() & members.keys() & home.keys()
+        carrier = {
+            n: n.split("/")[1]
+            if n.split("/")[1] in landed_names
+            else next((m for m in old[n].members if m in landed_names and m.count("/") != 2), "")
+            for n in owned
+        }
         by_group: defaultdict[str, list[UnitSpec]] = defaultdict(list)
         for unit in layout.units.values():
             if unit.path not in result:
@@ -921,14 +930,8 @@ def physical(
             if reflow is not None and group.name not in reflow and settled(group, landed):
                 result.update((u.path, u) for u in by_group[group.name])
                 continue
-            # an owned member follows its owner; one whose name points at no member (an old unit's name: the row was
-            # cut for a unit, not a function) follows the first member of its old unit, or the map drops its bytes
-            mate = {
-                n: next((m for m in old[n].members if m in landed and m.count("/") != 2), "")
-                for n in owned
-                if n.split("/")[1] not in landed
-            }
-            landed |= {n for n in owned if n.split("/")[1] in landed or mate.get(n)}
+            mate = {n: m for n, m in carrier.items() if m in landed}
+            landed |= mate.keys()
             atoms: dict[str, list[str]] = {}
             for n in sorted(landed, key=rank):
                 owner = (n.split("/")[1] if n.split("/")[1] in landed else mate.get(n, "")) if n.count("/") == 2 else n
