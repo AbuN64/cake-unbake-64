@@ -673,13 +673,18 @@ def blamed(
 
 
 def bisect(
-    keys: Sequence[tuple[str, int]], prove: Callable[[list[list[tuple[str, int]]]], list[bool]]
+    keys: Sequence[tuple[str, int]],
+    prove: Callable[[list[list[tuple[str, int]]]], list[bool]],
+    parts: list[list[tuple[str, int]]] | None = None,
 ) -> tuple[set[tuple[str, int]], list[Json]]:
     """The retypes of a refused group that land: the group is halved, every half of one level is proved in ONE call
     (on the pool, all cores), each half that proves is kept, and each refused half is halved again down to one retype.
-    Nothing persists between levels but the kept set; each level is logged with what it proved."""
+    Nothing persists between levels but the kept set; each level is logged with what it proved. `parts` collects
+    every kept half in key order (merge_up joins them)."""
     kept: set[tuple[str, int]] = set()
     levels: list[Json] = []
+    found: list[tuple[int, list[tuple[str, int]]]] = []
+    where = {k: n for n, k in enumerate(keys)}
     refused = [list(keys)]
     while True:
         halves = [
@@ -690,6 +695,7 @@ def bisect(
         start = time.monotonic()
         verdicts = prove(halves)
         kept.update(k for half, ok in zip(halves, verdicts, strict=True) if ok for k in half)
+        found += [(where[half[0]], half) for half, ok in zip(halves, verdicts, strict=True) if ok]
         refused = [half for half, ok in zip(halves, verdicts, strict=True) if not ok]
         levels.append(
             {
@@ -700,7 +706,46 @@ def bisect(
                 "seconds": round(time.monotonic() - start, 1),
             }
         )
+    if parts is not None:
+        parts.extend(half for _, half in sorted(found))
     return kept, levels
+
+
+def merge_up(
+    parts: Sequence[list[tuple[str, int]]], prove: Callable[[list[list[tuple[str, int]]]], list[bool]]
+) -> tuple[set[tuple[str, int]], list[Json]]:
+    """The kept halves of a bisection joined back into one group that proves. Halves that each prove alone can still
+    refuse together (two retypes rewriting one header): neighbours are joined in pairs; a pair that refuses keeps its
+    larger side as the base and halves the other, each piece tried on the base, down to single retypes. Every
+    proof of one step, over all pairs of a level, is ONE call: log2(halves) levels of about log2(n) steps, instead of
+    one 50 s submit per clash."""
+    groups = [list(p) for p in parts if p]
+    levels: list[Json] = []
+    while len(groups) > 1:
+        start = time.monotonic()
+        pairs = [(groups[i], groups[i + 1]) for i in range(0, len(groups) - 1, 2)]
+        ordered = [(a, b) if len(a) >= len(b) else (b, a) for a, b in pairs]  # the larger side is the base
+        bases = [list(base) for base, _ in ordered]
+        pending = [[other] if other else [] for _, other in ordered]  # per pair, the pieces still to absorb
+        dropped, steps = 0, 0
+        while any(pending):
+            tries = [(n, piece) for n, pieces in enumerate(pending) for piece in pieces[:1]]  # one piece per pair
+            verdicts = prove([bases[n] + piece for n, piece in tries])
+            steps += 1
+            for (n, piece), ok in zip(tries, verdicts, strict=True):
+                pending[n] = pending[n][1:]
+                if ok:
+                    bases[n] = bases[n] + piece
+                elif len(piece) > 1:
+                    pending[n] = [piece[: len(piece) // 2], piece[len(piece) // 2 :], *pending[n]]
+                else:
+                    dropped += 1  # one retype that clashes with the base
+        groups = bases + ([groups[-1]] if len(groups) % 2 else [])
+        seconds = round(time.monotonic() - start, 1)
+        levels.append(
+            {"merge": len(levels) + 1, "pairs": len(pairs), "steps": steps, "dropped": dropped, "seconds": seconds}
+        )
+    return (set(groups[0]) if groups else set()), levels
 
 
 def run(config: Config, params: Json) -> Json:
@@ -757,8 +802,13 @@ def run(config: Config, params: Json) -> Json:
         if not bisected:  # one bisection over the whole group: every half that proves is kept
             order = sorted(touches, key=lambda k: (touches[k], k))  # retypes sharing files stay in one half
             prove = functools.partial(_prove_halves, config, snapshot, texts, parts, out=out)
-            kept, levels = bisect(order, partial_halves(prove))
-            rounds.append({"rows": len(refused), "bisect": levels, "kept": len(kept), "of": len(order)})
+            halves = partial_halves(prove)
+            pieces: list[list[tuple[str, int]]] = []
+            kept, levels = bisect(order, halves, pieces)
+            kept, merged = merge_up(pieces, halves)  # the kept halves must also prove together
+            rounds.append(
+                {"rows": len(refused), "bisect": levels, "merge": merged, "kept": len(kept), "of": len(order)}
+            )
             drop = (set(order) - kept) or drop  # every half proves alone: the union's refusal names its own blame
             bisected = True
         else:

@@ -313,6 +313,34 @@ def test_bisect_keeps_every_half_that_proves_and_halves_refused_ones_down_to_one
     assert [lv["left"] for lv in levels] == [8, 4, 2]
 
 
+def test_kept_halves_that_clash_together_are_found_in_log_levels_not_one_submit_per_clash():
+    # real case: rt3 on G 421d8296d: every half proved alone, the union refused; dropping the blamed 2-4 retypes per
+    # 50 s submit took 39 submits for 28 retypes. Clashing pairs are now found by joining the kept halves level by level
+    clash = [{("a", 1), ("j", 1)}, {("d", 1), ("e", 1)}, {("m", 1), ("p", 1)}]
+    calls = []
+
+    def prove(groups):
+        calls.append(len(groups))
+        return [not any(pair <= set(g) for pair in clash) for g in groups]
+
+    keys = [(n, 1) for n in "abcdefghijklmnop"]
+    parts: list = []
+    kept, _ = retype.bisect(keys, prove, parts)
+    assert kept == set(keys) and len(parts) > 1  # every retype proves alone
+    joined, levels = retype.merge_up(parts, prove)
+    assert not any(pair <= joined for pair in clash) and prove([sorted(joined)]) == [True]
+    assert len(joined) == len(keys) - 3 and len(levels) <= 4  # one retype per clash, log2(16) joining levels at most
+    assert len(calls) < 39  # far fewer proofs than the 39 submits of rt3, each a parallel call over all pairs
+
+
+def test_merge_up_of_halves_that_prove_together_keeps_all_in_one_call_per_level():
+    calls = []
+    joined, levels = retype.merge_up(
+        [[("a", 0)], [("b", 0)], [("c", 0)]], lambda gs: calls.append(gs) or [True] * len(gs)
+    )
+    assert joined == {("a", 0), ("b", 0), ("c", 0)} and len(calls) == 2 and all(lv["dropped"] == 0 for lv in levels)
+
+
 def test_compose_writes_any_subset_of_one_plan_as_planning_it_alone_would():
     files = texts()
     whole = run(files)
