@@ -551,7 +551,13 @@ def _prove(
     staged = _stage(config, snapshot, files, params, overrides, prepared, kin)
     started = time.monotonic()
     batch = staged["batch"] if staged["proved"]["proving"] else None  # alone it measures (and exports) itself
-    measured = measure_units(staged["bound"], batch, overrides) if batch is not None else None
+    measured = None
+    if batch is not None:
+        measured = (
+            measure_bound(config, batch, overrides)
+            if staged["siblings"]
+            else [measure_units(staged["bound"], [u for _, u in batch], overrides)]
+        )
     return _finish(config, snapshot, params, overrides, out, staged, measured, time.monotonic() - started)
 
 
@@ -564,14 +570,21 @@ def _stage(
     prepared: tuple[dict[str, bytes], UnitSpec, Snapshot, list[str]] | None,
     kin: dict[str, tuple[Snapshot, UnitSpec]],
 ) -> Json:
-    """A candidate's tree, unit and proof set, and `batch`: the units one dispatch can measure with every other
-    candidate's (None when it proves against sibling drafts)."""
+    """A candidate's tree, unit and proof set, and `batch`: snapshot/unit pairs measured with every other candidate.
+    Sibling drafts retain their own tree and the candidate tree with their writes laid underneath its own."""
     extras, unit, bound, rewritten = prepared or _prepare(snapshot, files, params)
     bound, unit = ownership.derive(bound, unit, recipe=recipes.resolve(config, unit, overrides))
     proved = _proof_set(snapshot, bound, unit, extras, bool(params.get("prove_extras")))
     units = [unit if p == unit.path else bound.layout.units[p] for p in proved["changed"]] if proved["proving"] else []
     siblings = {c: kin[c] for c in proved["consumers"] if c in kin} if proved["proving"] else {}
-    batch = None if siblings else [*units, *(bound.layout.units[p] for p in proved["consumers"])] or [unit]
+    batch = (
+        _kin_pairs(bound, units, proved["consumers"], siblings)
+        if siblings
+        else [(bound, u) for u in ([*units, *(bound.layout.units[p] for p in proved["consumers"])] or [unit])]
+    )
+    # Recipe errors belong to this candidate, before any shared measurement dispatch can raise them for the chunk.
+    for candidate in [*(u for _, u in batch), *(snapshot.layout.units[c] for c in proved["consumers"])]:
+        recipes.resolve(config, candidate, overrides)
     return {
         "extras": extras,
         "unit": unit,
@@ -591,7 +604,7 @@ def _finish(
     overrides: Json,
     out: Path | None,
     staged: Json,
-    measured: tuple[Proof, ...] | None,
+    measured: Sequence[tuple[Proof, ...]] | None,
     wall: float,
 ) -> Json:
     """Everything admission decides from a staged candidate and, when it was batched, its measured proofs."""
@@ -600,13 +613,13 @@ def _finish(
     pending: dict[str, tuple[Finding, ...]] = {}
     started = time.monotonic()
     if proved["proving"]:
+        assert measured is not None  # every proving candidate was measured before its verdict is decided
         if siblings:
-            everyone, split = _prove_kin(config, snapshot, bound, unit, units, proved["consumers"], siblings, overrides)
+            everyone, split = _kin_findings(snapshot, staged, measured, overrides)
             pending = {c: f for c, f in split.items() if c in siblings and f}
             found_here = split.get("", ())
         else:
-            assert measured is not None  # a candidate without sibling drafts is measured in the batch
-            everyone = measured
+            everyone = tuple(p for group in measured for p in group)
             found_here = _regressions(snapshot, proved["consumers"], everyone, overrides)
         proofs = tuple(p for p in everyone if p.unit in proved["changed"])
         alike = bool(params.get("no_regression"))
@@ -614,7 +627,11 @@ def _finish(
         proofs = tuple(p for p in proofs if (p.member, p.version) not in standing)
         found += found_here
     else:
-        proofs = measured if measured is not None else measure(bound, unit, overrides, out)
+        proofs = (
+            tuple(p for group in measured for p in group)
+            if measured is not None
+            else measure(bound, unit, overrides, out)
+        )
         found = gaps(bound, unit, proofs)
     proved["wall"] = round(wall + time.monotonic() - started, 3)
     code = [n for n in unit.members if bound.layout.members[n].kind == "function"]
@@ -644,19 +661,11 @@ def _finish(
     }
 
 
-def _prove_kin(
-    config: Config,
-    snapshot: Snapshot,
-    bound: Snapshot,
-    unit: UnitSpec,
-    units: Sequence[UnitSpec],
-    consumers: Sequence[str],
-    siblings: dict[str, tuple[Snapshot, UnitSpec]],
-    overrides: Json,
-) -> tuple[tuple[Proof, ...], dict[str, tuple[Finding, ...]]]:
-    """The change set and its consumers in its tree, in one dispatch with every sibling consumer's draft twice: in
-    the sibling's own tree and in this tree with the sibling's writes laid under this candidate's own. Findings
-    under "" refuse now; under a sibling's path they hold only if that sibling is refused."""
+def _kin_pairs(
+    bound: Snapshot, units: Sequence[UnitSpec], consumers: Sequence[str], siblings: dict[str, tuple[Snapshot, UnitSpec]]
+) -> list[tuple[Snapshot, UnitSpec]]:
+    """The change set and old consumers, then each sibling draft in its own tree and under the candidate's writes.
+    Keep this order so each group's verdict can split its results after the shared measurement dispatch."""
     plain = [c for c in consumers if c not in siblings]
     after = {
         c: layout.overlay(bound, {p: b for p, b in tree.overlays.items() if p not in bound.overlays})
@@ -664,14 +673,23 @@ def _prove_kin(
     }
     pairs = [(bound, u) for u in (*units, *(bound.layout.units[c] for c in (*plain, *siblings)))]
     pairs += [siblings[c] for c in siblings] + [(after[c], siblings[c][1]) for c in siblings]
-    measured = measure_bound(config, pairs, overrides)
-    here = len(units) + len(plain) + len(siblings)
+    return pairs
+
+
+def _kin_findings(
+    snapshot: Snapshot, staged: Json, measured: Sequence[tuple[Proof, ...]], overrides: Json
+) -> tuple[tuple[Proof, ...], dict[str, tuple[Finding, ...]]]:
+    """Split one candidate's measured pairs. Findings under "" refuse now; those under a sibling path hold only if
+    that sibling is refused. No measurements are dispatched while deciding the group's verdict."""
+    siblings = staged["siblings"]
+    plain = [c for c in staged["proved"]["consumers"] if c not in siblings]
+    here = len(staged["units"]) + len(plain) + len(siblings)
     everyone = tuple(p for group in measured[:here] for p in group)
     own = measured[here : here + len(siblings)]
     applied = measured[here + len(siblings) :]
     found: dict[str, tuple[Finding, ...]] = {"": _regressions(snapshot, plain, everyone, overrides)}
     for n, c in enumerate(siblings):
-        found[""] += _kin_regressions(unit.path, own[n], applied[n])
+        found[""] += _kin_regressions(staged["unit"].path, own[n], applied[n])
         found[c] = _regressions(snapshot, [c], everyone, overrides, c)
     return everyone, found
 
@@ -850,17 +868,16 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
         snapshot = layout.capture(config)  # the chunk is bounded so what one capture and its overlays hold stays small
         chunk_params = {**params, "function": None, "bulk": True}
         prepared: dict[int, Any] = {}
+        trials: dict[int, Recipe] = {}
         for n, group in enumerate(groups[at : at + chunk]):
             try:
                 prepared[n] = _prepare(snapshot, group, chunk_params)
+                trials[n] = recipes.resolve(config, prepared[n][1], _overrides(params))
             except Refusal as refusal:
                 prepared[n] = refusal
         bound = {n: p for n, p in prepared.items() if not isinstance(p, Refusal)}
         # every candidate's tree state is derived in one dispatch; admission and its proofs reuse those derivations
-        ownership.derive_pairs(
-            [(p[2], p[1]) for p in bound.values()],
-            recipe=[recipes.resolve(config, p[1], _overrides(params)) for p in bound.values()],
-        )
+        ownership.derive_pairs([(p[2], p[1]) for p in bound.values()], recipe=[trials[n] for n in bound])
         kin = {p[1].path: (p[2], p[1]) for p in bound.values()}  # every member's draft, by its unit path
         staged: dict[int, Any] = {}
         for n, group in enumerate(groups[at : at + chunk]):
@@ -871,13 +888,17 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
                 staged[n] = _stage(config, snapshot, group, chunk_params, _overrides(params), prepared[n], others)
             except Refusal as refusal:
                 staged[n] = refusal
-        # every candidate proving without sibling drafts is measured in ONE dispatch, never one small one per group
-        batched = {n: s["batch"] for n, s in staged.items() if not isinstance(s, Refusal) and s["batch"] is not None}
-        pairs = [(staged[n]["bound"], u) for n, units in batched.items() for u in units]
+        # Warm the union of actual consumers once, then measure every candidate and sibling draft in one dispatch.
+        # Each pair keeps its own snapshot; only scheduling is shared, never candidate writes or verdicts.
+        batched = {n: s["batch"] for n, s in staged.items() if not isinstance(s, Refusal)}
+        consumers = sorted({c for n in batched for c in staged[n]["proved"]["consumers"]})
+        pairs = [pair for batch in batched.values() for pair in batch]
         started = time.monotonic()
+        if consumers:
+            _baseline(snapshot, consumers, _overrides(params))
         measured = iter(measure_bound(config, pairs, _overrides(params)) if pairs else [])
         wall = time.monotonic() - started
-        proofs = {n: tuple(p for _ in units for p in next(measured)) for n, units in batched.items()}
+        proofs = {n: [next(measured) for _ in batch] for n, batch in batched.items()}
         proved: dict[int, Any] = {}
         for n in range(len(groups[at : at + chunk])):
             try:

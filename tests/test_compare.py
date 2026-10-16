@@ -1171,7 +1171,13 @@ def test_a_bulk_admission_of_a_two_function_source_labels_it_with_its_first_memb
 
 
 def _bulk_pair(
-    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, headers: dict[str, bytes], fits: Any
+    cfg: Config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, bytes],
+    fits: Any,
+    dispatched: list[Any] | None = None,
+    consumers: tuple[str, ...] = ("src/a.c", "src/b.c"),
 ) -> list[dict[str, Any]]:
     """A bulk of a.c and b.c, landed fuzzy units including one header each group rewrites (`headers`: the text
     each group brings). `fits(path, header)` scores a draft against a header; an old source scores 0.5 with the old
@@ -1193,13 +1199,15 @@ def _bulk_pair(
             compare.layout.overlay(tree, {owned[file.stem].path: file.read_bytes()}),
         ),
     )
-    monkeypatch.setattr(compare.headers, "consumers", lambda tree, changed: ("src/a.c", "src/b.c"))
+    monkeypatch.setattr(compare.headers, "consumers", lambda tree, changed: consumers)
     monkeypatch.setattr(compare.land, "declaration_users", lambda before, after, affected, changed: affected)
     old = cfg.project.root / "include/h.h"
     old.parent.mkdir(parents=True)
     old.write_bytes(b"old")
 
     def measured(config: Config, pairs: Any, over: Any) -> list[tuple[Any, ...]]:
+        if dispatched is not None:
+            dispatched.append([(u.path, dict(tree.overlays)) for tree, u in pairs])
         out = []
         for tree, u in pairs:
             header, source = tree.overlays.get("include/h.h", b"old"), tree.overlays.get(u.path)
@@ -1419,3 +1427,281 @@ def test_bulk_submit_of_n_groups_measures_them_all_in_one_dispatch(
     result = compare.submit_command(cfg, {**base, "files": files, "flag": [], "omit_flag": []})
     assert [r["id"] for r in result["submissions"]] == ["sub"] * count
     assert len(dispatched) == 1 and dispatched[0] >= count  # one measure dispatch holds every group
+
+
+@pytest.mark.parametrize("regresses", [False, True])
+def test_bulk_batches_sibling_drafts_without_merging_their_trees_or_verdicts(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, regresses: bool
+) -> None:
+    dispatched: list[Any] = []
+    rows = _bulk_pair(
+        cfg,
+        tmp_path,
+        monkeypatch,
+        {"a": b"newA", "b": b"newB"},
+        lambda path, header: 0.3 if regresses and (path, header) == ("src/b.c", b"newA") else 1.0,
+        dispatched,
+    )
+    # One HEAD union and one candidate dispatch: every draft still has its own and applied tree.
+    assert dispatched[0] == [("src/a.c", {}), ("src/b.c", {})]
+    assert len(dispatched) == 2
+    assert dispatched[1] == [
+        ("src/a.c", {"include/h.h": b"newA", "src/a.c": b"int a;"}),
+        ("src/b.c", {"include/h.h": b"newA", "src/a.c": b"int a;"}),
+        ("src/b.c", {"include/h.h": b"newB", "src/b.c": b"int b;"}),
+        ("src/b.c", {"include/h.h": b"newA", "src/a.c": b"int a;", "src/b.c": b"int b;"}),
+        ("src/b.c", {"include/h.h": b"newB", "src/b.c": b"int b;"}),
+        ("src/a.c", {"include/h.h": b"newB", "src/b.c": b"int b;"}),
+        ("src/a.c", {"include/h.h": b"newA", "src/a.c": b"int a;"}),
+        ("src/a.c", {"include/h.h": b"newB", "src/b.c": b"int b;", "src/a.c": b"int a;"}),
+    ]
+    assert [r["member"] for r in rows] == ["f", "g"]
+    assert [r["refused"] for r in rows] == [regresses, regresses]
+    if regresses:
+        assert [r["id"] for r in rows] == [None, None]
+        assert all(f["path"] == "src/a.c" and f["unit"] == "src/b.c" for f in rows[0]["findings"])
+        assert all("src/a.c was refused" in f["reason"] for f in rows[1]["findings"])
+    else:
+        assert [r["id"] for r in rows] == ["sub-src/a.c", "sub-src/b.c"]
+        assert all(not r["findings"] for r in rows)
+
+
+@pytest.mark.parametrize("consumer_recipe_refused", [False, True])
+def test_bulk_prewarms_actual_overlapping_consumers_and_keeps_atomic_group_results(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer_recipe_refused: bool
+) -> None:
+    names = "abcxyz"
+    specs = {name: unit(f"f_{name}", path=f"src/{name}.c") for name in names}
+    snapshot = replace(
+        snap(cfg, {f"f_{name}": member(f"f_{name}") for name in names}, tuple(specs.values())),
+        digest="overlapping-consumers",
+    )
+    monkeypatch.setattr(compare.layout, "capture", lambda config: snapshot)
+    monkeypatch.setattr(
+        compare.layout,
+        "overlay",
+        lambda tree, writes: replace(tree, overlays={**tree.overlays, **writes}, digest=digest((tree.digest, writes))),
+    )
+
+    def bind(tree: Snapshot, file: Path, function: Any, notes: Any = None) -> tuple[UnitSpec, Snapshot]:
+        if file.stem == "bad":
+            raise Refusal(Finding("land.request", "candidate has no layout member", path=str(file)))
+        spec = specs[file.stem]
+        return spec, compare.layout.overlay(tree, {spec.path: file.read_bytes()})
+
+    monkeypatch.setattr(compare, "bind", bind)
+    affected = {b"A": ("src/x.c", "src/y.c"), b"B": ("src/y.c", "src/z.c"), b"C": ("src/x.c", "src/y.c")}
+    monkeypatch.setattr(compare.headers, "consumers", lambda tree, changed: affected[tree.overlays["include/h.h"]])
+    monkeypatch.setattr(compare.land, "declaration_users", lambda before, after, paths, changed: paths)
+    header = cfg.project.root / "include/h.h"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_bytes(b"old")
+    files: list[Path] = []
+    for name in "abc":
+        source, extra = tmp_path / f"{name}.c", tmp_path / f"{name}.h"
+        source.write_bytes(f"int f_{name};".encode())
+        extra.write_bytes(name.upper().encode())
+        files.extend([source, Path(f"include/h.h={extra}")])
+        if name == "a":
+            files.append(tmp_path / "bad.c")
+    dispatches: list[Any] = []
+
+    def measure(config: Config, pairs: Any, overrides: Any) -> list[tuple[Any, ...]]:
+        assert overrides == {"add": ["-O1"], "omit": []}
+        dispatches.append([(u.path, dict(tree.overlays)) for tree, u in pairs])
+        return [
+            tuple(
+                fixture.proof(
+                    u.path,
+                    u.members[0],
+                    version,
+                    not (tree.overlays.get("include/h.h") == b"C" and u.path == "src/x.c"),
+                    ("consumer bytes differ",)
+                    if tree.overlays.get("include/h.h") == b"C" and u.path == "src/x.c"
+                    else (),
+                    0.25 if tree.overlays.get("include/h.h") == b"C" and u.path == "src/x.c" else 1.0,
+                )
+                for version in ("a", "b")
+            )
+            for tree, u in pairs
+        ]
+
+    monkeypatch.setattr(compare, "measure_bound", measure)
+    resolve = compare.recipes.resolve
+
+    def recipe(config: Config, spec: UnitSpec, overrides: Any) -> Recipe:
+        if consumer_recipe_refused and spec.path == "src/x.c":
+            raise Refusal(Finding("recipe.option", "unsupported consumer option", unit=spec.path))
+        return resolve(config, spec, overrides)
+
+    monkeypatch.setattr(compare.recipes, "resolve", recipe)
+    accepted: list[Any] = []
+
+    def submit_many(config: Config, calls: Any) -> list[Any]:
+        accepted.extend(calls)
+        return [fixture.submission(id=f"sub-{call['unit'].path}") for call in calls]
+
+    monkeypatch.setattr(compare.land, "submit_many", submit_many)
+    audited: list[str] = []
+    monkeypatch.setattr(compare, "_source_rules", lambda tree, done: audited.append(done["unit"].path) or ())
+    result = compare.submit_command(
+        cfg, {"files": files, "bulk": True, "function": None, "note": None, "withhold": False, "flag": ["-O1"]}
+    )
+    rows = result["submissions"]
+    assert len(dispatches) == 2
+    assert [Path(row["file"]).stem for row in rows] == ["a", "bad", "b", "c"]
+    assert rows[1]["findings"][0]["key"] == "land.request"
+    if consumer_recipe_refused:
+        assert dispatches[0] == [("src/y.c", {}), ("src/z.c", {})]
+        assert [path for path, _ in dispatches[1]] == ["src/b.c", "src/y.c", "src/z.c"]
+        assert [row["refused"] for row in rows] == [True, True, False, True]
+        assert [row["id"] for row in rows] == [None, None, "sub-src/b.c", None]
+        assert [rows[n]["findings"][0]["key"] for n in (0, 3)] == ["recipe.option", "recipe.option"]
+        assert [call["extras"] for call in accepted] == [{"include/h.h": b"B"}]
+        assert [tuple(p.unit for p in call["proofs"]) for call in accepted] == [("src/b.c",) * 2]
+        assert audited == []
+    else:
+        assert dispatches[0] == [("src/x.c", {}), ("src/y.c", {}), ("src/z.c", {})]
+        assert [p for p, _ in dispatches[1]] == [
+            "src/a.c",
+            "src/x.c",
+            "src/y.c",
+            "src/b.c",
+            "src/y.c",
+            "src/z.c",
+            "src/c.c",
+            "src/x.c",
+            "src/y.c",
+        ]
+        assert [writes["include/h.h"] for _, writes in dispatches[1]] == [b"A"] * 3 + [b"B"] * 3 + [b"C"] * 3
+        assert [row["refused"] for row in rows] == [False, True, False, True]
+        assert [row["id"] for row in rows] == ["sub-src/a.c", None, "sub-src/b.c", None]
+        assert {(f["key"], f["unit"], f["versions"][0]) for f in rows[3]["findings"]} == {
+            ("land.consumer_regressed", "src/x.c", "a"),
+            ("land.consumer_regressed", "src/x.c", "b"),
+        }
+        assert [call["extras"] for call in accepted] == [{"include/h.h": b"A"}, {"include/h.h": b"B"}]
+        assert [tuple(p.unit for p in call["proofs"]) for call in accepted] == [("src/a.c",) * 2, ("src/b.c",) * 2]
+        assert audited == ["src/c.c"]
+    assert header.read_bytes() == b"old"
+    configuration.validate("result.submit", json.loads(json.dumps(result)), "result.submit")
+
+
+def test_empty_bulk_has_no_capture_baseline_or_measurement(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("empty bulk scheduled work")
+
+    monkeypatch.setattr(compare.layout, "capture", unexpected)
+    monkeypatch.setattr(compare, "_baseline", unexpected)
+    monkeypatch.setattr(compare, "measure_bound", unexpected)
+    monkeypatch.setattr(compare.land, "submit_many", unexpected)
+    assert compare._bulk(cfg, [], {"bulk": True}) == {"submissions": [], "drain": None}
+    # The public command still rejects a request without candidates.
+    with pytest.raises(Refusal, match="Pass source files"):
+        compare.submit_command(cfg, {"files": [], "bulk": True})
+
+
+def test_entirely_refused_bulk_chunk_never_warms_or_measures(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(compare.layout, "capture", lambda config: snap(cfg, {}))
+
+    def refuse(snapshot: Any, files: Any, params: Any) -> Any:
+        raise Refusal(Finding("land.request", "no member", path=str(files[0])))
+
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("refused groups scheduled proof work")
+
+    monkeypatch.setattr(compare, "_prepare", refuse)
+    monkeypatch.setattr(compare, "_baseline", unexpected)
+    monkeypatch.setattr(compare, "measure_bound", unexpected)
+    monkeypatch.setattr(compare.land, "submit_many", lambda config, calls: [] if not calls else unexpected())
+    files = [tmp_path / "a.c", tmp_path / "b.c"]
+    rows = compare.submit_command(cfg, {"files": files, "bulk": True})["submissions"]
+    assert [row["file"] for row in rows] == [str(f) for f in files]
+    assert all(row["refused"] and row["findings"][0]["key"] == "land.request" for row in rows)
+
+
+def test_bulk_mixes_sibling_and_standalone_candidates_in_one_measurement_batch(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dispatched: list[Any] = []
+    rows = _bulk_pair(
+        cfg, tmp_path, monkeypatch, {"a": b"newA", "b": b"newB"}, lambda path, header: 1.0, dispatched, ("src/b.c",)
+    )
+    assert len(dispatched) == 2
+    assert dispatched[0] == [("src/b.c", {})]
+    assert [path for path, _ in dispatched[1]] == ["src/a.c", "src/b.c", "src/b.c", "src/b.c", "src/b.c"]
+    assert dispatched[1][-1][1] == {"include/h.h": b"newB", "src/b.c": b"int b;"}
+    assert [row["id"] for row in rows] == ["sub-src/a.c", "sub-src/b.c"]
+    assert [row["consumers"]["count"] for row in rows] == [1, 0]
+
+
+@pytest.mark.parametrize("option", ["flag", "omit_flag"])
+def test_bulk_primary_recipe_refusal_keeps_its_row_and_excludes_its_draft_from_shared_work(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str
+) -> None:
+    flag = "-funroll-loops" if option == "flag" else "-O1"
+    specs = {
+        name: replace(unit(name, path=f"src/{name}.c"), options={"add": [flag]} if name != "b" else {})
+        for name in "abc"
+    }
+    snapshot = snap(cfg, {name: member(name) for name in specs}, tuple(specs.values()))
+    monkeypatch.setattr(compare.layout, "capture", lambda config: snapshot)
+    files = [tmp_path / f"{name}.c" for name in specs]
+    for file in files:
+        file.write_text(f"int {file.stem}(void) {{ return 1; }}")
+    monkeypatch.setattr(
+        compare,
+        "bind",
+        lambda tree, file, function, notes=None: (
+            specs[file.stem],
+            replace(tree, overlays={specs[file.stem].path: file.read_bytes()}, digest=file.stem),
+        ),
+    )
+    monkeypatch.setattr(compare.headers, "consumers", lambda tree, changed: ())
+    derived: list[Any] = []
+
+    def derive(pairs: Any, loose: bool = False, recipe: Any = None) -> Any:
+        derived.append(([u.path for _, u in pairs], recipe))
+        return list(pairs)
+
+    monkeypatch.setattr(ownership, "derive_pairs", derive)
+    stage = compare._stage
+    staged: list[Any] = []
+
+    def staging(config: Any, tree: Any, group: Any, params: Any, overrides: Any, prepared: Any, kin: Any) -> Any:
+        staged.append((prepared[1].path, tuple(kin)))
+        return stage(config, tree, group, params, overrides, prepared, kin)
+
+    monkeypatch.setattr(compare, "_stage", staging)
+    measured: list[Any] = []
+
+    def measure(config: Any, pairs: Any, overrides: Any) -> Any:
+        measured.append([u.path for _, u in pairs])
+        return [tuple(fixture.proof(u.path, u.members[0], v, True, ()) for v in ("a", "b")) for _, u in pairs]
+
+    monkeypatch.setattr(compare, "measure_bound", measure)
+    entered: list[Any] = []
+
+    def submit_many(config: Any, calls: Any) -> Any:
+        entered.extend(calls)
+        return [fixture.submission(id=f"sub-{call['unit'].path}") for call in calls]
+
+    monkeypatch.setattr(compare.land, "submit_many", submit_many)
+    result = compare.submit_command(
+        cfg, {"files": files, "bulk": True, "function": None, "note": None, "withhold": False, option: [flag]}
+    )
+    rows = result["submissions"]
+    assert [Path(row["file"]).stem for row in rows] == ["a", "b", "c"]
+    assert [row["id"] for row in rows] == ["sub-src/a.c", None, "sub-src/c.c"]
+    assert [row["refused"] for row in rows] == [False, True, False]
+    assert [(f["key"], f["unit"]) for f in rows[1]["findings"]] == [("recipe.option", "src/b.c")]
+    action = "add" if option == "flag" else "omit"
+    assert f"cannot {action} {flag}" in rows[1]["findings"][0]["reason"]
+    assert len(derived) == 1 and derived[0][0] == ["src/a.c", "src/c.c"] and len(derived[0][1]) == 2
+    assert staged == [("src/a.c", ("src/c.c",)), ("src/c.c", ("src/a.c",))]
+    assert measured == [["src/a.c", "src/c.c"]]
+    assert [call["unit"].path for call in entered] == ["src/a.c", "src/c.c"]
+    assert all(call["request"]["overrides"]["add" if option == "flag" else "omit"] == [flag] for call in entered)
+    configuration.validate("result.submit", json.loads(json.dumps(result)), "result.submit")
