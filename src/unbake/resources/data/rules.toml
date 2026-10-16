@@ -33,7 +33,7 @@ id = "raw-offset"
 scope = "code"
 waivable = false
 sentence = "a raw byte offset is used instead of a typed field"
-regex = '\(\s*(?:u8|s8|char|unsigned char)\s*\*\s*\)\s*\(?\s*[A-Za-z_]\w*\s*\)?\s*\+\s*(?:0[xX][0-9A-Fa-f]+|\d+)'
+regex = '\(\s*(?:u8|s8|char|unsigned char)\s*\*\s*\)\s*(?:[A-Za-z_]\w*|\(\s*[A-Za-z_]\w*\s*\))\s*\+\s*(?:\(\s*)*(?:0[xX][0-9A-Fa-f]+|\d+)'
 
 [[rule]]
 id = "local-include"

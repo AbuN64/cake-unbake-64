@@ -718,6 +718,57 @@ def test_raw_offset_unwaivable(snapshot):
     assert [f.key for f in policy.evaluate(snapshot, PATH, text, None, False)] == ["source.raw-offset"]
 
 
+def test_raw_offset_original_parenthesized_loads_and_stores(snapshot):
+    text = (
+        "/* FAKEMATCH: needed */\ntemp_a1 = (*(void **)((s8 *)(temp_v0) + (4)));\n(*(void **)((s"
+        "8 *)(temp_v0) + (4))) = (void *) (temp_a1 + 8);\n(*(s32 *)((s8 *)(temp_a1) + (0))) = 0"
+        "xFA000000;\n(*(s32 *)((s8 *)(temp_a1) + (4))) = (s32) (((*(u8 *)((s8 *)(arg0) + (0))) "
+        "<< 0x18) | ((*(u8 *)((s8 *)(arg0) + (1))) << 0x10) | ((*(u8 *)((s8 *)(arg0) + (2))) <"
+        "< 8) | (*(u8 *)((s8 *)(arg0) + (3))));\n"
+    )
+    findings = policy.evaluate(snapshot, PATH, text, None, False, only={"raw-offset"})
+    assert [(f.key, f.line) for f in findings] == [("source.raw-offset", n) for n in (2, 3, 4, 5)]
+
+
+@pytest.mark.parametrize(
+    ("byte_type", "operand", "offset"),
+    [
+        ("u8", "p", "0"),
+        ("u8", "( p )", "(4)"),
+        ("s8", "p", "0x10"),
+        ("s8", "( p )", "(4)"),
+        ("char", "p", "((0X10))"),
+        ("char", "( p )", "( \t (\n 4 ) )"),
+        ("unsigned char", "p", "(4)"),
+        ("unsigned char", "( p )", "((0X10))"),
+    ],
+)
+def test_raw_offset_numeric_grouping_and_whitespace(snapshot, byte_type, operand, offset):
+    text = f"*(int *)(( {byte_type} * ) {operand} + {offset}) = value;"
+    findings = policy.evaluate(snapshot, PATH, text, None, False, only={"raw-offset"})
+    assert [(f.key, f.line) for f in findings] == [("source.raw-offset", 1)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "value = words[4];",
+        "value = bytes[(4)];",
+        "value = object->field;",
+        "word = (s32 *)words + (4);",
+        "record = (Record *)records + ((4));",
+        "byte = (u8 *)(words + (4));",
+        "byte = (s8 *)(words + 4);",
+        "byte = (char *)(words + 0x10);",
+        "byte = (s8 *)words;",
+        "/* value = *((s8 *)p + (4)); */",
+        '// value = *((s8 *)p + (4));\nconst char *text = "(s8 *)p + (4)";',
+    ],
+)
+def test_raw_offset_keeps_typed_access_and_noncode(snapshot, text):
+    assert policy.evaluate(snapshot, PATH, text, None, False, only={"raw-offset"}) == ()
+
+
 def _placed_snapshot(snapshot):
     from types import SimpleNamespace
 
