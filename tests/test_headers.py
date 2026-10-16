@@ -1163,6 +1163,60 @@ def test_respell_resolves_and_parses_a_shared_include_chain_once_for_every_file(
     assert parsed.count(texts["include/a.h"]) == 1  # resolved once for 30 closures, never once per closure
 
 
+@pytest.mark.parametrize("same_include", [False, True])
+def test_header_relocation_dedupes_new_inherited_typedef_without_a_symbol_rename(same_include):
+    old = "include/old.h"
+    target = "include/base.h"
+    include = "base.h" if same_include else "old.h"
+    source = f'#include "{include}"\ntypedef struct Queue Queue;\ntypedef int Own;\n'
+    texts = {"src/timer.c": source.encode(), old: b"typedef struct Queue Queue;\n", target: b""}
+    snapshot = SimpleNamespace(peek=texts.get, layout=SimpleNamespace(units={}), config=SimpleNamespace())
+    with patch.object(
+        headers, "sources", lambda snap, place="include", suffix=".h": [p for p in texts if p.endswith(suffix)]
+    ):
+        written = headers.respell(snapshot, {old: None, target: texts[old].decode()}, {old: target}, [], {})
+    assert written["src/timer.c"] == b'#include "base.h"\ntypedef int Own;\n'
+
+
+def test_header_relocation_preserves_different_and_conditional_typedefs():
+    source = '#include "old.h"\ntypedef struct Other Queue;\n#if LOCAL\ntypedef struct Queue Queue;\n#endif\n'
+    texts = {"src/timer.c": source.encode(), "include/old.h": b"typedef struct Queue Queue;\n"}
+    snapshot = SimpleNamespace(peek=texts.get, layout=SimpleNamespace(units={}), config=SimpleNamespace())
+    with patch.object(
+        headers, "sources", lambda snap, place="include", suffix=".h": [p for p in texts if p.endswith(suffix)]
+    ):
+        written = headers.respell(
+            snapshot,
+            {"include/old.h": None, "include/base.h": texts["include/old.h"].decode()},
+            {"include/old.h": "include/base.h"},
+            [],
+            {},
+        )
+        unchanged = headers.respell(snapshot, {}, {}, [], {})
+    assert written["src/timer.c"].decode() == source.replace("old.h", "base.h")
+    assert unchanged == {}
+
+
+def test_header_relocation_bounds_shared_include_parsing(monkeypatch):
+    texts = {f"src/u{i}.c": b'#include "base.h"\ntypedef struct Queue Queue;\n' for i in range(30)}
+    texts |= {"src/no_types.c": b'#include "base.h"\nint plain;\n', "include/base.h": b""}
+    merged = "typedef struct Queue Queue;\n"
+    snapshot = SimpleNamespace(peek=texts.get, layout=SimpleNamespace(units={}), config=SimpleNamespace())
+    parsed = []
+    real = headers._quoted
+    monkeypatch.setattr(headers, "_quoted", lambda content: parsed.append(content) or real(content))
+    with patch.object(
+        headers, "sources", lambda snap, place="include", suffix=".h": [p for p in texts if p.endswith(suffix)]
+    ):
+        written = headers.respell(
+            snapshot, {"include/base.h": merged, "include/old.h": None}, {"include/old.h": "include/base.h"}, [], {}
+        )
+    assert all(written[f"src/u{i}.c"] == b'#include "base.h"\n' for i in range(30))
+    assert "src/no_types.c" not in written
+    assert parsed.count(merged.encode()) <= 2
+    assert texts["src/no_types.c"] not in parsed
+
+
 def test_a_moves_name_lookups_index_the_scans_once_per_listing(monkeypatch):
     listed = []
     rows = {

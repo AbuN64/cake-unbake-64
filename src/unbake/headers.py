@@ -3131,8 +3131,10 @@ def respell(
         for old in spelled:
             text = symbols.rewrite(text, old, renames[old])
         texts[path] = text
-        # several names may now be one: each typedef stays once per file, also where an included file now repeats it
-        if (spelled or words & targets) and configuration.is_text(path):
+        # A relocated header can newly supply a local typedef even without a symbol rename.
+        if configuration.is_text(path) and (
+            spelled or words & targets or ((moved or stay) and _typedef_spellings(text))
+        ):
             deduped.append(path)
         if path in files or text != current:
             writes[path] = text.encode()
