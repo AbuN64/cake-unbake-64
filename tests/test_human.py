@@ -1,12 +1,15 @@
 """Plain findings, exact summaries, and terminal-only progress and labels."""
 
 import io
+import json
 import os
+import sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
-from unbake import effort, human
+from unbake import cli, compare, config, effort, human, repo
 from unbake.contracts import Finding, Origin, StageRecord
 
 
@@ -187,3 +190,107 @@ def test_a_said_line_reaches_the_person_as_one_line():
     human.attach(stream, False)
     effort.say("unbake: waiting for pids 7 to finish")
     assert stream.getvalue() == "unbake: waiting for pids 7 to finish\n"
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_upgrade_command_finishes_after_install_without_reading_its_url_as_score_findings(
+    monkeypatch, capsys, installed
+):
+    # The real command used to emit ok JSON after pip succeeded, then crash in human.finish on source[0]['key'].
+    monkeypatch.setattr(repo.psutil, "process_iter", lambda attrs: [])
+    monkeypatch.setattr(repo, "_source", lambda: "https://example.invalid/tool")
+    ran = []
+
+    def install(name, argv, cwd, **kwargs):
+        ran.append(argv)
+        return SimpleNamespace(exit=0 if installed else 1, signal=None, stderr=b"install refused")
+
+    monkeypatch.setattr(repo.process, "run", install)
+    assert cli.main(["upgrade", "abc123"]) == (0 if installed else 1)
+    captured = capsys.readouterr()
+    assert len(captured.out.splitlines()) == 1
+    document = json.loads(captured.out)
+    config.validate("envelope", document, "envelope")
+    assert document["ok"] is installed
+    assert len(ran) == 1 and ran[0][0] == sys.executable
+    assert ran[0][-1] == "git+https://example.invalid/tool@abc123"
+    assert "Traceback" not in captured.err and "source rule" not in captured.err
+    if installed:
+        config.validate("result.upgrade", document["result"], "result.upgrade")
+        assert document["result"] == {"ref": "abc123", "prefix": sys.prefix, "source": "https://example.invalid/tool"}
+        assert document["findings"] == []
+    else:
+        assert document["result"] is None
+        assert document["findings"][0]["key"] == "upgrade.install"
+        assert "Refused:" in captured.err and "install refused" in captured.err
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_score_command_still_renders_its_diagnostics_in_both_output_forms(cfg, monkeypatch, capsys, short):
+    result = {
+        "unit": "src/f.c",
+        "members": ["f"],
+        "version": "a",
+        "versions": ["a"],
+        "exact": False,
+        "score": 0.5,
+        "words": {"built": 2, "target": 2, "matched": 1},
+        "shift": {
+            "first_difference": {"index": 1, "built": "x", "target": "y"},
+            "aligned": {"exact": 1, "register_blind": 2},
+        },
+        "source": [{"key": "source.pointer", "line": 7, "reason": "typed access required"}],
+        "alloc": [
+            {
+                "register": "$s0",
+                "candidate": {"name": "p1", "refs": 3, "length": 4, "priority": 5},
+                "target": {"name": "p2", "refs": 2, "length": 6, "priority": 3},
+                "flip": {"more_refs": 1, "shorter_by": 2},
+            }
+        ],
+        "sched": [
+            {
+                "line": 9,
+                "asm": "lw $v0, 0($a0)",
+                "words": 2,
+                "sched": {"priority": 4, "luid": 5},
+                "hint": "move the load",
+            }
+        ],
+        "diff": ["-x", "+y"],
+        "proofs": [],
+    }
+    monkeypatch.setattr(config, "load", lambda root, host: cfg)
+    monkeypatch.setattr(compare, "score_command", lambda cfg, params: result)
+    args = ["score", "f.c", "--host", "host.toml", *(["--short"] if short else [])]
+    assert cli.main(args) == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    config.validate("envelope", document, "envelope")
+    config.validate("result.score", result, "result.score")
+    assert document["ok"] and document["result"]["source"] == result["source"]
+    assert document["result"]["diff"] == result["diff"]
+    assert "first difference at word 1: built x, target y; aligned 1 exact, 2 register-blind of 2" in captured.err
+    assert "source rule source.pointer at line 7: typed access required" in captured.err
+    assert "$s0: p1 (refs 3, length 4, priority 5) takes it" in captured.err
+    assert "flips at +1 refs or -2 insns live" in captured.err
+    assert "line 9: lw $v0, 0($a0) sits 2 words earlier than in the target" in captured.err
+    assert "sched: priority 4, input position 5" in captured.err and "move the load" in captured.err
+
+
+@pytest.mark.parametrize("command", ["setup", "move", "land", "submit"])
+def test_other_command_results_keep_written_file_feedback(cfg, monkeypatch, capsys, command):
+    files, message = ["src/f.c"], "update f"
+    result = {"files": files, "message": message}
+    if command in ("land", "submit"):
+        result = {"landed": [{"files": files, "message": message}], "refused": []}
+        if command == "submit":
+            result = {"drain": result}
+    monkeypatch.setattr(config, "load", lambda root, host: cfg)
+    monkeypatch.setattr(cli, "_handler", lambda name: lambda cfg, params: result)
+    args = [command, *(["member", "f", "m"] if command == "move" else []), "--host", "host.toml"]
+    assert cli.main(args) == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["ok"] and document["result"] == result
+    assert "git add -A -- src/f.c" in captured.err and "git commit -m 'update f'" in captured.err
