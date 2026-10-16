@@ -1995,23 +1995,46 @@ def _rounds(monkeypatch: Patch, refuse: Any) -> list[list[str]]:
     return applied
 
 
-def test_partial_refuses_every_move_a_round_blames_at_once_and_lands_the_rest_the_next_round(
+def test_partial_finds_every_breaker_of_one_unit_by_halves_and_lands_the_rest(
     tmp_path: Path, seen: Any, monkeypatch: Patch
 ) -> None:
-    # the 2026-10-15 fakes move, rounds 9-21: one kept unit (code_802B7520_5.c) failing again blamed 134 moves; the
-    # old loop bisected them 67, 33, 16, 8, 4, 2, 1 per round on 3-4 cores for 50 minutes
+    # every move of the set breaks the unit alone: halving refuses each of them and lands the unblamed six
     broken = {"key": "move.not_exact", "unit": "src/sdk/libgultra/part_800C7F20/code_802B7520_5.c", "reason": "size"}
     blamed = {f"s{i}" for i in range(1, 12, 2)}
 
     def refuse(subjects: list[str]) -> Any:
         return ({s: [broken] for s in subjects if s in blamed} if blamed & set(subjects) else {}), False
 
-    applied = _rounds(monkeypatch, refuse)
+    _rounds(monkeypatch, refuse)
     stdin(monkeypatch, json.dumps([{"op": "symbol", "subject": f"s{i}", "target": f"t{i}"} for i in range(12)]))
     result = move.run(world(tmp_path), {"op": "-", "partial": "1"})
     assert [r["index"] for r in result["refused"]] == sorted(int(s[1:]) for s in blamed)
-    assert applied == [[f"s{i}" for i in range(12)], [f"s{i}" for i in range(0, 12, 2)]] and result["rounds"] == 2
     assert sorted(result["files"]) == sorted(f"src/s{i}.c" for i in range(0, 12, 2))
+    assert result["rounds"] <= 1 + move._SPLITS and not any(
+        f["key"] == "move.rounds" for r in result["refused"] for f in r["findings"]
+    )
+
+
+def test_partial_refuses_only_the_one_move_that_breaks_a_unit_seventeen_type_moves_touch(
+    tmp_path: Path, seen: Any, monkeypatch: Patch
+) -> None:
+    # real case (fakes slice on G 886ad9dfa, move20.json): 17 type moves (ALGlobals, ALParam_s, ALSndPlayer, ...) all
+    # touch the libgultra unit of func_802B2650_de; while any breaker is in the batch every one of them is refused with
+    # "func_802B2650_de does not match the ROM in every holding version", so the old round refused all 17
+    reason = "func_802B2650_de does not match the ROM in every holding version"
+    broken = {"key": "move.not_exact", "unit": "src/sdk/libgultra/func_802B2650_de.c", "reason": reason}
+    touching = [f"AL{i}" for i in range(17)]
+
+    def refuse(subjects: list[str]) -> Any:
+        return ({s: [broken] for s in subjects if s in touching} if "AL5" in subjects else {}), False
+
+    applied = _rounds(monkeypatch, refuse)
+    rows = [{"op": "type", "subject": s, "target": f"{s}T"} for s in touching + ["x0", "x1", "x2"]]
+    stdin(monkeypatch, json.dumps(rows))
+    result = move.run(world(tmp_path), {"op": "-", "partial": "1"})
+    assert [r["index"] for r in result["refused"]] == [5]
+    assert sorted(result["files"]) == sorted(f"src/{s}.c" for s in touching + ["x0", "x1", "x2"] if s != "AL5")
+    assert result["rounds"] <= 1 + 2 * 5 and applied[0] == touching + ["x0", "x1", "x2"]
 
 
 def test_partial_retries_alone_a_move_the_plan_refused_beside_others(

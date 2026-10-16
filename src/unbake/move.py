@@ -35,6 +35,7 @@ from unbake import types as typedb
 from unbake.contracts import Claim, Config, Finding, Group, Json, LayoutMap, Move, Refusal, Snapshot, UnitSpec, digest
 
 _ROUNDS = 5  # partial applies a batch at most this many times
+_SPLITS = 12  # rounds a command spends halving sets one cause blamed; then such sets refuse whole
 _REAPPLY = 1  # proof-found boundaries re-apply a batch at most this many times per command: work lands early
 _OPS = ("symbol", "type", "member", "module", "source", "header", "file", "relayout")
 _NAME = re.compile(r"[A-Za-z_]\w*")
@@ -1281,6 +1282,17 @@ def _refusal(moves: Sequence[Move], snapshot: Snapshot, rows: Sequence[tuple[Mov
     )
 
 
+def _causes(rows: Mapping[int, Json], blamed: Sequence[int]) -> list[list[int]]:
+    """The blamed batch positions grouped by the cause their first finding names (its key, unit and reason), in batch
+    order: one group is the set of moves one broken unit or rule refused together."""
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    for k in sorted(blamed):
+        found = rows[k]["findings"][0] if rows[k].get("findings") else {}
+        cause = (found.get("key", ""), found.get("unit", ""), found.get("reason", "")) if found else ("", "", str(k))
+        groups.setdefault(cause, []).append(k)  # a row naming no finding is a cause of its own
+    return list(groups.values())
+
+
 def _subjects(refused: Sequence[Json]) -> list[Json]:
     """Each refused subject once (a module's source and header moves refuse together), with its first finding and the
     indexes of all its refused moves."""
@@ -1334,10 +1346,11 @@ def run(config: Config, params: Json) -> Json:
         partial = bool(params.get("partial")) or unproved
         files: dict[str, None] = {}
         deleted: dict[str, None] = {}
-        # each round applies one batch of the stream's indexes. Every move a round's findings blame is refused in that
-        # round, all at once, and the rest apply as one batch next (never halves of the blamed, never one at a time:
-        # the 2026-10-15 fakes move spent rounds 9-21 bisecting one unit's suspects). A move the plan refuses beside
-        # others is tried once alone, after the rest.
+        # each round applies one batch of the stream's indexes. The moves a round's findings blame for one cause (one
+        # unit that stops matching) are split: the first halves of every such set apply with the unblamed rest next
+        # round and the second halves the round after, so a set of 17 with one breaker refuses that one in about
+        # 2*log2(17) rounds while every split set of the command shares them. A cause blaming one move refuses it. A
+        # move the plan refuses beside others is tried once alone, after the rest.
         queue: list[list[int]] = [list(range(len(moves)))]
         alone: set[int] = set()
         bounds: list[str] = []  # members a file starts at, found by this command's proofs
@@ -1345,7 +1358,7 @@ def run(config: Config, params: Json) -> Json:
         size: dict[str, int] = {}
         # every requeue below is bounded: boundary re-applies share _REAPPLY, kept units and boundaries only grow, and
         # a batch met again with the same boundaries and kept units would apply the same, so it is refused instead
-        reapplied, seen = 0, set()
+        reapplied, seen, split = 0, set(), 0
         per_unit = partial or any(m.op == "relayout" for m in moves)  # a stream fails per unit; one move all or nothing
         # every round's outcome is journalled as it ends: a killed or crashed command resumes after its last round,
         # with its landed files, kept units, boundaries and refusals, and proves none of them again
@@ -1363,6 +1376,7 @@ def run(config: Config, params: Json) -> Json:
             )
             alone, seen = set(saved["alone"]), {(tuple(a), b, c) for a, b, c in saved["seen"]}
             rounds, chained, reapplied, landed = saved["rounds"], saved["chained"], saved["reapplied"], saved["landed"]
+            split = saved.get("split", 0)
             files, deleted = dict.fromkeys(saved["files"]), dict.fromkeys(saved["deleted"])
             said = f"{len(kept)} units kept, {len(refused)} moves refused, {sum(map(len, queue))} moves left"
             effort.say(f"unbake: move resumes after round {rounds}: {said}")
@@ -1382,6 +1396,7 @@ def run(config: Config, params: Json) -> Json:
                     "rounds": rounds,
                     "chained": chained,
                     "reapplied": reapplied,
+                    "split": split,
                     "landed": landed,
                     "files": list(files),
                     "deleted": list(deleted),
@@ -1425,15 +1440,26 @@ def run(config: Config, params: Json) -> Json:
                 landed = landed or not result["refused"]
                 continue
             rows = {r["index"]: r for r in result["refused"]}
-            final = []
-            for k in rows:  # every row the round blames is refused at once: a round never refuses one row at a time
+            final, blamed = [], []
+            for k in rows:
                 if planned and len(ids) > 1 and ids[k] not in alone:
                     alone.add(ids[k])
                     queue.append([ids[k]])
                 else:
-                    final.append(k)
+                    blamed.append(k)
+            firsts, seconds = [], []
+            for group in _causes(rows, blamed):
+                if len(group) == 1 or split >= _SPLITS:
+                    final += group
+                else:  # one cause blamed several moves: which of them break it is found by halves
+                    firsts += [ids[k] for k in group[: len(group) // 2]]
+                    seconds += [ids[k] for k in group[len(group) // 2 :]]
             refused += [{**rows[k], "index": ids[k]} for k in final]
             rest = [x for k, x in enumerate(ids) if k not in rows]
+            if seconds:  # halving has its own bound (_SPLITS), so it spends none of the chained rounds
+                split += 1
+                queue[:0] = [sorted(rest + firsts), sorted(seconds)]
+                continue
             chained += bool(rest)
             if rest and chained >= _ROUNDS and not unproved:
                 # chained refusals cost a full apply each: the rest are refused as one finding
