@@ -869,6 +869,34 @@ def _facts_job(item: tuple[Snapshot, str]) -> Json:
     return fakefold.facts(policy.scopes(snapshot.read(path).decode(errors="replace"))["code"])
 
 
+_REACH_CHUNK = 32  # sources per reach job: the name alternation ships once per chunk, not once per file
+
+
+def _reach_job(item: tuple[Snapshot, tuple[str, ...], tuple[str, ...]]) -> dict[str, dict[str, dict[str, int]]]:
+    """`fakefold.reaches` over one run of sources, as plain dicts (the pool pickles them)."""
+    snapshot, paths, names = item
+    from unbake import fakefold
+
+    found = fakefold.reaches({p: snapshot.read(p).decode(errors="replace") for p in paths}, names)
+    return {name: {kind: dict(held) for kind, held in kinds.items()} for name, kinds in found.items()}
+
+
+def _reaches(snapshot: Snapshot, paths: Sequence[str], names: Sequence[str]) -> dict[str, dict[str, Counter[str]]]:
+    """`fakefold.reaches` of every source on all cores: runs of sources in order, merged in order, so each counter
+    holds the same counts in the same first-seen order as one serial scan."""
+    wanted = tuple(sorted(set(names)))
+    found: dict[str, dict[str, Counter[str]]] = defaultdict(lambda: defaultdict(Counter))
+    if not wanted:
+        return found
+    runs = [tuple(paths[i : i + _REACH_CHUNK]) for i in range(0, len(paths), _REACH_CHUNK)]
+    with effort.stage("report.fakes.reach"):
+        for part in pool.map(snapshot.config, "report.fakes.reach", _reach_job, [(snapshot, r, wanted) for r in runs]):
+            for name, kinds in part.items():
+                for kind, held in kinds.items():
+                    found[name][kind].update(held)
+    return found
+
+
 def _weights_job(item: tuple[Snapshot, str]) -> dict[str, list[str]]:
     """Per fake-type subject (an invented record name) of one unit the functions its finding withholds."""
     snapshot, path = item
@@ -888,16 +916,17 @@ def _fake_pieces(snapshot: Snapshot, version: str) -> tuple[dict[str, int], dict
     project, broken = snapshot.config.project, _broken(snapshot)
     pieces: dict[str, int] = defaultdict(int)
     paths: set[str] = set()
-    for name, member, unit, _, _ in _inventory(snapshot):
-        if member.kind != "function" or version not in member.holders() or unit is None:
-            continue
-        if not _version_matched(project, unit, version) or unit.path in broken:
-            continue
-        for fn, size in policy.pieces(snapshot, name, version):
-            if fn in rules:
-                pieces[fn] += size
-                if "source.fake-type" in rules[fn]:
-                    paths.add(unit.path)
+    with effort.stage("report.fakes.pieces"):
+        for name, member, unit, _, _ in _inventory(snapshot):
+            if member.kind != "function" or version not in member.holders() or unit is None:
+                continue
+            if not _version_matched(project, unit, version) or unit.path in broken:
+                continue
+            for fn, size in policy.pieces(snapshot, name, version):
+                if fn in rules:
+                    pieces[fn] += size
+                    if "source.fake-type" in rules[fn]:
+                        paths.add(unit.path)
     names: dict[str, set[str]] = defaultdict(set)
     with effort.stage("report.fakes.weights"):
         for found in pool.map(
@@ -967,13 +996,12 @@ def _fakes_stream(snapshot: Snapshot) -> Json:
 
     laid, aliases = move.record_layouts(snapshot)
     paths = [*headers.sources(snapshot), *headers.sources(snapshot, "src", ".c")]
-    texts = {p: snapshot.read(p).decode(errors="replace") for p in paths}
     with effort.stage("report.fakes.flow"):
         found = pool.map(snapshot.config, "report.fakes.flow", _facts_job, [(snapshot, p) for p in paths])
     edges = fakefold.flow(found, laid, aliases)
     local = {n for n in move.source_records(snapshot) if n in laid}
     wanted = [n for n in laid if fakefold.invented(n) or n in local]
-    reached = fakefold.reaches(texts, wanted)
+    reached = _reaches(snapshot, paths, wanted)
     taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}
     modules = _modules(snapshot)
     project = snapshot.config.project
@@ -983,7 +1011,8 @@ def _fakes_stream(snapshot: Snapshot) -> Json:
     for fn, names in subjects.items():
         for name in names:
             weight[name] += pieces.get(fn, 0)
-    rows, census = fakefold.plan(laid, aliases, reached, taken, weight, edges, local, modules)
+    with effort.stage("report.fakes.plan"):
+        rows, census = fakefold.plan(laid, aliases, reached, taken, weight, edges, local, modules)
     rows = _movable(snapshot, rows, census)
     root = snapshot.config.project.root
     store.write(

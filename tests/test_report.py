@@ -1331,3 +1331,45 @@ def test_the_fake_plan_keeps_only_rows_move_accepts_and_says_why_for_the_rest(mo
     kept = report._movable(None, rows, census)
     assert [r["subject"] for r in kept] == ["B_func_80000010"] and len(calls) == 2
     assert census[0]["class"] == "d" and "differ in pointee" in census[0]["reason"] and census[1]["class"] == "a"
+
+
+def test_the_fake_reach_scan_runs_on_the_pool_in_source_runs_and_gives_the_serial_answer(monkeypatch):
+    # real case: TOOL-T-BUNDLE map --fakes spent 13 s on one core in report.fakes (754 rows, 1922 records, 6058
+    # sources): the parent read every source and ran one 1922-name alternation over all of them
+    import pickle
+    from collections import Counter
+    from types import SimpleNamespace as NS
+
+    from unbake import fakefold
+
+    texts = {
+        f"src/m{n}.c": f"static Ab_func_8000{n:04X} *gHold{n};\nvoid f{n}(Ab_func_80000000 *p, Cd_func_80000010 q) {{\n"
+        "    Cd_func_80000010 local;\n}\n"
+        for n in range(7)
+    }
+    texts["include/a.h"] = (
+        "typedef struct Ab_func_80000000 Ab_func_80000000;\nstruct S {\n    Ab_func_80000000 *own;\n};\n"
+    )
+    names = ["Ab_func_80000000", "Cd_func_80000010", *(f"Ab_func_8000{n:04X}" for n in range(7))]
+    reads: Counter[str] = Counter()
+    snapshot = NS(config=None, read=lambda p: reads.update([p]) or texts[p].encode())
+    dispatches = []
+
+    def fake_map(config, name, function, items, key=None):
+        dispatches.append((name, len(items)))
+        return [pickle.loads(pickle.dumps(function(item))) for item in items]  # results cross a process
+
+    monkeypatch.setattr(report.pool, "map", fake_map)
+    monkeypatch.setattr(report, "_REACH_CHUNK", 3)
+    paths = list(texts)
+    got = report._reaches(snapshot, paths, names)
+    want = fakefold.reaches(texts, names)
+
+    def as_lists(found):  # every counter in first-seen order, as the plan's tie-breaks read it
+        return [(n, [(k, list(c.items())) for k, c in kinds.items()]) for n, kinds in found.items()]
+
+    assert as_lists(got) == as_lists(want) and got["Cd_func_80000010"]["local"]["q"] == 7
+    assert got["Ab_func_80000000"]["member"] == Counter({"*own": 1})
+    assert dispatches == [("report.fakes.reach", 3)]  # 8 sources in runs of 3: one dispatch, 3 jobs, not 8
+    assert reads == Counter(paths)  # each source read once, in a job: the parent reads none
+    assert report._reaches(snapshot, paths, []) == {} and len(dispatches) == 1
