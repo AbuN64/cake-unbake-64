@@ -20,7 +20,6 @@ from unbake import (
     effort,
     headers,
     infer,
-    land,
     layout,
     libasm,
     perfect,
@@ -727,7 +726,8 @@ def run(config: Config, params: Json) -> Json:
         snapshot = layout.capture(config)
         if params["next"]:
             return {"items": items(snapshot, params)}
-        return {**current(snapshot), "inbox": len(land.inbox(config)), "stale": stale(snapshot)}
+        pending = sum(p.is_file() for p in (config.project.root / ".unbake/inbox").glob("*.json"))
+        return {**current(snapshot), "inbox": pending, "stale": stale(snapshot)}
 
 
 def _strings(rom: bytes, start: int, limit: int = 4, width: int = 40) -> list[str]:

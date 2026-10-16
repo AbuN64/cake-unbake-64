@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import adapters, report, rescore, versions
+from unbake import adapters, land, report, rescore, versions
 from unbake import config as configuration
 from unbake.contracts import (
     Config,
@@ -664,9 +664,18 @@ def test_published_files_never_plan_the_boundaries_they_do_not_show(snapshot_fac
 def test_run_results_validate(snapshot_factory, monkeypatch, next_mode, empty):
     snapshot = snapshot_factory([] if empty else [_member("candidate")])
     capture = Mock(return_value=snapshot)
-    inbox = Mock(return_value=[fixture.submission(), fixture.submission(member="another")])
+    inbox = Mock(side_effect=AssertionError("report must not consume or validate the inbox"))
+    pending = snapshot.config.project.root / ".unbake/inbox"
+    pending.mkdir(parents=True, exist_ok=True)
+    for name, content in (("valid.json", "{}"), ("unsupported.json", "{}"), ("malformed.json", "{broken")):
+        (pending / name).write_text(content)
+    (pending / "directory.json").mkdir()
+    (pending / "done").mkdir()
+    (pending / "done/finished.json").write_text("{}")
+    (pending / "payload.c").write_text("candidate")
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in pending.rglob("*") if p.is_file()}
     monkeypatch.setattr(report.layout, "capture", capture)
-    monkeypatch.setattr(report.land, "inbox", inbox)
+    monkeypatch.setattr(land, "inbox", inbox)
     result = report.run(snapshot.config, {"next": next_mode})
     configuration.validate("result.next" if next_mode else "result.report", result, "result")
     capture.assert_called_once_with(snapshot.config)
@@ -674,9 +683,10 @@ def test_run_results_validate(snapshot_factory, monkeypatch, next_mode, empty):
         assert result == {"items": report.items(snapshot, {"next": True})}
         inbox.assert_not_called()
     else:
-        assert result["inbox"] == 2
+        assert result["inbox"] == 3
         assert "next" not in result
-        inbox.assert_called_once_with(snapshot.config)
+        inbox.assert_not_called()
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before} == before
 
 
 def test_items_leave_out_fragments_whose_delay_slot_is_in_the_next_member(snapshot_factory, monkeypatch):
@@ -1207,7 +1217,7 @@ def test_editing_one_candidate_runs_one_key_job_and_measures_one_member(snapshot
 def test_report_leaves_the_tree_clean_and_rescores_nothing(snapshot_factory, monkeypatch):
     snapshot, measured = _fuzzy_rows(snapshot_factory, monkeypatch, {"f": {"a": "new"}, "g": {"a": "same"}})
     monkeypatch.setattr(report.layout, "capture", Mock(return_value=snapshot))
-    monkeypatch.setattr(report.land, "inbox", Mock(return_value=[]))
+    monkeypatch.setattr(land, "inbox", Mock(return_value=[]))
     applied, written = Mock(), Mock()
     monkeypatch.setattr("unbake.journal.apply", applied)
     monkeypatch.setattr(report.store, "write", written)
@@ -1392,3 +1402,11 @@ def test_the_fake_reach_scan_runs_on_the_pool_in_source_runs_and_gives_the_seria
     assert dispatches == [("report.fakes.reach", 3)]  # 8 sources in runs of 3: one dispatch, 3 jobs, not 8
     assert reads == Counter(paths)  # each source read once, in a job: the parent reads none
     assert report._reaches(snapshot, paths, []) == {} and len(dispatches) == 1
+
+
+def test_report_counts_an_absent_inbox_as_empty(snapshot_factory, monkeypatch):
+    snapshot = snapshot_factory([])
+    monkeypatch.setattr(report.layout, "capture", lambda cfg: snapshot)
+    assert not (snapshot.config.project.root / ".unbake/inbox").exists()
+    assert report.run(snapshot.config, {"next": False})["inbox"] == 0
+    assert not (snapshot.config.project.root / ".unbake/inbox").exists()
