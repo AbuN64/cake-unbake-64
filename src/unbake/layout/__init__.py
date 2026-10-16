@@ -183,6 +183,17 @@ def _overlay(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> Snapshot
         return new
 
 
+def fresh(snapshot: Snapshot) -> bool:
+    """Whether an overlay of this snapshot lays the same again now: every file its versions and map derive from reads
+    on disk as the snapshot read it. A setup apply rewrites splits and symbols under a snapshot still in use."""
+    files = (p for v in snapshot.versions.values() for p in (v.split, v.symbols_file))
+    for path in {"layout.toml", symbols.path(), *files} - snapshot.overlays.keys():
+        pin = view._pin(snapshot, path)
+        if snapshot.reads.get(path) != (None if pin == "missing" else pin):
+            return False
+    return True
+
+
 def split_states(snapshot: Snapshot, version: Version) -> list[tuple[str, str, Placement]]:
     return version_data.rows(version, snapshot.read, store.content(snapshot.config).cached)
 

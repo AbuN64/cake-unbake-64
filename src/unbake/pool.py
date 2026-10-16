@@ -684,6 +684,7 @@ class _Pickler(pickle.Pickler):
         self.blobs = {} if blobs is None else blobs  # per dispatch: each overlay's writes and each spill's file, once
         self.ship = ship
         self.spills: set[str] = set()  # the spill files this pickler's tasks name
+        self.fresh: dict[str, bool] = {}  # base digest -> whether its overlays lay again as here
 
     def persistent_id(self, obj: Any) -> Any:
         if isinstance(obj, Snapshot):
@@ -696,7 +697,7 @@ class _Pickler(pickle.Pickler):
             self.needed.add(key)  # a refork after a broken pool forks holding it again
             return key
         made = effort.peek(("parent", obj.digest))  # (snapshot, writes) it was laid over with
-        if made is not None:
+        if made is not None and self._fresh(made[0]):  # a stale base lays another overlay: it travels whole
             blob = self.blobs.get(obj.digest)
             if blob is None:
                 blob = self.blobs[obj.digest] = pickle.dumps(dict(made[1]), protocol=5)
@@ -709,6 +710,14 @@ class _Pickler(pickle.Pickler):
         _SHARED[key] = obj
         self.needed.add(key)
         return key
+
+    def _fresh(self, base: Snapshot) -> bool:
+        """Whether a worker lays an overlay of `base` again as the parent did, once per dispatch."""
+        from unbake import layout
+
+        if (known := self.fresh.get(base.digest)) is None:
+            known = self.fresh[base.digest] = layout.fresh(base)
+        return known
 
     def _spill(self, obj: Snapshot, name: str, value: Any) -> str:
         """The file of one snapshot or writes, with the parent's warm indexes beside it."""
