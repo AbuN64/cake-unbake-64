@@ -813,6 +813,8 @@ def physical(
     module's, so one new unit renames no other.
     Each name that keeps units apart is a non-blocking layout.decl_split in `split`."""
     with effort.stage("layout.physical"):
+        if reflow is not None and not reflow:
+            return dict(layout.units)
         apart: dict[str, set[str]] = {}
         compiled, _, datum = _kinds()
         library = tuple(f.rstrip("/") + "/" for f in snapshot.config.project.library_dirs)

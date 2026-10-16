@@ -468,6 +468,44 @@ def test_a_shared_header_moves_into_no_other_and_a_module_bound_to_it_takes_only
     assert [(k, o, n) for k, o, n, _ in edited.events] == [("names", "include/types.h", "include/game/common.h")]
 
 
+@pytest.mark.parametrize("operation", ["header", "file", "symbol"])
+def test_nonstructural_move_preserves_units_behind_a_proposed_module(tmp_path, seen, operation):
+    groups = [
+        group("ga", source="src/f1.c"),
+        group("proposed", "f1", source="src/proposed.c"),
+        group("gb", "f2", source="src/f2.c"),
+        group("gc", "f3", source="src/f3.c"),
+    ]
+    cfg = world(tmp_path, groups=groups)
+    splat_rows(cfg)
+    snapshot = layout.capture(cfg)
+    subject, target = {
+        "header": ("ga", "include/game/timer.h"),
+        "file": ("include/main/ga.h", "include/game/timer.h"),
+        "symbol": ("f1", "renamed"),
+    }[operation]
+    edited = move.edit(snapshot, [Move(0, operation, subject, target)])
+    expected = {
+        p: dataclasses.replace(
+            u, members=tuple("renamed" if n == "f1" and operation == "symbol" else n for n in u.members)
+        )
+        for p, u in snapshot.layout.units.items()
+    }
+    assert not edited.bad and edited.layout.units == expected
+
+
+def test_reflow_selection_uses_structural_moves_and_proof_boundaries(tmp_path, seen, monkeypatch):
+    snapshot = layout.capture(world(tmp_path))
+    selections = []
+    monkeypatch.setattr(
+        layout, "physical", lambda snap, mapped, split, keep, *, reflow: selections.append(reflow) or dict(mapped.units)
+    )
+    move.edit(snapshot, [Move(0, "header", "ga", "include/game/timer.h"), Move(1, "source", "gb", "src/game/other.c")])
+    move.edit(snapshot, [Move(0, "header", "ga", "include/game/timer.h")], boundaries=("f3",))
+    move.edit(snapshot, [Move(0, "relayout", "", "")])
+    assert selections == [{"gb"}, {"gc"}, None]
+
+
 def test_relayout_sets_the_units_the_groups_lay_out_once_and_a_move_after_it_leaves_other_modules_units(
     tmp_path: Path, seen: Any
 ) -> None:

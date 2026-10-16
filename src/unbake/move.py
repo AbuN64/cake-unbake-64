@@ -459,7 +459,13 @@ def edit(
         split: list[Finding] = []
         # a move re-lays only the modules it changes (a source move renames its module's files); every other module
         # keeps its units as they are, whatever their file names
-        changed = {n for names in touched.values() for n in names if n in groups}
+        changed = {
+            n
+            for m in moves
+            if m.op in ("member", "module", "source", "options")
+            for n in touched[m.index]
+            if n in groups
+        }
         fresh = set(boundaries) - set(lay.boundaries)  # a boundary this command's proofs found cuts its module again
         changed |= {u.group for u in lay.units.values() if fresh.intersection(u.members)}
         changed |= {g.name for g in groups.values() if fresh.intersection(g.members)}

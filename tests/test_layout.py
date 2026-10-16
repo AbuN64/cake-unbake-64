@@ -1763,6 +1763,16 @@ def test_declaration_tables_are_parsed_once_per_text_and_never_again_by_a_later_
     assert parsed == []  # every table comes from the host cache
 
 
+def test_empty_reflow_preserves_kept_ownership_without_scanning_proposed_groups(scene, monkeypatch):
+    entries = (("fa", "c", RETURN), ("rodata/fa/80000408", ".rodata", (1, 2)))
+    snapshot = scene(entries, units=(_unit(tuple(n for n, _, _ in entries)),))
+    old = snapshot.layout.groups["grp"]
+    proposed = replace(old, name="proposed", source="src/proposed.c")
+    mapped = replace(snapshot.layout, groups={"grp": replace(old, members=()), "proposed": proposed})
+    monkeypatch.setattr(layout, "split_states", lambda *a: pytest.fail("empty reflow must not scan split rows"))
+    assert layout.physical(snapshot, mapped, reflow=()) == snapshot.layout.units
+
+
 def test_physical_keeps_a_settled_module_a_move_does_not_reflow_and_compose_recuts_nothing(scene):
     # G d66a9347a: one type move (View_func_80225940_de -> View) changed no module's members, yet the write stages
     # re-laid every module and compose returned 398 re-cut unit texts at new paths: the tree's units were not the ones
