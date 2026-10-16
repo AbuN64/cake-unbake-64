@@ -504,8 +504,9 @@ def test_reflow_selection_uses_structural_moves_and_proof_boundaries(tmp_path, s
         snapshot, [Move(0, "header", "ga", "include/game/timer.h"), Move(1, "options", "gb", '{"add": ["-mfp32"]}')]
     )
     move.edit(snapshot, [Move(0, "header", "ga", "include/game/timer.h")], boundaries=("f3",))
+    move.edit(snapshot, [Move(0, "options", "gb", '{"add": ["-mfp32"]}')], boundaries=("f3",))
     move.edit(snapshot, [Move(0, "relayout", "", "")])
-    assert selections == [{"gb"}, {"gc"}, None]
+    assert selections == [{"gb"}, set(), {"gb", "gc"}, None]
 
 
 def test_relayout_sets_the_units_the_groups_lay_out_once_and_a_move_after_it_leaves_other_modules_units(
@@ -2575,3 +2576,56 @@ def test_every_header_event_retains_its_input_move(tmp_path, seen, moves, kinds)
     assert [e[0] for e in edited.events] == kinds
     assert edited.event_moves == list(range(len(kinds)))
     assert move._cycle_moves(edited, moves, edited.events[0][1]) == moves
+
+
+def test_source_retry_keeps_existing_data_owner_and_ignores_physical_boundaries(tmp_path, seen):
+    cfg = world(
+        tmp_path,
+        data={"pool": both(0x1040)},
+        groups=[group("ga", "f1"), group("gb", "f2"), group("gc", "f3"), group("proposed", "pool")],
+        units=[unit("src/f1.c", "ga", "f1", "pool"), unit("src/f2.c", "gb", "f2"), unit("src/f3.c", "gc", "f3")],
+    )
+    snapshot = layout.capture(cfg)
+    moves = [Move(0, "source", "gb", "src/NEW/b.CPP"), Move(1, "source", "proposed", "src/DATA/pool.CPP")]
+    edited = move.edit(snapshot, moves, boundaries=("f2",), keep=("src/f2.c",))
+    assert edited.layout.units == snapshot.layout.units and edited.layout.boundaries == snapshot.layout.boundaries
+    failed = {"src/NEW/b.CPP": [Finding("move.not_exact", "kept source")]}
+    first = move.edit(snapshot, moves)
+    kept = move._kept(snapshot, first.layout, failed, (), moves)
+    assert kept["boundaries"] == [] and set(kept["keep"]) == {"src/f2.c"}
+
+
+@pytest.mark.parametrize("disjoint", [False, True])
+def test_source_conservation_retains_existing_shared_member_and_holder_records(tmp_path, seen, disjoint):
+    owner = unit("src/f1.c", "ga", "f1", "pool")
+    shared = {**unit("src/pool.c", "proposed", "pool"), "kind": "data"}
+    if disjoint:
+        owner["withheld"], shared["withheld"] = ["b"], ["a"]
+    cfg = world(
+        tmp_path,
+        data={"pool": both(0x1040)},
+        groups=[group("ga", "f1"), group("gb", "f2"), group("gc", "f3"), group("proposed", "pool")],
+        units=[owner, shared, unit("src/f2.c", "gb", "f2"), unit("src/f3.c", "gc", "f3")],
+    )
+    snapshot = layout.capture(cfg)
+    edited = move.edit(snapshot, [Move(0, "source", "ga", "src/NEW/a.CPP")])
+    expected = dict(snapshot.layout.units)
+    prior = expected.pop("src/f1.c")
+    expected["src/NEW/a.CPP"] = dataclasses.replace(prior, path="src/NEW/a.CPP")
+    assert edited.layout.units == expected
+
+
+def test_nonstructural_guard_refuses_new_duplicate_unit_before_composition(tmp_path, seen, monkeypatch):
+    snapshot = layout.capture(world(tmp_path))
+    original = snapshot.layout.units["src/f1.c"]
+    monkeypatch.setattr(
+        layout,
+        "physical",
+        lambda s, mapped, *a, **k: {
+            **mapped.units,
+            "src/duplicate.c": dataclasses.replace(original, path="src/duplicate.c"),
+        },
+    )
+    with pytest.raises(Refusal, match="nonstructural move changed physical unit membership"):
+        move.edit(snapshot, [Move(0, "header", "ga", "include/NEW.H")])
+    assert seen.plans == [] and seen.measured == []

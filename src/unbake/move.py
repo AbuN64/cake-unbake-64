@@ -282,6 +282,7 @@ def edit(
         touched: defaultdict[int, set[str]] = defaultdict(set)
         bad: list[tuple[Move, Finding]] = []
         own = {m.subject for m in moves if m.op == "member"}
+        structural = any(m.op in ("member", "module", "options", "relayout") for m in moves)
         types = _Types(snapshot) if any(m.op == "type" for m in moves) else None
         if types is not None:
             _warm_layouts(types, moves, table.keys() | known)
@@ -458,14 +459,15 @@ def edit(
         units = {
             p: replace(u, members=tuple(layout.renamed(n, renames) for n in u.members)) for p, u in lay.units.items()
         }
-        bounds = tuple(sorted({*(layout.renamed(n, renames) for n in lay.boundaries), *boundaries}))
+        proof_boundaries = boundaries if structural else ()
+        bounds = tuple(sorted({*(layout.renamed(n, renames) for n in lay.boundaries), *proof_boundaries}))
         shifted = replace(lay, groups=groups, units=units, fuzzy=fuzzy, digest="", boundaries=bounds)
         mid = layout.overlay(snapshot, {**writes, "layout.toml": layout.dump_map(shifted)})
         split: list[Finding] = []
         # Membership/recipe changes re-lay their modules. Source naming carries current units whole, even when
         # their group's proposed membership differs after an earlier proof kept them.
         changed = {n for m in moves if m.op in ("member", "module", "options") for n in touched[m.index] if n in groups}
-        fresh = set(boundaries) - set(lay.boundaries)  # a boundary this command's proofs found cuts its module again
+        fresh = set(proof_boundaries) - set(lay.boundaries)  # only structural proofs can cut physical units again
         changed |= {u.group for u in lay.units.values() if fresh.intersection(u.members)}
         changed |= {g.name for g in groups.values() if fresh.intersection(g.members)}
         reflow = None if any(m.op == "relayout" for m in moves) else changed
@@ -488,6 +490,28 @@ def edit(
             path = layout.unit_path(final, unit.group, units)
             units[path] = replace(unit, path=path)
         final = replace(final, units=units)
+        if not structural:
+
+            def physical_identity(unit: UnitSpec) -> tuple[Any, ...]:
+                return (
+                    unit.kind,
+                    unit.group,
+                    unit.members,
+                    unit.toolchain,
+                    json.dumps(unit.options, sort_keys=True),
+                    tuple(unit.withheld),
+                )
+
+            expected = Counter(physical_identity(u) for u in mid.layout.units.values())
+            actual = Counter(physical_identity(u) for u in final.units.values())
+            if actual != expected:
+                raise Refusal(
+                    Finding(
+                        "layout.map",
+                        "nonstructural move changed physical unit membership or recipe",
+                        action="report this move; pathname and spelling changes must retain the physical units",
+                    )
+                )
         if (final.groups, final.units, final.fuzzy, final.boundaries) != (
             lay.groups,
             lay.units,
@@ -1905,7 +1929,8 @@ def _kept(
         rows = [(Move(0, "relayout", "", ""), _capped(f)) for found in failing.values() for f in found]
         return {**_refusal([Move(0, "relayout", "", "")], snapshot, rows), "unkept": True}
     bounds: set[str] = set()
-    for old in why:
+    structural = any(m.op in ("member", "module", "options", "relayout") for m in moves)
+    for old in why if structural else ():
         members = lay.units[old].members
         order = lay.groups[lay.units[old].group].members if lay.units[old].group in lay.groups else ()
         bounds.add(members[0])
