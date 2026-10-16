@@ -51,6 +51,15 @@ _ATTEMPTS = (
 
 def _read(path: Path) -> Submission:
     value = json.loads(path.read_text(encoding="utf-8"))
+    if "extra_bases" not in value:
+        configuration.validate("submission", {**value, "extra_bases": {}}, str(path))
+        raise Refusal(
+            Finding(
+                "land.rebase",
+                "Submission lacks measured extra-input provenance; resubmit against the current tree.",
+                path=str(path),
+            )
+        )
     configuration.validate("submission", value, str(path))
     value.pop("refusal", None)
     value["proofs"] = tuple(proof_from(p) for p in value["proofs"])
@@ -68,6 +77,7 @@ def _enqueue(
     origin: str,
     base: str,
     extras: Mapping[str, bytes],
+    extra_bases: Mapping[str, bytes | None],
     withheld: Sequence[str],
 ) -> Submission:
     source_hash = sha256(source)
@@ -78,6 +88,7 @@ def _enqueue(
             request["overrides"],
             operation,
             *([sorted((p, sha256(b)) for p, b in extras.items())] if extras else []),
+            *([sorted((p, sha256(b) if b is not None else None) for p, b in extra_bases.items())] if extras else []),
             *([tuple(withheld)] if withheld else []),
         )
     )
@@ -101,6 +112,10 @@ def _enqueue(
         request["note"],
         effort.invocation(),
         {path: f".unbake/inbox/{identity}.x{n}" for n, path in enumerate(sorted(extras))},
+        {
+            path: f".unbake/inbox/{identity}.b{n}" if data is not None else None
+            for n, (path, data) in enumerate(sorted(extra_bases.items()))
+        },
         tuple(withheld),
     )
     value = json.loads(json.dumps(asdict(entry)))
@@ -108,6 +123,10 @@ def _enqueue(
     store.write(config.project.root / source_path, source)
     for extra, copy in entry.extras.items():
         store.write(config.project.root / copy, extras[extra])
+    for extra, copy in entry.extra_bases.items():
+        data = extra_bases[extra]
+        if copy is not None and data is not None:
+            store.write(config.project.root / copy, data)
     store.write(inbox_path / f"{identity}.json", json.dumps(value, sort_keys=True).encode())
     return entry
 
@@ -175,7 +194,12 @@ def submit_many(config: Config, calls: Sequence[Mapping[str, Any]]) -> list[Subm
             elif verdicts.get(n):
                 out.append(Refusal(*verdicts[n]))
             else:
-                out.append(_entered(config, call["request"], call["source"], call["proofs"], call["origin"], intake))
+                try:
+                    out.append(
+                        _entered(config, call["request"], call["source"], call["proofs"], call["origin"], intake)
+                    )
+                except Refusal as refusal:
+                    out.append(refusal)
         return out
 
 
@@ -188,6 +212,7 @@ class _Intake:
     withheld: tuple[str, ...]
     snapshot: Snapshot
     extras: Mapping[str, bytes]
+    extra_bases: Mapping[str, bytes | None]
     check: Json  # the request the publish acceptance check reads
 
 
@@ -208,13 +233,14 @@ def _intake(
     kinds = configuration.kinds()
     path = config.project.root / unit.path
     extras = extras or {}
+    extra_bases = {p: snapshot.peek(p) for p in extras}
     if current and kinds[current.kind]["decompiled"] and path.is_file() and path.read_bytes() == source and not extras:
         return None
     exact = {p.version for p in proofs if all(q.exact for q in proofs if q.version == p.version)}
     withheld = tuple(sorted({p.version for p in proofs} - exact)) if withhold and exact else ()
     check = {**request, "function": member}
     if proofs and (all(p.exact for p in proofs) or withheld):
-        return _Intake(member, "publish", withheld, snapshot, extras, check)
+        return _Intake(member, "publish", withheld, snapshot, extras, extra_bases, check)
     if extras:
         return None
     scores = snapshot.layout.fuzzy[member]["scores"] if member in snapshot.layout.fuzzy else {}
@@ -226,24 +252,34 @@ def _intake(
         or min(p.score for p in proofs) - before < gain
     ):
         return None
-    return _Intake(member, "fuzzy", withheld, snapshot, extras, check)
+    return _Intake(member, "fuzzy", withheld, snapshot, extras, extra_bases, check)
 
 
 def _entered(
     config: Config, request: Json, source: bytes, proofs: Sequence[Proof], origin: str, intake: _Intake
 ) -> Submission:
-    return _enqueue(
-        config,
-        request,
-        intake.member,
-        intake.operation,
-        source,
-        proofs,
-        origin,
-        intake.snapshot.commit,
-        intake.extras,
-        intake.withheld,
-    )
+    with ExitStack() as stack:
+        if intake.extras:
+            stack.enter_context(journal.held(config))
+        if changed := journal.changed(intake.snapshot, tuple(intake.extras)):
+            raise Refusal(
+                Finding(
+                    "journal.changed", "Extra inputs changed during admission.", missing=changed, action="submit again"
+                )
+            )
+        return _enqueue(
+            config,
+            request,
+            intake.member,
+            intake.operation,
+            source,
+            proofs,
+            origin,
+            intake.snapshot.commit,
+            intake.extras,
+            intake.extra_bases,
+            intake.withheld,
+        )
 
 
 def _move(config: Config, identity: str, destination: str) -> None:
@@ -255,10 +291,12 @@ def _move(config: Config, identity: str, destination: str) -> None:
             os.replace(path, target / path.name)
 
 
-def inbox(config: Config) -> list[Submission]:
+def inbox(config: Config, only: str | None = None) -> list[Submission]:
     with effort.stage("land.inbox"):
         entries, stamped = [], []
         for path in (config.project.root / ".unbake/inbox").glob("*.json"):
+            if only is not None and path.stem != only:
+                continue
             with suppress(FileNotFoundError):  # another drain landed it between the listing and now
                 stamped.append((path.stat().st_mtime_ns, path.name, path))
         for _, _, path in sorted(stamped):
@@ -267,6 +305,8 @@ def inbox(config: Config) -> list[Submission]:
             except FileNotFoundError:
                 continue
             except (Refusal, ValueError, TypeError, KeyError, OSError) as error:
+                if isinstance(error, Refusal) and any(f.key == "land.rebase" for f in error.findings):
+                    raise  # unsupported provenance stays intact for explicit review and resubmission
                 finding = Finding("inbox.corrupt", str(error), path=str(path.relative_to(config.project.root)))
                 _move(config, path.stem, "refused")
                 store.log(config, "refusal", {"id": path.stem, "findings": [asdict(finding)]})
@@ -340,7 +380,7 @@ def drain(config: Config, only: str | None = None) -> Json:
         busy = False
         with store.exclusive(config, "land", wait=False) as free:
             busy = not free
-        while not busy and (entries := [e for e in inbox(config) if only in (None, e.id)]):
+        while not busy and (entries := inbox(config, only)):
             claimed = False
             fuzzy = [e for e in entries if e.operation == "fuzzy"][: configuration.fuzzy()["chunk"]]
             with ExitStack() as locks:

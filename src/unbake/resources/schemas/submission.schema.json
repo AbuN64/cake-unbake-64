@@ -222,6 +222,15 @@
     "type": "string",
     "minLength": 1
    }
+  },
+  "extra_bases": {
+   "type": "object",
+   "additionalProperties": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
   }
  },
  "required": [
@@ -238,7 +247,8 @@
   "note",
   "invocation",
   "extras",
-  "withheld"
+  "withheld",
+  "extra_bases"
  ],
  "additionalProperties": false
 }

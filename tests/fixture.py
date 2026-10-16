@@ -298,7 +298,7 @@ def submission(**fields: Any) -> Submission:
     member, source_sha = fields.get("member", "func_80000400"), "0" * 64
     values: dict[str, Any] = {"operation": "publish", "member": member, "function": None, "source_sha256": source_sha}
     values |= {"overrides": {"add": [], "omit": []}, "base": "0" * 40, "origin": "submit", "note": ""}
-    values |= {"invocation": "test-invocation", "extras": {}, "withheld": ()}
+    values |= {"invocation": "test-invocation", "extras": {}, "extra_bases": {}, "withheld": ()}
     values |= fields
     values.setdefault("proofs", (proof(f"src/{member}.c", member, "a", True),))
     id_basis = (values["member"], values["source_sha256"], values["overrides"], values["operation"])

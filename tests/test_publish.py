@@ -383,7 +383,7 @@ def _change_set(lane, tmp_path_files):
         copy = f"set.{len(extras)}"
         (lane["config"].project.root / copy).write_bytes(data)
         extras[path] = copy
-    return replace(lane["submission"], extras=extras)
+    return replace(lane["submission"], extras=extras, extra_bases={p: None for p in extras})
 
 
 def test_land_change_set_is_one_plan_and_one_commit(lane):
@@ -1197,7 +1197,7 @@ def test_land_normalizes_the_whole_extra_set_before_any_overlay(lane, monkeypatc
     publish.moved.extras.side_effect = None
     publish.land(lane["config"], entry)
     publish.moved.extras.assert_called_once_with(
-        publish.layout.capture.return_value, {"include/retired.h": b"old pending bytes"}, entry.base
+        publish.layout.capture.return_value, {"include/retired.h": b"old pending bytes"}, {"include/retired.h": None}
     )
     writes = publish.journal.apply.call_args.args[1].writes
     assert writes["include/CURRENT.H"] == normalized["include/CURRENT.H"] and "include/retired.h" not in writes
@@ -1209,6 +1209,18 @@ def test_land_rebase_conflict_never_binds_or_mutates_any_file(lane):
     publish.moved.extras.side_effect = Refusal(Finding("land.rebase", "ambiguous merged destination"))
     with pytest.raises(Refusal, match="ambiguous"):
         publish.land(lane["config"], entry)
+    publish.compare.bind.assert_not_called()
+    publish.layout.overlay.assert_not_called()
+    publish.journal.apply.assert_not_called()
+
+
+@pytest.mark.parametrize("missing_copy", [False, True])
+def test_land_missing_measured_base_refuses_before_overlay(lane, missing_copy):
+    entry = _change_set(lane, {"include/old.h": b"candidate"})
+    entry = replace(entry, extra_bases={"include/old.h": "missing-base"} if missing_copy else {})
+    with pytest.raises(Refusal) as caught:
+        publish.land(lane["config"], entry)
+    assert caught.value.findings[0].key == "land.rebase"
     publish.compare.bind.assert_not_called()
     publish.layout.overlay.assert_not_called()
     publish.journal.apply.assert_not_called()

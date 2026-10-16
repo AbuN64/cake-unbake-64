@@ -502,3 +502,7 @@ sentence = "the move stream was made for another layout than the current one"
 [key."move.policy"]
 owner = "move"
 sentence = "the move creates a new blocking source finding"
+
+[key."land.rebase"]
+owner = "land"
+sentence = "the submission cannot be safely rebased onto the current project"

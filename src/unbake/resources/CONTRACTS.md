@@ -89,7 +89,7 @@ Inferred modules (`infer.groups`): authored and proven modules stay. Every other
 
 | Path | Writer | Format |
 |---|---|---|
-| `.unbake/inbox/<id>.json`, `<id>.c` | land.submit (create-new, then rename `.part`) | submission schema; source copy |
+| `.unbake/inbox/<id>.json`, `<id>.c`, `<id>.xN`, `<id>.bN` | land.submit (create-new, then rename `.part`) | submission schema; source, candidate extra and measured base copies (`extra_bases`; null means absent) |
 | `.unbake/inbox/done/<id>.json`, `.unbake/inbox/refused/<id>.json` | land.drain (rename) | same file moved |
 | `.unbake/ledger.jsonl` | store.log | ledger schema |
 | `.unbake/stages.jsonl` | effort | stage schema |

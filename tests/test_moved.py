@@ -21,7 +21,7 @@ def history(tmp_path, toolchains):
     )
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cfg.project.root).decode().strip()
     snapshot = Snapshot(cfg, base, LayoutMap({}, {}, {}, "map", (), {}), {}, {}, "snapshot")
-    return snapshot, base
+    return snapshot, {p: snapshot.peek(p) for p in ("include/old.h", "include/other.h", "src/old.c", "include/NEW.H")}
 
 
 def merged(history):
@@ -56,7 +56,7 @@ def test_two_extras_to_one_target_merge_both_deltas(history):
         (root / "include" / name).write_text(body)
     subprocess.run(["git", "add", "include"], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "Record shared declarations"], cwd=root, check=True)
-    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
+    base = {p: (root / p).read_bytes() for p in ("include/old.h", "include/other.h")}
     snapshot, _, _ = merged((snapshot, base))
     current = headers.wrapped("include/NEW.H", body).encode()
     (root / "include/NEW.H").write_bytes(current)
@@ -86,7 +86,7 @@ def test_conflicting_old_and_current_targets_refuse_without_a_write(history):
     assert snapshot.read("include/NEW.H") == current and snapshot.peek("include/old.h") is None
 
 
-@pytest.mark.parametrize("base", [None, "missing-commit"])
+@pytest.mark.parametrize("base", [None, {}])
 def test_stale_extra_without_available_base_refuses_before_overlay(history, base):
     snapshot, _, current = merged(history)
     with pytest.raises(Refusal) as caught:
@@ -104,7 +104,7 @@ def test_an_unmoved_recorded_extra_keeps_concurrent_changes(history):
     (root / "include/old.h").write_bytes(original)
     subprocess.run(["git", "add", "include/old.h"], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "Record header context"], cwd=root, check=True)
-    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
+    base = {p: (root / p).read_bytes() for p in ("include/old.h", "include/other.h")}
     current = original + b"extern int concurrent;\n"
     (root / "include/old.h").write_bytes(current)
     result = moved.extras(snapshot, {"include/old.h": original.replace(b"int Count", b"signed int Count")}, base)
@@ -162,3 +162,18 @@ def test_primary_cannot_silently_discard_an_extra_at_the_same_moved_source(histo
     assert caught.value.findings[0].key == "land.rebase"
     assert "combine" in caught.value.findings[0].reason
     moved.check_primary(snapshot, "src/old.c", {"src/old.c": snapshot.read("src/old.c")})
+
+
+def test_dirty_measured_input_is_the_base_and_later_same_line_change_refuses(history):
+    snapshot, _ = history
+    path = snapshot.config.project.root / "include/old.h"
+    measured = b"typedef signed int Count;\n"
+    desired = b"typedef signed long Count;\n"
+    path.write_bytes(measured)
+    bases = {"include/old.h": measured}
+    assert moved.extras(snapshot, {"include/old.h": desired}, bases) == {"include/old.h": desired}
+    path.write_bytes(b"typedef unsigned int Count;\n")
+    with pytest.raises(Refusal) as caught:
+        moved.extras(snapshot, {"include/old.h": desired}, bases)
+    assert caught.value.findings[0].key == "land.rebase"
+    assert path.read_bytes() == b"typedef unsigned int Count;\n"

@@ -1475,3 +1475,98 @@ def test_submit_many_withheld_partial_matches_submit(lane, monkeypatch):
     single = land.submit(cfg, _request(), unit, _one_exact(unit), b"candidate", "submit", withhold=True)
     assert seen == [True] and many.id == single.id and many.withheld == ("b",)
     assert land.publish.accept.call_args.args[3] is True  # the one-group path checks the same partial landing
+
+
+def test_dirty_extra_base_is_copied_and_part_of_submission_identity(lane):
+    cfg, _, snapshot = lane[:3]
+    path = cfg.project.root / "include/dirty.h"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"dirty measured input")
+    extras = {"include/dirty.h": b"candidate", "include/new.h": b"new"}
+    first = _submit(lane, extras=extras)
+    assert first.base == snapshot.commit
+    assert first.extra_bases["include/new.h"] is None
+    copy = cfg.project.root / first.extra_bases["include/dirty.h"]
+    assert copy.read_bytes() == b"dirty measured input"
+    before = _paths(cfg, first)[0].read_bytes()
+    path.write_bytes(b"later measured input")
+    lane[3].return_value = replace(snapshot, reads={})
+    second = _submit(lane, extras=extras)
+    assert second.id != first.id
+    assert copy.read_bytes() == b"dirty measured input"
+    assert _paths(cfg, first)[0].read_bytes() == before
+    assert (cfg.project.root / second.extra_bases["include/dirty.h"]).read_bytes() == b"later measured input"
+
+
+def test_admission_extra_race_leaves_no_inbox_entry(lane):
+    cfg = lane[0]
+    path = cfg.project.root / "input.yaml"
+    path.write_bytes(b"measured")
+    land.publish.accept.side_effect = lambda *args, **kwargs: path.write_bytes(b"concurrent")
+    with pytest.raises(Refusal) as caught:
+        _submit(lane, extras={"input.yaml": b"candidate"})
+    assert caught.value.findings[0].key == "journal.changed"
+    assert not list((cfg.project.root / ".unbake/inbox").glob("*"))
+    assert path.read_bytes() == b"concurrent"
+
+
+def test_submission_without_measured_bases_explicitly_refuses(lane):
+    entry = _submit(lane)
+    record, _ = _paths(lane[0], entry)
+    data = json.loads(record.read_text())
+    data.pop("extra_bases")
+    record.write_text(json.dumps(data))
+    with pytest.raises(Refusal) as caught:
+        land._read(record)
+    assert caught.value.findings[0].key == "land.rebase"
+    assert "provenance" in caught.value.findings[0].reason
+
+
+def test_submit_many_extra_race_refuses_only_its_entry(lane, monkeypatch):
+    cfg, unit = lane[:2]
+    path = cfg.project.root / "input.yaml"
+    path.write_bytes(b"measured")
+
+    def accept_each(*args):
+        path.write_bytes(b"concurrent")
+        return [(), ()]
+
+    monkeypatch.setattr(land.publish, "accept_each", accept_each)
+    call = {"request": _request(), "unit": unit, "proofs": _proofs(unit), "source": b"candidate", "origin": "submit"}
+    first, second = land.submit_many(cfg, [{**call, "extras": {"input.yaml": b"desired"}}, call])
+    assert isinstance(first, Refusal) and first.findings[0].key == "journal.changed"
+    assert second is not None and not isinstance(second, Refusal)
+    assert len(land.inbox(cfg)) == 1
+
+
+def test_scoped_drain_never_reads_or_moves_unselected_legacy_or_corrupt_entries(lane):
+    cfg = lane[0]
+    legacy, current = [_submit(lane, source) for source in (b"legacy", b"current")]
+    old, source = _paths(cfg, legacy)
+    value = json.loads(old.read_text())
+    value.pop("extra_bases")
+    old.write_text(json.dumps(value))
+    corrupt = old.with_name("unrelated.json")
+    corrupt.write_text("invalid json")
+    preserved = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (old, source, corrupt)}
+    result = land.drain(cfg, only=current.id)
+    assert [r["id"] for r in result["landed"]] == [current.id]
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in preserved} == preserved
+    with pytest.raises(Refusal) as caught:
+        land.drain(cfg, only=legacy.id)
+    assert caught.value.findings[0].key == "land.rebase"
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in preserved} == preserved
+
+
+@pytest.mark.parametrize("refuse", [False, True])
+def test_measured_base_copies_follow_the_entry_lifecycle(lane, refuse):
+    cfg = lane[0]
+    path = cfg.project.root / "input.yaml"
+    path.write_bytes(b"measured")
+    entry = _submit(lane, extras={"input.yaml": b"desired"})
+    copy = cfg.project.root / entry.extra_bases["input.yaml"]
+    if refuse:
+        lane[6].side_effect = Refusal(Finding("land.rebase", "later conflict"))
+    land.drain(cfg, only=entry.id)
+    destination = cfg.project.root / ".unbake/inbox" / ("refused" if refuse else "done") / copy.name
+    assert not copy.exists() and destination.read_bytes() == b"measured"

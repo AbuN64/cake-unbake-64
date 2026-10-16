@@ -628,6 +628,7 @@ class Submission:
     note: str  # free-text note given at submit time ("" when none)
     invocation: str
     extras: Json  # change set: project path -> inbox copy, landed with the source; {} for one file
+    extra_bases: Mapping[str, str | None]  # measured extra inputs: inbox copy, or absent at admission
     withheld: tuple[str, ...]  # versions the source is not exact in, landed withheld; () when exact in all
 
 

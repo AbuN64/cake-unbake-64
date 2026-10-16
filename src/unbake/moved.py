@@ -122,34 +122,27 @@ def _extra_text(snapshot: Snapshot, text: bytes, old: str, target: str) -> bytes
     return (headers.wrapped(target, headers._unguarded(spelled)) if config.is_header(target) else spelled).encode()
 
 
-def extras(snapshot: Snapshot, changes: Mapping[str, bytes], base: str | None = None) -> dict[str, bytes]:
+def extras(
+    snapshot: Snapshot, changes: Mapping[str, bytes], bases: Mapping[str, bytes | None] | None = None
+) -> dict[str, bytes]:
     """Normalize a whole change set before overlay. Recorded submissions apply their base-to-candidate deltas to
     current destinations, including merged headers; fresh requests have no historical base and must name live paths.
     Any missing provenance, deleted destination or merge conflict refuses before a project write."""
     if not changes:
         return {}
     paths, _ = table(snapshot.config)
-    revision = ""
-    if base is not None:
-        try:
-            revision = (
-                process.git(snapshot.config, "rev-parse", "--verify", f"{base}^{{commit}}").stdout.decode().strip()
-            )
-        except Refusal:
-            old = next(iter(changes))
-            target = paths.get(old, old) if snapshot.peek(old) is None else old
-            raise _refuse(old, target, f"recorded base {base} is unavailable") from None
     out: dict[str, bytes] = {}
     for old, supplied in sorted(changes.items()):
         target = paths.get(old, old) if snapshot.peek(old) is None else old
-        if base is None and target != old:
+        if bases is None and target != old:
             raise _refuse(old, target, "the retired path has no recorded submission base")
         fresh = _extra_text(snapshot, supplied, old, target)
-        if base is None:
+        if bases is None:
             out[target] = fresh
             continue
-        listed = process.git(snapshot.config, "ls-tree", "-z", revision, "--", old).stdout
-        before = process.git(snapshot.config, "show", f"{revision}:{old}").stdout if listed else None
+        if old not in bases:
+            raise _refuse(old, target, "the submission has no measured base for this extra")
+        before = bases[old]
         before = _extra_text(snapshot, before, old, target) if before is not None else None
         current = out.get(target, snapshot.peek(target))
         if config.is_source(target) and target not in snapshot.layout.units:

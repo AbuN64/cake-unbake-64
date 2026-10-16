@@ -713,10 +713,24 @@ def land(config: Config, submission: Submission) -> Receipt:
         snapshot = layout.capture(config)
         if submission.operation != "publish":
             raise Refusal(Finding("land.request", "Unknown submission operation.", unit=submission.member))
+        if submission.extra_bases.keys() != submission.extras.keys():
+            raise Refusal(
+                Finding(
+                    "land.rebase",
+                    "Submission lacks measured extra-input provenance; resubmit against the current tree.",
+                )
+            )
+        try:
+            bases = {
+                path: (config.project.root / copy).read_bytes() if copy is not None else None
+                for path, copy in submission.extra_bases.items()
+            }
+        except OSError as error:
+            raise Refusal(Finding("land.rebase", f"Measured extra-input base is unavailable: {error}")) from None
         extras = moved.extras(
             snapshot,
             {path: (config.project.root / copy).read_bytes() for path, copy in submission.extras.items()},
-            submission.base,
+            bases,
         )
         request = {
             "file": str(config.project.root / submission.source),
