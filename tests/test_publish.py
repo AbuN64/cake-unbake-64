@@ -105,6 +105,7 @@ def lane(tmp_path, monkeypatch):
     monkeypatch.setattr(publish.native, "measure", Mock(side_effect=lambda *args: (proofs[("a", "b").index(args[2])],)))
     monkeypatch.setattr(publish.native, "prove", Mock(side_effect=lambda *args: (proofs[("a", "b").index(args[2])],)))
     monkeypatch.setattr(publish.native, "warnings", Mock(return_value=()))
+    monkeypatch.setattr(publish.native, "recorded", Mock(return_value=()))
     monkeypatch.setattr(publish.versions, "undefined", Mock(return_value=()))
     monkeypatch.setattr(publish.versions, "resolve", Mock(return_value=()))
     monkeypatch.setattr(publish.journal, "apply", Mock(return_value=("src/f.c",)))
@@ -670,6 +671,9 @@ def test_admission_refuses_a_view_conversion_in_new_text_only(lane):
     assert [(f.key, f.line) for f in exc.value.findings] == [("land.view-conversion", 1)]
     same = replace(lane["snapshot"], overlays={lane["unit"].path: text.encode()})
     assert publish.admit(same, _request(lane))[2] == lane["proofs"]  # the line was already landed text
+    publish.native.recorded.return_value = publish.native.warnings.return_value  # HEAD's build says it too
+    landed = replace(snapshot, layout=replace(snapshot.layout, units={lane["unit"].path: lane["unit"]}))
+    assert publish.admit(landed, _request(lane))[2] == lane["proofs"]  # landed debt on a changed line
 
 
 def _bad_in(*versions):
@@ -1117,3 +1121,40 @@ def test_admission_plans_carry_no_progress_block_and_land_plans_keep_it(monkeypa
         assert publish.progress_block(Mock(), {"src/a.c": b"int a;"}) == {}
     finally:
         publish._PRESENT.reset(token)
+
+
+# real cases (RW-AROUND bulk submit 18:14 on G fc9c9aa17): 15 retype groups refused land.view-conversion although every
+# warning was HEAD's own on the line the retype respelled (the cast went, the complaint stayed)
+_R024 = (
+    "player = ((Shared_Actor *)(actor))->entity;",
+    "player = actor->entity;",
+    "assignment from incompatible pointer type",
+)
+_R021 = (
+    "((Vec3 *)arg1)->x, ((Vec3 *)arg1)->z));",  # gcc names the statement's last line; the complaint is about arg0
+    "arg1->x, arg1->z));",
+    "passing arg 1 of `func_80275DD4_de' makes integer from pointer without a cast",
+)
+
+
+@pytest.mark.parametrize("old, new, said", [_R024, _R021])
+@pytest.mark.parametrize("head_says, refused", [(1, False), (0, True)])
+def test_a_respelled_line_keeping_a_warning_head_makes_is_landed_debt(old, new, said, head_says, refused):
+    unit = UnitSpec("src/a.c", "c", "group", ("f",), "gcc-test", {"add": [], "omit": []})
+    before = f"void f(void) {{\n    {old}\n}}\n"
+    after = f"void f(void) {{\n    {new}\n}}\n"
+    warned = (f"build/views/b0ed72cb5b027981/src/a.c:2: warning: {said}",)
+    head = (f"src/a.c:2: warning: {said}",) * head_says
+    found = publish.view_findings(unit, after, before.encode(), warned, head)
+    assert [(f.key, f.line) for f in found] == ([("land.view-conversion", 2)] if refused else [])
+
+
+def test_a_warning_said_more_often_than_head_says_it_blocks_on_the_changed_line():
+    unit = UnitSpec("src/a.c", "c", "group", ("f",), "gcc-test", {"add": [], "omit": []})
+    before = "void f(void) {\n    a = ((T *)p)->m;\n    b = 1;\n}\n"
+    after = "void f(void) {\n    a = p->m;\n    b = p->m;\n}\n"
+    said = "warning: assignment from incompatible pointer type"
+    found = publish.view_findings(
+        unit, after, before.encode(), (f"src/a.c:2: {said}", f"src/a.c:3: {said}"), (f"src/a.c:2: {said}",)
+    )
+    assert [f.line for f in found] == [2, 3]  # one complaint is new: every changed line saying it is named

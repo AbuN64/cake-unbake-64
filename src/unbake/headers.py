@@ -369,6 +369,17 @@ def _scanned(snapshot: Snapshot, paths: list[str], pinned: Mapping[str, str] | N
     return [_SCANS[k] for k in keys]
 
 
+def declared_spellings(snapshot: Snapshot, paths: Sequence[str]) -> dict[str, dict[str, set[str]]]:
+    """Per file and name the type spellings its file-scope declarations give the name, normalized as `reconcile`
+    compares them; every file scanned in one dispatch."""
+    found: dict[str, dict[str, set[str]]] = {p: defaultdict(set) for p in paths}
+    for path, scanned in zip(paths, _scanned(snapshot, list(paths)) if paths else (), strict=True):
+        for name, _, text in scanned["declared"]:
+            if name not in _TYPE_WORDS and not text.startswith("typedef") and "{" not in text:
+                found[path][name].add(_unnamed(_normal(_type_of(text, name))))
+    return found
+
+
 def definers(snapshot: Snapshot) -> dict[str, set[str]]:
     """Per name the landed sources that define it at file scope, a function or storage, static or not."""
     found: dict[str, set[str]] = defaultdict(set)

@@ -1,6 +1,7 @@
 """Admission, submission landing and withdrawal."""
 
 import re
+from collections import Counter
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import replace
@@ -53,13 +54,29 @@ def _measure(item: tuple[Any, ...]) -> tuple[Proof, ...]:
     return native.measure(*item)
 
 
-def view_findings(unit: UnitSpec, text: str, old: bytes | None, warnings: Sequence[str]) -> tuple[Finding, ...]:
-    """The refused warnings whose line is new or changed text of the candidate; its landed debt never blocks."""
+_AT = re.compile(r"([^\s:,]+)[:,] ?(?:line )?(\d+)\b")
+
+
+def _said(warning: str) -> str:
+    """What a warning says without the file and line it names: the same complaint on a moved or respelled line."""
+    at = _AT.search(warning)
+    return warning[at.end() :].lstrip(" :") if at else warning
+
+
+def view_findings(
+    unit: UnitSpec, text: str, old: bytes | None, warnings: Sequence[str], head: Sequence[str] = ()
+) -> tuple[Finding, ...]:
+    """The refused warnings the candidate adds: on a new or changed line of its text, and said more often than the
+    landed unit's own compile (`head`) says it. A respelled line that keeps the complaint HEAD already makes is landed
+    debt, which never blocks; a complaint said once more than HEAD says it blocks on every changed line saying it."""
     lines, before, found = text.splitlines(), set((old or b"").decode().splitlines()), []
+    landed = Counter(map(_said, head))
+    excess = Counter(map(_said, warnings)) - landed
     for warning in warnings:
-        at = re.search(r"([^\s:,]+)[:,] ?(?:line )?(\d+)\b", warning)
+        at = _AT.search(warning)
         if (
             at
+            and excess[_said(warning)] > 0
             and Path(at[1]).name == Path(unit.path).name
             and 0 < int(at[2]) <= len(lines)
             and lines[int(at[2]) - 1] not in before
@@ -74,6 +91,17 @@ def view_findings(unit: UnitSpec, text: str, old: bytes | None, warnings: Sequen
                 )
             )
     return tuple(found)
+
+
+def _head_warnings(snapshot: Snapshot, path: str, version: str, work: Path) -> tuple[str, ...]:
+    """The refused warnings of the landed unit at path: what its build kept, else one compile of HEAD's text (kept
+    by that text, so warm after once); none for a path HEAD has no unit at."""
+    head = snapshot.layout.units.get(path)
+    if head is None or snapshot.peek(path) is None:
+        return ()
+    recipe = recipes.resolve(snapshot.config, head, head.options)
+    kept = native.recorded(snapshot, head, version, recipe)
+    return kept if kept is not None else native.warnings(snapshot, head, version, recipe, work)
 
 
 def refuse_blocking(findings: Sequence[Finding]) -> None:
@@ -304,6 +332,7 @@ def admit(snapshot: Snapshot, request: Json, partial: bool = False) -> tuple[Uni
                     text,
                     snapshot.peek(unit.path),
                     native.warnings(snap, unit, holders[0], recipe, work / "warnings"),
+                    _head_warnings(snapshot, unit.path, holders[0], work / "head-warnings"),
                 )
                 add(_blocking(warned))
                 if unresolved:  # what does not link measures nothing more
