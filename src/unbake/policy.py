@@ -780,6 +780,16 @@ _VIEWED = frozenset({"shared-declarations", "volatile-storage"})  # the checks t
 
 def _census_version(snapshot: Snapshot, unit: UnitSpec) -> str:
     holders = sorted({p.version for name in unit.members for p in snapshot.layout.members[name].placements})
+    if not holders:
+        raise Refusal(
+            Finding(
+                "layout.map",
+                "compiled unit has no placed members",
+                path=unit.path,
+                unit=unit.path,
+                action="restore the unit's ownership or run unbake setup",
+            )
+        )
     return snapshot.config.project.names_from if snapshot.config.project.names_from in holders else holders[0]
 
 
@@ -907,8 +917,10 @@ def _changed_findings(snapshot: Snapshot, texts: Mapping[str, str], *, baseline:
     findings: list[Any] = []
     for path, text in texts.items():
         owner = snapshot.layout.units.get(path)
-        if not config.is_header(path) and (owner is None or not snapshot.layout.held(owner.members)):
-            continue
+        if not config.is_header(path):
+            if owner is None or (baseline and not snapshot.layout.held(owner.members)):
+                continue
+            _census_version(snapshot, owner)  # the staged source cannot silently lose policy with its holders
         if baseline and owner and owner.group not in snapshot.layout.groups:
             continue
         sdk = snapshot.layout.groups[owner.group].sdk if owner else headers.get(path, False)

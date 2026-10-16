@@ -1076,3 +1076,55 @@ def test_holder_build_key_follows_its_producer_but_not_scheduling(monkeypatch, m
     after = ownership._built_key(None, None, "a", None)
     assert (after != before) is changes
     ownership.code_identity.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "mode", ["covered", "split", "partial", "compile-error", "unplaced", "no-output", "uncovered-holder"]
+)
+def test_displaced_data_provider_keeps_source_until_all_bytes_transfer(monkeypatch, mode):
+    from unbake import layout
+
+    code = unit("f")
+    provider = replace(unit("row"), path="src/provider.c", kind="data")
+    members = dict(MEMBERS)
+    members["row"] = replace(MEMBERS["row"], placements=(Placement("a", ".rodata", 4, 12, 0x104, 0),))
+    if mode == "uncovered-holder":
+        members["row"] = replace(
+            members["row"], placements=(*members["row"].placements, Placement("b", ".rodata", 4, 12, 0x104, 0))
+        )
+    units = {code.path: code, provider.path: provider}
+    if mode == "split":
+        other = replace(code, path="src/other.c")
+        units = {code.path: code, other.path: other, provider.path: provider}
+    snapshot = SimpleNamespace(
+        config=SimpleNamespace(project=SimpleNamespace(names_from="a")),
+        layout=LayoutMap({}, members, units, "d", (), {}),
+        versions={"a": None, "b": None},
+        digest="displaced-provider",
+    )
+    results = {code.path: {"a": {".rodata": [[4, 8 if mode in ("split", "partial") else 12]]}}}
+    results[provider.path] = {"a": {".rodata": [[4, 12]]}}
+    if mode == "split":
+        results[other.path] = {"a": {".rodata": [[8, 12]]}}
+    elif mode == "compile-error":
+        results[provider.path] = {"a": "compile.error: invalid source"}
+    elif mode == "unplaced":
+        results[provider.path] = {"a": {".rodata": {"why": "not in the ROM", "at": ""}}}
+    elif mode == "uncovered-holder":
+        results[provider.path]["b"] = {".rodata": [[4, 12]]}
+    elif mode == "no-output":
+        results[provider.path] = {"a": {}}
+    monkeypatch.setattr(
+        ownership.pool, "map", lambda cfg, name, fn, items, key=None: [results[i[1].path] for i in items]
+    )
+    monkeypatch.setattr(ownership, "_index", lambda snapshot, v: INDEXES[v])
+    out, claims, findings = ownership.claims(snapshot, units=units)
+    assert claims and all(u.members for u in out.values())
+    if mode in ("covered", "split"):
+        assert provider.path not in out and not findings
+    else:
+        assert out[provider.path].members == provider.members
+        assert out[provider.path].withheld == ("a",)
+        if mode in ("partial", "compile-error"):
+            assert any(f.blocking for f in findings)
+    assert layout.is_datum(provider)

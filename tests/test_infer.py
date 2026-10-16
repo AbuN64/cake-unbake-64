@@ -667,3 +667,53 @@ def test_compile_regression_refuses_before_another_units_claim_rows_are_recaptur
     assert plan.blocking == (failed,) and not plan.writes
     assert claims.call_count == 1
     cuts.assert_not_called()
+
+
+@pytest.mark.usefixtures("toolchains")
+@pytest.mark.parametrize("separate_group", [False, True])
+def test_infer_retires_displaced_provider_in_same_plan_and_is_stable(tmp_path, monkeypatch, separate_group):
+    from unbake import ownership
+
+    code = {**UNIT, "path": "src/f0.c", "kind": "c"}
+    provider = {**UNIT, "path": "src/provider.c", "kind": "data", "members": ["row"]}
+    groups = [module(name="u", members=["f0", "row"])]
+    if separate_group:
+        provider["group"] = "d"
+        groups = [module(name="u", members=["f0"]), module(name="d", members=["row"])]
+    snapshot = snap(
+        tmp_path,
+        functions={"f0": {"a": (0x1000, blob(*LEAF))}},
+        data={provider["members"][0]: {"a": (0x1010, bytes(0xFF0))}},
+        versions=("a",),
+        units=[code, provider],
+        groups=groups,
+        sources={"f0.c": "void f0(void) {}", "provider.c": "unsigned int data[1020] = {0};"},
+    )
+    snapshot = layout.overlay(
+        snapshot,
+        {
+            "versions/a/Game.yaml": b"""name: a
+segments:
+  - name: main
+    type: code
+    start: 0x1000
+    vram: 0x80000400
+    subsegments:
+      - [0x1000, asm, f0]
+      - [0x1010, data, row]
+      - [0x2000]
+"""
+        },
+    )
+    monkeypatch.setattr(pool, "map", lambda cfg, name, fn, items, key=None: [fn(i) for i in items])
+    monkeypatch.setattr(infer, "sdk", lambda s: {})
+    monkeypatch.setattr(infer, "groups", lambda s, identified: tuple(s.layout.groups.values()))
+    monkeypatch.setattr(ownership, "_job", lambda item: {"a": {".data": [[0x1010, 0x2000]]}})
+    monkeypatch.setattr(ownership, "exact", lambda s, units: (units, []))
+    plan = infer._plan(snapshot)
+    assert not plan.blocking and plan.writes[provider["path"]] is None
+    assert "layout.toml" in plan.writes and "versions/a/Game.yaml" in plan.writes
+    after = layout.overlay(snapshot, plan.writes)
+    assert provider["path"] not in after.layout.units
+    assert after.layout.units[code["path"]].members == ("f0", "data/f0/80000410")
+    assert not infer._plan(after).writes

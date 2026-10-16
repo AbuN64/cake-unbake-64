@@ -711,6 +711,7 @@ def _neighbour_group(
 
 
 def _plan(snapshot: Snapshot) -> Plan:
+    original_map = snapshot.read("layout.toml")
     identified = sdk(snapshot)
     base, inferred = snapshot.digest, groups(snapshot, identified)
     updated = {
@@ -738,6 +739,9 @@ def _plan(snapshot: Snapshot) -> Plan:
     for _ in range(_PASSES):  # its rows are generated from its claims: write them now, and plan on the rows they give,
         if any(f.blocking for f in found):  # never recapture a new compile regression as existing withholding
             break
+        # Retired providers have proved their emitted bytes redundant. Their sources and ownership leave in
+        # the same journaled plan, before a split row can disappear beneath the old provider.
+        cut_writes.update(dict.fromkeys(snapshot.layout.units.keys() - assigned.keys()))
         rows = layout.claim_rows(snapshot, claimed)  # so one plan holds both
         if not rows:
             break
@@ -769,6 +773,11 @@ def _plan(snapshot: Snapshot) -> Plan:
     members = {
         n: replace(m, group=memberships[n]) if n in memberships else m for n, m in snapshot.layout.members.items()
     }
+    updated = {
+        name: replace(g, members=tuple(n for n in g.members if n in members))
+        for name, g in updated.items()
+        if not g.members or any(n in members for n in g.members)
+    }
     units, more = ownership.exact(snapshot, assigned)  # and is built only where its bytes are proven
     debt = tuple(f for f in [*found, *more] if not f.blocking)
     units = {
@@ -778,7 +787,7 @@ def _plan(snapshot: Snapshot) -> Plan:
         snapshot.layout, groups=updated, members=members, units=units, digest=digest((updated, members, units))
     )
     text, writes = layout.dump_map(value), dict(cut_writes)
-    if text != snapshot.read("layout.toml"):
+    if text != original_map:
         writes["layout.toml"] = text
     sdk_units = sum(g.sdk for g in updated.values())
     message = f"infer: {len(updated)} groups, {sdk_units} sdk units, {len(cut_writes)} files cut"

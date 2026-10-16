@@ -1343,3 +1343,19 @@ def test_pad_view_counts_every_declarator_of_a_field():
     )
     assert typedebt.pad_view(code) == {}  # seven named members: a record, not a view
     assert typedebt.pad_view("struct A { u8 pad0[0x10]; s32 a, b, c, d; };") == {}
+
+
+@pytest.mark.parametrize("members", [(), ("unplaced",)])
+def test_policy_refuses_a_compiled_unit_without_holders(snapshot, members):
+    from unbake.contracts import Refusal
+
+    unit = UnitSpec(PATH, "data", "g", members, "tc", {"add": [], "omit": []})
+    snapshot.layout = LayoutMap(
+        {}, {"unplaced": Member("unplaced", "data", ".data", "g", ())}, {PATH: unit}, "d", (), {}
+    )
+    with pytest.raises(Refusal) as refused:
+        policy._census_version(snapshot, unit)
+    assert refused.value.findings[0].key == "layout.map"
+    assert refused.value.findings[0].path == PATH
+    with pytest.raises(Refusal):
+        policy.census(snapshot, changes={PATH: ("", "unsigned int value = 1;")})

@@ -477,6 +477,17 @@ def _clash(taken: list[tuple[int, int, str]], start: int, end: int) -> str | Non
     return next((o for s, e, o in taken[max(at - 1, 0) : at + 1] if s < end and start < e), None)
 
 
+def _occupied(taken: list[tuple[int, int, str]], start: int, end: int) -> bool:
+    """Whether other owners' disjoint claims cover every byte, including adjacent claims from several owners."""
+    at = max(0, bisect_right(taken, (start, float("inf"))) - 1)
+    while at < len(taken) and taken[at][0] <= start:
+        start = max(start, taken[at][1])
+        if start >= end:
+            return True
+        at += 1
+    return False
+
+
 def _own(
     unit: UnitSpec,
     members: Mapping[str, Any],
@@ -554,15 +565,50 @@ def claims(
         taken: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         debt: dict[str, list[str]] = defaultdict(list)
         out, found = dict(wanted), []
+        stranded = []
         for unit, result in zip(todo, results, strict=True):
             keep, resolved, mine, left = _resolve(
                 unit, snapshot.layout.members, result, indexes, snapshot.config.project.names_from
             )
-            out[unit.path], kept = _own(unit, snapshot.layout.members, keep, resolved, mine, taken, left)
+            # A provider may yield only after every byte it successfully emits in every holder is owned
+            # elsewhere. Keep failed or unplaced sources attached to their old rows; an empty unit loses both
+            # its compile regression and the version in which policy must read it on the next pass.
+            holders = snapshot.layout.held(unit.members)
+            retired = (
+                layout.is_datum(unit)
+                and not keep
+                and bool(mine)
+                and not left
+                and resolved == holders
+                and all(_occupied(taken[c.version], c.start, c.end) for c in mine)
+                and all(
+                    p.size > 0 and _occupied(taken[p.version], p.rom_start, p.rom_end)
+                    for n in unit.members
+                    for p in snapshot.layout.members[n].placements
+                )
+            )
+            if retired:
+                del out[unit.path]
+                continue
+            owned, kept = _own(unit, snapshot.layout.members, keep, resolved, mine, taken, left)
+            out[unit.path] = (
+                owned if owned.members else replace(unit, withheld=tuple(sorted(holders | set(unit.withheld))))
+            )
+            if not owned.members and any(line.startswith("row owned by another unit:") for line in left):
+                stranded.append(unit.path)
             found.extend(kept)
             for line in left:
                 debt[line.split(":")[0]].append(line.split(": ", 1)[1])
         findings = _findings(debt, "fix the source of each listed unit")
+        if stranded:
+            findings.append(
+                Finding(
+                    "layout.ownership",
+                    "data providers cannot yield until all their bytes have other owners",
+                    missing=tuple(stranded),
+                    action="resolve the overlapping data ownership before retiring these sources",
+                )
+            )
         span.add(items=len(todo), findings=findings)
         return out, tuple(found), findings
 
