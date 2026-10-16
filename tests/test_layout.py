@@ -1957,3 +1957,46 @@ def test_a_units_file_name_keeps_its_module_sources_suffix_and_case() -> None:
     lay = LayoutMap({"m": group}, {}, {}, "d", (), {})
     assert layout.unit_path(lay, "m", ()) == "src/AI/ENEMIES/TURRETAI.CPP"
     assert layout.unit_path(lay, "m", {"src/AI/ENEMIES/TURRETAI.CPP"}) == "src/AI/ENEMIES/TURRETAI_2.CPP"
+
+
+@pytest.mark.parametrize("data_first", [True, False])
+@pytest.mark.parametrize("owner_name", ["fa", "old_file"])
+def test_physical_boundary_at_keyed_function_keeps_its_resident_data(scene, data_first, owner_name):
+    pool = f"rodata/{owner_name}/80000400"
+    rows = [("fa", "c", RETURN), (pool, "data", (1, 2, 3, 4, 5))]
+    if data_first:
+        rows.reverse()
+    snapshot = scene(tuple(rows), units=(_unit(("fa", pool), path="src/old_file.c"),))
+    group = snapshot.layout.groups["grp"]
+    mapped = replace(snapshot.layout, groups={"grp": replace(group, members=("fa",))}, boundaries=("fa",))
+    result = layout.physical(snapshot, mapped, reflow=("grp",))
+    held = [n for u in result.values() for n in u.members]
+    assert sorted(held) == sorted(("fa", pool))
+    assert len(result) == 1 and set(next(iter(result.values())).members) == {"fa", pool}
+    for version in snapshot.versions:
+        assert sum(p.size for n in held for p in snapshot.layout.members[n].placements if p.version == version) == 28
+
+
+def test_physical_honors_a_boundary_at_the_first_nonleader_resident_row(scene):
+    pool = "rodata/fa/80000400"
+    data = replace(_unit((pool,), path="src/pool.c", kind="data"), options={"add": ["-O0"], "omit": []})
+    code = _unit(("fa",), path="src/fa.c")
+    snapshot = scene(((pool, "data", (1, 2)), ("fa", "c", RETURN)), units=(code, data))
+    group = snapshot.layout.groups["grp"]
+    mapped = replace(snapshot.layout, groups={"grp": replace(group, members=("fa",))}, boundaries=(pool,))
+    result = layout.physical(snapshot, mapped)
+    assert {u.members for u in result.values()} == {("fa",), (pool,)}
+    assert {u.kind: u.options for u in result.values()} == {"c": code.options, "data": data.options}
+
+
+def test_physical_refuses_a_lost_existing_data_owner_before_proof(scene, monkeypatch):
+    pool = "rodata/fa/80000400"
+    first = replace(_unit(("fa", pool), path="src/a.c"), options={"add": ["-O0"], "omit": []})
+    second = _unit(("fb",), path="src/b.c")
+    snapshot = scene(((pool, "data", (1, 2)), ("fa", "c", RETURN), ("fb", "c", RETURN)), units=(first, second))
+    # A broken path allocator overwrites a prior run: emitted-claim parity must not hide the missing owner.
+    monkeypatch.setattr(layout, "unit_path", lambda *args: "src/collision.c")
+    with pytest.raises(Refusal) as caught:
+        layout.physical(snapshot, snapshot.layout)
+    assert caught.value.findings[0].key == "layout.map"
+    assert caught.value.findings[0].missing == (pool,)

@@ -931,8 +931,8 @@ def physical(
             for n in sorted(landed, key=rank):
                 owner = (n.split("/")[1] if n.split("/")[1] in landed else mate.get(n, "")) if n.count("/") == 2 else n
                 atoms.setdefault(owner if owner in landed else n, []).append(n)
-            for atom in list(atoms.values()):  # a member a file starts at (a proof's evidence) leads its own
-                for n in [n for n in atom[1:] if n in boundaries]:
+            for leader, atom in list(atoms.items()):  # the keyed leader already starts its atom, even after data
+                for n in [n for n in atom if n != leader and n in boundaries]:
                     atom.remove(n)
                     atoms[n] = [n]
             for leader, atom in list(atoms.items()):
@@ -1037,6 +1037,17 @@ def physical(
             for name, units in by_group.items():
                 if name not in layout.groups and name not in reflow:
                     result.update((u.path, u) for u in units if not taken.intersection(u.members))
+        owned_data = {n for n in old.keys() & members.keys() if members[n].kind != "function"}
+        lost = owned_data - {n for u in result.values() for n in u.members}
+        if lost:
+            raise Refusal(
+                Finding(
+                    "layout.map",
+                    "physical layout dropped existing data owners",
+                    missing=tuple(sorted(lost)),
+                    action="report this layout change; existing data members must keep an owner",
+                )
+            )
         if split is not None:
             split += [
                 Finding(
