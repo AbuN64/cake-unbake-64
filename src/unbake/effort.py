@@ -19,6 +19,8 @@ import psutil
 
 from unbake.contracts import Config, Finding, Json, NativeResult, Origin, Refusal, Span, StageRecord
 
+__plumbing__ = True  # contracts.code_identity names this code and never follows it: it shapes no result
+
 _stack: ContextVar[tuple[_Open, ...]] = ContextVar("effort_stack", default=())
 _closed: list[StageRecord] = []
 _counters: dict[str, list[int]] = {}

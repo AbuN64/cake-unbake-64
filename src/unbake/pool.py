@@ -33,6 +33,8 @@ from abucache.store import absorb_touched, take_touched
 from unbake import effort, journal, store
 from unbake.contracts import Config, Finding, Host, Json, Refusal, Snapshot, code_identity, digest, sha256
 
+__plumbing__ = True  # contracts.code_identity names this code and never follows it: it shapes no result
+
 _KEYS_INLINE = 1  # keys of up to this many items per worker are computed here: a dispatch costs more than they do
 _INLINE_AT = 1  # a gather of up to this many chunks runs here: a dispatch costs more than one chunk does
 _REBALANCE = 0.5  # seconds between looks at the other commands while a pool works
@@ -897,8 +899,9 @@ def _stall(pending: dict[Future[Any], tuple[Any, list[int]]]) -> None:
 
 
 def _identity(run_function: Callable[..., Any], key: Callable[[Any], str | None]) -> str:
-    """What a stored result also depends on: the job's code, unless its key names every input (`stable`)."""
-    return "" if getattr(key, "stable", False) else code_identity(run_function)
+    """What a stored result also depends on: the job's code, unless its key names every input (`stable`) or names the
+    code the result depends on itself (`coded`: a key narrower than everything the job reaches)."""
+    return "" if getattr(key, "stable", False) or getattr(key, "coded", False) else code_identity(run_function)
 
 
 def _keys(key: Callable[[Any], str | None], items: Sequence[Any], identity: str) -> list[str | None]:

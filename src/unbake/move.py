@@ -2161,7 +2161,14 @@ def _apply(
         if refused and found:
             return {**_refusal(moves, snapshot, refused), "boundaries": sorted(found)}
         claims = not refused and not unproved
-        old_claims, new_claims = (ownership.claims(snapshot)[1], ownership.claims(overlay)[1]) if claims else ((), ())
+        # the units the writes reach (the proved ones, and any includer of a written non-header file) are located
+        # again; every other unit keeps the old pass's placements (headers.readers decides a header edit's reach)
+        reached = {*affected, *headers.consumers(overlay, [p for p in writes if not configuration.is_header(p)])}
+        old_claims, new_claims = (
+            (ownership.claims(snapshot)[1], ownership.claims(overlay, reuse=(snapshot, reached))[1])
+            if claims
+            else ((), ())
+        )
         if claims and _claims(new_claims) != _claims(old_claims):
             lost = Finding("move.not_exact", "the unit claims differ from the old claims", missing=("claims",))
             unseamed = _unseamed(old_claims, new_claims, keep)  # a change at a kept unit's seam is bookkeeping

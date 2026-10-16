@@ -239,3 +239,20 @@ def test_the_identity_of_a_producer_is_equal_in_every_process():
         for seed in ("1", "2", "3")
     }
     assert len(runs) == 1  # a hash seed or a set order must never move a cache key
+
+
+def test_code_of_a_plumbing_module_is_named_and_never_followed(monkeypatch):
+    def identity(plumbing: bool, body: str) -> str:
+        helper = types.ModuleType("fixturepkg.helper")
+        helper.__plumbing__ = plumbing
+        exec(compile(f"def schedule(x):\n    return {body}\n", "helper.py", "exec"), vars(helper))
+        helper.schedule.__module__ = "fixturepkg.helper"
+        monkeypatch.setitem(sys.modules, "fixturepkg.helper", helper)
+        scope = _module("def produce(x):\n    return schedule(x) + 1\n")
+        scope["schedule"] = helper.schedule
+        code_identity.cache_clear()
+        return code_identity(scope["produce"])
+
+    assert identity(True, "x") == identity(True, "[x, x]")  # a scheduler edit leaves stored results warm
+    assert identity(False, "x") != identity(False, "[x, x]")
+    assert identity(True, "x") != identity(False, "x")

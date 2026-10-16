@@ -365,6 +365,7 @@ def test_claims_give_bytes_to_one_unit_only_and_aggregate_the_debt(monkeypatch):
         config=SimpleNamespace(project=SimpleNamespace(names_from="a")),
         layout=LayoutMap({}, MEMBERS, units, "d", (), {}),
         versions={"a": None},
+        digest="claims_give_bytes_to",
     )
     out, claims, findings = ownership.claims(snapshot)
     assert findings == found["findings"]
@@ -553,6 +554,7 @@ def test_claims_let_a_function_unit_take_bytes_before_an_unowned_data_unit(monke
         config=SimpleNamespace(project=SimpleNamespace(names_from="a")),
         layout=LayoutMap({}, members, units, "d", (), {}),
         versions={"a": None},
+        digest="claims_let_a_functio",
     )
     ownership.claims(snapshot)
     assert order == ["src/f.c", "src/data.c"]
@@ -586,7 +588,7 @@ def test_ownership_keys_name_the_pinned_stamp_of_every_holder_so_an_unchanged_un
     )
     stamps = []
 
-    def stamp(snap, u, v, recipe=None, pinned=False):
+    def stamp(snap, u, v, recipe=None, pinned=False, code=True):
         assert pinned  # the key never preprocesses the unit
         stamps.append((v, recipe))
         return f"stamp-{v}-{recipe}"
@@ -912,3 +914,57 @@ def test_a_move_that_renames_a_data_row_keeps_the_index_digest_every_ownership_k
     shifted = snapshot("D_80000008", "three")
     shifted.layout.members["D_80000008"].placements[0].rom_end = 12  # a row cut elsewhere: placements may differ
     assert ownership._index(shifted, "a").digest != before.digest
+
+
+def test_an_overlay_pass_locates_only_the_units_the_writes_reach_and_keeps_the_rest(monkeypatch):
+    located = {"src/a.c": {".rodata": [[4, 8]]}, "src/b.c": {".rodata": [[0, 4]]}, "src/c.c": {".rodata": [[8, 12]]}}
+    seen: list[list[str]] = []
+
+    def run(cfg, name, fn, items, key=None):
+        seen.append([u.path for _, u, *_ in items])
+        return [{"a": located[u.path]} for _, u, *_ in items]
+
+    monkeypatch.setattr(ownership.pool, "map", run)
+    digests = {"before": INDEXES["a"], "after": INDEXES["a"]}
+    monkeypatch.setattr(ownership, "_index", lambda snap, v: digests[snap.digest.split("-")[0]])
+    monkeypatch.setattr(
+        ownership.config, "load_resource", lambda name: {"kind": {"c": {"credit": "code", "phases": ["compile"]}}}
+    )
+    units = {p: replace(unit("f"), path=p) for p in ("src/a.c", "src/b.c", "src/c.c")}
+    cfg, versions = SimpleNamespace(project=SimpleNamespace(names_from="a")), {"a": None}
+
+    def snap(name, layout_units, members=MEMBERS):
+        return SimpleNamespace(
+            config=cfg, layout=LayoutMap({}, members, layout_units, "d", (), {}), versions=versions, digest=name
+        )
+
+    before = snap("before-1", units)
+    changed = {**units, "src/c.c": replace(units["src/c.c"], options={"add": ["-O1"], "omit": []})}
+    after = snap("after-1", changed)
+    full = ownership.claims(after)[1]  # what a pass of its own finds
+    seen.clear()
+    old = ownership.claims(before)[1]
+    assert seen == [["src/a.c", "src/b.c", "src/c.c"]]
+    new = ownership.claims(snap("after-2", changed), reuse=(before, {"src/b.c"}))[1]
+    assert seen[1] == ["src/b.c", "src/c.c"]  # b is reached, c's spec changed, a keeps its placements
+    assert new == full and old
+    digests["after"] = INDEXES["b"]._replace(digest="moved rows")  # a data row moved: nothing is kept
+    ownership.claims(snap("after-3", changed), reuse=(before, set()))
+    assert seen[2] == ["src/a.c", "src/b.c", "src/c.c"]
+    moved = {**MEMBERS, "f": replace(MEMBERS["f"], state="c")}  # a member's record changed: its units go again
+    digests["after"] = INDEXES["a"]
+    ownership.claims(snap("after-4", units, moved), reuse=(before, set()))
+    assert seen[3] == ["src/a.c", "src/b.c", "src/c.c"]
+
+
+def test_the_job_key_names_only_the_code_that_follows_an_object_to_the_rom(monkeypatch):
+    asked = []
+    monkeypatch.setattr(ownership.native, "stamp", lambda *a, **kw: asked.append(kw) or "build inputs")
+    monkeypatch.setattr(ownership, "_index", lambda snap, v: INDEXES["a"])
+    snapshot = SimpleNamespace(layout=LayoutMap({}, MEMBERS, {}, "d", (), {}), versions={"a": None})
+    item = (snapshot, unit("f"), None, False, None)
+    monkeypatch.setattr(ownership, "code_identity", lambda *f: "placement code one")
+    first = ownership._job_key(item)
+    monkeypatch.setattr(ownership, "code_identity", lambda *f: "placement code two")
+    assert ownership._job_key(item) != first  # an edit of the placement code moves it
+    assert asked[0]["code"] is False and ownership._job_key.coded  # the tool's build code and pool add nothing

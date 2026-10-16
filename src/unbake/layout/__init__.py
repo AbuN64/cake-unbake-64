@@ -21,7 +21,7 @@ from typing import Any
 import rabbitizer
 
 from unbake import config as configuration
-from unbake import effort, headers, journal, process, store, symbols, view
+from unbake import effort, headers, journal, pool, process, store, symbols, view
 from unbake import versions as version_data
 from unbake.contracts import (
     Claim,
@@ -1500,8 +1500,6 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
                     if q.section == ".text" and (unit := unit_of(snapshot, n)) and unit.kind == compiled:
                         gained[unit.path].add(h)
                 break
-    # a dropped row's member goes from the map too once no split holds it
-    _unlist(snapshot, {n for n, hs in dropped.items() if hs >= held.get(n, set())}, writes, gained)
     if writes:
         writes.update(
             {
@@ -1512,7 +1510,47 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
                 if data != snapshot.read(path)
             }
         )
+    # a dropped row's member goes from the map too once no split holds it
+    gone = {n for n, hs in dropped.items() if hs >= held.get(n, set())}
+    _unlist(snapshot, gone, writes, _unproved(snapshot, writes, gone, gained))
     return writes
+
+
+def _unproved_key(item: tuple[Snapshot, UnitSpec, str]) -> str:
+    from unbake import native
+
+    return native.stamp(*item, pinned=True)
+
+
+def _unproved_job(item: tuple[Snapshot, UnitSpec, str]) -> bool:
+    from unbake import native
+
+    proofs = native.prove_job(item)
+    return bool(proofs) and all(p.exact for p in proofs)
+
+
+def _unproved(
+    snapshot: Snapshot, writes: Mapping[str, bytes | None], gone: Collection[str], gained: Mapping[str, set[str]]
+) -> dict[str, set[str]]:
+    """Of the versions a compiled unit gains code rows in, those its C does not build exactly there (proved on the
+    rows the writes give): it stays withheld only in those, and builds wherever its C matches."""
+    if not gained:
+        return {}
+    trial = dict(writes)
+    _unlist(snapshot, gone, trial)
+    over = overlay(snapshot, trial)
+    jobs = [
+        (over, over.layout.units[p], v)
+        for p, vs in sorted(gained.items())
+        if p in over.layout.units
+        for v in sorted(vs)
+    ]
+    exact = pool.map(snapshot.config, "layout.versioned", _unproved_job, jobs, _unproved_key)
+    failing: dict[str, set[str]] = defaultdict(set)
+    for (_, unit, version), ok in zip(jobs, exact, strict=True):
+        if not ok:
+            failing[unit.path].add(version)
+    return failing
 
 
 def _framed(code: Sequence[int], vram: int, frame: int) -> bool:

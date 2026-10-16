@@ -363,6 +363,25 @@ def test_a_stable_key_survives_a_changed_module(tmp_path, monkeypatch, mocked_pa
     assert ran == [1, 2]  # warm under the other code
 
 
+def _coded_name(value):
+    return str(value)
+
+
+_coded_name.coded = True
+
+
+def test_a_coded_key_keeps_its_results_warm_across_an_install(tmp_path, monkeypatch, mocked_parallel):
+    """A key that names the code its result depends on stores every result (not only clean ones) and pool adds no
+    identity of the job's whole reach: another install leaves it warm."""
+    config, ran = _config(tmp_path), _RAN
+    ran.clear()
+    monkeypatch.setattr(pool, "code_identity", lambda function: "one")
+    pool.map(config, "units", _record, [1, 2], key=_coded_name)
+    monkeypatch.setattr(pool, "code_identity", lambda function: "two")
+    pool.map(config, "units", _record, [1, 2], key=_coded_name)
+    assert ran == [1, 2]  # nonempty results, warm under the other code
+
+
 def test_the_key_pass_dispatches_chunks_and_the_parent_computes_no_key(tmp_path, monkeypatch, mocked_parallel):
     config, chunks, parent = _config(tmp_path), [], []
     monkeypatch.setattr(sys.modules[__name__], "_KEY_CHUNKS", chunks)

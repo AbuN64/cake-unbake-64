@@ -144,6 +144,15 @@ class _Walk:
         module = getattr(value, "__module__", None) or ""
         return module == self.package or module.startswith(self.package + ".")
 
+    def plumbing(self, value: Any) -> bool:
+        """Code of a module that declares `__plumbing__ = True`: it schedules, times or memoises work and never shapes
+        a result, so it is named and not followed (a pool or timing edit leaves every stored result warm)."""
+        module = sys.modules.get(getattr(value, "__module__", None) or "")
+        if getattr(module, "__plumbing__", False):
+            self.add("plumbing", module.__name__, getattr(value, "__qualname__", ""))  # type: ignore[union-attr]
+            return True
+        return False
+
     def value(self, value: Any, name: str, home: str = "", declared: bool = False) -> None:
         """A global or attribute the code names: followed when it is code of the package, else its constants."""
         while isinstance(getattr(value, "__wrapped__", None), types.FunctionType):
@@ -151,9 +160,11 @@ class _Walk:
         if isinstance(value, types.ModuleType):
             self.add("module", value.__name__)
         elif isinstance(value, types.FunctionType) and self.ours(value):
-            self.queue.append((self.function, value))
+            if not self.plumbing(value):
+                self.queue.append((self.function, value))
         elif inspect.isclass(value) and self.ours(value):
-            self.queue.append((self.klass, value))
+            if not self.plumbing(value):
+                self.queue.append((self.klass, value))
         elif declared and name in _assigned(_home(value, name, home, self.package)):
             self.data(value, name, home, True)  # a global a module assigns: its expression, not what a run left in it
         elif (text := _plain(value)) is not None:

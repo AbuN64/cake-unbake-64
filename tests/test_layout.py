@@ -1914,6 +1914,9 @@ def test_code_another_version_names_between_the_same_members_takes_its_rows(scen
         units=(_unit(("func_80000418",), "src/body.c"),),
     )
     counts = {"versioned": 0}
+    proved = []
+    monkeypatch.setattr(layout, "_unproved_key", lambda item: f"{item[1].path}-{item[2]}")
+    monkeypatch.setattr(layout, "_unproved_job", lambda item: proved.append(item[1:]) or False)
     writes = layout._versioned(snapshot, counts)
     rows = [r[:3] for r in yaml.safe_load(writes["versions/a/Game.yaml"])["segments"][0]["subsegments"][:-1]]
     assert counts["versioned"] == 2
@@ -1925,8 +1928,11 @@ def test_code_another_version_names_between_the_same_members_takes_its_rows(scen
     ]
     # the dropped row leaves the map: no unit names a lost row
     assert b"data/unresolved/80000410" not in writes["layout.toml"]
-    # the C that builds the code in b was never built for a: it stays withheld there, a's rows build from assembly
+    # the C that builds the code in b does not prove exact in a: it stays withheld there, a's rows build from assembly
     assert b'withheld = ["a"]' in writes["layout.toml"]
+    assert [(u.path, v) for u, v in proved] == [("src/body.c", "a")]
+    monkeypatch.setattr(layout, "_unproved_job", lambda item: True)  # where it matches, the C builds in a too
+    assert b"withheld" not in layout._versioned(snapshot, {"versioned": 0})["layout.toml"]
     other = (0x27BDFFD8, 0x24020005, 0, *RETURN, 0x27BD0028)  # other instructions: no rows
     snapshot = scene(
         (

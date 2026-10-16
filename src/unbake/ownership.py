@@ -19,7 +19,7 @@ from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
 from unbake import config, effort, layout, native, pool, recipes, store, versions
-from unbake.contracts import Claim, Finding, Placement, Recipe, Refusal, Snapshot, UnitSpec, digest
+from unbake.contracts import Claim, Finding, Placement, Recipe, Refusal, Snapshot, UnitSpec, code_identity, digest
 
 _WORD = 0xFFFFFFFF
 _MANY = 16  # more equal ranges than this are ambiguous without counting them all
@@ -297,16 +297,22 @@ def _vram_of(index: _Index, offset: int) -> int:
 
 
 def _job_key(item: tuple[Any, ...]) -> str:
-    """What the unit's placements read: its builds in every holder, the rows they can land on and its own text range."""
+    """What the unit's placements read: its builds in every holder (their inputs and tools, not the tool's own build
+    code), the rows they can land on, its own text range and the code that follows an object to the ROM. Any other
+    edit of the tool leaves every placement warm."""
     snapshot, unit, only, loose, recipe = item
     held = sorted(snapshot.layout.held(unit.members) & ({only} if only else set(snapshot.versions)))
     return digest(
         (
-            [native.stamp(snapshot, unit, v, recipe, pinned=True) for v in held],
+            [native.stamp(snapshot, unit, v, recipe, pinned=True, code=False) for v in held],
             [_index(snapshot, v).digest for v in held],
             loose,
+            code_identity(locate, emitted, versions.undefined, versions.resolve),
         )
     )
+
+
+_job_key.coded = True  # type: ignore[attr-defined]  # the key names the code it depends on: pool adds none
 
 
 def _job(item: tuple[Any, ...]) -> dict[str, Located | str]:
@@ -487,17 +493,37 @@ def _findings(debt: dict[str, list[str]], action: str) -> list[Finding]:
 
 
 def claims(
-    snapshot: Snapshot, version: str | None = None, units: Mapping[str, UnitSpec] | None = None
+    snapshot: Snapshot,
+    version: str | None = None,
+    units: Mapping[str, UnitSpec] | None = None,
+    *,
+    reuse: tuple[Snapshot, Collection[str]] | None = None,
 ) -> tuple[dict[str, UnitSpec], tuple[Claim, ...], list[Finding]]:
     """The one place that decides who owns which ROM bytes: each compiled unit's object is followed to the ROM ranges
     its data occupies in each holder. Returns the units with their claims' rows and withheld holders, the claims,
-    and findings."""
+    and findings. `reuse` = (an earlier snapshot, the units its writes reach): every other unit that reads the same
+    there takes the earlier pass's placements, so only the reached units are keyed and located again."""
     with effort.stage("layout.ownership") as span:
         wanted = dict(snapshot.layout.units if units is None else units)
         phases = config.kinds()
         todo = sorted((u for u in wanted.values() if "compile" in phases[u.kind]["phases"]), key=_unowned)
-        jobs = [(snapshot, u, version, False, None) for u in todo]
-        results = pool.map(snapshot.config, "layout.ownership", _job, jobs, _job_key)
+        earlier = _earlier(snapshot, version, reuse) if reuse and units is None else {}
+        fresh = [u for u in todo if earlier.get(u.path, (None,))[0] != u]
+        jobs = [(snapshot, u, version, False, None) for u in fresh]
+        located = dict(
+            zip(
+                (u.path for u in fresh),
+                pool.map(snapshot.config, "layout.ownership", _job, jobs, _job_key),
+                strict=True,
+            )
+        )
+        results = [located[u.path] if u.path in located else earlier[u.path][1] for u in todo]
+        if units is None:  # kept for a later pass over an overlay of this snapshot
+            pairs = dict(zip((u.path for u in todo), zip(todo, results, strict=True), strict=True))
+            effort.memo(("ownership.located", snapshot.digest, version), lambda: pairs)
+        if reuse:
+            with effort.stage("layout.ownership.reused") as taken_over:  # units this pass took from the earlier one
+                taken_over.add(items=len(todo) - len(fresh))
         indexes = {v: _index(snapshot, v) for v in snapshot.versions}
         taken: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         debt: dict[str, list[str]] = defaultdict(list)
@@ -513,6 +539,30 @@ def claims(
         findings = _findings(debt, "fix the source of each listed unit")
         span.add(items=len(todo), findings=findings)
         return out, tuple(found), findings
+
+
+def _earlier(
+    after: Snapshot, version: str | None, reuse: tuple[Snapshot, Collection[str]]
+) -> dict[str, tuple[UnitSpec, dict[str, Located | str]]]:
+    """The earlier pass's (unit, placements) of every unit whose placements cannot differ in `after`: not reached by
+    the writes, the same spec, members and version facts, and every data row index it locates against unchanged
+    (row places only, so renames keep it). Anything else that differs gives nothing back."""
+    before, reached = reuse
+    if before.versions != after.versions or before.config != after.config:
+        return {}
+    kept = effort.peek(("ownership.located", before.digest, version))
+    if kept is None:
+        claims(before, version)
+        kept = effort.peek(("ownership.located", before.digest, version)) or {}
+    same = {v for v in after.versions if _index(before, v).digest == _index(after, v).digest}
+    old, new = before.layout.members, after.layout.members
+    return {
+        path: (unit, located)
+        for path, (unit, located) in kept.items()
+        if path not in reached
+        and all(old.get(n) == new.get(n) for n in unit.members)
+        and after.layout.held(unit.members) <= same
+    }
 
 
 def _unowned(unit: UnitSpec) -> bool:
