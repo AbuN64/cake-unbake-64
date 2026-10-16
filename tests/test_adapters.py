@@ -373,9 +373,21 @@ def test_a_failed_chain_step_is_refused_as_the_direct_calls_refuse(adapter_confi
     assert caught.value.findings[0].key == "assemble.error"
 
 
-def test_abucache_must_be_the_version_this_unbake_requires(monkeypatch):
-    adapters.check_abucache()
-    monkeypatch.setattr(adapters.abucache, "__version__", "0.1.0")
+_PIN = adapters._pin  # the real reading, before the autouse fixture pins it to the installed abucache
+
+
+@pytest.mark.parametrize(("installed", "refused"), [("0.3.3", False), ("0.1.0", True)])
+def test_abucache_must_be_the_version_this_unbake_requires(monkeypatch, installed, refused):
+    """The pin comes from the requirement unbake was installed with (canned here: the runner's venv may predate a
+    pin bump), and setup refuses any other installed abucache."""
+    wheel = "abucache @ https://example.invalid/releases/download/v0.3.3/abucache-0.3.3-py3-none-any.whl"
+    requires = {"unbake": ["click==8.5.0", wheel]}
+    monkeypatch.setattr(adapters, "_pin", _PIN)
+    monkeypatch.setattr(adapters.metadata, "requires", lambda name: requires[name])
+    monkeypatch.setattr(adapters.abucache, "__version__", installed)
+    if not refused:
+        adapters.check_abucache()
+        return
     with pytest.raises(Refusal) as caught:
         adapters.check_abucache()
     (finding,) = caught.value.findings

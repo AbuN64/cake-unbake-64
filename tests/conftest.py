@@ -11,8 +11,8 @@ import fixture
 import pytest
 from abucache.store import forget
 
+from unbake import adapters, effort, pool
 from unbake import config as configuration
-from unbake import effort, pool
 from unbake.contracts import Config
 
 TOOLCHAIN_ROW = {
@@ -81,6 +81,14 @@ def _fresh_module_state(monkeypatch, tmp_path_factory):
     effort._listeners.clear()
     pool._drop_executor()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _pinned_abucache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setup checks the installed abucache against the unbake requirement the venv recorded at install time: a test
+    venv installed before a pin bump would fail every setup test. Tests judge the code, never the runner's install;
+    test_adapters checks the pin reading itself on a canned requirement."""
+    monkeypatch.setattr(adapters, "_pin", lambda: adapters.abucache.__version__)
 
 
 @pytest.fixture(autouse=True)

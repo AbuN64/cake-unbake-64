@@ -324,11 +324,16 @@ def tool_identity(config: Config, id: str) -> str:
     return abucache.compile.identity(chain.tool_files(), [f"{k}={v}" for k, v in sorted(chain.row["pins"].items())])
 
 
-def check_abucache() -> None:
-    """The installed abucache is the one version this unbake's own requirement names."""
+def _pin() -> str:
+    """The abucache version this unbake's installed requirement names (its wheel URL carries it)."""
     requirement = next(r for r in metadata.requires("unbake") or () if r.startswith("abucache"))
     found = re.search(r"abucache-([0-9][^-]*)-", requirement)
-    pin = found[1] if found else ""
+    return found[1] if found else ""
+
+
+def check_abucache() -> None:
+    """The installed abucache is the one version this unbake's own requirement names."""
+    pin = _pin()
     if abucache.__version__ != pin:
         raise Refusal(
             Finding(
