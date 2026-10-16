@@ -1783,15 +1783,31 @@ def test_physical_keeps_a_settled_module_a_move_does_not_reflow_and_compose_recu
 @pytest.mark.parametrize("change", ["source", "boundary"])
 def test_physical_reflows_a_module_whose_units_no_longer_match_it(scene, change):
     both = (("fa", "c", RETURN), ("fb", "c", RETURN))
-    if change == "source":  # a source move: the old file names are no longer the module's
+    if change == "source":  # a source move names its module: the old file names are no longer the module's
         snapshot = scene(both, units=(_unit(("fa",), "src/fa.c"), _unit(("fb",), "src/fb.c")))
-        result = layout.physical(snapshot, snapshot.layout, reflow=())
+        result = layout.physical(snapshot, snapshot.layout, reflow=("grp",))
         assert {p: u.members for p, u in result.items()} == {"src/grp.c": ("fa", "fb")}
-    else:  # a proof recorded a boundary inside a unit: the unit is split
+        # a move of another module re-cuts none of it: units landed under their members' names stay (G72: a member
+        # move re-laid 21 such modules, renamed their files and merged their texts into conflicting declarations)
+        assert layout.physical(snapshot, snapshot.layout, reflow=()) == snapshot.layout.units
+    else:  # a proof recorded a boundary inside a unit: the module it names is split, no other module is touched
         snapshot = scene(both, units=(_unit(("fa", "fb")),))
         bounded = replace(snapshot.layout, boundaries=("fb",))
-        result = layout.physical(snapshot, bounded, reflow=())
+        result = layout.physical(snapshot, bounded, reflow=("grp",))
         assert {p: u.members for p, u in result.items()} == {"src/grp.c": ("fa",), "src/grp_2.c": ("fb",)}
+        assert layout.physical(snapshot, bounded, reflow=()) == snapshot.layout.units
+
+
+def test_physical_keeps_an_unnamed_module_with_extra_rows_and_an_inside_boundary(scene):
+    # G72: units holding a padding row the module does not list, or a boundary inside a unit, were re-cut by any
+    # member move elsewhere (code_80299DB4, code_80400000 on G 3ff147577)
+    both = (("fa", "c", RETURN), ("fb", "c", RETURN))
+    pad = (*both, ("fb_us_padding_9A9B4", "asm", RETURN))  # a row only version b holds: the module lists no such name
+    units = (_unit(("fa",), "src/fa.c"), _unit(("fb", "fb_us_padding_9A9B4"), "src/fb.c"))
+    snapshot = scene(both, other=pad, units=units)
+    bounded = replace(snapshot.layout, boundaries=("fb_us_padding_9A9B4",))
+    assert layout.physical(snapshot, bounded, reflow=()) == snapshot.layout.units
+    assert layout.physical(snapshot, bounded, reflow=("grp",)) != snapshot.layout.units  # named: laid again
 
 
 def test_physical_relaid_units_keep_their_old_file_names_so_one_new_unit_renames_no_other(scene):
@@ -1875,3 +1891,49 @@ def test_boundary_returns_a_prologue_that_ends_in_a_call_whose_slot_is_the_body(
     plan, counts = layout.boundary_plan(snapshot)
     rows = [r[:3] for r in yaml.safe_load(plan.writes["versions/a/Game.yaml"])["segments"][0]["subsegments"][:-1]]
     assert counts["heads"] == 1 and [0x1008, "asm", "func_80000414"] in rows
+
+
+def test_code_another_version_names_between_the_same_members_takes_its_rows(scene, monkeypatch):
+    monkeypatch.setattr(layout.symbols, "edit", lambda snapshot: {})
+    head, tail = (0x27BDFFE8, *RETURN, 0x27BD0018), (0x27BDFFE0, *RETURN, 0x27BD0020)
+    body = (0x27BDFFD8, 0x0C000200, 0, *RETURN, 0x27BD0028)  # addiu sp; jal; nop; jr ra; nop; addiu sp
+    called = (0x27BDFFD8, 0x0C000300, 0, *RETURN, 0x27BD0028)  # the same code calling another address
+    fill = (0x24020001, 0x24030002)  # a fill whose bytes differ between versions: each keeps its own
+    snapshot = scene(
+        (
+            ("func_80000400", "c", head),
+            ("data/unresolved/80000410", "data", (0x47554E5F, 0x46495245, *called)),
+            ("func_80000430", "c", tail),
+        ),
+        other=(
+            ("func_80000400", "c", head),
+            ("func_80000410_padding", "data", fill),
+            ("func_80000418", "c", body),
+            ("func_80000430", "c", tail),
+        ),
+    )
+    counts = {"versioned": 0}
+    writes = layout._versioned(snapshot, counts)
+    rows = [r[:3] for r in yaml.safe_load(writes["versions/a/Game.yaml"])["segments"][0]["subsegments"][:-1]]
+    assert counts["versioned"] == 2
+    assert rows == [
+        [0x1000, "c", "func_80000400"],
+        [0x1010, "data", "func_80000410_padding"],
+        [0x1018, "asm", "func_80000418"],  # its bytes are this version's own: assembly, never another's C
+        [0x1030, "c", "func_80000430"],
+    ]
+    other = (0x27BDFFD8, 0x24020005, 0, *RETURN, 0x27BD0028)  # other instructions: no rows
+    snapshot = scene(
+        (
+            ("func_80000400", "c", head),
+            ("data/unresolved/80000410", "data", (0, 0, *other)),
+            ("func_80000430", "c", tail),
+        ),
+        other=(
+            ("func_80000400", "c", head),
+            ("func_80000410_padding", "data", fill),
+            ("func_80000418", "c", body),
+            ("func_80000430", "c", tail),
+        ),
+    )
+    assert layout._versioned(snapshot, {"versioned": 0}) == {}

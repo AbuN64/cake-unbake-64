@@ -225,6 +225,56 @@
      "additionalProperties": false
     }
    }
+  },
+  "evidence": {
+   "type": "object",
+   "properties": {
+    "object": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "first": {
+        "type": "string",
+        "minLength": 1
+       },
+       "last": {
+        "type": "string",
+        "minLength": 1
+       },
+       "source": {
+        "type": "string",
+        "minLength": 1
+       },
+       "origin": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "required": [
+       "first",
+       "last",
+       "source",
+       "origin"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "additionalProperties": false
+  },
+  "flags": {
+   "type": "object",
+   "properties": {
+    "lattice": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^-"
+     }
+    }
+   },
+   "additionalProperties": false
   }
  },
  "required": [

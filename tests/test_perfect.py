@@ -104,11 +104,13 @@ def test_two_units_or_a_split_proof_inside_break_the_boundary(tmp_path):
     ("units", "flags"),
     [
         ([_unit("src/m.c", ["f2", "f3"], options={"add": [], "omit": []})], "default"),
-        ([_unit("src/m.c", ["f2", "f3"], options={"add": ["-ffast-math"], "omit": []})], "open"),
+        ([_unit("src/m.c", ["f2", "f3"], options={"add": ["-ffast-math"], "omit": []})], "proven"),
         ([_unit("asm/m.s", ["f2", "f3"], kind="asm")], "open"),  # not every member compiles from C yet
     ],
 )
-def test_flags_are_default_only_when_every_function_compiles_without_options(tmp_path, units, flags):
+def test_flags_are_default_without_options_proven_with_them_and_open_until_every_function_compiles(
+    tmp_path, units, flags
+):
     snapshot = _snapshot(tmp_path, {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}, units)
     assert perfect.objects(snapshot)["m"]["flags"] == flags
 
@@ -119,7 +121,10 @@ def test_names_come_from_sdk_library_or_an_evidence_row(tmp_path, monkeypatch):
     assert perfect.objects(_snapshot(tmp_path, groups, units))["m"]["name"] == "assigned"
     assert perfect.objects(_snapshot(tmp_path, groups, units, library="libgcc"))["m"]["name"] == "library"
     row = {"first": "f2", "last": "f3", "source": "AI/ENEMIES/TURRETAI.CPP", "origin": "debug stream"}
-    assert perfect.objects(_snapshot(tmp_path, groups, units, evidence=(row,)))["m"]["name"] == "evidence"
+    named = perfect.objects(_snapshot(tmp_path / "row", groups, units, evidence=(row,)))["m"]
+    assert named["name"] == "assigned" and (named["start"], named["end"]) == ("pad", "pad")  # src/m.c is not its file
+    row = {**row, "source": "AI/ENEMIES/M.CPP"}
+    assert perfect.objects(_snapshot(tmp_path / "file", groups, units, evidence=(row,)))["m"]["name"] == "evidence"
     monkeypatch.setattr(perfect.infer, "sdk", lambda s: {n: SdkHit(n, "sqrtf", "libm") for n in ("f2", "f3")})
     assert perfect.objects(_snapshot(tmp_path / "sdk", groups, units))["m"]["name"] == "sdk"
 
@@ -162,3 +167,30 @@ def test_census_counts_axes_and_perfect_bytes_per_version(tmp_path):
     assert (row["bytes"], row["total"], row["modules"], row["perfect_modules"]) == (56, 72, 3, 2)
     assert (row["boundary"], row["flags"], row["members"], row["named"]) == (3, 3, 2, 0)
     assert row["module_starts"] == {"pad": 2, "segment": 1} and row["open_edges"] == 0 and row["contradictions"] == 0
+
+
+def test_a_module_flag_set_is_proven_between_cuts_and_a_conflict_at_a_join(tmp_path):
+    from dataclasses import replace
+
+    groups = {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}
+    units = [_unit("src/a.c", ["f1"]), _unit("src/m.c", ["f2", "f3"]), _unit("src/z.c", ["f4"])]
+    snapshot = _snapshot(tmp_path, groups, units)
+    flagged = {"add": ["-ffast-math"], "omit": []}
+    lay = snapshot.layout
+    snapshot.layout = replace(lay, groups={**lay.groups, "m": replace(lay.groups["m"], options=flagged)}, digest="m")
+    snapshot.digest = "m"
+    assert perfect.objects(snapshot)["m"]["flags"] == "proven"  # pad cuts on both sides: its own object
+    island = _snapshot(tmp_path / "island", {"a": ("f1", "f2"), "m": ("f3",), "z": ("f4",)}, units)
+    lay = island.layout
+    island.layout = replace(lay, groups={**lay.groups, "m": replace(lay.groups["m"], options=flagged)}, digest="i")
+    island.digest = "i"
+    assert perfect.objects(island)["m"]["flags"] == "conflict"  # f2|f3 is unal: one object cannot hold two sets
+
+
+def test_units_of_one_module_under_two_flag_sets_are_a_conflict(tmp_path):
+    units = [
+        _unit("src/m.c", ["f2"]),
+        _unit("src/m_2.c", ["f3"], options={"add": ["-fno-strength-reduce"], "omit": []}),
+    ]
+    snapshot = _snapshot(tmp_path, {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}, units)
+    assert perfect.objects(snapshot)["m"]["flags"] == "conflict"

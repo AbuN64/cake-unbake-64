@@ -1015,7 +1015,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
         start_ns, waited, current, rebalanced = time.monotonic_ns(), 0.0, (0, 0), time.monotonic()
         held, mark = 0.0, time.monotonic()  # slot-seconds this gather held: the share it was given, as it changed
         runs = [_Run(*group) for group in groups]
-        total, admitted, joined = 0, 0, False
+        total, admitted, joined, width = 0, 0, False, 1  # width before anything can fail: the finally reads it
         pending: dict[Future[list[tuple[bool, Any, Json]]], tuple[_Run, list[int]]] = {}
         quiet: dict[int, float] = {}  # the workers' CPU at the last window that finished no chunk
         spills: set[str] = set()  # the spill files this gather's tasks name: kept while it runs
@@ -1023,7 +1023,6 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             _resolve(config, runs)
             total = sum(len(r.todo) for r in runs)
             inline = total <= _INLINE_AT or _in_worker  # nothing to fan out: the jobs run here, one at a time
-            width = 1
             fan = max(1, min(config.host.workers, _budget(config.host)))
             size = {r: 1 if inline else max(1, len(r.todo) // (fan * 32)) for r in runs}
             needed: set[str] = set()

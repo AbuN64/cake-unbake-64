@@ -1944,3 +1944,13 @@ def test_measure_bound_without_held_versions_dispatches_nothing(cfg: Config, mon
     snapshot = snap(cfg, {})
     assert compare.measure_bound(cfg, [], {}) == []
     assert compare.measure_bound(cfg, [(snapshot, unit())], {}) == [()]
+
+
+def test_a_variants_row_carries_its_own_flag_set_and_function(tmp_path):
+    row = {"file": "a.c", "flags": ["-ffast-math"], "omit_flags": ["-O2"], "function": "f"}
+    got = compare._variant_params({"flag": ["-g"], "omit_flag": [], "function": None}, row)
+    assert (got["flag"], got["omit_flag"], got["function"]) == (["-ffast-math"], ["-O2"], "f")
+    plain = compare._variant_params({"flag": ["-g"], "omit_flag": [], "function": None}, {"file": "a.c"})
+    assert (plain["flag"], plain["function"]) == (["-g"], None)  # the command's own set stands
+    with pytest.raises(Refusal):
+        compare._variant_params({}, {"file": "a.c", "flags": "-ffast-math"})

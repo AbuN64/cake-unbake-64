@@ -38,9 +38,24 @@ from unbake.contracts import Claim, Config, Finding, Group, Json, LayoutMap, Mov
 _ROUNDS = 5  # partial applies a batch at most this many times
 _SPLITS = 12  # rounds a command spends halving sets one cause blamed; then such sets refuse whole
 _REAPPLY = 1  # proof-found boundaries re-apply a batch at most this many times per command: work lands early
-_OPS = ("symbol", "type", "member", "module", "source", "header", "file", "relayout")
+_OPS = ("symbol", "type", "member", "module", "source", "header", "file", "options", "relayout")
 _NAME = re.compile(r"[A-Za-z_]\w*")
 _PATH = {"source": re.compile(r"src/[\w+.-]+(/[\w+.-]+)*\.c"), "header": re.compile(r"include/[\w+.-]+(/[\w+.-]+)*\.h")}
+
+
+def _flag_set(text: str) -> Json | None:
+    """The module flag set an `options` move names: JSON {"add": [...], "omit": [...]} of compiler options, each list
+    optional; None when the text is no such set."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or set(value) - {"add", "omit"}:
+        return None
+    lists = [value.get(k, []) for k in ("add", "omit")]
+    if any(not isinstance(v, list) or any(not isinstance(f, str) or not f.startswith("-") for f in v) for v in lists):
+        return None
+    return {"add": list(lists[0]), "omit": list(lists[1])}
 
 
 def _placement(source: str) -> tuple[str, str]:
@@ -292,7 +307,7 @@ def edit(
                 op == "member" and subject not in known
             ):
                 reject(move, "move.unknown", f"{subject} is not a symbol or member of the project", unit=subject)
-            elif op in ("module", "source", "header") and subject not in groups:
+            elif op in ("module", "source", "header", "options") and subject not in groups:
                 reject(move, "move.unknown", f"{subject} is not a module", unit=subject)
             elif op == "file" and not any(g.header == subject for g in groups.values()) and not snapshot.peek(subject):
                 reject(move, "move.unknown", f"{subject} is not a header", path=subject)
@@ -377,6 +392,15 @@ def edit(
                 else:
                     bind(replace(group, name=target))
                 touch |= {subject, target}
+            elif op == "options":  # one flag set per object: every unit of the module is laid and proved with it
+                flags = _flag_set(target)
+                if flags is None:
+                    reject(move, "move.options", f'{target} is not a flag set {{"add": [...], "omit": [...]}}')
+                elif any(locked(n) for n in groups[subject].members):
+                    reject(move, "move.library", f"{subject} holds a library unit", unit=subject)
+                else:
+                    bind(replace(groups[subject], options=flags))
+                    touch.add(subject)
             elif op == "source" and path_ok(move, "source"):
                 clash = lay.units.get(target)
                 if clash and clash.group != subject:
@@ -426,7 +450,13 @@ def edit(
         shifted = replace(lay, groups=groups, units=units, fuzzy=fuzzy, digest="", boundaries=bounds)
         mid = layout.overlay(snapshot, {**writes, "layout.toml": layout.dump_map(shifted)})
         split: list[Finding] = []
-        reflow = None if any(m.op == "relayout" for m in moves) else ()  # a move re-lays only the modules it changes
+        # a move re-lays only the modules it changes (a source move renames its module's files); every other module
+        # keeps its units as they are, whatever their file names
+        changed = {n for names in touched.values() for n in names if n in groups}
+        fresh = set(boundaries) - set(lay.boundaries)  # a boundary this command's proofs found cuts its module again
+        changed |= {u.group for u in lay.units.values() if fresh.intersection(u.members)}
+        changed |= {g.name for g in groups.values() if fresh.intersection(g.members)}
+        reflow = None if any(m.op == "relayout" for m in moves) else changed
         final = replace(mid.layout, units=layout.physical(mid, mid.layout, split, keep, reflow=reflow))
         if (final.groups, final.units, final.fuzzy, final.boundaries) != (
             lay.groups,
@@ -2097,7 +2127,10 @@ def _apply(
                 return _refusal(moves, snapshot, rows)
         with effort.stage("move.readers"):
             readers = headers.readers(snapshot, overlay, changed)  # as a publish judges its consumers
-        affected = sorted({*(p for p in writes if p in overlay.layout.units), *readers})
+        # a unit whose flag set changed builds other bytes from the same text: it is proved too
+        prior = snapshot.layout.units
+        flagged = {p for p, u in overlay.layout.units.items() if p in prior and prior[p].options != u.options}
+        affected = sorted({*(p for p in writes if p in overlay.layout.units), *readers, *flagged})
         with effort.stage("move.proof"):
             proofs, gaps = publish._proofs(overlay, affected) if affected and not unproved else ((), ())
         refused = [

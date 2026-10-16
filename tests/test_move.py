@@ -287,6 +287,26 @@ def test_a_member_move_joins_two_contiguous_units_into_one_at_the_module_source(
     assert seen.folded == ["src/f1.c"] and seen.files == 1 and seen.claims == 2
 
 
+def test_a_member_move_re_lays_only_its_own_modules_never_a_module_landed_one_unit_per_function(
+    tmp_path: Path, seen: Any
+) -> None:
+    # G72: gc's two member-named units would join under a relayout; a move of f2 into ga must leave them as they are
+    functions = {"f1": both(0x1000), "f2": both(0x1010), "f3": both(0x1020), "f4": both(0x1030)}
+    groups = [group("ga", "f1", source="src/f1.c"), group("gb", "f2", source="src/f2.c")]
+    groups.append(group("gc", "f3", "f4", source="src/f3.c"))
+    units = [unit("src/f1.c", "ga", "f1"), unit("src/f2.c", "gb", "f2")]
+    units += [unit("src/f3.c", "gc", "f3"), unit("src/f4.c", "gc", "f4")]
+    headers = {"main/ga.h": "void f1(void);\n", "main/gb.h": "void f2(void);\n"}
+    headers["main/gc.h"] = "void f3(void);\nvoid f4(void);\n"
+    sources = {f"{n}.c": body(n) for n in ("f1", "f2", "f3")}
+    sources["f4.c"] = '#include "main/gc.h"\nint f4(void) { return 1; }\n'
+    cfg = world(tmp_path, functions=functions, groups=groups, units=units, headers=headers, sources=sources)
+    go(cfg, "member", "f2", "ga")
+    layout_after = seen.plans[0].writes["layout.toml"].decode()
+    assert 'path = "src/f3.c"' in layout_after and 'path = "src/f4.c"' in layout_after
+    assert not any(p in seen.plans[0].writes for p in ("src/f3.c", "src/f4.c"))
+
+
 def test_a_merged_unit_writes_a_forward_typedef_both_old_units_make_once(tmp_path: Path, seen: Any) -> None:
     forward = "typedef struct Owner Owner;\n"
     sources = {"f1.c": body("f1", forward), "f2.c": body("f2", forward), "f3.c": body("f3")}
@@ -2338,3 +2358,41 @@ def test_a_refused_move_changes_nothing_the_moves_after_it_see(tmp_path: Path, s
     alone = move.edit(snap, accepted)
     assert sorted(m.index for m, _ in both.bad) == [0, 1, 2] and alone.bad == []
     assert both.writes == alone.writes
+
+
+# ------------------------------------------------------------------ options: one flag set per object
+
+
+def test_an_options_move_gives_the_module_its_flag_set_and_proves_its_units_under_it(tmp_path: Path, seen: Any) -> None:
+    cfg = world(tmp_path)
+    result = go(cfg, "options", "gb", '{"add": ["-ffast-math", "-fno-delayed-branch"]}')
+    assert result["refused"] == [] and result["applied"]["options"] == 1
+    assert ["src/f2.c"] in seen.measured  # the module's unit is proved under its new set, no other
+    after = layout.overlay(move.layout.capture(cfg), seen.plans[-1].writes)
+    wanted = {"add": ["-ffast-math", "-fno-delayed-branch"], "omit": []}
+    assert after.layout.groups["gb"].options == wanted and after.layout.units["src/f2.c"].options == wanted
+    assert after.layout.units["src/f1.c"].options == {"add": [], "omit": []}
+    assert "[group.options]" in text(seen.plans[-1], "layout.toml")
+
+
+def test_an_options_move_a_member_loses_bytes_under_is_refused(tmp_path: Path, seen: Any) -> None:
+    seen.exact = False  # the members built under the set no longer match: fake flags, the island stays apart
+    result = go(world(tmp_path), "options", "gb", '{"add": ["-fno-strength-reduce"]}')
+    assert {f["key"] for r in result["refused"] for f in r["findings"]} == {"move.not_exact"} and seen.plans == []
+
+
+@pytest.mark.parametrize("target", ['{"add": "-O2"}', '{"add": ["O2"]}', '{"flags": []}', "-O2"])
+def test_an_options_move_takes_only_a_flag_set(tmp_path: Path, seen: Any, target: str) -> None:
+    result = go(world(tmp_path), "options", "gb", target)
+    assert [f["key"] for r in result["refused"] for f in r["findings"]] == ["move.options"]
+
+
+def test_modules_with_other_flag_sets_never_share_a_unit(tmp_path: Path, seen: Any) -> None:
+    groups = [group("ga", "f1", "f2", source="src/f1.c"), group("gc", "f3", source="src/f3.c")]
+    units = [unit("src/f1.c", "ga", "f1", "f2"), unit("src/f3.c", "gc", "f3")]
+    sources = {"f1.c": body("f1") + body("f2"), "f3.c": body("f3")}
+    cfg = world(tmp_path, groups=groups, units=units, sources=sources)
+    snap = move.layout.capture(cfg)
+    edited = move.edit(snap, [Move(0, "options", "gc", '{"add": ["-mfp32"]}'), Move(1, "member", "f3", "ga")])
+    laid = {p: (u.members, u.options) for p, u in edited.layout.units.items()}
+    assert laid["src/f1.c"] == (("f1", "f2", "f3"), {"add": [], "omit": []})  # f3 joined ga: ga's set, one file

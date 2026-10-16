@@ -1953,3 +1953,16 @@ def test_a_slot_waiter_only_rechecks_without_an_event_when_its_caller_requests_i
     monkeypatch.setattr(pool.select, "select", select)
     pool._until(tmp_path, tmp_path / "cmd-1.lock", lambda: False, stop=502, interval=interval)
     assert calls == [interval]
+
+
+def test_a_refusal_while_keys_resolve_reaches_the_caller_not_an_unbound_width(tmp_path, monkeypatch):
+    # G73: unbake map crashed with UnboundLocalError on `width` when a key job refused (no assembly for a row)
+    refusal = Refusal(Finding("version.split", "no assembly for osScAddClient in de", action="run unbake setup"))
+
+    def refuse(config, runs):
+        raise refusal
+
+    monkeypatch.setattr(pool, "_resolve", refuse)
+    with effort.command("t", ()), pytest.raises(Refusal) as caught:
+        pool.gather(_config(tmp_path), [("job", len, [b"a"], len)])
+    assert caught.value is refusal

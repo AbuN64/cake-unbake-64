@@ -60,6 +60,30 @@
      },
      "library": {
       "type": "string"
+     },
+     "options": {
+      "type": "object",
+      "properties": {
+       "add": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "omit": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       }
+      },
+      "required": [
+       "add",
+       "omit"
+      ],
+      "additionalProperties": false
      }
     },
     "required": [

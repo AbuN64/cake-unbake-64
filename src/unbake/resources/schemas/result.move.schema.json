@@ -126,7 +126,8 @@
          "module",
          "source",
          "header",
-         "file"
+         "file",
+         "options"
         ]
        },
        "subject": {

@@ -11,6 +11,7 @@ perfect = B and F and M; N is counted apart."""
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import pairwise
@@ -28,7 +29,7 @@ _RANK = {"join": 0, "open": 1}  # worst first: a defect, then unproven; every pr
 
 def evidence_rows(snapshot: Snapshot) -> tuple[Json, ...]:
     """Project evidence rows (`[[evidence.object]]` in config.toml): first, last, source, origin."""
-    return tuple(getattr(snapshot.config.project, "evidence_objects", ()) or ())
+    return tuple(snapshot.config.project.evidence_objects)
 
 
 def _edge(
@@ -56,6 +57,11 @@ def _edge(
     return "open"  # al0 everywhere, or a contradiction
 
 
+def _stem(path: str) -> str:
+    """A file's name without folder or suffix, lower case: TURRETAI.CPP and src/game/ai/enemies/turretai.c agree."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+
+
 def _worst(labels: Iterable[str]) -> str:
     seen = list(labels)
     return min(seen, key=lambda label: _RANK.get(label, 2)) if seen else "open"
@@ -69,6 +75,18 @@ def _built(snapshot: Snapshot, unit: UnitSpec | None) -> bool:
     return bool(
         kind["decompiled"] or (kind["credit"] == "code" and configuration.library(snapshot.config.project, unit.path))
     )
+
+
+def _flags(options: bool, built: bool, edges: Iterable[str], mixed: bool = False) -> str:
+    """default: no options and every function compiles exact; proven: a flag set every function compiles exact under;
+    conflict: units of one module under two sets, or a flag set on a module that sits inside an object (an edge at a
+    proven join): one object cannot have two sets, so this C is not the original; open: not every function compiles
+    yet."""
+    if mixed or (options and "join" in edges):
+        return "conflict"
+    if not built:
+        return "open"
+    return "proven" if options else "default"
 
 
 def _code_modules(snapshot: Snapshot) -> dict[str, list[str]]:
@@ -134,11 +152,18 @@ def _objects(snapshot: Snapshot) -> dict[str, Json]:
                         cut_inside = True
             units = {u.path if (u := layout.unit_of(snapshot, n)) else n for n in functions}
             debt = sum(1 for n in functions[1:] if n in boundaries)
-            options = any(any(u.options.values()) for p in units if (u := lay.units.get(p)) is not None)
+            sets = {
+                json.dumps(group.options or u.options, sort_keys=True)
+                for p in units
+                if (u := lay.units.get(p)) is not None
+            }
+            options = any(group.options.values()) or any(
+                any(u.options.values()) for p in units if (u := lay.units.get(p)) is not None
+            )
             built = all(_built(snapshot, layout.unit_of(snapshot, n)) for n in functions)
             hits = {sdk.get(n, "") for n in functions}
-            if named.get(functions[0]):
-                label = "evidence"
+            if _stem(named.get(functions[0], "")) and _stem(named[functions[0]]) == _stem(group.source):
+                label = "evidence"  # the module starts where the row does and its file is the one the row names
             elif len(hits) == 1 and "" not in hits:
                 label = "sdk"
             elif group.library:
@@ -150,7 +175,7 @@ def _objects(snapshot: Snapshot) -> dict[str, Json]:
                 "end": _worst(ends),
                 "inside": "cut" if cut_inside or apart else "joined",
                 "units": len(units),
-                "flags": "open" if options or not built else "default",
+                "flags": _flags(options, built, starts + ends, len(sets) > 1),
                 "name": label,
             }
             record["boundary"] = (

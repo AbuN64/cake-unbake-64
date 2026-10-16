@@ -264,3 +264,15 @@ def test_project_readme_map_must_name_a_version(tmp_path: Path, toolchains: dict
     assert [(f.key, f.path.split(":")[-1], f.reason) for f in refusal.findings] == [
         ("config.file", "project.readme_map", "zz is not in project.versions")
     ]
+
+
+def test_project_evidence_rows_and_lattice_options_load(tmp_path: Path, toolchains: dict[str, Any]) -> None:
+    code = b"\x03\xe0\x00\x08\x00\x00\x00\x00"
+    root = fixture.project(tmp_path, functions={"func_80000400": {v: (fixture.ROM_BASE, code) for v in "ab"}})
+    path = root / "config.toml"
+    row = (
+        '[[evidence.object]]\nfirst = "f1"\nlast = "f2"\nsource = "AI/ENEMIES/TURRETAI.CPP"\norigin = "debug stream"\n'
+    )
+    path.write_text(path.read_text() + "\n" + row + '\n[flags]\nlattice = ["-fno-gcse"]\n')
+    project = configuration.load_project(root)
+    assert project.evidence_objects[0]["source"] == "AI/ENEMIES/TURRETAI.CPP" and project.lattice == ("-fno-gcse",)

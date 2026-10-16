@@ -787,6 +787,12 @@ class _Declarations:
         return _Side(own, reach, self.header_names(frozenset(reach)), run.paths | unit.paths, run.header)
 
 
+def _options_of(group: Group, unit: UnitSpec) -> Json:
+    """The flag set a unit of the module compiles with: the module's own once it has one (one set per object; empty
+    lists are the defaults), else what the unit carries from before modules held options."""
+    return group.options or unit.options
+
+
 def physical(
     snapshot: Snapshot,
     layout: LayoutMap,
@@ -800,9 +806,10 @@ def physical(
     A member the map records as a boundary (a proof found bytes change when it shared a file) starts a new unit, and
     a unit in `keep` (one whose proof failed this command) stays exactly as it is.
     `reflow` names the modules laid again (None: every module, a relayout); any other module whose units already hold
-    exactly what it lists, under its own file names and with no recorded boundary inside a unit, keeps its units as
-    they are: a move that changes no module's members re-cuts no unit. A unit laid again keeps the file name of the
-    old unit its first member came from when that name is still its module's, so one new unit renames no other.
+    every member it lists keeps its units as they are, whatever their file names, extra rows or inside boundaries (a
+    unit landed under its member's name stays so): a move re-cuts only the modules it changes.
+    A unit laid again keeps the file name of the old unit its first member came from when that name is still its
+    module's, so one new unit renames no other.
     Each name that keeps units apart is a non-blocking layout.decl_split in `split`."""
     with effort.stage("layout.physical"):
         apart: dict[str, set[str]] = {}
@@ -891,15 +898,18 @@ def physical(
             )
 
         def settled(group: Group, landed: set[str]) -> bool:
-            """Whether the module's units already hold what it lists: laying them again could only re-cut them."""
+            """Whether a module the command did not change keeps its units: they hold every member it lists once, with
+            its flag set. What else they hold (a padding or another version's row) and a boundary inside a unit stay
+            as they are: only a relayout, or a move or proof that names the module, lays it again."""
             units = by_group.get(group.name, [])
             held = [n for u in units for n in u.members if n.count("/") != 2]
+            elsewhere = {n for n in landed if n.count("/") != 2} - set(held)  # held by another module's unit
             return (
                 bool(units)
+                and all(u.options == _options_of(group, u) for u in units)  # a module flag set changed: lay again
                 and len(held) == len(set(held))
-                and set(held) == {n for n in landed if n.count("/") != 2}
-                and all(scheme(group.name, u.path) for u in units)
-                and not any(n in boundaries for u in units for n in u.members[1:])
+                # a member it lists that a re-laid module's unit holds comes back: that module lets it go
+                and not any(old[n].group in (reflow or ()) for n in elsewhere)
             )
 
         for group in layout.groups.values():
@@ -963,7 +973,7 @@ def physical(
                 props = (
                     tuple(sorted({v for n in atom for v in members[n].holders()})),
                     unit.toolchain,
-                    json.dumps(unit.options, sort_keys=True),
+                    json.dumps(_options_of(group, unit), sort_keys=True),
                     tuple(sorted(unit.withheld)),
                     _defines(snapshot, unit),
                 )
@@ -1018,7 +1028,13 @@ def physical(
                 path = claimed.get(index) or unit_path(layout, group.name, {*result, *claimed.values()})
                 kind = compiled if any(members[n].kind == "function" for n in run) else datum
                 unit = old[run[0]]
-                result[path] = UnitSpec(path, kind, group.name, tuple(run), unit.toolchain, unit.options, unit.withheld)
+                options = _options_of(group, unit)
+                result[path] = UnitSpec(path, kind, group.name, tuple(run), unit.toolchain, options, unit.withheld)
+        if reflow is not None:  # units of a module the map no longer names keep their rows while no unit took them
+            taken = {n for u in result.values() for n in u.members}
+            for name, units in by_group.items():
+                if name not in layout.groups and name not in reflow:
+                    result.update((u.path, u) for u in units if not taken.intersection(u.members))
         if split is not None:
             split += [
                 Finding(
@@ -1381,6 +1397,79 @@ def _end(code: Sequence[int], vram: int) -> int | None:
             if op != 2 and not (op == 4 and w >> 21 & 31 == w >> 16 & 31):
                 todo.append(i + 2)
     return max(covered) + 1 if covered else None
+
+
+def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | None]:
+    """The rows of a version whose unowned data row lies between two members exactly where another version holds the
+    same instructions (addresses masked) as member rows between the same two members: those rows, rebased, replace
+    it (code typed as data in one version only because nothing named it there). A code row comes as assembly: its
+    bytes are this version's own, whatever source another version builds it from. The version with the same addresses
+    is asked first."""
+    from unbake.infer import masked_code  # infer reads layout, so the import waits for the first use
+
+    _, assembly, _ = _kinds()
+
+    def masked(v: Version, start: int, end: int) -> bytes:
+        blob = version_data.rom_bytes(v, start, end)
+        words = struct.unpack(f">{len(blob) // 4}I", blob[: len(blob) // 4 * 4])
+        return masked_code([(w, rabbitizer.Instruction(w, vram=0)) for w in words])
+
+    rows = {h: sorted(split_states(snapshot, v), key=lambda r: r[2].rom_start) for h, v in snapshot.versions.items()}
+    at = {h: {name: i for i, (name, _, _) in enumerate(found)} for h, found in rows.items()}
+    held = {name: set(member.holders()) for name, member in snapshot.layout.members.items()}
+    order = sorted(snapshot.versions, key=lambda h: (h != snapshot.config.project.names_from, h))
+    writes: dict[str, bytes | None] = {}
+    table = symbols.edit(snapshot)
+    for h, version in sorted(snapshot.versions.items()):
+        for i, (name, state, p) in enumerate(rows[h]):
+            if not version_data.unowned(name) or not 0 < i < len(rows[h]) - 1:
+                continue
+            (a, _, pa), (b, _, pb) = rows[h][i - 1], rows[h][i + 1]
+            if (
+                version_data.unowned(a)
+                or version_data.unowned(b)
+                or (pa.rom_end, pb.rom_start) != (p.rom_start, p.rom_end)
+            ):
+                continue
+            others = [w for w in order if w != h and a in at[w] and b in at[w] and at[w][b] - at[w][a] >= 2]
+            for w in sorted(others, key=lambda w: rows[w][at[w][a]][2].vram != pa.vram):  # same addresses first
+                gap = rows[w][at[w][a] + 1 : at[w][b]]
+                start, end = rows[w][at[w][a]][2].rom_end, rows[w][at[w][b]][2].rom_start
+                if (
+                    end - start != p.size
+                    or not any(q.section == ".text" for _, _, q in gap)  # code typed as data, never data for data
+                    or any(version_data.unowned(n) or h in held.get(n, {h}) for n, _, _ in gap)
+                    or gap[0][2].rom_start != start
+                    or any(  # each code row the same instructions here; a fill or data row is this version's own
+                        masked(snapshot.versions[w], q.rom_start, q.rom_end)
+                        != masked(version, p.rom_start + q.rom_start - start, p.rom_start + q.rom_end - start)
+                        for _, _, q in gap
+                        if q.section == ".text"
+                    )
+                ):
+                    continue
+                pieces = tuple((p.rom_start + q.rom_start - start, n) for n, _, q in gap)
+                text = edit_split(_written(writes, snapshot, version.split), name, drop=True, additions=pieces)
+                for n, kind, q in gap:
+                    code = q.section == ".text"
+                    text = edit_split(text, n, state=assembly if code else kind, types=frozenset({state}))
+                writes[version.split] = text
+                for offset, n in pieces:
+                    if n in table:  # a name the table gives other versions gets this version's address too
+                        table[n][h] = p.vram + offset - p.rom_start
+                counts["versioned"] += len(gap)
+                break
+    if writes:
+        writes.update(
+            {
+                path: data
+                for path, data in symbols.files(
+                    table, {v.id: v.symbols_file for v in snapshot.versions.values()}
+                ).items()
+                if data != snapshot.read(path)
+            }
+        )
+    return writes
 
 
 def _framed(code: Sequence[int], vram: int, frame: int) -> bool:
@@ -1759,7 +1848,7 @@ def boundary_plan(snapshot: Snapshot) -> tuple[Plan, dict[str, Any]]:
                     (plan, dict(counts)) if first is None else (first, _added(total, counts) if plan.writes else total)
                 )
                 writes = {**writes, **plan.writes}
-                if not plan.writes or not (counts["fill"] or counts["heads"]):
+                if not plan.writes or not (counts["fill"] or counts["heads"] or counts["versioned"]):
                     break
                 trial = overlay(snapshot, writes)
             assert first is not None  # the rounds run at least once
@@ -1785,7 +1874,18 @@ def _boundary(snapshot: Snapshot) -> tuple[Plan, dict[str, Any]]:
         rule: {"proposed": 0, "applied": 0, "withheld": 0} for rule in ("prelude", "split", "merge")
     }
     counts["withheld_reasons"], counts["join"], counts["align"], counts["retype"] = {}, 0, 0, 0
-    counts["fill"], counts["heads"] = 0, 0
+    counts["fill"], counts["heads"], counts["versioned"] = 0, 0, 0
+    if versioned := _versioned(snapshot, counts):
+        return Plan(
+            "layout",
+            snapshot.digest,
+            versioned,
+            (),
+            (),
+            (),
+            "layout: rows another version holds over the same bytes",
+            digest((snapshot.digest, versioned)),
+        ), counts
     heads, blocked = _heads(snapshot, counts)
     if heads:
         return Plan(

@@ -1040,15 +1040,27 @@ def _variant_params(params: Json, row: Any) -> Json:
                 action="pass a JSON list of {file, overlays}",
             )
         )
-    unknown = sorted(set(row) - {"file", "overlays"})
+    unknown = sorted(set(row) - {"file", "overlays", "flags", "omit_flags", "function"})
     if unknown:  # a misspelt key would score the variant without what it names
         raise Refusal(
             Finding(
                 "land.request",
-                reason=f"--variants rows take file and overlays only, not {', '.join(unknown)}",
-                action="pass a JSON list of {file, overlays}",
+                reason=f"--variants rows take file, overlays, flags, omit_flags, function: not {', '.join(unknown)}",
+                action="pass a JSON list of {file, overlays, flags, omit_flags, function}",
             )
         )
+    for key in ("flags", "omit_flags"):  # a row's own flag set: one call scores a whole flag lattice
+        value = row.get(key)
+        if value is not None and (not isinstance(value, list) or any(not isinstance(f, str) or not f for f in value)):
+            raise Refusal(
+                Finding(
+                    "land.request",
+                    reason=f"--variants {key} must be a list of nonempty compiler options or null",
+                    action='pass e.g. "flags": ["-ffast-math"]',
+                )
+            )
+    if row.get("function") is not None and (not isinstance(row["function"], str) or not row["function"]):
+        raise Refusal(Finding("land.request", reason="--variants function must be a member name or null"))
     overlays = row.get("overlays")
     if overlays is not None and (
         not isinstance(overlays, list) or any(not isinstance(o, str) or not o for o in overlays)
@@ -1060,7 +1072,12 @@ def _variant_params(params: Json, row: Any) -> Json:
                 action="pass overlays as a JSON list of file paths or PATH=FILE strings",
             )
         )
-    return {**params, "file": Path(row["file"]), "extras": [Path(o) for o in overlays or ()]}
+    own = {
+        **({"flag": list(row["flags"])} if row.get("flags") is not None else {}),
+        **({"omit_flag": list(row["omit_flags"])} if row.get("omit_flags") is not None else {}),
+        **({"function": row["function"]} if row.get("function") is not None else {}),
+    }
+    return {**params, **own, "file": Path(row["file"]), "extras": [Path(o) for o in overlays or ()]}
 
 
 def _variant_job(item: tuple[Snapshot, Json]) -> Json:
@@ -1068,8 +1085,15 @@ def _variant_job(item: tuple[Snapshot, Json]) -> Json:
     try:
         result = _score_one(snapshot, params)
     except Refusal as refusal:
-        return {"file": str(params["file"]), "ok": False, "findings": [asdict(f) for f in refusal.findings]}
-    return {"file": str(params["file"]), "ok": True, "result": {k: v for k, v in result.items() if k != "proofs"}}
+        flags = {"flags": list(params.get("flag") or ()), "omit_flags": list(params.get("omit_flag") or ())}
+        return {"file": str(params["file"]), **flags, "ok": False, "findings": [asdict(f) for f in refusal.findings]}
+    flags = {"flags": list(params.get("flag") or ()), "omit_flags": list(params.get("omit_flag") or ())}
+    return {
+        "file": str(params["file"]),
+        **flags,
+        "ok": True,
+        "result": {k: v for k, v in result.items() if k != "proofs"},
+    }
 
 
 def _score_variants(config: Config, params: Json) -> Json:

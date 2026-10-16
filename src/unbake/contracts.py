@@ -356,6 +356,10 @@ class Project:
     readme_map_link: str | None = (
         None  # the image links to this page at the anchor of the version's lower-cased cartridge id
     )
+    # [[evidence.object]] rows: an original object the project proves (first, last, source, origin): its edges are
+    # proven cuts and its source path is evidenced, e.g. a debug record's __FILE__
+    evidence_objects: tuple[Json, ...] = ()
+    lattice: tuple[str, ...] = ()  # [flags] lattice: compiler options the project adds to the toolchain's lattice
 
 
 @dataclass(frozen=True)
@@ -419,6 +423,8 @@ class Group:
     header: str  # module header path
     subsystem: str = ""  # path below the repo.toml [layout] subsystem_source, e.g. "main/actor"; "" until placed
     library: str = ""  # name below the repo.toml [layout] library_source, "" for game code
+    # one flag set per object: {"add": [...], "omit": [...]} every unit of the module compiles with ({} = defaults)
+    options: Json = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

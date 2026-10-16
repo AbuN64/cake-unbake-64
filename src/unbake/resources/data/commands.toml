@@ -103,7 +103,7 @@ params = [
 help = "Apply one move (OP SUBJECT TARGET) or, with -, JSON moves from stdin, as one proved change; byte-identical in every version or nothing is written."
 handler = "move.run"
 params = [
-  { name = "op", kind = "argument", type = "str", required = true, multiple = false, help = "symbol, type, member, module, source, header or file; - reads JSON moves from stdin; relayout (alone) sets the units to the ones the groups lay out, once before moves" },
+  { name = "op", kind = "argument", type = "str", required = true, multiple = false, help = "symbol, type, member, module, source, header, file or options (TARGET a JSON flag set {add, omit}: the module compiles with it); - reads JSON moves from stdin; relayout (alone) sets the units to the ones the groups lay out, once before moves" },
   { name = "subject", kind = "argument", type = "str", required = false, multiple = false, help = "what moves (absent with -)" },
   { name = "target", kind = "argument", type = "str", required = false, multiple = false, help = "where it goes (absent with -)" },
   { name = "partial", kind = "flag", type = "str", required = false, multiple = false, help = "drop each refused move and apply the rest: a refusal several moves share is retried in halves, a move the plan refuses beside others is retried alone" },
