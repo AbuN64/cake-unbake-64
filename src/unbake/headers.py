@@ -61,17 +61,24 @@ def _quoted(content: bytes) -> tuple[str, ...]:
 
 def included_by(snapshot: Snapshot, changed: Collection[str] = ()) -> dict[str, set[str]]:
     """Per file the files that include it directly. A quote include names a file beside the includer, else under
-    include/ or src/; every existing one is taken. Built once per snapshot."""
+    include/ or src/; every existing one is taken, including library-local headers. Built once per snapshot."""
 
     def graph() -> dict[str, set[str]]:
         known = {*sources(snapshot), *snapshot.layout.units, *changed}
         found: dict[str, set[str]] = defaultdict(set)
-        for path in known:
-            content = snapshot.peek(path) or b""
+        read = cache(snapshot.peek)
+        pending = sorted(known)
+        while pending:
+            path = pending.pop()
+            content = read(path) or b""
             for name in effort.memo(("quoted", digest(content)), partial(_quoted, content)):
                 for base in (posixpath.dirname(path), "include", "src"):
-                    if (target := posixpath.normpath(posixpath.join(base, name))) in known:
+                    target = posixpath.normpath(posixpath.join(base, name))
+                    if target in known or read(target) is not None:
                         found[target].add(path)
+                        if target not in known:
+                            known.add(target)
+                            pending.append(target)
         return found
 
     return effort.memo(("included-by", snapshot.digest, tuple(sorted(changed))), graph)
@@ -3095,10 +3102,11 @@ def _inherited(
     return found
 
 
-def _dedupe(text: str, inherited: Collection[str] = ()) -> str:
+def _dedupe(text: str, inherited: Collection[str] = (), *, local: bool = True) -> str:
     """The text with each file-scope typedef kept once: a repeat of an earlier one, or of one an included file already
     makes, is dropped (what a many-to-one rename leaves behind: old gcc 2 rejects a repeated typedef). A repeat after a
-    preprocessor conditional line stays: it may sit in the other branch."""
+    preprocessor conditional line stays: it may sit in the other branch.
+    With `local=False`, only inherited repeats go."""
     seen: dict[str, int] = dict.fromkeys(inherited, -1)
     found = list(re.finditer(r"(?m)^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b", text))
     guard = re.match(
@@ -3112,7 +3120,7 @@ def _dedupe(text: str, inherited: Collection[str] = ()) -> str:
         earlier = seen.get(spelled)
         if earlier is not None and not any(earlier < c < start for c in conditionals):
             drop.append((start, end))
-        else:
+        elif local:
             seen[spelled] = start
     for start, end in reversed(drop):
         stop = end + 1 if text[end : end + 1] == "\n" else end
@@ -3138,6 +3146,14 @@ def respell(
         *(sources(snapshot) if scan else ()),
         *(["types.toml"] if scan and snapshot.peek("types.toml") else []),
     }
+    # Library protection excludes semantic edits, not the readers of relocated files.
+    if (moved or stay) and snapshot.layout.units:
+        graph = included_by(snapshot, [*moved, *moved.values()])
+        paths.update(p for p in snapshot.layout.units if configuration.is_source(p))
+        paths.update(p for p in graph if configuration.is_text(p))
+    libraries = tuple(
+        p.rstrip("/") + "/" for p in getattr(getattr(snapshot.config, "project", None), "library_dirs", ())
+    )
     writes: dict[str, bytes | None] = {}
     texts: dict[str, str] = {}
     deduped: list[str] = []
@@ -3153,9 +3169,10 @@ def respell(
         for old, new, names in stay:
             if path != new and names & words and rewrite_includes(text, {old: ""}, path) != text:
                 text = included(text, [new.removeprefix("include/")])
-        for tag in sorted(set(folded) & words):
+        protected = path.startswith(libraries)
+        for tag in sorted(set(folded) & words) if not protected else ():
             text = drop_record(text, tag) if configuration.is_text(path) else _drop_row(text, tag)
-        spelled = sorted(symbols.tokens(text) & renames.keys())
+        spelled = sorted(symbols.tokens(text) & renames.keys()) if not protected else []
         for old in spelled:
             text = symbols.rewrite(text, old, renames[old])
         texts[path] = text
@@ -3173,8 +3190,14 @@ def respell(
     def read(p: str) -> str | None:  # an included file as this respell spells it, read once
         return read_(p)
 
+    old_edges: dict[str, list[tuple[str, str]]] = {}
+    old_read = cache(partial(_peek, snapshot))
     for path in deduped:
-        text = _dedupe(texts[path], _inherited(read, path, texts[path], edges))
+        inherited = _inherited(read, path, texts[path], edges)
+        protected = path.startswith(libraries)
+        if protected:
+            inherited -= _inherited(old_read, path, old_read(path) or "", old_edges)
+        text = _dedupe(texts[path], inherited, local=not protected)
         if path in files or text != texts[path] or path in writes:
             writes[path] = text.encode()
     return writes

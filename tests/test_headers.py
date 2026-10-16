@@ -587,9 +587,10 @@ def test_consumers_read_each_file_once_however_many_units_include_the_header(mon
     monkeypatch.setattr(headers, "sources", lambda _: ["include/shared.h"])
     snapshot = _graph(files, reads, "many-units")
     assert sorted(headers.consumers(snapshot, ["include/shared.h"])) == sorted(units)
-    assert len(reads) == len(files) and len(set(reads)) == len(files)  # one read per file, not per unit
+    assert set(reads) == {*files, "src/shared.h"}  # also resolve the local include candidate once
+    assert len(reads) == len(set(reads))
     headers.consumers(snapshot, ["include/shared.h"])
-    assert len(reads) == len(files)  # the graph is one fact of the snapshot: asking again reads nothing
+    assert len(reads) == len(files) + 1  # the graph is one fact: asking again reads nothing
 
 
 def test_reaching_keeps_only_the_units_whose_text_names_a_changed_declaration_or_a_user_of_one(tmp_path, monkeypatch):
@@ -1892,3 +1893,71 @@ def test_carried_source_preserves_conditional_includes_and_unresolved_names():
         headers.rewrite_includes(text, {}, "src/new/u.c", origin="src/old/u.c", exists={"src/old/local.h"}.__contains__)
         == '#if V\n#include "old/local.h"\n#endif\n#include "missing.h"\n'
     )
+
+
+@pytest.mark.parametrize("suffix", [".c", ".CPP"])
+def test_header_paths_follow_library_readers_without_semantic_edits(tmp_path, suffix):
+    source = f"src/sdk/reader{suffix}"
+    unrelated = "src/sdk/unrelated.CPP"
+    sdk = '#include "old.h"\ntypedef int SDKName;\nstruct Protected { int SDKName; };\nSDKName f(void) { return 1; }\n'
+    quiet = "typedef int SDKName;\nSDKName other(void) { return 2; }\n"
+    snapshot = snap(tmp_path, {source: sdk, unrelated: quiet, "include/old.h": "typedef int Count;\n"})
+    snapshot.config.project.library_dirs = ("src/sdk",)
+    snapshot.layout.units = {p: SimpleNamespace(path=p) for p in (source, unrelated)}
+    assert source not in headers.sources(snapshot, "src", ".c")  # semantic catalog remains protected
+    written = headers.respell(
+        snapshot,
+        {"include/old.h": None, "include/NEW.H": "typedef int Count;\n"},
+        {"include/old.h": "include/NEW.H"},
+        [],
+        {"SDKName": "Changed"},
+        {"Protected"},
+    )
+    assert written[source] == sdk.replace('"old.h"', '"NEW.H"').encode()
+    assert unrelated not in written and snapshot.read(unrelated) == quiet.encode()
+    assert set(headers.consumers(snapshot, ["include/old.h"])) == {source}
+
+
+def test_library_header_closure_propagates_path_and_discovers_compiled_reader(tmp_path):
+    source, wrapper = "src/sdk/reader.CPP", "src/sdk/wrapper.h"
+    snapshot = snap(
+        tmp_path,
+        {
+            source: '#include "wrapper.h"\nCount f(void) { return 1; }\n',
+            wrapper: '#include "old.h"\n',
+            "include/old.h": "typedef int Count;\n",
+        },
+    )
+    snapshot.config.project.library_dirs = ("src/sdk",)
+    snapshot.layout.units = {source: SimpleNamespace(path=source)}
+    assert wrapper not in headers.sources(snapshot)
+    assert headers.consumers(snapshot, ["include/old.h"]) == (source,)
+    written = headers.respell(
+        snapshot,
+        {"include/old.h": None, "include/NEW.H": "typedef int Count;\n"},
+        {"include/old.h": "include/NEW.H"},
+        [],
+        {},
+    )
+    assert written[wrapper] == b'#include "NEW.H"\n'
+    assert source not in written
+
+
+def test_library_include_change_dedupes_only_newly_inherited_identical_typedefs(tmp_path):
+    source = "src/sdk/reader.CPP"
+    body = (
+        '#include "old.h"\ntypedef int Supplied;\ntypedef int Existing;\n'
+        "typedef int Existing;\n#if LOCAL\ntypedef int Supplied;\n#endif\n"
+    )
+    snapshot = snap(tmp_path, {source: body, "include/old.h": ""})
+    snapshot.config.project.library_dirs = ("src/sdk",)
+    snapshot.layout.units = {source: SimpleNamespace(path=source)}
+    written = headers.respell(
+        snapshot,
+        {"include/old.h": None, "include/NEW.H": "typedef int Supplied;\n"},
+        {"include/old.h": "include/NEW.H"},
+        [],
+        {},
+    )
+    expected = body.replace('"old.h"', '"NEW.H"').replace("typedef int Supplied;\n", "", 1)
+    assert written[source].decode() == expected
