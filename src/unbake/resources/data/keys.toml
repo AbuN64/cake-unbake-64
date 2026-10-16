@@ -370,6 +370,15 @@ sentence = "the candidate does not raise the item's best score by the fuzzy mini
 owner = "land"
 sentence = "an inbox entry does not validate against its schema"
 
+[key."upgrade.busy"]
+owner = "repo"
+sentence = "another process runs from the environment the upgrade would change"
+[key."upgrade.source"]
+owner = "repo"
+sentence = "the environment records no URL the tool was installed from"
+[key."upgrade.install"]
+owner = "repo"
+sentence = "pip could not install the requested ref"
 [key."init.request"]
 owner = "repo"
 sentence = "the init request is invalid"

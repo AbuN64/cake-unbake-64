@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
+import os
 import shutil
+import sys
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -13,6 +16,7 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+import psutil
 import rabbitizer
 import yaml
 
@@ -197,6 +201,50 @@ _Dumper.add_representer(
 
 def _dump_split(document: Json) -> bytes:
     return str(yaml.dump(document, Dumper=_Dumper, sort_keys=False, width=1 << 30)).encode()
+
+
+def _users(prefix: Path) -> list[str]:
+    """Every other process running from this environment (any command, its pool workers, make under setup): a swap
+    under one leaves its output made by two tool versions."""
+    here, mine = f"{prefix}/", os.getpid()
+    found = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        line = proc.info["cmdline"] or []
+        if proc.info["pid"] != mine and any(str(arg).startswith(here) for arg in line):
+            found.append(f"{proc.info['pid']} {' '.join(map(str, line))[:160]}")
+    return found
+
+
+def _source() -> str | None:
+    """The URL this tool was installed from, as pip recorded it."""
+    try:
+        recorded = importlib.metadata.distribution("unbake").read_text("direct_url.json")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    url = json.loads(recorded).get("url") if recorded else None
+    return url if url and not url.startswith("file:") else None
+
+
+def upgrade(params: Json) -> Json:
+    """Install REF of the tool into the environment running it, refused while any other process runs from it."""
+    prefix, ref = Path(sys.prefix), params["ref"]
+    if busy := _users(prefix):
+        raise Refusal(
+            Finding(
+                "upgrade.busy",
+                f"{len(busy)} processes run from {prefix}",
+                missing=tuple(busy),
+                action="upgrade when no command of this environment runs",
+            )
+        )
+    source = _source()
+    if source is None:
+        raise Refusal(Finding("upgrade.source", f"{prefix} was not installed from a URL", action="install it by hand"))
+    argv = [sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir", "--force-reinstall", "--no-deps"]
+    result = process.run("pip", [*argv, f"git+{source}@{ref}"], Path.cwd(), tmp=Path.cwd())
+    if result.exit != 0 or result.signal is not None:
+        raise Refusal(Finding("upgrade.install", result.stderr.decode(errors="replace")[-2000:] or "pip failed"))
+    return {"ref": ref, "prefix": str(prefix), "source": source}
 
 
 def init(params: Json) -> Json:

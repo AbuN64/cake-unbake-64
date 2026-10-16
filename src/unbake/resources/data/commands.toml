@@ -18,6 +18,13 @@ params = [
   { name = "title", kind = "option", type = "str", required = true, multiple = false, help = "game title" },
 ]
 
+[command.upgrade]
+configured = false
+help = "Install REF of unbake into the environment running it; refused while any other process runs from it."
+handler = "repo.upgrade"
+params = [
+  { name = "ref", kind = "argument", type = "str", required = true, multiple = false, help = "commit, tag or branch to install" },
+]
 [command.setup]
 help = "Install toolchains, extract every version, prove the extracted assembly, map the program, render repository files; the files are written uncommitted."
 handler = "repo.setup"

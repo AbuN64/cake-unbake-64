@@ -26,6 +26,8 @@ pip install "splat64[mips]==0.50.0" spimdisasm==1.42.4 rabbitizer==1.16.2 \
   git+https://github.com/AbuN64/cake-unbake-64
 ```
 
+Later `unbake upgrade REF` installs another commit in place. It refuses while any command runs from the same environment.
+
 ### Windows
 
 Install [WSL](https://learn.microsoft.com/windows/wsl/install) with Ubuntu and follow the Linux steps inside it.
