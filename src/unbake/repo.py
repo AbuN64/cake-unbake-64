@@ -498,188 +498,214 @@ def _drop_stale_facts(config: Config) -> None:
                 (root / path).unlink(missing_ok=True)
 
 
+def _restore(config: Config, originals: Mapping[str, bytes | None]) -> None:
+    """Every file a refused setup wrote back as it was (one it created goes). Extraction stamps name their inputs, so
+    the next run extracts again the versions whose inputs came back."""
+    root = config.project.root
+    for path, content in originals.items():
+        if content is None:
+            (root / path).unlink(missing_ok=True)
+        else:
+            store.write(root / path, content)
+
+
 def setup(config: Config, params: Json) -> Json:
     wait_s = config.host.move_wait_s
     with effort.stage("repo.setup"), store.exclusive(config, "structure", wait=True, wait_s=wait_s) as held:
         adapters.check_abucache()
         if not held:
             raise Refusal(Finding("setup.busy", configuration.sentence("setup.busy")))
-        journal.recover(config)
-        _require_options(config)
-        done, state = config.project.root / ".unbake/setup.json", _state(config)
-        kept = json.loads(done.read_bytes()) if done.exists() else None
-        if kept and kept["state"] == state:
-            effort.count("setup", True)
-            return {**kept["result"], "messages": [], "extracted": [], "files": []}
-        effort.count("setup", False)
-        _drop_stale_facts(config)
-        project = config.project
-        messages: list[Any] = []
-        written: set[Any] = set()
+        originals: dict[str, bytes | None] = {}  # what each file setup writes held before it
+        try:
+            journal.recover(config)
+            _require_options(config)
+            done, state = config.project.root / ".unbake/setup.json", _state(config)
+            kept = json.loads(done.read_bytes()) if done.exists() else None
+            if kept and kept["state"] == state:
+                effort.count("setup", True)
+                return {**kept["result"], "messages": [], "extracted": [], "files": []}
+            effort.count("setup", False)
+            _drop_stale_facts(config)
+            project = config.project
+            messages: list[Any] = []
+            written: set[Any] = set()
 
-        snapshot: Snapshot
-        moved: set[str] = set()  # versions extracted again since the proof: proved once, when the layout settles
-        extracting = False
+            snapshot: Snapshot
+            moved: set[str] = set()  # versions extracted again since the proof: proved once, when the layout settles
+            extracting = False
 
-        def apply(plan: Plan) -> bool:
-            """Write the plan. Once extraction has run, a version whose split or symbols file it wrote is extracted
-            again and the project captured; true then, else the snapshot is the plan laid over the old one."""
-            nonlocal snapshot
-            journal.apply(config, plan, snapshot)
-            messages.append(plan.message)
-            written.update(plan.writes)
-            changed = [v for v, vf in project.version_files.items() if {vf.split, vf.symbols} & plan.writes.keys()]
-            if extracting and changed:
-                moved.update(changed)
-                extract(changed)
+            def apply(plan: Plan) -> bool:
+                """Write the plan. Once extraction has run, a version whose split or symbols file it wrote is extracted
+                again and the project captured; true then, else the snapshot is the plan laid over the old one."""
+                nonlocal snapshot
+                for path in plan.writes.keys() - originals.keys():
+                    old = config.project.root / path
+                    originals[path] = old.read_bytes() if old.is_file() else None
+                journal.apply(config, plan, snapshot)
+                messages.append(plan.message)
+                written.update(plan.writes)
+                changed = [v for v, vf in project.version_files.items() if {vf.split, vf.symbols} & plan.writes.keys()]
+                if extracting and changed:
+                    moved.update(changed)
+                    extract(changed)
+                    snapshot = layout.capture(config)
+                    return True
+                snapshot = replace(layout.overlay(snapshot, plan.writes), reads=snapshot.reads)
+                return False
+
+            def extract(versions: Iterable[str]) -> None:
+                """Splat runs for the versions whose inputs moved since its last run, wherever setup asks."""
+                stale = [v for v in versions if stamps.get(v) != _stamp(config, v)]
+                for v in versions:
+                    effort.count("extract", v not in stale)
+                results = pool.map(config, "repo.extract", extract_job, [(config, v) for v in stale])
+                for v, result in zip(stale, results, strict=True):
+                    _checked(result, "setup.splat", f"extract {v}")
+                    stamps[v] = _stamp(config, v)
+                effort.forget("generated", "versions.read", "pin", "includes", "closure")
+                store.write(project.root / ".unbake/extract.json", json.dumps(stamps, sort_keys=True).encode())
+                extracted.update(stale)
+
+            with effort.stage("repo.setup.toolchains"):
                 snapshot = layout.capture(config)
-                return True
-            snapshot = replace(layout.overlay(snapshot, plan.writes), reads=snapshot.reads)
-            return False
-
-        def extract(versions: Iterable[str]) -> None:
-            """Splat runs for the versions whose inputs moved since its last run, wherever setup asks."""
-            stale = [v for v in versions if stamps.get(v) != _stamp(config, v)]
-            for v in versions:
-                effort.count("extract", v not in stale)
-            results = pool.map(config, "repo.extract", extract_job, [(config, v) for v in stale])
-            for v, result in zip(stale, results, strict=True):
-                _checked(result, "setup.splat", f"extract {v}")
-                stamps[v] = _stamp(config, v)
-            effort.forget("generated", "versions.read", "pin", "includes", "closure")
-            store.write(project.root / ".unbake/extract.json", json.dumps(stamps, sort_keys=True).encode())
-            extracted.update(stale)
-
-        with effort.stage("repo.setup.toolchains"):
-            snapshot = layout.capture(config)
-            table = symbols.edit(snapshot)
-            writes: dict[str, bytes | None] = {**_changed(snapshot, symbols.files(table, _paths(project)))}
-            writes.update(
-                {
-                    path: value
-                    for path, value in _extras(
-                        configuration.load_resource("repo.toml"), project.title, project.versions
-                    ).items()
-                    if not (project.root / path).exists()
-                }
-            )
-            if writes:
-                apply(_plan(snapshot, writes, "setup", "setup: extraction inputs"))
-            toolchains = sorted({project.toolchain, *(u.toolchain for u in snapshot.layout.units.values())})
-            build.install_toolchains(config, toolchains)
-        with effort.stage("repo.setup.extract"):
-            extracted: set[Any] = set()
-            stamps = _stamps(config)
-            extract(project.versions)
-            extracting = True
-        with effort.stage("repo.setup.prove"):
-            snapshot = layout.capture(config)
-            proof = _prove(snapshot, project.versions)
-        joined, recaptured = 0, False
-
-        def converge() -> Plan:
-            """One map pass: plan, read the names the versions give one thing and the addresses the ROM code forms, plan
-            again, and write it all in one plan; changed versions are extracted again. A second pass must find nothing
-            to write, else the layout is not a function of the ROMs and setup refuses naming what moved."""
-            nonlocal snapshot, joined, recaptured
-            snapshot = layout.capture(config)
-            try:
-                mapped = infer.plan(snapshot)
-            except Refusal as refusal:
-                if recaptured or any(f.key != "journal.changed" for f in refusal.findings):
-                    raise
-                recaptured = True
-                return converge()
-            if mapped.blocking:  # landed C that does not compile in a version it holds is not debt: setup refuses
-                raise Refusal(*mapped.blocking)
-            table = symbols.edit(snapshot)  # names the versions give one thing become one symbol
-            read, misnamed = infer.addresses(snapshot, mapped.debt)
-            mapped = replace(mapped, debt=(*mapped.debt, *misnamed))
-            found = symbols.join_pairs(snapshot, table, infer.correspondences(snapshot)) + symbols.fix_rows(table, read)
-            writes, message = dict(mapped.writes), mapped.message
-            if found:  # plan again on the table the readings give, so the same plan holds the layout it implies
-                writes.update(_changed(snapshot, symbols.files(table, _paths(project))))
-                settled = infer.plan(layout.overlay(snapshot, writes))
-                writes.update(settled.writes)
-                message = f"{settled.message}; {found} symbols read from the ROM"
-            if not writes:
-                return mapped
-            split = any(vf.split in writes or vf.symbols in writes for vf in project.version_files.values())
-            planned = None if split else layout.overlay(snapshot, writes).digest  # what the writes give, unextracted
-            if not apply(_plan(snapshot, writes, "layout", message)):
-                snapshot = layout.capture(config)
-            joined += found
-            if planned is not None and snapshot.digest == planned:  # the plan is its own fixpoint
-                return replace(mapped, writes={})
-            again = infer.plan(snapshot)  # extraction told something else: the layout must still hold under it
-            again = replace(again, debt=(*again.debt, *misnamed))
-            if again.writes:
-                raise Refusal(
-                    Finding(
-                        "layout.nonconvergent",
-                        "a second map pass still changes "
-                        f"{', '.join(sorted(again.writes)[:8])} ({len(again.writes)} files) after the "
-                        f"first pass wrote {len(writes)} files: {again.message}",
-                    )
+                table = symbols.edit(snapshot)
+                writes: dict[str, bytes | None] = {**_changed(snapshot, symbols.files(table, _paths(project)))}
+                writes.update(
+                    {
+                        path: value
+                        for path, value in _extras(
+                            configuration.load_resource("repo.toml"), project.title, project.versions
+                        ).items()
+                        if not (project.root / path).exists()
+                    }
                 )
-            return again
+                if writes:
+                    apply(_plan(snapshot, writes, "setup", "setup: extraction inputs"))
+                toolchains = sorted({project.toolchain, *(u.toolchain for u in snapshot.layout.units.values())})
+                build.install_toolchains(config, toolchains)
+            with effort.stage("repo.setup.extract"):
+                extracted: set[Any] = set()
+                stamps = _stamps(config)
+                extract(project.versions)
+                extracting = True
+            with effort.stage("repo.setup.prove"):
+                snapshot = layout.capture(config)
+                proof = _prove(snapshot, project.versions)
+            joined, recaptured = 0, False
 
-        with effort.stage("repo.setup.map"):
-            mapped = converge()
-            if moved:
-                proof.update(_prove(layout.capture(config), sorted(moved)))
-                moved.clear()
-            snapshot = layout.capture(config)
-            writes = {**_changed(snapshot, {"types.toml": types.scan(snapshot)})}
-            if writes:
-                apply(_plan(snapshot, writes, "layout", "setup: type map"))
-        with effort.stage("repo.setup.boundary"):
-            plan, boundary = layout.boundary_plan(snapshot)
-            if plan.writes:
-                apply(plan)
-                changed = [v for v, vf in project.version_files.items() if vf.split in plan.writes]
-                proof.update(_prove(snapshot, changed))
-                moved.clear()
-                if layout.boundary_plan(snapshot)[0].writes:
-                    raise Refusal(Finding("layout.nonconvergent", configuration.sentence("layout.nonconvergent")))
-                mapped = converge()  # the functions moved: the units and their data follow
-                if moved:
-                    proof.update(_prove(layout.capture(config), sorted(moved)))
-        with effort.stage("repo.setup.library"):
-            if writes := libasm.plan(snapshot)[0]:  # foreign routines become library assembly from the ROM bytes
-                apply(_plan(snapshot, writes, "layout", "setup: library assembly"))
+            def converge() -> Plan:
+                """One map pass: plan, read the names the versions give one thing and the addresses the ROM code forms,
+                plan again, and write it all in one plan; changed versions are extracted again. A second pass must find
+                nothing to write, else the layout is not a function of the ROMs and setup refuses naming what moved."""
+                nonlocal snapshot, joined, recaptured
+                snapshot = layout.capture(config)
+                try:
+                    mapped = infer.plan(snapshot)
+                except Refusal as refusal:
+                    if recaptured or any(f.key != "journal.changed" for f in refusal.findings):
+                        raise
+                    recaptured = True
+                    return converge()
+                if mapped.blocking:  # landed C that does not compile in a version it holds is not debt: setup refuses
+                    raise Refusal(*mapped.blocking)
+                table = symbols.edit(snapshot)  # names the versions give one thing become one symbol
+                read, misnamed = infer.addresses(snapshot, mapped.debt)
+                mapped = replace(mapped, debt=(*mapped.debt, *misnamed))
+                found = symbols.join_pairs(snapshot, table, infer.correspondences(snapshot)) + symbols.fix_rows(
+                    table, read
+                )
+                writes, message = dict(mapped.writes), mapped.message
+                if found:  # plan again on the table the readings give, so the same plan holds the layout it implies
+                    writes.update(_changed(snapshot, symbols.files(table, _paths(project))))
+                    settled = infer.plan(layout.overlay(snapshot, writes))
+                    writes.update(settled.writes)
+                    message = f"{settled.message}; {found} symbols read from the ROM"
+                if not writes:
+                    return mapped
+                split = any(vf.split in writes or vf.symbols in writes for vf in project.version_files.values())
+                planned = (
+                    None if split else layout.overlay(snapshot, writes).digest
+                )  # what the writes give, unextracted
+                if not apply(_plan(snapshot, writes, "layout", message)):
+                    snapshot = layout.capture(config)
+                joined += found
+                if planned is not None and snapshot.digest == planned:  # the plan is its own fixpoint
+                    return replace(mapped, writes={})
+                again = infer.plan(snapshot)  # extraction told something else: the layout must still hold under it
+                again = replace(again, debt=(*again.debt, *misnamed))
+                if again.writes:
+                    raise Refusal(
+                        Finding(
+                            "layout.nonconvergent",
+                            "a second map pass still changes "
+                            f"{', '.join(sorted(again.writes)[:8])} ({len(again.writes)} files) after the "
+                            f"first pass wrote {len(writes)} files: {again.message}",
+                        )
+                    )
+                return again
+
+            with effort.stage("repo.setup.map"):
+                mapped = converge()
                 if moved:
                     proof.update(_prove(layout.capture(config), sorted(moved)))
                     moved.clear()
                 snapshot = layout.capture(config)
-        with effort.stage("repo.setup.files"):
-            wanted = files(snapshot)
-            writes = {**_changed(snapshot, wanted), **_stale(snapshot, wanted)}
-            if writes:
-                apply(_plan(snapshot, writes, "setup", "setup: repository files"))
-            local = project.root / "local.mk"
-            store.write(local, build.local_mk(config))
-        with effort.stage("repo.setup.make"):
-            make = build.make_check(config, layout.capture(config))
-        snapshot = layout.capture(config)
-        type_map, conflicts = types.load(snapshot), types.conflicts(snapshot)
-        result = {
-            "toolchains": toolchains,
-            "extracted": sorted(extracted),
-            "proof": proof,
-            "groups": len(snapshot.layout.groups),
-            "segments": dict(Counter(g.segment for g in snapshot.layout.groups.values())),
-            "types": {
-                plural: len(type_map[key])
-                for plural, key in (("functions", "function"), ("globals", "global"), ("structs", "struct"))
-            },
-            "boundary": boundary,
-            "joined": joined,
-            "units": _built(snapshot),
-            "debt": [*(f.reason for f in mapped.debt), *(f"{f.reason}: " + "; ".join(f.missing) for f in conflicts)],
-            "messages": messages,
-            "files": sorted(written),
-            "make": make,
-        }
-        store.write(done, json.dumps({"state": _state(config), "result": result}).encode())
-        return result
+                writes = {**_changed(snapshot, {"types.toml": types.scan(snapshot)})}
+                if writes:
+                    apply(_plan(snapshot, writes, "layout", "setup: type map"))
+            with effort.stage("repo.setup.boundary"):
+                plan, boundary = layout.boundary_plan(snapshot)
+                if plan.writes:
+                    apply(plan)
+                    changed = [v for v, vf in project.version_files.items() if vf.split in plan.writes]
+                    proof.update(_prove(snapshot, changed))
+                    moved.clear()
+                    if layout.boundary_plan(snapshot)[0].writes:
+                        raise Refusal(Finding("layout.nonconvergent", configuration.sentence("layout.nonconvergent")))
+                    mapped = converge()  # the functions moved: the units and their data follow
+                    if moved:
+                        proof.update(_prove(layout.capture(config), sorted(moved)))
+            with effort.stage("repo.setup.library"):
+                if writes := libasm.plan(snapshot)[0]:  # foreign routines become library assembly from the ROM bytes
+                    apply(_plan(snapshot, writes, "layout", "setup: library assembly"))
+                    if moved:
+                        proof.update(_prove(layout.capture(config), sorted(moved)))
+                        moved.clear()
+                    snapshot = layout.capture(config)
+            with effort.stage("repo.setup.files"):
+                wanted = files(snapshot)
+                writes = {**_changed(snapshot, wanted), **_stale(snapshot, wanted)}
+                if writes:
+                    apply(_plan(snapshot, writes, "setup", "setup: repository files"))
+                local = project.root / "local.mk"
+                store.write(local, build.local_mk(config))
+            with effort.stage("repo.setup.make"):
+                make = build.make_check(config, layout.capture(config))
+            snapshot = layout.capture(config)
+            type_map, conflicts = types.load(snapshot), types.conflicts(snapshot)
+            result = {
+                "toolchains": toolchains,
+                "extracted": sorted(extracted),
+                "proof": proof,
+                "groups": len(snapshot.layout.groups),
+                "segments": dict(Counter(g.segment for g in snapshot.layout.groups.values())),
+                "types": {
+                    plural: len(type_map[key])
+                    for plural, key in (("functions", "function"), ("globals", "global"), ("structs", "struct"))
+                },
+                "boundary": boundary,
+                "joined": joined,
+                "units": _built(snapshot),
+                "debt": [
+                    *(f.reason for f in mapped.debt),
+                    *(f"{f.reason}: " + "; ".join(f.missing) for f in conflicts),
+                ],
+                "messages": messages,
+                "files": sorted(written),
+                "make": make,
+            }
+            store.write(done, json.dumps({"state": _state(config), "result": result}).encode())
+            return result
+        except Refusal:  # a refused setup leaves the files as it found them, never a part of its writes
+            _restore(config, originals)
+            raise

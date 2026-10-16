@@ -1922,6 +1922,9 @@ def test_code_another_version_names_between_the_same_members_takes_its_rows(scen
         [0x1018, "asm", "func_80000418"],  # its bytes are this version's own: assembly, never another's C
         [0x1030, "c", "func_80000430"],
     ]
+    assert (
+        b"data/unresolved/80000410" not in writes["layout.toml"]
+    )  # the dropped row leaves the map: no unit names a lost row
     other = (0x27BDFFD8, 0x24020005, 0, *RETURN, 0x27BD0028)  # other instructions: no rows
     snapshot = scene(
         (

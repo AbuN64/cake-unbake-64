@@ -564,10 +564,13 @@ def test_setup_boundary_reextracts_and_reproves(setup_case, monkeypatch, nonconv
         return plan({split: b"changed"} if calls == 1 or nonconvergent else {}, message="boundary"), boundary
 
     monkeypatch.setattr(repo.layout, "boundary_plan", boundary_plan)
+    path = snapshot.config.project.root / split
+    before = path.read_bytes() if path.exists() else None
     if nonconvergent:
         with pytest.raises(Refusal) as caught:
             repo.setup(snapshot.config, {})
         assert caught.value.findings[0].key == "layout.nonconvergent"
+        assert (path.read_bytes() if path.exists() else None) == before  # a refused setup leaves its files as found
     else:
         repo.setup(snapshot.config, {})
     assert calls == 2

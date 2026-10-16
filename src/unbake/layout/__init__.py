@@ -1401,6 +1401,31 @@ def _end(code: Sequence[int], vram: int) -> int | None:
     return max(covered) + 1 if covered else None
 
 
+def _unlist(snapshot: Snapshot, gone: Collection[str], writes: dict[str, bytes | None]) -> None:
+    """The map without members whose rows the writes drop from every split that held them: no group lists them and
+    no unit holds them (a unit left holding only padding goes with its file), or the map names rows no split has."""
+    if not gone:
+        return
+    groups = {
+        k: replace(g, members=tuple(n for n in g.members if n not in gone)) for k, g in snapshot.layout.groups.items()
+    }
+    units = {}
+    for path, u in snapshot.layout.units.items():
+        members = tuple(n for n in u.members if n not in gone)
+        if members:
+            units[path] = replace(u, members=members)
+        elif all("_padding_" in n for n in u.members):
+            writes[path] = None
+    writes["layout.toml"] = dump_map(
+        replace(
+            snapshot.layout,
+            groups=groups,
+            units=units,
+            fuzzy={n: r for n, r in snapshot.layout.fuzzy.items() if n not in gone},
+        )
+    )
+
+
 def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | None]:
     """The rows of a version whose unowned data row lies between two members exactly where another version holds the
     same instructions (addresses masked) as member rows between the same two members: those rows, rebased, replace
@@ -1421,6 +1446,7 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
     held = {name: set(member.holders()) for name, member in snapshot.layout.members.items()}
     order = sorted(snapshot.versions, key=lambda h: (h != snapshot.config.project.names_from, h))
     writes: dict[str, bytes | None] = {}
+    dropped: defaultdict[str, set[str]] = defaultdict(set)  # row name -> the versions whose split no longer has it
     table = symbols.edit(snapshot)
     for h, version in sorted(snapshot.versions.items()):
         for i, (name, state, p) in enumerate(rows[h]):
@@ -1460,7 +1486,10 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
                     if n in table:  # a name the table gives other versions gets this version's address too
                         table[n][h] = p.vram + offset - p.rom_start
                 counts["versioned"] += len(gap)
+                dropped[name].add(h)
                 break
+    # a dropped row's member goes from the map too once no split holds it
+    _unlist(snapshot, {n for n, hs in dropped.items() if hs >= held.get(n, set())}, writes)
     if writes:
         writes.update(
             {
@@ -1646,24 +1675,7 @@ def _heads(snapshot: Snapshot, counts: dict[str, Any]) -> tuple[dict[str, bytes 
                 table.get(key, {}).pop(h, None)
             if key in table and table[key].keys() <= {"kind"}:
                 table.pop(key)
-    groups = {
-        k: replace(g, members=tuple(n for n in g.members if n not in gone)) for k, g in snapshot.layout.groups.items()
-    }
-    units = {}
-    for path, u in snapshot.layout.units.items():
-        members = tuple(n for n in u.members if n not in gone)
-        if members:
-            units[path] = replace(u, members=members)
-        elif all("_padding_" in n for n in u.members):
-            writes[path] = None
-    writes["layout.toml"] = dump_map(
-        replace(
-            snapshot.layout,
-            groups=groups,
-            units=units,
-            fuzzy={n: r for n, r in snapshot.layout.fuzzy.items() if n not in gone},
-        )
-    )
+    _unlist(snapshot, gone, writes)
     writes.update(
         {
             p: b
