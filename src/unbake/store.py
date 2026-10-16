@@ -120,6 +120,21 @@ def _refusing() -> Iterator[None]:
 # command, the tool bytes and view.py's own bytes (never the rest of the tool), its chunks by content
 _NAMED = frozenset({"unit", "object", "bytes", "view", "view.chunk"})
 
+# a kind keyed on its content alone plus the bytes of only the modules that make its value: an install that leaves
+# those modules alone keeps every entry, an edit to one of them misses its kinds and nothing else
+_BUILT: dict[str, tuple[str, ...]] = {
+    "view.facts": ("view", "declarations"),  # a view's live and text digests (the key names the view)
+    "declarations": ("declarations", "headers"),  # a header run's parse: declarations.live and headers._regions
+    "live-object": ("native", "view", "declarations"),  # an object kept by the live digest of its text
+}
+_HERE = Path(__file__).resolve().parent
+
+
+@functools.cache
+def built(kind: str) -> str:
+    """The digest of the bytes of the modules that make a _BUILT kind's values, read once per process."""
+    return sha256(b"".join((_HERE / f"{module}.py").read_bytes() for module in _BUILT[kind]))
+
 
 class Packed(ContentCache):
     """The host's content cache with every value zlib level 1 packed behind a format tag, so reads stay write free.
@@ -131,7 +146,9 @@ class Packed(ContentCache):
         self._named = named
 
     def _key(self, kind: str, key: str) -> str:
-        return key if self._named or kind in _NAMED else sha256(f"{code()}:{key}".encode())
+        if self._named or kind in _NAMED:
+            return key
+        return sha256(f"{built(kind) if kind in _BUILT else code()}:{key}".encode())
 
     def get(self, kind: str, key: str) -> bytes | None:
         raw = self._inner.get(kind, self._key(kind, key))

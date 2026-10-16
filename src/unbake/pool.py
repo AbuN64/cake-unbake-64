@@ -29,7 +29,7 @@ from typing import Any
 import psutil
 from abucache.store import absorb_touched, take_touched
 
-from unbake import effort, store
+from unbake import effort, journal, store
 from unbake.contracts import Config, Finding, Host, Json, Refusal, Snapshot, code_identity, digest, sha256
 
 _KEYS_INLINE = 1  # keys of up to this many items per worker are computed here: a dispatch costs more than they do
@@ -86,6 +86,7 @@ def _init(limit: int) -> None:
     for f in _slots + _cmd:  # the parent's locks are the parent's: a worker holding one pins it for life
         f.close()
     store.drop_inherited()
+    journal.drop_inherited()  # a worker forked inside journal.held never holds the parent's landing lock
     _in_worker = True
 
 
@@ -821,10 +822,23 @@ def _chunk(
     return outcomes
 
 
+def _header() -> bytes:
+    """What every task blob starts with: the parent's forgets and the projects whose landing lock it holds now."""
+    return pickle.dumps((effort.epochs(), journal.holding()), protocol=5)
+
+
+def _follow(stream: io.BytesIO) -> None:
+    """First in a worker: forget what the parent forgot (the items lay overlays from the memo) and hold the landing
+    locks the parent holds while it waits, never the ones it held when this worker was forked."""
+    forgotten, held = pickle.load(stream)
+    effort.follow(forgotten)
+    journal.adopt(held)
+
+
 def _dispatch(blob: bytes) -> list[tuple[bool, Any, Json]]:
     """One chunk travels as its own pickle, so a worker only unpacks the items it runs and stores their results."""
     stream = io.BytesIO(blob)
-    effort.follow(pickle.load(stream))  # first: the items lay overlays from the memo
+    _follow(stream)
     function, items, sink = _Unpickler(stream).load()
     return _chunk(function, items, sink)
 
@@ -997,7 +1011,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             if not inline:  # the snapshots in the items are known before the workers are forked
                 writes: dict[str, Any] = {}  # an overlay's writes are pickled once for every task of this dispatch
                 ship = _warm(config)  # workers up: what they lack travels to them, they never fork again
-                forgotten = pickle.dumps(effort.epochs(), protocol=5)  # read by each worker before its items
+                forgotten = _header()  # read by each worker before its items
                 for n, (run, picked) in enumerate(tasks):
                     stream = io.BytesIO(forgotten)
                     stream.seek(0, io.SEEK_END)

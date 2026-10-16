@@ -334,3 +334,38 @@ def test_a_reader_waits_for_a_swap_and_a_crashed_swap_is_rolled_back_before_it_r
         assert not (config.project.root / ".unbake/journal.json").exists()
         with lock.open("a+b") as other, pytest.raises(BlockingIOError):
             fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # writers wait while it reads
+
+
+def test_a_worker_forked_inside_a_landing_takes_its_own_reading_lock(repo, monkeypatch):
+    # a warm worker forked inside journal.held copied _HELD: kept warm after the landing, it read with no lock at all
+    config, _, _ = repo
+    taken = []
+    real = journal.store.shared
+
+    def shared(config, name):
+        taken.append(name)
+        return real(config, name)
+
+    monkeypatch.setattr(journal.store, "shared", shared)
+    journal._HELD.add(config.project.root)  # the copy a worker forked inside held starts with
+    journal.drop_inherited()
+    with journal.reading(config):
+        pass
+    assert taken == ["journal"] and not journal._HELD
+
+
+def test_a_worker_reads_under_the_parents_landing_lock_only_while_the_parent_holds_it(repo, monkeypatch):
+    config, _, _ = repo
+    taken = []
+    monkeypatch.setattr(journal.store, "shared", lambda config, name: taken.append(name) or nullcontext())
+    with journal.held(config):
+        inside = journal.holding()
+    after = journal.holding()  # the parent's next header, once the landing is written
+    journal.adopt(inside)  # a dispatch sent inside the landing: the parent waits on it, holding the lock
+    with journal.reading(config):
+        pass
+    assert taken == []
+    journal.adopt(after)
+    with journal.reading(config):
+        pass
+    assert taken == ["journal"] and not journal._HELD

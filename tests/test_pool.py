@@ -278,10 +278,11 @@ def test_worker_dies_with_its_parent(tmp_path, monkeypatch):
     monkeypatch.setattr(pool.ctypes, "CDLL", lambda name: type("L", (), {"prctl": lambda self, *a: calls.append(a)})())
     monkeypatch.setattr(pool, "_in_worker", False)
     dropped = []
-    monkeypatch.setattr(pool.store, "drop_inherited", lambda: dropped.append(True))
+    monkeypatch.setattr(pool.store, "drop_inherited", lambda: dropped.append("store"))
+    monkeypatch.setattr(pool.journal, "drop_inherited", lambda: dropped.append("journal"))
     pool._init(1 << 30)
     assert calls == [(1, pool.signal.SIGKILL)]
-    assert dropped == [True]  # the parent's store flocks are let go in every worker
+    assert dropped == ["store", "journal"]  # the parent's store flocks and landing lock are let go in every worker
 
 
 def test_a_warm_keyed_group_costs_one_store_read(tmp_path, monkeypatch):
@@ -1811,3 +1812,33 @@ def test_a_pool_records_the_slot_seconds_it_held_as_its_share_shrank(tmp_path, m
     record = next(r for r in effort.closed() if r.kind == "pool")
     held = record.slot_seconds / record.wall_seconds
     assert record.workers_admitted == 12 and 3.0 < held < 6.0
+
+
+def test_a_task_header_ships_the_landing_locks_the_parent_holds_now(tmp_path, monkeypatch):
+    # a warm worker forked inside journal.held kept the parent's _HELD and skipped its reading locks for life
+    root = tmp_path / "project"
+    monkeypatch.setattr(pool.journal, "_HELD", {root})
+    inside = pool._header()
+    pool.journal._HELD.clear()
+    outside = pool._header()
+    pool.journal._HELD.add(root)  # the worker's copy, forked inside the landing
+    pool._follow(io.BytesIO(outside))
+    assert not pool.journal._HELD
+    pool._follow(io.BytesIO(inside))
+    assert sorted(pool.journal._HELD) == [root]
+
+
+def _holds(root):
+    return root in pool.journal._HELD
+
+
+def test_warm_workers_hold_the_landing_lock_only_for_dispatches_sent_inside_it(tmp_path, monkeypatch, warm):
+    config = _config(tmp_path)
+    root = config.project.root
+    monkeypatch.setattr(pool.journal, "_HELD", set())
+    with effort.command("check", []):
+        assert pool.map(config, "units", _holds, [root, root]) == [False, False]
+        with pool.journal.held(config):
+            assert pool.map(config, "units", _holds, [root, root]) == [True, True]
+        assert pool.map(config, "units", _holds, [root, root]) == [False, False]
+    assert warm.forks == 1

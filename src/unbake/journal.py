@@ -23,6 +23,24 @@ def held(config: Config) -> Iterator[None]:
             _HELD.discard(config.project.root)
 
 
+def drop_inherited() -> None:
+    """Runs in a forked worker: the landing lock a parent held at fork is the parent's, so the worker takes its own
+    reading and writing locks instead of skipping them as the holder would."""
+    _HELD.clear()
+
+
+def holding() -> frozenset[Path]:
+    """The projects whose landing lock this process holds now: shipped with every pool dispatch."""
+    return frozenset(_HELD)
+
+
+def adopt(roots: frozenset[Path]) -> None:
+    """Runs in a worker before each dispatch: its jobs read under the lock the waiting parent holds for them, and only
+    then (a worker forked earlier or kept warm after the landing takes its own locks)."""
+    _HELD.clear()
+    _HELD.update(roots)
+
+
 def _lock(config: Config) -> AbstractContextManager[bool | None]:
     return nullcontext() if config.project.root in _HELD else store.exclusive(config, "journal", wait=True)
 
