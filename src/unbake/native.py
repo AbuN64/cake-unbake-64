@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
@@ -297,16 +298,83 @@ def _compiled(
     return obj, tuple(results)
 
 
+def _material(
+    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, obj: Path, proofs: Sequence[Proof]
+) -> dict[str, bytes]:
+    """Current exact proof bytes as the make rule's section outputs, or nothing when evidence is incomplete.
+    Proof material is in member placement order, including the whole section's decimal size for each BSS placement."""
+    from unbake import ownership
+
+    held = _held(snapshot, unit, version)
+    names = {n for n, _ in held}
+    if not proofs or len(proofs) != len(names) or {p.member for p in proofs} != names:
+        return {}
+    ranges = {p.section: p for p in sections(snapshot, unit, version)}
+    blob = obj.read_bytes()
+    if "armips" in _phases(unit) or ownership.borrowed(snapshot, unit, version, blob, tuple(ranges.values())):
+        return {}  # a borrowed pool's proof linked different sections than the generated make rule
+    source_sha, object_sha = sha256(snapshot.read(unit.path)), sha256(blob)
+    chunks: dict[str, list[tuple[int, bytes]]] = {}
+    for proof in proofs:
+        if (
+            not proof.exact
+            or proof.missing
+            or (proof.unit, proof.version, proof.recipe, proof.source_sha256, proof.object_sha256)
+            != (unit.path, version, recipe.digest, source_sha, object_sha)
+            or proof.built_sha256 != proof.target_sha256
+        ):
+            return {}
+        material = store.get(snapshot.config, "bytes", proof.built_sha256)
+        if material is None or sha256(material) != proof.built_sha256:
+            return {}
+        offset = 0
+        for name, p in held:
+            if name != proof.member:
+                continue
+            size = len(str(ranges[p.section].size)) if p.section == ".bss" else p.size
+            part = material[offset : offset + size]
+            if len(part) != size:
+                return {}
+            chunks.setdefault(p.section, []).append((p.rom_start, part))
+            offset += size
+        if offset != len(material):
+            return {}
+    out = {}
+    for section, p in ranges.items():
+        parts = sorted(chunks.get(section, ()))
+        if section == ".bss":
+            data = str(p.size).encode()
+            if not parts or any(part != data for _, part in parts):
+                return {}
+        else:
+            cursor = p.rom_start
+            for start, part in parts:
+                if start != cursor:
+                    return {}
+                cursor += len(part)
+            if cursor != p.rom_end:
+                return {}
+            data = b"".join(part for _, part in parts)
+        out[section[1:] + (".size" if section == ".bss" else ".bin")] = data
+    return out
+
+
 def compiles(
     item: tuple[Snapshot, UnitSpec, str], home: Path | None = None
 ) -> tuple[Finding, ...]:  # why the unit does not build (compile, link, owned sizes); empty when it does
     snapshot, unit, version = item
+    if home is not None and (home / "proved").exists():
+        shutil.rmtree(home / "proved")  # a caller reusing a work directory cannot inherit an earlier verdict
     try:
         with (
             nullcontext(home) if home else store.work(snapshot.config)
         ) as work:  # make links (and asserts owned sizes) only where the unit is not withheld
             obj = objects(snapshot, unit, version, r := recipes.resolve(snapshot.config, unit, {}), work)[0]
             proofs = () if version in unit.withheld else measure(snapshot, unit, version, r, obj, work)
+            if home is not None and (material := _material(snapshot, unit, version, r, obj, proofs)):
+                (home / "proved").mkdir()
+                for name, data in material.items():
+                    (home / "proved" / name).write_bytes(data)
         return tuple(
             Finding("link.error", f"{unit.path}: {m}", unit=unit.path, versions=(version,))
             for m in sorted({m for p in proofs for m in p.missing if "bytes differ" not in m})

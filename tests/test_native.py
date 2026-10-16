@@ -1007,3 +1007,50 @@ def test_allocation_dumps_name_a_compile_error_as_one_and_a_dumpless_toolchain_a
         native.dumps(snapshot, unit, "a", recipe, work)
     found = refused.value.findings[0]
     assert found.key == key and (key != "score.compile" or "no member named `x'" in found.reason)
+
+
+def test_proof_material_reassembles_members_sections_and_bss_in_placement_order(case, monkeypatch):
+    snapshot = case[0]
+    f = replace(
+        snapshot.layout.members["f"],
+        placements=(
+            Placement("a", ".data", 0x2004, 0x2008, 0x80001004),
+            Placement("a", ".text", 0x1000, 0x1004, 100),
+            Placement("a", ".bss", 0x3000, 0x3000, 0x80002000, 4),
+        ),
+    )
+    g = replace(
+        f,
+        name="g",
+        placements=(
+            Placement("a", ".text", 0x1004, 0x1008, 104),
+            Placement("a", ".data", 0x2000, 0x2004, 0x80001000),
+            Placement("a", ".bss", 0x3000, 0x3000, 0x80002004, 12),
+        ),
+    )
+    case = _placements(case, (), members={"f": f, "g": g})
+    snapshot, unit, recipe, obj, _, linker = case
+    monkeypatch.setattr(
+        native.versions,
+        "rom_bytes",
+        lambda v, start, end: (
+            TARGET[start - 0x1000 : end - 0x1000] if start < 0x2000 else b"ABCDEFGH"[start - 0x2000 : end - 0x2000]
+        ),
+    )
+    _outputs(case, {".text": TARGET, ".data": b"ABCDEFGH", ".bss": b"16"})
+    proofs = _measure(case)
+    assert all(p.exact for p in proofs)
+    assert native._material(snapshot, unit, "a", recipe, obj, proofs) == {
+        "text.bin": TARGET,
+        "data.bin": b"ABCDEFGH",
+        "bss.size": b"16",
+    }
+    assert linker.link.call_count == 1  # reconstructing the stored material never links
+    assert native._material(snapshot, unit, "a", recipe, obj, proofs[:1]) == {}
+    first = proofs[0]
+    material = store.get(snapshot.config, "bytes", first.built_sha256)
+    assert material is not None and material.endswith(b"16")
+    bad = material[:-2] + b"17"
+    store.put(snapshot.config, "bytes", sha256(bad), bad)
+    bad_proof = replace(first, built_sha256=sha256(bad), target_sha256=sha256(bad))
+    assert native._material(snapshot, unit, "a", recipe, obj, (bad_proof, proofs[1])) == {}

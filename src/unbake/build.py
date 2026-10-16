@@ -368,6 +368,18 @@ def compile_unit(item: tuple[Snapshot, UnitSpec, str]) -> tuple[Finding, ...]:
         home = root / "build" / version / Path(unit.path).with_suffix("") / tag
         home.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(obj, home / "source.o")
+        proved = work / "proved"
+        if proved.is_dir() and {p.name for p in proved.iterdir()} == {Path(o).name for o in outputs}:
+            for old in home.parent.iterdir():
+                if old != home:
+                    if old.is_dir() and not old.is_symlink():
+                        shutil.rmtree(old)
+                    else:
+                        old.unlink()
+            for o in outputs:
+                shutil.copyfile(proved / Path(o).name, root / o)
+                os.utime(root / o, ns=(begun, begun))
+            return found
         script = " && ".join(c.replace("$$", "$") for c in commands)
         for host, var in _MAKE.items():
             script = (

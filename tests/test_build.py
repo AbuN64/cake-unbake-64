@@ -960,3 +960,156 @@ def test_a_header_edit_moves_the_check_key_of_only_the_consumers_whose_preproces
     preprocessed["src/u7.c"] = "text of u7 after the header edit"
     cold = [u.path for u in units if build.check_key((build_snapshot, u, "a")) not in warm]
     assert cold == ["src/u3.c", "src/u7.c"]
+
+
+def _proved_item(build_snapshot, monkeypatch, *, data=b"12345678", case="valid"):
+    from unbake import ownership
+    from unbake.contracts import Proof, sha256
+
+    compiles = native.compiles
+    item, ran = _compile_item(
+        build_snapshot, monkeypatch, run=lambda *a, **k: SimpleNamespace(exit=1, stderr=b"fallback link refused")
+    )
+    snapshot, unit, version = item
+    recipe = recipes.resolve(snapshot.config, unit, {})
+    proof = Proof(
+        unit.path,
+        "function",
+        version,
+        recipe.digest,
+        sha256(b"x"),
+        sha256(b"obj"),
+        sha256(data),
+        sha256(data),
+        True,
+        (),
+        1.0,
+        {},
+    )
+    cache = {proof.built_sha256: data}
+    proofs = (proof,)
+    if case == "missing-bytes":
+        cache.clear()
+    elif case == "corrupt-bytes":
+        cache[proof.built_sha256] = b"87654321"
+    elif case == "missing-proof":
+        proofs = ()
+    elif case == "duplicate-proof":
+        proofs = (proof, proof)
+    elif case in ("object", "source", "recipe"):
+        proofs = (
+            replace(
+                proof, **{{"object": "object_sha256", "source": "source_sha256", "recipe": "recipe"}[case]: "different"}
+            ),
+        )
+    elif case == "inexact":
+        proofs = (replace(proof, exact=False),)
+
+    def objects(snap, spec, holder, rec, work):
+        obj = work / "group.o"
+        obj.write_bytes(b"obj")
+        return obj, ()
+
+    monkeypatch.setattr(native, "objects", objects)
+    measured = Mock(return_value=proofs)
+    monkeypatch.setattr(native, "measure", measured)
+    get = native.store.get
+    monkeypatch.setattr(
+        native.store, "get", lambda cfg, kind, key: cache.get(key) if kind == "bytes" else get(cfg, kind, key)
+    )
+    monkeypatch.setattr(ownership, "borrowed", lambda *a: (object(),) if case == "borrowed" else ())
+    monkeypatch.setattr(native, "compiles", compiles)
+    return item, ran, measured
+
+
+def test_exact_proof_material_writes_rule_outputs_without_relinking(build_snapshot, monkeypatch):
+    item, ran, measured = _proved_item(build_snapshot, monkeypatch)
+    root = build_snapshot.config.project.root
+    _, tag, outputs, deps, _ = build._rule(*item)
+    begun = max((root / p).stat().st_mtime_ns for p in deps if (root / p).is_file()) + 1
+    monkeypatch.setattr(build.time, "time_ns", lambda: begun)
+    old = root / "build/a/src/group/obsolete"
+    old.mkdir(parents=True)
+    (old / "text.bin").write_bytes(b"stale")
+    writes = []
+    copy = build.shutil.copyfile
+    monkeypatch.setattr(build.shutil, "copyfile", lambda source, dest: writes.append(Path(dest)) or copy(source, dest))
+    assert build.compile_unit(item) == ()
+    output = root / outputs[0]
+    assert output.read_bytes() == b"12345678" and output.stat().st_mtime_ns == begun
+    assert (output.parent / "source.o").read_bytes() == b"obj"
+    assert not old.exists() and output.parent.name == tag
+    assert build.compile_unit(item) == ()
+    assert writes.count(output) == 1 and measured.call_count == 2
+    ran.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "case,data",
+    [
+        ("missing-bytes", b"12345678"),
+        ("corrupt-bytes", b"12345678"),
+        ("valid", b"short"),
+        ("valid", b"123456789"),
+        ("missing-proof", b"12345678"),
+        ("duplicate-proof", b"12345678"),
+        ("object", b"12345678"),
+        ("source", b"12345678"),
+        ("recipe", b"12345678"),
+        ("borrowed", b"12345678"),
+        ("inexact", b"12345678"),
+    ],
+)
+def test_unusable_proof_material_keeps_the_link_fallback_and_its_failure(build_snapshot, monkeypatch, case, data):
+    item, ran, measured = _proved_item(build_snapshot, monkeypatch, data=data, case=case)
+    findings = build.compile_unit(item)
+    assert len(findings) == 1 and findings[0].key == "link.error"
+    assert "fallback link refused" in findings[0].reason
+    ran.assert_called_once()
+    measured.assert_called_once()
+    assert not any((build_snapshot.config.project.root / p).exists() for p in build._rule(*item)[2])
+
+
+def test_reused_compile_work_cannot_keep_old_proved_material(build_snapshot, monkeypatch, tmp_path):
+    item, ran, measured = _proved_item(build_snapshot, monkeypatch)
+    work = tmp_path / "work"
+    work.mkdir()
+    assert native.compiles(item, work) == () and (work / "proved/text.bin").exists()
+    measured.return_value = ()
+    assert native.compiles(item, work) == () and not (work / "proved").exists()
+    ran.assert_not_called()
+
+
+def test_proved_outputs_keep_the_start_stamp_when_a_peer_touches_a_dependency(build_snapshot, monkeypatch):
+    item, ran, measured = _proved_item(build_snapshot, monkeypatch)
+    root = build_snapshot.config.project.root
+    begun = (root / "src/group.c").stat().st_mtime_ns + 100
+    monkeypatch.setattr(build.time, "time_ns", lambda: begun)
+
+    def while_touched(*args, **kwargs):
+        os.utime(root / "src/group.c", ns=(begun + 1, begun + 1))
+        return measured.return_value
+
+    measured.side_effect = while_touched
+    output = root / build._rule(*item)[2][0]
+    writes = []
+    copy = build.shutil.copyfile
+    monkeypatch.setattr(build.shutil, "copyfile", lambda source, dest: writes.append(Path(dest)) or copy(source, dest))
+    assert build.compile_unit(item) == ()
+    assert output.stat().st_mtime_ns == begun < (root / "src/group.c").stat().st_mtime_ns
+    assert build.compile_unit(item) == () and writes.count(output) == 2
+    ran.assert_not_called()
+
+
+def test_a_compile_regression_cannot_reuse_proved_outputs(build_snapshot, monkeypatch):
+    item, ran, measured = _proved_item(build_snapshot, monkeypatch)
+
+    def broken(*args):
+        raise Refusal(Finding("compile.error", "source no longer compiles"))
+
+    monkeypatch.setattr(native, "objects", broken)
+    findings = build.compile_unit(item)
+    assert len(findings) == 1 and findings[0].key == "compile.error"
+    measured.assert_not_called()
+    ran.assert_not_called()
+    assert not any((build_snapshot.config.project.root / p).exists() for p in build._rule(*item)[2])
