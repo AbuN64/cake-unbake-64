@@ -279,8 +279,11 @@ def test_worker_dies_with_its_parent(tmp_path, monkeypatch):
     monkeypatch.setattr(pool.resource, "setrlimit", lambda *a: None)
     monkeypatch.setattr(pool.ctypes, "CDLL", lambda name: type("L", (), {"prctl": lambda self, *a: calls.append(a)})())
     monkeypatch.setattr(pool, "_in_worker", False)
+    dropped = []
+    monkeypatch.setattr(pool.store, "drop_inherited", lambda: dropped.append(True))
     pool._init(1 << 30)
     assert calls == [(1, pool.signal.SIGKILL)]
+    assert dropped == [True]  # the parent's store flocks are let go in every worker
 
 
 def test_a_warm_keyed_group_costs_one_store_read(tmp_path, monkeypatch):

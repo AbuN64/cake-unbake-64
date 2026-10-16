@@ -218,7 +218,29 @@ def _flock(path: Path, flags: int, *, wait: bool = True, wait_s: float | None = 
             if not taken:
                 yield None
                 return
-        yield fd
+        _HELD_FDS.add(fd)
+        try:
+            yield fd
+        finally:
+            _HELD_FDS.discard(fd)
+
+
+_HELD_FDS: set[int] = set()  # the descriptors whose flock this process holds now
+
+
+def drop_inherited() -> None:
+    """A forked worker lets go of the flocks it inherited without unlocking them for the parent: each descriptor is
+    pointed at /dev/null, so the lock lives exactly as long as the parent holds it. A warm worker kept them for life,
+    and the parent then waited forever on its own journal lock."""
+    if not _HELD_FDS:
+        return
+    null = os.open(os.devnull, os.O_RDWR)
+    try:
+        for fd in _HELD_FDS:
+            os.dup2(null, fd)
+    finally:
+        os.close(null)
+    _HELD_FDS.clear()
 
 
 def cached(config: Config, kind: str, key: str, produce: Callable[[], bytes]) -> bytes:

@@ -374,3 +374,23 @@ def test_two_tool_builds_writing_one_logical_key_keep_two_entries_and_never_misr
     assert store.get(cfg, "pool.job", "keyed", named=True) == b"result"  # a pool key names its code itself
     monkeypatch.setattr(store, "code", lambda: "build-one")
     assert store.get(cfg, "declarations", "same") == b"one"
+
+
+def test_a_forked_worker_drops_an_inherited_flock_without_unlocking_it(tmp_path) -> None:
+    # setup forked its warm workers inside journal.reading: each kept the shared journal lock for life, and the
+    # boundary apply then waited forever for the exclusive side. Dropping the inherited descriptor frees the lock
+    # once the parent lets go; the holder here plays the worker's copy of the parent's descriptor.
+    path = tmp_path / "journal.lock"
+    with store._flock(path, fcntl.LOCK_SH) as fd:
+        assert fd in store._HELD_FDS
+        store.drop_inherited()
+        assert not store._HELD_FDS
+        with store._flock(path, fcntl.LOCK_EX, wait_s=0.0) as taken:
+            assert taken is not None  # no copy of the descriptor holds the lock any more
+    assert not store._HELD_FDS
+
+
+def test_flock_tracks_the_held_descriptor_only_while_held(tmp_path) -> None:
+    with store._flock(tmp_path / "a.lock", fcntl.LOCK_EX) as fd:
+        assert list(store._HELD_FDS) == [fd]
+    assert not store._HELD_FDS

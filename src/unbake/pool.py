@@ -85,6 +85,7 @@ def _init(limit: int) -> None:
     ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG: a worker never outlives the process that forked it
     for f in _slots + _cmd:  # the parent's locks are the parent's: a worker holding one pins it for life
         f.close()
+    store.drop_inherited()
     _in_worker = True
 
 
