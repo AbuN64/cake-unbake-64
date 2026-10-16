@@ -1911,6 +1911,7 @@ def test_code_another_version_names_between_the_same_members_takes_its_rows(scen
             ("func_80000418", "c", body),
             ("func_80000430", "c", tail),
         ),
+        units=(_unit(("func_80000418",), "src/body.c"),),
     )
     counts = {"versioned": 0}
     writes = layout._versioned(snapshot, counts)
@@ -1922,9 +1923,10 @@ def test_code_another_version_names_between_the_same_members_takes_its_rows(scen
         [0x1018, "asm", "func_80000418"],  # its bytes are this version's own: assembly, never another's C
         [0x1030, "c", "func_80000430"],
     ]
-    assert (
-        b"data/unresolved/80000410" not in writes["layout.toml"]
-    )  # the dropped row leaves the map: no unit names a lost row
+    # the dropped row leaves the map: no unit names a lost row
+    assert b"data/unresolved/80000410" not in writes["layout.toml"]
+    # the C that builds the code in b was never built for a: it stays withheld there, a's rows build from assembly
+    assert b'withheld = ["a"]' in writes["layout.toml"]
     other = (0x27BDFFD8, 0x24020005, 0, *RETURN, 0x27BD0028)  # other instructions: no rows
     snapshot = scene(
         (

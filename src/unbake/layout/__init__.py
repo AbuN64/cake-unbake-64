@@ -1401,10 +1401,18 @@ def _end(code: Sequence[int], vram: int) -> int | None:
     return max(covered) + 1 if covered else None
 
 
-def _unlist(snapshot: Snapshot, gone: Collection[str], writes: dict[str, bytes | None]) -> None:
+def _unlist(
+    snapshot: Snapshot,
+    gone: Collection[str],
+    writes: dict[str, bytes | None],
+    withheld: Mapping[str, Collection[str]] | None = None,
+) -> None:
     """The map without members whose rows the writes drop from every split that held them: no group lists them and
-    no unit holds them (a unit left holding only padding goes with its file), or the map names rows no split has."""
-    if not gone:
+    no unit holds them (a unit left holding only padding goes with its file), or the map names rows no split has.
+    `withheld`: per unit path the versions it newly holds rows in that its source was never built for (it stays
+    withheld there, the rows build from their assembly)."""
+    withheld = withheld or {}
+    if not gone and not withheld:
         return
     groups = {
         k: replace(g, members=tuple(n for n in g.members if n not in gone)) for k, g in snapshot.layout.groups.items()
@@ -1413,7 +1421,7 @@ def _unlist(snapshot: Snapshot, gone: Collection[str], writes: dict[str, bytes |
     for path, u in snapshot.layout.units.items():
         members = tuple(n for n in u.members if n not in gone)
         if members:
-            units[path] = replace(u, members=members)
+            units[path] = replace(u, members=members, withheld=tuple(sorted({*u.withheld, *withheld.get(path, ())})))
         elif all("_padding_" in n for n in u.members):
             writes[path] = None
     writes["layout.toml"] = dump_map(
@@ -1434,7 +1442,7 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
     is asked first."""
     from unbake.infer import masked_code  # infer reads layout, so the import waits for the first use
 
-    _, assembly, _ = _kinds()
+    compiled, assembly, _ = _kinds()
 
     def masked(v: Version, start: int, end: int) -> bytes:
         blob = version_data.rom_bytes(v, start, end)
@@ -1447,6 +1455,7 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
     order = sorted(snapshot.versions, key=lambda h: (h != snapshot.config.project.names_from, h))
     writes: dict[str, bytes | None] = {}
     dropped: defaultdict[str, set[str]] = defaultdict(set)  # row name -> the versions whose split no longer has it
+    gained: defaultdict[str, set[str]] = defaultdict(set)  # compiled unit -> the versions it now holds code rows in
     table = symbols.edit(snapshot)
     for h, version in sorted(snapshot.versions.items()):
         for i, (name, state, p) in enumerate(rows[h]):
@@ -1487,9 +1496,12 @@ def _versioned(snapshot: Snapshot, counts: dict[str, Any]) -> dict[str, bytes | 
                         table[n][h] = p.vram + offset - p.rom_start
                 counts["versioned"] += len(gap)
                 dropped[name].add(h)
+                for n, _, q in gap:  # C another version builds this code from never had this version's branch
+                    if q.section == ".text" and (unit := unit_of(snapshot, n)) and unit.kind == compiled:
+                        gained[unit.path].add(h)
                 break
     # a dropped row's member goes from the map too once no split holds it
-    _unlist(snapshot, {n for n, hs in dropped.items() if hs >= held.get(n, set())}, writes)
+    _unlist(snapshot, {n for n, hs in dropped.items() if hs >= held.get(n, set())}, writes, gained)
     if writes:
         writes.update(
             {
