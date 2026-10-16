@@ -275,6 +275,7 @@ def edit(
         groups, table = dict(lay.groups), symbols.edit(snapshot)
         known = set(lay.members)
         renames: dict[str, str] = {}
+        named_sources: set[str] = set()
         was: dict[str, str] = {}
         events: list[tuple[str, str, str, frozenset[str]]] = []
         event_moves: list[int] = []
@@ -386,6 +387,9 @@ def edit(
                 if subject == target:
                     continue
                 group = groups.pop(subject)
+                if subject in named_sources:
+                    named_sources.remove(subject)
+                    named_sources.add(target)
                 if target in groups:
                     into = groups[target]
                     if group.header != into.header:
@@ -414,6 +418,7 @@ def edit(
                     continue
                 sub, lib = _placement(target, rows)  # where its source sits places the module
                 bind(replace(groups[subject], source=target, subsystem=sub, library=lib))
+                named_sources.add(subject)
                 touch.add(subject)
             elif op in ("header", "file") and path_ok(move, "header"):
                 named = groups.get(subject)
@@ -457,20 +462,32 @@ def edit(
         shifted = replace(lay, groups=groups, units=units, fuzzy=fuzzy, digest="", boundaries=bounds)
         mid = layout.overlay(snapshot, {**writes, "layout.toml": layout.dump_map(shifted)})
         split: list[Finding] = []
-        # a move re-lays only the modules it changes (a source move renames its module's files); every other module
-        # keeps its units as they are, whatever their file names
-        changed = {
-            n
-            for m in moves
-            if m.op in ("member", "module", "source", "options")
-            for n in touched[m.index]
-            if n in groups
-        }
+        # Membership/recipe changes re-lay their modules. Source naming carries current units whole, even when
+        # their group's proposed membership differs after an earlier proof kept them.
+        changed = {n for m in moves if m.op in ("member", "module", "options") for n in touched[m.index] if n in groups}
         fresh = set(boundaries) - set(lay.boundaries)  # a boundary this command's proofs found cuts its module again
         changed |= {u.group for u in lay.units.values() if fresh.intersection(u.members)}
         changed |= {g.name for g in groups.values() if fresh.intersection(g.members)}
         reflow = None if any(m.op == "relayout" for m in moves) else changed
-        final = replace(mid.layout, units=layout.physical(mid, mid.layout, split, keep, reflow=reflow))
+        source_units = {
+            p for p, u in mid.layout.units.items() if reflow is not None and u.group in named_sources - reflow
+        }
+        final = replace(
+            mid.layout, units=layout.physical(mid, mid.layout, split, {*keep, *source_units}, reflow=reflow)
+        )
+        compiled, _, datum = layout._kinds()
+        naming = {
+            p: u
+            for p, u in final.units.items()
+            if u.group in named_sources and u.kind in (compiled, datum) and p not in keep and not p.startswith(library)
+        }
+        units = {p: u for p, u in final.units.items() if p not in naming}
+        for unit in sorted(
+            naming.values(), key=lambda u: (u.group, min(map(rank, u.members), default=(1 << 40, "")), u.path)
+        ):
+            path = layout.unit_path(final, unit.group, units)
+            units[path] = replace(unit, path=path)
+        final = replace(final, units=units)
         if (final.groups, final.units, final.fuzzy, final.boundaries) != (
             lay.groups,
             lay.units,

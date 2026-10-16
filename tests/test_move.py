@@ -500,7 +500,9 @@ def test_reflow_selection_uses_structural_moves_and_proof_boundaries(tmp_path, s
     monkeypatch.setattr(
         layout, "physical", lambda snap, mapped, split, keep, *, reflow: selections.append(reflow) or dict(mapped.units)
     )
-    move.edit(snapshot, [Move(0, "header", "ga", "include/game/timer.h"), Move(1, "source", "gb", "src/game/other.c")])
+    move.edit(
+        snapshot, [Move(0, "header", "ga", "include/game/timer.h"), Move(1, "options", "gb", '{"add": ["-mfp32"]}')]
+    )
     move.edit(snapshot, [Move(0, "header", "ga", "include/game/timer.h")], boundaries=("f3",))
     move.edit(snapshot, [Move(0, "relayout", "", "")])
     assert selections == [{"gb"}, {"gc"}, None]
@@ -597,6 +599,65 @@ def test_a_new_module_is_made_with_its_source_and_header(tmp_path: Path, seen: A
     plan = seen.plans[0]
     assert "src/gnew.c" in plan.writes and "void f3(void);" in text(plan, "include/gnew.h")
     assert 'name = "gnew"' in text(plan, "layout.toml") and result["units"]["after"] == 3
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_source_naming_preserves_kept_members_recipes_and_allocates_stably(tmp_path, seen, configured):
+    target = "src/game/PAIR.CPP"
+    groups = [
+        group("ga", source=target if configured else "src/f1.c"),
+        group("proposed", "f1", "f2", source="src/proposed.c"),
+        group("gc", "f3", source="src/game/PAIR_2.CPP"),
+    ]
+    units = [unit("src/f2.c", "ga", "f2"), unit("src/f1.c", "ga", "f1"), unit("src/game/PAIR_2.CPP", "gc", "f3")]
+    units[0]["options"] = {"add": ["-mfp32"], "omit": []}
+    units[0]["withheld"] = ["b"]
+    cfg = world(tmp_path, groups=groups, units=units)
+    snapshot = layout.capture(cfg)
+    edited = move.edit(snapshot, [Move(0, "source", "ga", target)])
+    assert not edited.bad
+    assert edited.layout.units == {
+        target: dataclasses.replace(snapshot.layout.units["src/f1.c"], path=target),
+        "src/game/PAIR_3.CPP": dataclasses.replace(snapshot.layout.units["src/f2.c"], path="src/game/PAIR_3.CPP"),
+        "src/game/PAIR_2.CPP": snapshot.layout.units["src/game/PAIR_2.CPP"],
+    }
+    after = layout.overlay(snapshot, edited.writes)
+    again = move.edit(after, [Move(0, "source", "ga", target)])
+    assert again.layout.units == edited.layout.units and "layout.toml" not in again.writes
+
+
+def test_source_naming_carries_its_kept_units_through_structural_work_elsewhere(tmp_path, seen):
+    groups = [
+        group("ga", source="src/f1.c"),
+        group("proposed", "f1", source="src/proposed.c"),
+        group("gb", "f2", source="src/f2.c"),
+        group("gc", "f3", source="src/f3.c"),
+    ]
+    snapshot = layout.capture(world(tmp_path, groups=groups))
+    edited = move.edit(snapshot, [Move(0, "source", "ga", "src/game/timer.CPP"), Move(1, "member", "f2", "gc")])
+    assert edited.layout.units["src/game/timer.CPP"] == dataclasses.replace(
+        snapshot.layout.units["src/f1.c"], path="src/game/timer.CPP"
+    )
+    assert len(edited.layout.units) == 2
+    assert sorted(u.members for u in edited.layout.units.values()) == [("f1",), ("f2", "f3")]
+
+
+@pytest.mark.parametrize("structural", ["member", "module"])
+def test_source_naming_with_structural_changes_still_reconstructs_members(tmp_path, seen, structural):
+    snapshot = layout.capture(world(tmp_path))
+    subject = "f2" if structural == "member" else "gb"
+    edited = move.edit(snapshot, [Move(0, "source", "ga", "src/game/joined.CPP"), Move(1, structural, subject, "ga")])
+    assert edited.layout.units["src/game/joined.CPP"].members == ("f1", "f2")
+    assert len(edited.layout.units) == 2
+
+
+def test_source_naming_follows_a_later_module_rename_and_respects_explicit_keep(tmp_path, seen):
+    snapshot = layout.capture(world(tmp_path))
+    moves = [Move(0, "source", "ga", "src/game/timer.CPP"), Move(1, "module", "ga", "renamed")]
+    edited = move.edit(snapshot, moves)
+    assert edited.layout.units["src/game/timer.CPP"].group == "renamed"
+    kept = move.edit(snapshot, moves[:1], keep=("src/f1.c",))
+    assert kept.layout.units == snapshot.layout.units
 
 
 def test_source_and_module_moves_rename_the_unit_file_and_merge_modules(tmp_path: Path, seen: Any) -> None:
