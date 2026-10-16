@@ -645,3 +645,25 @@ def test_plan_orphan_unit_takes_predecessor_group() -> None:
     assert infer._neighbour_group(snapshot, unit, memberships, groups) == "g1"
     assert infer._neighbour_group(snapshot, unit, {"after": "g2"}, groups) == "g2"
     assert infer._neighbour_group(snapshot, replace(unit, members=("before",)), memberships, groups) == "g1"
+
+
+@pytest.mark.usefixtures("toolchains")
+def test_compile_regression_refuses_before_another_units_claim_rows_are_recaptured(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from unbake.contracts import Claim, Finding
+
+    monkeypatch.setattr(pool, "map", lambda cfg, name, fn, items, key=None: [fn(i) for i in items])
+    snapshot = corresponding(tmp_path, [("foo_a", "foo_b")])
+    failed = Finding("compile.error", "active holder stopped compiling", missing=("src/broken.c a",))
+    assigned = {p: replace(u, withheld=("a",)) for p, u in snapshot.layout.units.items()}
+    claimed = (Claim("src/other.c", "a", ".rodata", 4, 8, ("new-row",)),)
+    claims = Mock(side_effect=[(assigned, claimed, [failed]), (assigned, claimed, [])])
+    monkeypatch.setattr(infer.ownership, "claims", claims)
+    cuts = Mock(side_effect=[{"versions/a.yaml": b"split another unit data row"}, {}])
+    monkeypatch.setattr(infer.layout, "claim_rows", cuts)
+    monkeypatch.setattr(infer.layout, "overlay", lambda snap, writes: snap)
+    plan = infer._plan(snapshot)
+    assert plan.blocking == (failed,) and not plan.writes
+    assert claims.call_count == 1
+    cuts.assert_not_called()

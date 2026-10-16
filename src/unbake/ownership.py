@@ -305,7 +305,7 @@ def _vram_of(index: _Index, offset: int) -> int:
 
 
 def _job_key(item: tuple[Any, ...]) -> str:
-    """What the unit's placements read: its builds in every holder (their inputs and tools, not the tool's own build
+    """What the unit's placements read: its builds in every holder (their inputs, tools and producing
     code), the rows they can land on, its own text range and the code that follows an object to the ROM. Any other
     edit of the tool leaves every placement warm."""
     snapshot, unit, only, loose, recipe = item
@@ -326,12 +326,7 @@ _job_key.coded = True  # type: ignore[attr-defined]  # the key names the code it
 def _built_key(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe | None) -> str:
     """What one holder's object says about where it lands, without the rows: an edit of any data row of the version
     (a relabel, a split) moves the job key of every unit there, while their objects stay built."""
-    return digest(
-        (
-            native.stamp(snapshot, unit, version, recipe, pinned=True, code=False),
-            code_identity(emitted, versions.undefined, versions.resolve),
-        )
-    )
+    return digest((native.stamp(snapshot, unit, version, recipe, pinned=True, code=False), code_identity(_built)))
 
 
 def _built(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> Built | str:
@@ -439,7 +434,8 @@ def _resolve(
     debt: list[str] = []
     for version, got in result.items():
         if isinstance(got, str):
-            debt.append(f"compile failed ({got.split(':')[0]}): {unit.path} {version} {got.split(': ', 1)[1]}")
+            state = "withheld compile failed" if version in unit.withheld else "compile failed"
+            debt.append(f"{state} ({got.split(':')[0]}): {unit.path} {version} {got.split(': ', 1)[1]}")
             continue
         index = indexes[version]
         before = [
@@ -505,7 +501,7 @@ def _own(
 
 
 def _findings(debt: dict[str, list[str]], action: str) -> list[Finding]:
-    """One finding per reason. Landed C that does not compile in a version it holds is broken, not debt: it refuses."""
+    """One finding per reason: a previously built holder failing to compile refuses; withheld failures stay debt."""
     out = []
     for why, rows in sorted(debt.items()):
         broken = why.startswith("compile failed (") and "symbols.unknown" not in why

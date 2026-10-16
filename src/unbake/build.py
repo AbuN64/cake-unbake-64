@@ -756,7 +756,14 @@ def make_check(config: Config, snapshot: Snapshot) -> Json:
         broken = [  # the content cache builds each unit and leaves its make outputs, so make below only links
             f
             for found in pool.map(
-                config, "land.compile", compile_unit, compile_jobs(snapshot, list(snapshot.layout.units))
+                config,
+                "land.compile",
+                compile_unit,
+                [
+                    job
+                    for job in compile_jobs(snapshot, list(snapshot.layout.units))
+                    if job[2] not in job[1].withheld  # prewarm only the holders the generated make rules build
+                ],
             )
             for f in found
             if f.blocking

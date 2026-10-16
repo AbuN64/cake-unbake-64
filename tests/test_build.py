@@ -842,10 +842,14 @@ def test_extract_stamp_is_per_root_and_covers_every_read_path(build_snapshot, na
     assert native_mock.call_count == 2
 
 
-def test_make_check_compiles_every_job_once_then_runs_make(build_snapshot, native_mock, monkeypatch):
+@pytest.mark.parametrize("withheld", [(), ("a",), ("a", "b")])
+def test_make_check_compiles_every_built_holder_once_then_runs_make(build_snapshot, native_mock, monkeypatch, withheld):
     cfg, order = build_snapshot.config, []
-    jobs = [(build_snapshot, "u", "a"), (build_snapshot, "u", "b")]
-    monkeypatch.setattr(build, "compile_jobs", lambda snap, paths: jobs)
+    unit = replace(next(iter(build_snapshot.layout.units.values())), withheld=withheld)
+    build_snapshot = replace(build_snapshot, layout=replace(build_snapshot.layout, units={unit.path: unit}))
+    checked = build.compile_jobs(build_snapshot, [unit.path])
+    assert [v for _, _, v in checked] == ["a", "b"]  # source checks still inspect every holder
+    jobs = [(build_snapshot, unit, v) for v in ("a", "b") if v not in withheld]
 
     def mapped(config, stage, fn, given):
         order.append(("pool", stage, fn, list(given)))

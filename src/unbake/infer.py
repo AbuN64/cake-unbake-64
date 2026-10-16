@@ -736,6 +736,8 @@ def _plan(snapshot: Snapshot) -> Plan:
     assigned, claimed, found = ownership.claims(snapshot, units=dict(snapshot.layout.units))
     cut_writes: dict[str, bytes | None] = {}
     for _ in range(_PASSES):  # its rows are generated from its claims: write them now, and plan on the rows they give,
+        if any(f.blocking for f in found):  # never recapture a new compile regression as existing withholding
+            break
         rows = layout.claim_rows(snapshot, claimed)  # so one plan holds both
         if not rows:
             break

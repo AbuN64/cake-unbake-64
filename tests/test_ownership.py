@@ -995,3 +995,84 @@ def test_a_changed_data_row_relocates_every_unit_from_its_cached_build_without_b
     assert ownership._job_key(item) != before  # the placement is located again on the new rows
     assert ownership._job(item) == {"a": {".rodata": [[12, 16]]}}
     assert built.call_count == 1  # from the object built before: the rows never reach the build
+
+
+@pytest.mark.parametrize("withheld", [(), ("a",)])
+def test_compile_failure_blocks_only_a_previously_built_holder(monkeypatch, inline, withheld):
+    spec = unit("f", withheld=withheld)
+    snapshot = Snapshot(
+        SimpleNamespace(project=SimpleNamespace(names_from="a")),
+        "h",
+        LayoutMap({}, MEMBERS, {spec.path: spec}, "d", (), {}),
+        {"a": None},
+        {},
+        "compile-debt",
+    )
+    monkeypatch.setattr(ownership, "_job", lambda item: {"a": "compile.error: undeclared constant"})
+    monkeypatch.setattr(ownership, "_index", lambda snapshot, v: INDEXES[v])
+    out, claims, findings = ownership.claims(snapshot, units={spec.path: spec})
+    assert out[spec.path].withheld == ("a",) and not claims
+    assert len(findings) == 1
+    assert findings[0].blocking is (not withheld)
+    assert findings[0].key == ("layout.ownership" if withheld else "compile.error")
+    assert findings[0].missing == ("src/f.c a undeclared constant",)
+
+
+@pytest.mark.parametrize("gap", ["", "text differs"])
+def test_withheld_compile_recovery_still_needs_exactness(monkeypatch, inline, gap):
+    spec = unit("f", withheld=("a",))
+    snapshot = Snapshot(
+        SimpleNamespace(project=SimpleNamespace(names_from="a")),
+        "h",
+        LayoutMap({}, MEMBERS, {spec.path: spec}, "d", (), {}),
+        {"a": None},
+        {},
+        "recovered",
+    )
+    monkeypatch.setattr(ownership, "_job", lambda item: {"a": {}})
+    monkeypatch.setattr(ownership, "_index", lambda snapshot, v: INDEXES[v])
+    assigned, _, findings = ownership.claims(snapshot, units={spec.path: spec})
+    assert not findings and assigned[spec.path].withheld == ()
+    seen = []
+    monkeypatch.setattr(ownership, "_exact_job", lambda item: seen.append(item) or gap)
+    out, findings = ownership.exact(snapshot, assigned)
+    assert [v for _, _, v in seen] == ["a"]
+    assert out[spec.path].withheld == (("a",) if gap else ())
+    assert bool(findings) == bool(gap)
+
+
+@pytest.mark.parametrize(
+    "module,name,changes",
+    [
+        (ownership, "_built", True),
+        (ownership.native, "objects", True),
+        (ownership.native, "sections", True),
+        (ownership, "emitted", True),
+        (ownership.pool, "map", False),
+        (ownership.effort, "stage", False),
+    ],
+)
+def test_holder_build_key_follows_its_producer_but_not_scheduling(monkeypatch, module, name, changes):
+    from types import FunctionType
+
+    monkeypatch.setattr(ownership.native, "stamp", lambda *args, **kwargs: "unchanged native inputs")
+    ownership.code_identity.cache_clear()
+    before = ownership._built_key(None, None, "a", None)
+    original = getattr(module, name)
+    while hasattr(original, "__wrapped__"):
+        original = original.__wrapped__
+    edited = FunctionType(
+        original.__code__.replace(co_consts=(*original.__code__.co_consts, "producer edit")),
+        original.__globals__,
+        original.__name__,
+        original.__defaults__,
+        original.__closure__,
+    )
+    edited.__module__ = original.__module__
+    edited.__qualname__ = original.__qualname__
+    edited.__kwdefaults__ = original.__kwdefaults__
+    monkeypatch.setattr(module, name, edited)
+    ownership.code_identity.cache_clear()
+    after = ownership._built_key(None, None, "a", None)
+    assert (after != before) is changes
+    ownership.code_identity.cache_clear()
