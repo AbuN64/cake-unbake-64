@@ -290,15 +290,22 @@ def _keep(config: Config, key: str, overlaid: bool, text: str, deps: list[tuple[
 _FORMAT = 1  # bump when the text a view keeps is made differently (marker rewriting, overlay naming)
 
 
+def _code() -> str:
+    """The bytes of this module, the one place a view's text is made (marker rewriting, overlay naming, chunking)."""
+    return sha256(Path(__file__).read_bytes())
+
+
 def _identity(config: Config, recipe: Recipe) -> str:
-    """What makes a preprocessed text beyond the files it reads: the preprocessor command and the bytes of the tools,
-    never the tool's own code, so an install that leaves these alone keeps every stored view."""
+    """What makes a preprocessed text beyond the files it reads: the preprocessor command, the bytes of the tools and
+    of the module that makes views, never the rest of the tool, so an install that leaves these alone keeps every
+    stored view."""
     return str(
         effort.memo(
             ("view-identity", recipe.toolchain),
             lambda: digest(
                 (
                     _FORMAT,
+                    _code(),
                     adapters.tool_identity(config, recipe.toolchain),
                     adapters.row(recipe.toolchain).get("preprocess"),
                 )

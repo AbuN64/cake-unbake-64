@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import view
+from unbake import store, view
 from unbake.contracts import (
     Config,
     Finding,
@@ -24,6 +24,9 @@ from unbake.contracts import (
     digest,
     sha256,
 )
+
+
+_STORE = (store.get, store.put, store.put_many, store.content)  # the real cache, before a lane mocks it
 
 
 def _sha(data):
@@ -638,3 +641,38 @@ def test_a_warm_view_key_names_its_digests_without_loading_or_parsing_the_view(l
     (lane.root / "include/active.h").write_bytes(b"typedef long active;\n")  # a reached file moves the key
     keyed()
     assert (loads.call_count, live.call_count) == (2, 2)
+
+
+@pytest.mark.parametrize("overlaid", [False, True])
+def test_a_view_stored_by_one_install_and_root_hits_in_another_with_the_same_content(lane, monkeypatch, overlaid):
+    """Map's cold ownership pass missed 0/14,140 views on every new install while units hit: the view kinds were keyed
+    by the tool code. Same files, recipe and tool bytes in another checkout under another install share the stored view."""
+    for name, real in zip(("get", "put", "put_many", "content"), _STORE, strict=True):
+        monkeypatch.setattr(store, name, real)
+    writes = {"include/active.h": b"typedef long active;\n"} if overlaid else {}
+    monkeypatch.setattr(store, "code", lambda: "install-one")
+    first = _get(lane, _overlay(lane.snapshot, writes))
+    other = lane.root.parent / "other"
+    import shutil
+    shutil.copytree(lane.root, other)
+    moved = replace(lane.snapshot.config, project=replace(lane.snapshot.config.project, root=other))
+    lane.text = lane.text.replace(str(lane.root), str(other))
+    monkeypatch.setattr(store, "code", lambda: "install-two")
+    second = _get(lane, _overlay(replace(lane.snapshot, config=moved), writes))
+    assert lane.preprocess.call_count == 1  # no second preprocess: the second run hit the first run's view
+    assert (second.key, second.text, second.dependencies) == (first.key, first.text, first.dependencies)
+
+
+def test_a_new_install_with_the_same_view_code_keeps_the_view_identity_and_a_view_code_edit_does_not(monkeypatch):
+    """Only view.py's bytes, the tool bytes and the preprocess command name a view: another install hits."""
+    monkeypatch.setattr(view.adapters, "tool_identity", lambda config, toolchain: "tool-bytes")
+    monkeypatch.setattr(view.adapters, "row", lambda toolchain: {"preprocess": ["cpp"]})
+    recipe = Recipe("fake", (), (), (), digest("recipe"))
+    identities = {}
+    runs = (("one", "install-one", "same"), ("two", "install-two", "same"), ("edit", "install-two", "edited"))
+    for name, code, source in runs:
+        view.effort._memo.clear()
+        monkeypatch.setattr(store, "code", lambda code=code: code)
+        monkeypatch.setattr(view, "_code", lambda source=source: source)
+        identities[name] = view._identity(None, recipe)
+    assert identities["one"] == identities["two"] != identities["edit"]

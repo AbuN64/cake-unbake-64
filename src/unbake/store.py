@@ -116,7 +116,9 @@ def _refusing() -> Iterator[None]:
         ) from full
 
 
-_NAMED = frozenset({"unit", "object", "bytes"})  # a tool's output named by all its inputs: every unbake build shares it
+# a tool's output named by all its inputs: every unbake build shares it. A view is named by its reads, the preprocessor
+# command, the tool bytes and view.py's own bytes (never the rest of the tool), its chunks by content
+_NAMED = frozenset({"unit", "object", "bytes", "view", "view.chunk"})
 
 
 class Packed(ContentCache):

@@ -394,3 +394,13 @@ def test_flock_tracks_the_held_descriptor_only_while_held(tmp_path) -> None:
     with store._flock(tmp_path / "a.lock", fcntl.LOCK_EX) as fd:
         assert list(store._HELD_FDS) == [fd]
     assert not store._HELD_FDS
+
+
+@pytest.mark.parametrize(("kind", "shared"), [("view", True), ("view.chunk", True), ("unit", True), ("kind", False)])
+def test_content_named_kinds_survive_an_install_and_code_keyed_kinds_do_not(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, kind: str, shared: bool
+) -> None:
+    monkeypatch.setattr(store, "code", lambda: "install-one")
+    store.put(cfg, kind, "key", b"value")
+    monkeypatch.setattr(store, "code", lambda: "install-two")
+    assert (store.get(cfg, kind, "key") == b"value") is shared
