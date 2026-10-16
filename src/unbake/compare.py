@@ -674,17 +674,24 @@ def prove_groups(
         sets[n] = (bound, unit, units, proved, len(pairs), len(everyone))
         pairs += [(bound, u) for u in everyone]
     measured = measure_bound(config, pairs, overrides) if pairs else []
+    judged: dict[int, tuple[tuple[Proof, ...], tuple[Proof, ...], tuple[Finding, ...]]] = {}
+    heads: set[str] = set()
+    for n, (bound, _unit, units, proved, at, count) in sets.items():
+        everyone_ = tuple(p for group in measured[at : at + count] for p in group)
+        proofs = tuple(p for p in everyone_ if p.unit in proved["changed"])
+        judged[n] = (everyone_, proofs, _gaps_of(bound, units, proofs))
+        heads.update(proved["consumers"])
+        heads.update(u.path for f in judged[n][2] if (u := layout.unit_of(snapshot, f.unit)) is not None)
+    if heads:  # every set's HEAD proofs in ONE dispatch (memoised for the gates below), never one dispatch per set
+        _baseline(snapshot, sorted(heads), overrides)
     out: list[tuple[Finding, ...]] = []
     for n, done in enumerate(prepared):
         if isinstance(done, Refusal):
             out.append(tuple(done.findings))
             continue
         bound, unit, units, proved, at, count = sets[n]
-        everyone_ = tuple(p for group in measured[at : at + count] for p in group)
-        proofs = tuple(p for p in everyone_ if p.unit in proved["changed"])
-        found, standing = _standing(
-            snapshot, unit, _gaps_of(bound, units, proofs), proofs, overrides, bool(params.get("no_regression"))
-        )
+        everyone_, proofs, gaps_ = judged[n]
+        found, standing = _standing(snapshot, unit, gaps_, proofs, overrides, bool(params.get("no_regression")))
         found += _regressions(snapshot, proved["consumers"], everyone_, overrides)
         kept = [p for p in proofs if (p.member, p.version) not in standing]
         if not kept:
