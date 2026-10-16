@@ -291,8 +291,9 @@ def _budget(record: StageRecord, leaf: bool, shipped: bool = False) -> StageReco
         return record
     host, found, cores, pool = _config.host, [], f"{record.cores:.2f} cores", record.kind == "pool"
     slow = record.wall_seconds >= host.serial_seconds
+    alone = record.wall_seconds / record.spans >= host.serial_seconds  # a folded record is many short spans
     hits, misses = (sum(v[i] for v in record.cache.values()) for i in (0, 1))
-    if leaf and slow and record.cores < host.serial_cores:
+    if leaf and alone and record.cores < host.serial_cores:
         found.append(("single_core", "serial_seconds", f"ran {record.wall_seconds:.1f}s at {cores}"))
     if (
         pool
@@ -540,6 +541,7 @@ def record_pool(
     opened = _Open(name, "pool", _stack.get()[-1])
     opened.start = start_ns
     cache: dict[str, tuple[int, int]] = {}
+    shipped: list[tuple[StageRecord, bool]] = []  # every worker record, rebased, and whether it is a worker's leaf
     for envelope in envelopes:
         _merge_cache(cache, envelope.get("cache", {}))
         records = envelope.get("records", [])
@@ -571,7 +573,9 @@ def record_pool(
                 )
                 for f in raw.get("findings", [])
             )
-            _emit(StageRecord(**values), raw["span"] not in parents, True)
+            shipped.append((StageRecord(**values), raw["span"] not in parents))
+    for folded, leaf in _fold(shipped):
+        _emit(folded, leaf, True)
     record = _emit(
         _record(
             opened,
@@ -592,6 +596,56 @@ def record_pool(
     )
     _stack.get()[-1].children.append(record)
     _merge_cache(_stack.get()[-1].remote_cache, cache)
+
+
+def _fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord, bool]]:
+    """The worker records of one pool, one per path: thousands of jobs below the log floor each still add up to the
+    stage they spent their time in. A record with findings or a status other than ok stays on its own."""
+    groups: dict[tuple[str, tuple[str, ...]], list[tuple[StageRecord, bool]]] = {}
+    alone: list[tuple[StageRecord, bool]] = []
+    for record, leaf in shipped:
+        if record.findings or record.status != "ok":
+            alone.append((record, leaf))
+        else:
+            groups.setdefault((record.kind, record.path), []).append((record, leaf))
+    span: dict[str | None, str | None] = {
+        r.span: (members[0][0].span if len(members) > 1 else r.span) for members in groups.values() for r, _ in members
+    }
+    out = [(replace(r, parent=span.get(r.parent, r.parent)), leaf) for r, leaf in alone]
+    for members in groups.values():
+        first = members[0][0]
+        if len(members) == 1:
+            out.append((replace(first, parent=span.get(first.parent, first.parent)), members[0][1]))
+            continue
+        rows = [r for r, _ in members]
+        wall = sum(r.wall_seconds for r in rows)
+        worker, native = sum(r.worker_cpu_seconds for r in rows), sum(r.native_cpu_seconds for r in rows)
+        cores = (worker + native) / wall if wall else 0
+        cache: dict[str, tuple[int, int]] = {}
+        for r in rows:
+            _merge_cache(cache, dict(r.cache))
+        folded = replace(
+            first,
+            parent=span.get(first.parent, first.parent),
+            execution="parallel" if _config and cores >= _config.host.serial_cores else "serial",
+            start_ns=min(r.start_ns for r in rows),
+            wall_seconds=wall,
+            worker_cpu_seconds=worker,
+            native_cpu_seconds=native,
+            cores=cores,
+            items=sum(r.items for r in rows),
+            jobs=sum(r.jobs for r in rows),
+            workers_used=max(r.workers_used for r in rows),
+            workers_admitted=max(r.workers_admitted for r in rows),
+            worker_rss_peak_bytes=max(r.worker_rss_peak_bytes for r in rows),
+            cache=cache,
+            wait_seconds=sum(r.wait_seconds for r in rows),
+            dispatch_seconds=sum(r.dispatch_seconds for r in rows),
+            busy_seconds=sum(r.busy_seconds for r in rows),
+            spans=sum(r.spans for r in rows),
+        )
+        out.append((folded, all(leaf for _, leaf in members)))
+    return out
 
 
 class _Null:

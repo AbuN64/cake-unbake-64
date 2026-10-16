@@ -642,6 +642,7 @@ class StageRecord:
     wait_seconds: float = 0.0  # time this stage itself blocked on a lock
     dispatch_seconds: float = 0.0  # pool: wall the parent spent outside waiting on workers
     busy_seconds: float = 0.0  # pool: wall the workers spent inside jobs, summed
+    spans: int = 1  # how many worker spans of one pool this record folds, by path
 
 
 # ---------------------------------------------------------------- adapter protocols

@@ -252,6 +252,10 @@
   "busy_seconds": {
    "type": "number",
    "minimum": 0
+  },
+  "spans": {
+   "type": "integer",
+   "minimum": 1
   }
  },
  "required": [

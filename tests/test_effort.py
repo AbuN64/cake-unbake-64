@@ -457,3 +457,70 @@ def test_the_stage_log_keeps_the_head_of_a_long_finding_and_the_record_keeps_it_
     assert missing.startswith("version de: error: x") and "50019 chars" in missing
     kept = next(r for r in effort.closed() if r.path[-1] == "native.objects")
     assert kept.findings[0].reason == reason
+
+
+def _job_raw(path: tuple[str, ...], wall: float, cpu: float, wait: float, n: int, kind: str = "stage") -> dict:
+    return {
+        "invocation": "w",
+        "span": f"s{n}",
+        "parent": None,
+        "path": list(path),
+        "kind": kind,
+        "status": "ok",
+        "execution": "serial",
+        "start_ns": n,
+        "wall_seconds": wall,
+        "parent_cpu_seconds": cpu,
+        "worker_cpu_seconds": 0.0,
+        "native_cpu_seconds": 0.0,
+        "cores": cpu / wall,
+        "items": 1,
+        "jobs": 0,
+        "workers_used": 0,
+        "workers_admitted": 0,
+        "parent_rss_peak_bytes": 0,
+        "worker_rss_peak_bytes": n,
+        "cache": {"view": [0, 1]},
+        "findings": [],
+        "wait_seconds": wait,
+    }
+
+
+def _envelope(records: list[dict]) -> dict:
+    return {"worker_cpu": 0, "native_cpu": 0, "rss": 1, "pid": 1, "start_ns": 0, "end_ns": 1, "records": records}
+
+
+def test_sub_floor_worker_spans_of_one_path_fold_into_one_logged_record(tmp_path):
+    # setup's layout.ownership ran 5,439 jobs each under the log floor: every span was dropped and their 1,589
+    # worker-seconds vanished from the stage log. One path's spans fold into one record that crosses the floor.
+    raws = [_job_raw(("job", "native.objects"), 0.05, 0.02, 0.01, n) for n in range(5000)]
+    with effort.command("check", []):
+        effort.bind(_config(tmp_path))
+        effort.record_pool("units", 5000, 5000, 0, effort.time.perf_counter_ns(), [_envelope(raws)])
+    rows = [json.loads(line) for line in (tmp_path / ".unbake" / "stages.jsonl").read_text().splitlines()]
+    folded = [r for r in rows if r["path"][-2:] == ["job", "native.objects"]]
+    assert len(folded) == 1
+    row = folded[0]
+    assert row["spans"] == 5000 and row["items"] == 5000
+    assert row["wall_seconds"] == pytest.approx(250.0) and row["worker_cpu_seconds"] == pytest.approx(100.0)
+    assert row["wait_seconds"] == pytest.approx(50.0) and row["cores"] == pytest.approx(0.4)
+    assert row["cache"] == {"view": [0, 5000]} and row["worker_rss_peak_bytes"] == 4999
+    assert row["start_ns"] == 0 and not any(f["key"] == "budget.single_core" for f in row["findings"])
+
+
+def test_a_folded_child_hangs_under_its_folded_parent_and_findings_stay_alone(tmp_path):
+    raws = []
+    for n in range(3):
+        job = _job_raw(("job",), 1.0, 0.5, 0.0, n, kind="job")
+        child = _job_raw(("job", "view.get"), 0.5, 0.1, 0.0, 10 + n)
+        child["parent"] = job["span"]
+        raws += [job, child]
+    raws[1]["findings"] = [{"key": "k", "reason": "r"}]
+    with effort.command("check", []):
+        effort.record_pool("units", 3, 3, 1, effort.time.perf_counter_ns(), [_envelope(raws)])
+    shipped = [r for r in effort.closed() if r.path[:2] == ("check", "units") and r.kind != "pool"]
+    job = next(r for r in shipped if r.kind == "job")
+    views = [r for r in shipped if r.path[-1] == "view.get"]
+    assert job.spans == 3 and job.wall_seconds == 3.0
+    assert sorted(r.spans for r in views) == [1, 2]
+    assert all(r.parent == job.span for r in views)
