@@ -524,3 +524,15 @@ def test_a_folded_child_hangs_under_its_folded_parent_and_findings_stay_alone(tm
     assert job.spans == 3 and job.wall_seconds == 3.0
     assert sorted(r.spans for r in views) == [1, 2]
     assert all(r.parent == job.span for r in views)
+
+
+def test_a_worker_span_at_the_log_floor_stays_alone_so_a_pools_tail_is_seen(tmp_path):
+    # RW move round 1: publish.units kept 6.3 of 12 workers busy over 501 jobs; folded, no job's wall was left to
+    # tell a tail from a slow pool. Spans under the floor fold, a slow one stays alone.
+    raws = [_job_raw(("job",), 0.05, 0.02, 0.0, n, kind="job") for n in range(40)]
+    raws.append(_job_raw(("job",), 90.0, 89.0, 0.0, 99, kind="job"))
+    with effort.command("check", []):
+        effort.bind(_config(tmp_path))
+        effort.record_pool("units", 41, 41, 0, effort.time.perf_counter_ns(), [_envelope(raws)])
+    jobs = sorted((r.spans, r.wall_seconds) for r in effort.closed() if r.kind == "job")
+    assert jobs == [(1, 90.0), (40, pytest.approx(2.0))]

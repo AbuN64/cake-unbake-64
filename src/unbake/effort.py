@@ -621,12 +621,13 @@ def record_pool(
 
 def fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord, bool]]:
     """Worker records, one per path: thousands of jobs below the log floor each still add up to the stage they spent
-    their time in. A worker folds its chunk's records, the parent a pool's chunks. A record with findings or a status
-    other than ok stays on its own."""
+    their time in. A worker folds its chunk's records, the parent a pool's chunks. A record with findings, a status
+    other than ok or a wall at the log floor stays on its own: the slow jobs of a pool's tail are each seen."""
     groups: dict[tuple[str, tuple[str, ...]], list[tuple[StageRecord, bool]]] = {}
     alone: list[tuple[StageRecord, bool]] = []
+    floor = _config.host.serial_seconds / 4 if _config else float("inf")
     for record, leaf in shipped:
-        if record.findings or record.status != "ok":
+        if record.findings or record.status != "ok" or record.wall_seconds >= floor:  # a slow one is seen alone
             alone.append((record, leaf))
         else:
             groups.setdefault((record.kind, record.path), []).append((record, leaf))
@@ -641,8 +642,9 @@ def fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord,
             continue
         rows = [r for r, _ in members]
         wall = sum(r.wall_seconds for r in rows)
-        worker, native = sum(r.worker_cpu_seconds for r in rows), sum(r.native_cpu_seconds for r in rows)
-        cores = (worker + native) / wall if wall else 0
+        own, worker = sum(r.parent_cpu_seconds for r in rows), sum(r.worker_cpu_seconds for r in rows)
+        native = sum(r.native_cpu_seconds for r in rows)
+        cores = (own + worker + native) / wall if wall else 0
         cache: dict[str, tuple[int, int]] = {}
         for r in rows:
             _merge_cache(cache, dict(r.cache))
@@ -652,6 +654,7 @@ def fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord,
             execution="parallel" if _config and cores >= _config.host.serial_cores else "serial",
             start_ns=min(r.start_ns for r in rows),
             wall_seconds=wall,
+            parent_cpu_seconds=own,
             worker_cpu_seconds=worker,
             native_cpu_seconds=native,
             cores=cores,

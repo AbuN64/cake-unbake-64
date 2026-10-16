@@ -1754,7 +1754,7 @@ def test_only_a_pure_overlay_is_laid_again_in_a_worker_and_never_from_files(tmp_
 
 def _two_stages(value):
     with effort.stage("native.objects"), effort.stage("view.get"):
-        pass
+        sum(i * i for i in range(20000))  # cpu the fold must keep, job by job
     return value
 
 
@@ -1767,5 +1767,8 @@ def test_a_chunk_ships_every_jobs_records_folded_by_path_once(tmp_path):
     by_path = {tuple(r["path"]): r for r in shipped}
     assert {p[-1] for p in by_path} == {"job", "native.objects", "view.get", "(own)"}
     assert by_path[("job", "native.objects")]["spans"] == 50 and by_path[("job",)]["spans"] == 50
+    jobs = by_path[("job",)]
+    total = sum(o[2]["worker_cpu"] for o in outcomes)
+    assert jobs["parent_cpu_seconds"] >= 0.5 * total  # a workers own cpu is summed, not the first jobs alone
     view = by_path[("job", "native.objects", "view.get")]
     assert view["parent"] == by_path[("job", "native.objects")]["span"]

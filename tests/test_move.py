@@ -776,8 +776,11 @@ def test_a_claims_mismatch_refuses_only_the_moves_that_touched_the_unit(
 ) -> None:
     cfg = world(tmp_path)
 
+    made: list[str] = []
+
     def claims(snapshot: Any, *args: Any, **kw: Any) -> Any:  # the unit of ga claims four bytes more after the batch
         grown = "src/ga2.c" in snapshot.layout.units
+        made.append(snapshot.digest)
         rows = [
             Claim(p, "a", ".text", 32 * i, 32 * i + 16 + (4 if grown and u.group == "ga" else 0))
             for i, (p, u) in enumerate(sorted(snapshot.layout.units.items()))
@@ -790,6 +793,8 @@ def test_a_claims_mismatch_refuses_only_the_moves_that_touched_the_unit(
     assert [r["index"] for r in result["refused"]] == [0, 1] and result["files"] == []
     assert {f["key"] for r in result["refused"] for f in r["findings"]} == {"move.not_exact"}
     assert seen.plans == []
+    # each tree is claimed once per check: RW move round 3 claimed both trees twice (4 x ~9 s, half of it repeated)
+    assert len(made) == len(set(made))
 
 
 def test_a_policy_finding_refuses_only_the_moves_that_touched_its_unit(

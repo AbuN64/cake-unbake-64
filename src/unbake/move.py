@@ -1004,9 +1004,11 @@ def _blamed(edited: Edited, moves: Sequence[Move], units: Sequence[UnitSpec | No
     return [hit[i] for i in sorted(hit)]
 
 
-def _failing_claims(old: Snapshot, new: Snapshot, edited: Edited) -> list[UnitSpec | None]:
-    """The units whose ROM claims differ before and after: those holding a range the other side does not claim."""
-    before, after = ownership.claims(old)[1], ownership.claims(new)[1]
+def _failing_claims(
+    old: Snapshot, new: Snapshot, edited: Edited, before: Sequence[Claim], after: Sequence[Claim]
+) -> list[UnitSpec | None]:
+    """The units whose ROM claims differ before and after (`before`, `after`: the claims of `old` and `new`, made once
+    by the caller): those holding a range the other side does not claim."""
 
     def key(claim: Claim) -> tuple[str, str, int, int]:
         return claim.version, claim.section, claim.start, claim.end
@@ -1926,7 +1928,11 @@ def _apply(
         if claims and _claims(new_claims) != _claims(old_claims):
             lost = Finding("move.not_exact", "the unit claims differ from the old claims", missing=("claims",))
             unseamed = _unseamed(old_claims, new_claims, keep)  # a change at a kept unit's seam is bookkeeping
-            losing = [u for u in _failing_claims(snapshot, overlay, edited) if u is None or u.path in unseamed]
+            losing = [
+                u
+                for u in _failing_claims(snapshot, overlay, edited, old_claims, new_claims)
+                if u is None or u.path in unseamed
+            ]
         else:
             losing = []
         if losing:
