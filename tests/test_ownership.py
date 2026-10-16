@@ -1123,8 +1123,40 @@ def test_displaced_data_provider_keeps_source_until_all_bytes_transfer(monkeypat
     if mode in ("covered", "split"):
         assert provider.path not in out and not findings
     else:
-        assert out[provider.path].members == provider.members
+        assert out[provider.path].members == (("old2",) if mode == "partial" else provider.members)
         assert out[provider.path].withheld == ("a",)
-        if mode in ("partial", "compile-error"):
+        if mode == "compile-error":
             assert any(f.blocking for f in findings)
     assert layout.is_datum(provider)
+
+
+@pytest.mark.parametrize("start,end", [(0xC2A70, 0xC2A74), (0xC2A68, 0xC2A70), (0xC2A74, 0xC2A80)])
+def test_real_provider_keeps_residual_rows_and_source_when_a_literal_is_claimed(monkeypatch, start, end):
+    # RageWars US: a 24-byte raw provider contains the claimant's 100.0f literal in its middle.
+    name = "rodata/unresolved/800C1E68"
+    code = replace(unit("f"), path="src/func_8020EAE0_de_13.c")
+    provider = replace(unit(name), path="src/rodata.unresolved.800C1E68.c", kind="data")
+    members = {
+        "f": member("f", "function", ".text", ("us",)),
+        name: Member(name, "data", ".data", "g", (Placement("us", ".data", 0xC2A68, 0xC2A80, 0x800C1E68),)),
+    }
+    units = {code.path: code, provider.path: provider}
+    snapshot = SimpleNamespace(
+        config=SimpleNamespace(project=SimpleNamespace(names_from="us")),
+        layout=LayoutMap({}, members, units, "d", (), {}),
+        versions={"us": None},
+        digest="real-partial-provider",
+    )
+    rows = index(bytes(0xC2A80), [(0xC2A68, 0xC2A80, name, ".data", 0x800C1E68)])
+    results = {code.path: {"us": {".rodata": [[start, end]]}}, provider.path: {"us": {".data": [[0xC2A68, 0xC2A80]]}}}
+    monkeypatch.setattr(
+        ownership.pool, "map", lambda cfg, stage, fn, items, key=None: [results[i[1].path] for i in items]
+    )
+    monkeypatch.setattr(ownership, "_index", lambda snapshot, v: rows)
+    out, claims, findings = ownership.claims(snapshot, units=units)
+    expected = ((name,) if start > 0xC2A68 else ()) + (
+        (f"data/unresolved/{0x800C1E68 + end - 0xC2A68:08X}",) if end < 0xC2A80 else ()
+    )
+    assert out[provider.path] == replace(provider, members=expected, withheld=("us",))
+    assert not any(f.blocking for f in findings)
+    assert [(c.unit, c.start, c.end) for c in claims] == [(code.path, start, end)]

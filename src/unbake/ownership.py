@@ -529,6 +529,33 @@ def _findings(debt: dict[str, list[str]], action: str) -> list[Finding]:
     return out
 
 
+def _residuals(
+    snapshot: Snapshot, units: Sequence[UnitSpec], claims: Sequence[Claim], indexes: Mapping[str, _Index]
+) -> dict[str, tuple[str, ...]]:
+    """The unclaimed rows left inside displaced providers. Use claim_rows' partition, so a retained source names
+    exactly the prefix and suffix rows the split edits create. Withheld sources leave those bytes in the base ROM."""
+    places: dict[str, list[tuple[str, Placement]]] = defaultdict(list)
+    for unit in units:
+        for name in unit.members:
+            for p in snapshot.layout.members[name].placements:
+                places[p.version].append((unit.path, p))
+    remaining: dict[str, list[str]] = defaultdict(list)
+    for version, held in places.items():
+        # Only the row names are needed: section classes give the same partition as the split's raw/dotted kinds.
+        rows: list[list[Any]] = [[s, e, at, n, section, n, True] for s, e, n, section, at in indexes[version].rows]
+        named = {r[3] for r in rows}
+        mine = sorted((c for c in claims if c.version == version), key=lambda c: c.start)
+        for c in mine:
+            layout._claim_row(snapshot.versions[version], rows, named, c)
+        claimed = {n for c in mine for n in c.rows}
+        for start, end, _, name, *_ in rows:
+            if name not in claimed:
+                for path, p in held:
+                    if p.rom_start <= start and end <= p.rom_end:
+                        remaining[path].append(name)
+    return {path: tuple(dict.fromkeys(names)) for path, names in remaining.items()}
+
+
 def claims(
     snapshot: Snapshot,
     version: str | None = None,
@@ -565,7 +592,7 @@ def claims(
         taken: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         debt: dict[str, list[str]] = defaultdict(list)
         out, found = dict(wanted), []
-        stranded = []
+        displaced = {}
         for unit, result in zip(todo, results, strict=True):
             keep, resolved, mine, left = _resolve(
                 unit, snapshot.layout.members, result, indexes, snapshot.config.project.names_from
@@ -594,11 +621,19 @@ def claims(
             out[unit.path] = (
                 owned if owned.members else replace(unit, withheld=tuple(sorted(holders | set(unit.withheld))))
             )
-            if not owned.members and any(line.startswith("row owned by another unit:") for line in left):
-                stranded.append(unit.path)
+            if layout.is_datum(unit) and any(line.startswith("row owned by another unit:") for line in left):
+                displaced[unit.path] = owned
             found.extend(kept)
             for line in left:
                 debt[line.split(":")[0]].append(line.split(": ", 1)[1])
+        residuals = _residuals(snapshot, [wanted[p] for p in displaced], found, indexes)
+        stranded = []
+        for path, owned in displaced.items():
+            names = tuple(dict.fromkeys((*owned.members, *residuals.get(path, ()))))
+            if names:
+                out[path] = replace(owned, members=names)
+            else:
+                stranded.append(path)
         findings = _findings(debt, "fix the source of each listed unit")
         if stranded:
             findings.append(

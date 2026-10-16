@@ -671,7 +671,8 @@ def test_compile_regression_refuses_before_another_units_claim_rows_are_recaptur
 
 @pytest.mark.usefixtures("toolchains")
 @pytest.mark.parametrize("separate_group", [False, True])
-def test_infer_retires_displaced_provider_in_same_plan_and_is_stable(tmp_path, monkeypatch, separate_group):
+@pytest.mark.parametrize("partial", [None, (0x1010, 0x1014), (0x1018, 0x101C), (0x1FFC, 0x2000)])
+def test_infer_reconciles_displaced_provider_in_same_plan_and_is_stable(tmp_path, monkeypatch, separate_group, partial):
     from unbake import ownership
 
     code = {**UNIT, "path": "src/f0.c", "kind": "c"}
@@ -708,12 +709,30 @@ segments:
     monkeypatch.setattr(pool, "map", lambda cfg, name, fn, items, key=None: [fn(i) for i in items])
     monkeypatch.setattr(infer, "sdk", lambda s: {})
     monkeypatch.setattr(infer, "groups", lambda s, identified: tuple(s.layout.groups.values()))
-    monkeypatch.setattr(ownership, "_job", lambda item: {"a": {".data": [[0x1010, 0x2000]]}})
+    monkeypatch.setattr(
+        ownership,
+        "_job",
+        lambda item: {
+            "a": {".data": [list(partial) if partial and item[1].path == code["path"] else [0x1010, 0x2000]]}
+        },
+    )
     monkeypatch.setattr(ownership, "exact", lambda s, units: (units, []))
     plan = infer._plan(snapshot)
-    assert not plan.blocking and plan.writes[provider["path"]] is None
+    assert not plan.blocking
     assert "layout.toml" in plan.writes and "versions/a/Game.yaml" in plan.writes
     after = layout.overlay(snapshot, plan.writes)
-    assert provider["path"] not in after.layout.units
-    assert after.layout.units[code["path"]].members == ("f0", "data/f0/80000410")
+    if partial:
+        assert provider["path"] not in plan.writes
+        assert after.read(provider["path"]) == snapshot.read(provider["path"])
+        start, end = partial
+        residuals = (("row",) if start > 0x1010 else ()) + (
+            (f"data/unresolved/{0x80000400 + end - 0x1000:08X}",) if end < 0x2000 else ()
+        )
+        assert after.layout.units[provider["path"]].members == residuals
+        assert after.layout.units[provider["path"]].withheld == ("a",)
+        assert after.layout.units[code["path"]].members == ("f0", f"data/f0/{0x80000400 + start - 0x1000:08X}")
+    else:
+        assert plan.writes[provider["path"]] is None
+        assert provider["path"] not in after.layout.units
+        assert after.layout.units[code["path"]].members == ("f0", "data/f0/80000410")
     assert not infer._plan(after).writes
