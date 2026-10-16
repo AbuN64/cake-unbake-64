@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from click.core import ParameterSource
 
 from unbake import config, effort, human, store
 from unbake.contracts import Finding, Json, Refusal
@@ -138,11 +139,21 @@ def _group(outcome: dict[str, int], argv: Sequence[str]) -> click.Group:
             params.append(click.Option(["--project"], type=path, required=False, help="project root, default cwd"))
 
         def callback(_name: str = name, **kwargs: Any) -> None:
-            context = click.get_current_context().parent
-            parent = context.params if context else {}
+            context = click.get_current_context()
+            parent = context.parent
             for key in ("host", "project"):
-                if key in kwargs and kwargs[key] is None:
-                    kwargs[key] = parent.get(key)
+                if (
+                    key in kwargs
+                    and parent
+                    and (
+                        kwargs[key] is None
+                        or (
+                            context.get_parameter_source(key) != ParameterSource.COMMANDLINE
+                            and parent.get_parameter_source(key) == ParameterSource.COMMANDLINE
+                        )
+                    )
+                ):
+                    kwargs[key] = parent.params.get(key)
             outcome["code"] = _run(_name, kwargs, argv)
 
         group.add_command(click.Command(name, params=params, callback=callback, help=spec["help"]))

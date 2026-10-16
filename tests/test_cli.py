@@ -315,3 +315,37 @@ def test_every_command_ends_with_exactly_one_finish(argv: list[str], monkeypatch
     monkeypatch.setattr(store, "finish", ended.append)
     cli.main(argv)
     assert len(ended) == 1
+
+
+@pytest.mark.parametrize(
+    "global_value, command_value, ambient, expected",
+    [
+        ("global.toml", None, "environment.toml", "global.toml"),
+        ("global.toml", "command.toml", "environment.toml", "command.toml"),
+        (None, "command.toml", "environment.toml", "command.toml"),
+        (None, None, "environment.toml", "environment.toml"),
+        ("global.toml", None, None, "global.toml"),
+        (None, None, None, None),
+    ],
+)
+def test_host_selection_uses_click_parameter_sources(monkeypatch, global_value, command_value, ambient, expected):
+    if ambient is None:
+        monkeypatch.delenv("UNBAKE_HOST", raising=False)
+    else:
+        monkeypatch.setenv("UNBAKE_HOST", ambient)
+    seen = {}
+    monkeypatch.setattr(cli, "_run", lambda name, params, argv: seen.update(params) or 0)
+    args = (["--host", global_value] if global_value else []) + ["report"]
+    args += ["--host", command_value] if command_value else []
+    assert cli.main(args) == 0
+    assert seen["host"] == (Path(expected) if expected else None)
+
+
+@pytest.mark.parametrize("command_value", [None, "command-project"])
+def test_command_project_still_overrides_global_project(monkeypatch, command_value):
+    seen = {}
+    monkeypatch.setattr(cli, "_run", lambda name, params, argv: seen.update(params) or 0)
+    args = ["--project", "global-project", "report"]
+    args += ["--project", command_value] if command_value else []
+    assert cli.main(args) == 0
+    assert seen["project"] == Path(command_value or "global-project")
