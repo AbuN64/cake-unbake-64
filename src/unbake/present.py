@@ -235,15 +235,13 @@ def overview(snapshot: Snapshot, version: str) -> bytes:
     for cls, width in zip(("q0", "q3", "q7", "q10"), _LEGEND, strict=True):  # none, fuzzy low, fuzzy high, exact
         legend.append(f'<rect class="{cls}" x="{x}" y="{top}" width="{width}" height="6"/>')
         x += width + 2
-    end, middle = x - 2, (OVERVIEW_LEFT + x - 2) // 2
+    end = x - 2
     label = top + 17
     legend += [
-        f'<text x="{OVERVIEW_LEFT}" y="{label}">none</text>',
-        f'<text x="{middle}" y="{label}" text-anchor="middle">fuzzy</text>',
-        f'<text x="{end}" y="{label}" text-anchor="end">exact</text>',
-        f'<text x="{OVERVIEW_LEFT}" y="{label + 16}">one block per run of functions \u00b7 one row per 64 KiB</text>',
+        f'<text x="{OVERVIEW_LEFT}" y="{label}">0 %</text>',
+        f'<text x="{end}" y="{label}" text-anchor="end">100 %</text>',
     ]
-    height = label + 20
+    height = label + 4
     head = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OVERVIEW_WIDTH} {height}" '
         f'width="{OVERVIEW_WIDTH}" height="{height}"><style>{_OVERVIEW_STYLE}</style>'

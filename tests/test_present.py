@@ -158,7 +158,7 @@ def test_the_overview_merges_adjacent_functions_of_one_status_and_leaves_out_emp
     assert svg.count("M") == 4  # one block each: f_exact, f_draft, f_asm and f_late
     assert svg.count('<path class="') == 3 and svg.count("<rect") == 4  # three tones in use, four legend blocks
     assert svg.count(">0x") == 2  # rows 0x000000 and 0x020000 only
-    assert all(word in svg for word in (">none<", ">fuzzy<", ">exact<", "one row per 64 KiB"))
+    assert ">0 %<" in svg and ">100 %<" in svg and "fuzzy<" not in svg and "one row per" not in svg
     assert "<title>" not in svg and 'viewBox="0 0 720 ' in svg
 
 
