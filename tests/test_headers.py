@@ -1872,3 +1872,23 @@ def test_a_back_included_header_that_moved_gives_its_types_from_where_it_went_an
     assert merged.index("typedef struct T") < merged.index("extern T gp;")  # pulled from q.h, where o.h went
     assert merged.index('#include "s.h"') < merged.index("extern U gu;")  # o.h's include that reaches no merged file
     assert "struct T" not in out["include/q.h"] and moved["include/o.h"] == "include/q.h"
+
+
+@pytest.mark.parametrize("shadow", [False, True])
+def test_carried_source_includes_keep_their_original_relative_binding(shadow):
+    files = {"src/old/local.h", "include/common.h"}
+    if shadow:
+        files |= {"src/new/deep/local.h", "src/new/deep/common.h"}
+    text = '#include "local.h"\n#include "common.h"\n#include <system.h>\n'
+    result = headers.rewrite_includes(text, {}, "src/new/deep/u.CPP", origin="src/old/u.c", exists=files.__contains__)
+    expected = '#include "old/local.h"\n'
+    expected += '#include "../../../include/common.h"\n' if shadow else '#include "common.h"\n'
+    assert result == expected + "#include <system.h>\n"
+
+
+def test_carried_source_preserves_conditional_includes_and_unresolved_names():
+    text = '#if V\n#include "local.h"\n#endif\n#include "missing.h"\n'
+    assert (
+        headers.rewrite_includes(text, {}, "src/new/u.c", origin="src/old/u.c", exists={"src/old/local.h"}.__contains__)
+        == '#if V\n#include "old/local.h"\n#endif\n#include "missing.h"\n'
+    )

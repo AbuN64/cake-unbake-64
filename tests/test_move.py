@@ -660,6 +660,25 @@ def test_source_naming_follows_a_later_module_rename_and_respects_explicit_keep(
     assert kept.layout.units == snapshot.layout.units
 
 
+def test_pure_source_naming_carries_text_without_folding_but_still_proves(tmp_path, seen):
+    cfg = world(tmp_path, sources={f"{n}.c": body(n, "extern int local;\n") for n in ("f1", "f2", "f3")})
+    before = (cfg.project.root / "src/f1.c").read_bytes()
+    result = go(cfg, "source", "ga", "src/game/f1.CPP")
+    assert result["refused"] == [] and seen.folded == []
+    assert seen.plans[-1].writes["src/game/f1.CPP"] == before
+    assert seen.measured == [["src/game/f1.CPP"]] and seen.claims == 2
+
+
+def test_source_naming_preserves_a_local_include_binding_at_its_new_path(tmp_path, seen):
+    cfg = world(tmp_path, sources={f"{n}.c": body(n, '#include "local.h"\n') for n in ("f1", "f2", "f3")})
+    (cfg.project.root / "src/local.h").write_text("typedef int Local;\n")
+    (cfg.project.root / "include/local.h").write_text("typedef long Shadow;\n")
+    result = go(cfg, "source", "ga", "src/game/f1.CPP")
+    assert result["refused"] == [] and seen.folded == []
+    assert '#include "../local.h"' in text(seen.plans[-1], "src/game/f1.CPP")
+    assert seen.measured == [["src/game/f1.CPP"]]
+
+
 def test_source_and_module_moves_rename_the_unit_file_and_merge_modules(tmp_path: Path, seen: Any) -> None:
     cfg = world(tmp_path)
     go(cfg, "source", "ga", "src/lib/a.c")
@@ -1507,7 +1526,7 @@ def test_unproved_drops_the_moves_of_a_unit_whose_fold_fails_and_applies_the_res
         return {u.path: snapshot.read(u.path)}, ()
 
     monkeypatch.setattr(move.headers, "fold", fold)
-    moves = [("source", "ga", "src/x/a.c"), ("source", "gb", "src/x/b.c")]
+    moves = [("source", "ga", "src/x/a.c"), ("source", "gb", "src/x/b.c"), ("options", "ga", '{"add": ["-mfp32"]}')]
     stdin(monkeypatch, "\n".join(json.dumps({"op": o, "subject": s, "target": t}) for o, s, t in moves))
     result = move.run(world(tmp_path), {"op": "-", "unproved": True})
     assert [(r["index"], r["findings"][0]["key"]) for r in result["refused"]] == [(1, "headers.parse")]
@@ -1525,7 +1544,7 @@ def test_independent_units_fold_in_one_pool_dispatch(tmp_path: Path, seen: Any, 
         return [fn(i) for i in items]
 
     monkeypatch.setattr(move.pool, "map", inline)
-    moves = [("source", g, f"src/x/{g}.c") for g in ("ga", "gb", "gc")]
+    moves = [("source", g, f"src/x/{g}.c") for g in ("ga", "gb", "gc")] + [("options", "ga", '{"add": ["-mfp32"]}')]
     stdin(monkeypatch, "\n".join(json.dumps({"op": o, "subject": s, "target": t}) for o, s, t in moves))
     result = move.run(world(tmp_path), {"op": "-"})
     assert result["refused"] == [] and [d for d in dispatched if d[0] == "move.fold"] == [("move.fold", 3)]
@@ -1665,7 +1684,7 @@ def test_the_writers_of_one_file_fold_in_turn_in_one_job_of_the_next_wave(
 
     monkeypatch.setattr(move.pool, "map", inline)
     monkeypatch.setattr(move.headers, "fold", fold)
-    moves = [("source", g, f"src/x/{g}.c") for g in ("ga", "gb", "gc")]
+    moves = [("source", g, f"src/x/{g}.c") for g in ("ga", "gb", "gc")] + [("options", "ga", '{"add": ["-mfp32"]}')]
     stdin(monkeypatch, "\n".join(json.dumps({"op": o, "subject": s, "target": t}) for o, s, t in moves))
     result = move.run(world(tmp_path), {"op": "-", "unproved": True})
     assert result["refused"] == [] and [n for d, n in dispatched if d == "move.fold"] == [3, 1]  # not 3, 2, 1

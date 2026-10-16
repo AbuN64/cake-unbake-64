@@ -2538,12 +2538,15 @@ def compose(
         lead = f'#include "{final.groups[unit.group].header.removeprefix("include/")}"'
         if len(feeds) == 1 and set(old[(only := next(iter(feeds)))].members) == set(names):
             before[unit.path] = text[only]
+            carried = headers.rewrite_includes(
+                text[only], {}, unit.path, origin=only, exists=lambda p: snapshot.peek(p) is not None
+            )
             if old[only].group != unit.group and header(final.groups[unit.group].header):
                 out[unit.path] = headers.ordered(
-                    headers.included(text[only], [lead.split('"')[1]]), lead.split('"')[1]
+                    headers.included(carried, [lead.split('"')[1]]), lead.split('"')[1]
                 ).encode()
             elif only != unit.path:
-                out[unit.path] = text[only].encode()
+                out[unit.path] = carried.encode()
             continue
         for path in sorted(feeds):
             fed[path].append((unit, [n for n in names if n in held and held[n].path == path]))

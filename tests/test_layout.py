@@ -1259,7 +1259,7 @@ def test_boundary_fill_member_between_a_return_and_the_next_aligned_member_becom
     )
     monkeypatch.setattr(infer, "groups", lambda s, *a: (inferred,))
     monkeypatch.setattr(infer, "sdk", lambda s: frozenset())
-    monkeypatch.setattr(infer.ownership, "claims", lambda s, units: (units, (), []))
+    monkeypatch.setattr(infer.ownership, "claims", lambda s, **kwargs: (dict(s.layout.units), (), []))
     monkeypatch.setattr(infer.ownership, "exact", lambda s, units: (units, []))
     settled = layout.overlay(changed, infer.plan(changed).writes)
     for unit in settled.layout.units.values():

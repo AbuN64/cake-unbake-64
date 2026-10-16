@@ -2033,11 +2033,24 @@ def _apply(
         called = {m[1] for b in units.values() for m in re.finditer(rb"(?m)^extern\b[^;{}]*?\b(\w+)\s*\(", b)}
         owners = {p for p, b in units.items() if called & {n.encode() for n in headers.defined(b)}}
         frozen = headers._closure(snapshot, list(keep)) if keep else set()
+        carried: set[str] = set()
+        if all(m.op == "source" for m in live):
+            old_units = {(u.group, u.members): u for u in snapshot.layout.units.values()}
+            for path in units:
+                carried_unit = final.units[path]
+                origin_unit = old_units.get((carried_unit.group, carried_unit.members))
+                if (
+                    origin_unit is not None
+                    and origin_unit.path != path
+                    and replace(origin_unit, path=path) == carried_unit
+                    and snapshot.layout.groups[origin_unit.group].header == final.groups[carried_unit.group].header
+                ):
+                    carried.add(path)
         with effort.stage("move.fold"):
             # an owner folds first: its prototype is in its header before a caller's extern of it is folded; a unit
             # whose module header a kept unit reaches folds nothing (the kept unit must read today's headers)
             order = sorted(
-                (p for p in units if final.groups[final.units[p].group].header not in frozen),
+                (p for p in units if p not in carried and final.groups[final.units[p].group].header not in frozen),
                 key=lambda p: (p not in owners, p),
             )
             # every unit's view is made once, together, from the overlay of the moves; a fold that then changes a file

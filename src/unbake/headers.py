@@ -1549,14 +1549,42 @@ def wrapped(path: str, body: str) -> str:
     return f"#ifndef {guard}\n#define {guard}\n\n{body.strip(chr(10))}\n\n#endif\n"
 
 
-def rewrite_includes(text: str, moves: Mapping[str, str], at: str = "") -> str:
+def rewrite_includes(
+    text: str, moves: Mapping[str, str], at: str = "", *, origin: str = "", exists: Callable[[str], bool] | None = None
+) -> str:
     """The text with each quoted include of a moved header spelled for its new path; a target of "" drops the line.
-    A name resolves beside the includer `at`, else under include/ or src/ (the rule consumers uses)."""
+    A name resolves beside the includer `at`, else under include/ or src/ (the rule consumers uses).
+    For a carried source, `origin` and `exists` preserve the header each quoted name resolved to before it moved."""
 
     seen: set[str] = set()
 
     def one(match: re.Match[str]) -> str:
         line = match[0]
+        if origin and exists is not None:
+
+            def resolved(here: str, name: str = match[1]) -> str:
+                return next(
+                    (
+                        p
+                        for base in (posixpath.dirname(here), "include", "src")
+                        if exists(p := posixpath.normpath(posixpath.join(base, name)))
+                    ),
+                    "",
+                )
+
+            old = resolved(origin)
+            if old:
+                target = moves.get(old, old)
+                if not target or target == at:
+                    return ""
+                if resolved(at) != target:
+                    candidates = [
+                        target.removeprefix(base + "/") for base in ("include", "src") if target.startswith(base + "/")
+                    ]
+                    candidates.append(posixpath.relpath(target, posixpath.dirname(at)))
+                    spelling = next((name for name in candidates if resolved(at, name) == target), candidates[-1])
+                    line = line.replace(match[1], spelling, 1)
+            return line
         for base in (posixpath.dirname(at), "include", "src"):
             target = posixpath.normpath(posixpath.join(base, match[1]))
             if target in moves:
