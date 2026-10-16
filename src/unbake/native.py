@@ -328,7 +328,18 @@ def dumps(
     argv += ["-g", "-dg", "-dl", "-dS", "-dR"]
     result = process.run("native.dumps", argv, work, tmp=process.scratch(snapshot.config.project.root))
     found = [work / f"{stem}.i.{kind}" for kind in ("greg", "lreg")]
-    if result.exit != 0 or not all(f.is_file() for f in found):
+    if result.exit != 0:  # the candidate does not compile: its errors, never a toolchain verdict
+        lines = [ln for ln in result.stderr.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+        raise Refusal(
+            Finding(
+                "score.compile",
+                reason="; ".join(lines) or f"the compiler exited {result.exit}",
+                unit=unit.path,
+                versions=(version,),
+                action="fix the compile error shown",
+            )
+        )
+    if not all(f.is_file() for f in found):
         raise Refusal(
             Finding(
                 "land.request",
@@ -505,6 +516,12 @@ def measure(
                 symbols.write_bytes(symbols_data)
                 result = adapters.linker(snapshot.config).link(obj, linked_ranges, symbols, work, trim)
                 built = {s: p.read_bytes() for s, p in result.outputs.items() if s.startswith(".")}
+            lent = [  # a borrowed pool is no member's bytes, yet the code reads it: it has to be the ROM's own
+                f"version {version}: emitted {p.section} differs from the ROM bytes at 0x{p.rom_start:X} it is "
+                "placed on"
+                for p in linked_ranges[len(ranges) :]
+                if built.get(p.section) != versions.rom_bytes(snapshot.versions[version], p.rom_start, p.rom_end)
+            ]
             by_section = {p.section: p for p in ranges}
             for name in dict.fromkeys(n for n, _ in _held(snapshot, unit, version)):
                 material, target, missing, measured = [], [], [], []
@@ -533,6 +550,7 @@ def measure(
                         )
                     material.append(b)
                     target.append(t)
+                missing += lent
                 exact = not missing
                 reads = _literal_reads(snapshot, version, by_section.get(".rodata"), built.get(".rodata", b""))
                 score_pairs = [(symptoms.literals(b, t, *reads) if s == ".text" else b, t) for b, t, s in measured]

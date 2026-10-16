@@ -63,6 +63,7 @@ def progress(snapshot: Snapshot, current: Json, updated: str | None = None) -> b
                 "text_pct": row["code_percent"],
                 "bytes": {"matched": matched, "fuzzy": fuzzy, "asm": total - matched - fuzzy, "total": total},
                 "toolchain": project.toolchain,
+                **({"perfect": _perfect(current["perfect"][v])} if v in current.get("perfect", {}) else {}),
             }
         )
     document = {"schema": SCHEMA, "carts": carts}
@@ -73,6 +74,12 @@ def progress(snapshot: Snapshot, current: Json, updated: str | None = None) -> b
     head = snapshot.commit if re.fullmatch(r"[0-9a-f]{40}", snapshot.commit or "") else ""
     when = (_committed(snapshot) if head else "") if updated is None else updated
     return _dump({**document, "head": head, "updated": when})
+
+
+def _perfect(census: Json) -> Json:
+    """The perfect block of one cart: bytes of perfect modules, the axis counts and the open edge estimate."""
+    keys = ("bytes", "total", "modules", "boundary", "flags", "named", "open_edges", "objects_estimate")
+    return {k: census[k] for k in keys}
 
 
 def _drafted(snapshot: Snapshot) -> dict[str, int]:

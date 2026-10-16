@@ -92,14 +92,9 @@ publication transition; the report validator refuses a missing record and never
 manufactures eligibility from history. Prior receipt evidence is preserved by the
 owning offline migration, with unavailable dependency proof kept explicit.
 
-The owning build generator writes `tools/report-verifier.zip`, including the exporter
-and its source parser. Both generated CI workflows check its immutable content hash
-and run `python3 -m unbake.report.verify` before copying reports. Verification needs no
-ROM or compiler executable. It checks strict JSON, receipt agreement, full inventories,
-canonical report bytes, README figures and the source/coverage manifest. Each report
-artifact retains the established version naming and gains a companion manifest with
-the immutable checkout revision, tool payload hash and report hash. Consumers must
-compare those identities with the requested revision before accepting numerical repair.
+The generated CI workflow runs `sh ci/run check` (the project's `make check`) and
+`sh ci/run audit`. The publication gate is `make check CHECK=rom`: every version
+builds byte for byte. There is no separate report verifier command.
 
 Publication requires a complete current strict proof for every required or already
 published holder: identical bounded linked bytes, zero positional and size

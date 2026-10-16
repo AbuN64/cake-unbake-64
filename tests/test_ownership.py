@@ -865,3 +865,27 @@ def test_derive_pairs_places_every_tree_state_in_one_dispatch(monkeypatch):
     monkeypatch.setattr(ownership, "_derived", lambda snap, u, result: (snap, u))
     got = ownership.derive_pairs([(t, unit("f")) for t in trees])
     assert dispatched == [["t1", "t2", "t3"]] and got == [(t, unit("f")) for t in trees]
+
+
+def test_borrowed_places_a_pool_where_the_code_forms_it_even_when_its_bytes_differ(monkeypatch):
+    seen = []
+    rows = [(0x40, 0x48, "D_a", ".rodata", 0x80300040)]
+    rom = bytes(0x100)
+    emits(monkeypatch, **{".rodata": (b"\1" * 8, {}, [(0, 4)])})
+    monkeypatch.setattr(ownership, "_index", lambda snapshot, version: index(rom, rows))
+    monkeypatch.setattr(ownership, "_placed", lambda *args, **kw: seen.append(kw) or 0x40)
+    text = Placement("us", ".text", 0x1000, 0x1040, TEXT_VRAM)
+    (placed,) = ownership.borrowed(Mock(), UnitSpec("src/u.c", "c", "g", (), "t", {}), "us", b"", [text])
+    assert (placed.rom_start, placed.rom_end) == (0x40, 0x48) and seen == [{"loose": True}]
+
+
+def test_a_low_half_ref_aligns_to_the_targets_own_instruction_when_the_candidate_is_a_word_longer():
+    # target: lui at,0x800D; lwc1 f20,-0x7A14(at). The candidate has one more instruction first: its lo is at +8
+    lui, lwc1 = 0x3C01800D, 0xC43485EC
+    rom = b"".join(w.to_bytes(4, "big") for w in (0, lui, lwc1, 0))
+    code = b"".join(w.to_bytes(4, "big") for w in (0, 0, 0x3C010000, 0xC4340000))
+    assert ownership._loaded(rom, 0, 12) is None  # the word at the candidate's offset forms nothing
+    assert ownership._aligned(rom, 0, code, [(12, 0)]) == [(8, 0)]
+    assert ownership._loaded(rom, 0, 8) == 0x800C85EC
+    assert ownership._aligned(rom, 0, rom, [(8, 0)]) == [(8, 0)]  # a candidate equal to the target: kept
+    assert ownership._aligned(bytes(16), 0, code, [(12, 0)]) == []  # no lo near: the ref forms nothing

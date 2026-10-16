@@ -544,6 +544,15 @@ def _integer(text: str) -> int | None:
 _OFFSET = re.compile(
     r"(?:\(\s*(?:char|u8|s8|unsigned char)\s*\*\s*\)\s*)?&?\s*([A-Za-z_]\w*)\s*\+\s*(0[xX][0-9A-Fa-f]+|\d+)\b"
 )
+# An operand of a bitwise operator is a mask, never an address: `&`, `|` or `^` (a literal has no address to take, so
+# `& 0x800FFFFF` is the binary and), `~`, or their assignments, before the literal; the binary operator after it.
+_MASKED = re.compile(r"(?:(?<![&|])[&|^]=?|~)[\s(]*\Z")
+_MASKS = re.compile(r"[\s)]*[&|^](?![&|])")
+
+
+def _mask(code: str, start: int, end: int) -> bool:
+    """Whether the literal at [start, end) is an operand of a bitwise operator."""
+    return bool(_MASKED.search(code, max(0, start - 24), start) or _MASKS.match(code, end))
 
 
 def _vram_index(snapshot: Snapshot, version: str) -> tuple[list[int], list[int]]:
@@ -574,7 +583,7 @@ def _address_literals(snapshot: Snapshot, path: str, code: str) -> dict[int, str
     hits: dict[int, str] = {}
     for match in _NUMBER.finditer(code):
         value = _integer(match["int"]) if match["int"] else None
-        if value is None or value < _KSEG0:
+        if value is None or value < _KSEG0 or _mask(code, match.start(), match.end()):
             continue
         for starts, ends in indexes:
             at = bisect_right(starts, value) - 1

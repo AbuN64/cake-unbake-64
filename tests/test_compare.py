@@ -228,6 +228,33 @@ def test_bind_no_options_refused(cfg: Config, tmp_path: Path, monkeypatch: pytes
     assert "no standalone unit option" in error.value.findings[0].reason
 
 
+def test_bind_a_c_source_never_takes_a_landed_assembly_unit(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asm = UnitSpec("src/sdk/f.s", "asm", "g", ("f",), "gcc-test", {})
+    s = snap(cfg, {"f": member("f")}, (asm,))
+    file = tmp_path / "f.c"
+    file.write_bytes(b"void f(void) {}")
+    own = unit("f", path="src/f.c")
+    over = replace(s, digest="overlaid")
+    monkeypatch.setattr(compare.layout, "unit_options", lambda snapshot, name, source: [(own, {"src/f.c": source})])
+    monkeypatch.setattr(compare.layout, "overlay", lambda snapshot, writes: over)
+    assert compare.bind(s, file, None) == (own, over)  # its own C unit, never C text at the .s path
+    monkeypatch.setattr(compare.layout, "unit_options", lambda *a: [])
+    with pytest.raises(Refusal) as error:
+        compare.bind(s, file, None)
+    assert "src/sdk/f.s (asm) holds it" in error.value.findings[0].reason
+
+
+def test_bind_names_the_storage_a_source_defines_when_no_member_matches(cfg: Config, tmp_path: Path) -> None:
+    s = snap(cfg, {"f": member("f")})
+    file = tmp_path / "d.c"
+    file.write_bytes(b"int table[4];")
+    with pytest.raises(Refusal) as error:
+        compare.bind(s, file, None)
+    assert error.value.findings[0].reason.endswith("it defines table")
+
+
 def mock_measure(
     monkeypatch: pytest.MonkeyPatch, seen: list[Path], exact: bool = True, keys: list[Any] | None = None
 ) -> None:
@@ -235,6 +262,8 @@ def mock_measure(
     monkeypatch.setattr(compare.recipes, "resolve", lambda *a: RECIPE)
 
     def fake_map(config: Config, name: str, function: Any, items: list[Any], key: Any = None) -> list[Any]:
+        if name == "compare.stamps":
+            return [digest((item[0].digest, item[1], item[2], item[3])) for item in items]
         keys.append(key)
         if function is compare._export:
             return [function(item) for item in items]
@@ -743,6 +772,148 @@ def test_score_variants_capture_once_dispatch_once_and_report_each_candidate(
     assert result["variants"][2]["findings"][0]["reason"] == "gone"
     with pytest.raises(Refusal):
         compare.score_command(cfg, given | {"file": None})
+    assert calls["captures"] == [1]  # missing FILE also refuses before snapshot capture
+
+
+def test_score_variants_refuses_a_row_with_an_unknown_key_or_overlays_given_as_a_map(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = Mock(side_effect=AssertionError("a malformed manifest captured the project"))
+    monkeypatch.setattr(compare.layout, "capture", capture)
+    for row, said in (
+        ({"file": "one.c", "overlay": ["include/a.h=a.h"]}, "not overlay"),
+        ({"file": "one.c", "overlays": {"include/a.h": "a.h"}}, "overlays must be a list"),
+    ):
+        listing = tmp_path / "variants.json"
+        listing.write_text(json.dumps([row]), encoding="utf-8")
+        with pytest.raises(Refusal) as error:
+            compare.score_command(cfg, {"variants": listing})
+        assert said in error.value.findings[0].reason and error.value.findings[0].reason.startswith("row 1: ")
+    capture.assert_not_called()
+
+
+@pytest.mark.parametrize("text,line,column", [("", 1, 1), ('[\n {"file": "one.c"},\n]', 2, 19)])
+def test_score_variants_malformed_json_names_input_and_location(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, line: int, column: int
+) -> None:
+    listing = tmp_path / "variants.json"
+    listing.write_text(text, encoding="utf-8")
+    capture = Mock(side_effect=AssertionError("invalid manifest captured the project"))
+    monkeypatch.setattr(compare.layout, "capture", capture)
+    dispatch = Mock(side_effect=AssertionError("invalid manifest scheduled workers"))
+    monkeypatch.setattr(compare.pool, "map", dispatch)
+    with pytest.raises(Refusal) as error:
+        compare.score_command(cfg, {"variants": listing})
+    finding = error.value.findings[0]
+    assert finding.key == "land.request" and finding.path == str(listing) and finding.line == line
+    assert f"line {line}, column {column}" in finding.reason and "JSON" in finding.action
+    capture.assert_not_called()
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [None, b"\xff"])
+def test_score_variants_unreadable_input_is_actionable(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes | None
+) -> None:
+    listing = tmp_path / "variants.json"
+    if content is not None:
+        listing.write_bytes(content)
+    capture = Mock(side_effect=AssertionError("unreadable manifest captured the project"))
+    monkeypatch.setattr(compare.layout, "capture", capture)
+    dispatch = Mock(side_effect=AssertionError("unreadable manifest scheduled workers"))
+    monkeypatch.setattr(compare.pool, "map", dispatch)
+    with pytest.raises(Refusal) as error:
+        compare.score_command(cfg, {"variants": listing})
+    finding = error.value.findings[0]
+    assert finding.key == "land.request" and finding.path == str(listing)
+    assert "cannot read" in finding.reason and "UTF-8" in finding.action
+    capture.assert_not_called()
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("document", [{"file": "one.c"}, None])
+def test_score_variants_requires_outer_list(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: Any
+) -> None:
+    listing = tmp_path / "variants.json"
+    listing.write_text(json.dumps(document), encoding="utf-8")
+    capture = Mock(side_effect=AssertionError("invalid manifest captured the project"))
+    monkeypatch.setattr(compare.layout, "capture", capture)
+    dispatch = Mock(side_effect=AssertionError("invalid manifest scheduled workers"))
+    monkeypatch.setattr(compare.pool, "map", dispatch)
+    with pytest.raises(Refusal) as error:
+        compare.score_command(cfg, {"variants": listing})
+    finding = error.value.findings[0]
+    assert finding.key == "land.request" and finding.path == str(listing)
+    assert "JSON list" in finding.reason
+    capture.assert_not_called()
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "two.c",
+        {},
+        {"file": 2},
+        {"file": ""},
+        {"file": "two.c", "overlays": "include/h.h=new.h"},
+        {"file": "two.c", "overlays": ["include/h.h=new.h", 2]},
+        {"file": "two.c", "overlays": [""]},
+    ],
+)
+def test_score_variants_validates_every_row_before_dispatch(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: Any
+) -> None:
+    listing = tmp_path / "variants.json"
+    listing.write_text(json.dumps([{"file": "one.c"}, row]), encoding="utf-8")
+    capture = Mock(side_effect=AssertionError("invalid row captured the project"))
+    monkeypatch.setattr(compare.layout, "capture", capture)
+    dispatch = Mock(side_effect=AssertionError("invalid row scheduled workers"))
+    monkeypatch.setattr(compare.pool, "map", dispatch)
+    with pytest.raises(Refusal) as error:
+        compare.score_command(cfg, {"variants": listing})
+    finding = error.value.findings[0]
+    assert finding.key == "land.request" and finding.path == str(listing)
+    assert "row 2:" in finding.reason and finding.action
+    capture.assert_not_called()
+    dispatch.assert_not_called()
+
+
+def test_score_variants_preserves_valid_overlays_and_command_options(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    listing = tmp_path / "variants.json"
+    listing.write_text(
+        json.dumps(
+            [
+                {"file": "one.c"},
+                {"file": "two.c", "overlays": None},
+                {"file": "three.c", "overlays": []},
+                {"file": "four candidate.c", "overlays": ["include/shared h.h=new h.h", " extra.h "]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snapshot = snap(cfg, {})
+    capture = Mock(return_value=snapshot)
+    monkeypatch.setattr(compare.layout, "capture", capture)
+    dispatch = Mock(return_value=[])
+    monkeypatch.setattr(compare.pool, "map", dispatch)
+    result = compare.score_command(
+        cfg, {"variants": listing, "function": "chosen", "version": "us", "alloc": True, "extras": [Path("old.h")]}
+    )
+    assert result == {"variants": []}
+    capture.assert_called_once_with(cfg)
+    dispatch.assert_called_once()
+    config, name, worker, jobs = dispatch.call_args.args
+    assert config is cfg and name == "compare.variants" and worker is compare._variant_job
+    assert all(s is snapshot for s, params in jobs)
+    expected_files = [Path(name) for name in ("one.c", "two.c", "three.c", "four candidate.c")]
+    expected_extras = [[], [], [], [Path("include/shared h.h=new h.h"), Path(" extra.h ")]]
+    assert [params["file"] for s, params in jobs] == expected_files
+    assert [params["extras"] for s, params in jobs] == expected_extras
+    assert all(params["function"] == "chosen" and params["version"] == "us" and params["alloc"] for s, params in jobs)
 
 
 def test_score_compile_failure_shows_every_error_line_and_no_warning(tmp_path: Path) -> None:
@@ -1705,3 +1876,71 @@ def test_bulk_primary_recipe_refusal_keeps_its_row_and_excludes_its_draft_from_s
     assert [call["unit"].path for call in entered] == ["src/a.c", "src/c.c"]
     assert all(call["request"]["overrides"]["add" if option == "flag" else "omit"] == [flag] for call in entered)
     configuration.validate("result.submit", json.loads(json.dumps(result)), "result.submit")
+
+
+def test_measure_bound_coalesces_native_stamps_across_trees_and_restores_every_pair(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A bulk union used to dispatch duplicate cold misses: identical consumers in distinct overlays
+    # lost the reuse that separate groups got when the earlier group completed its proof.
+    a, b = unit("f"), unit("g", path="src/b.c")
+    alternate = replace(a, toolchain="gcc-alternative")
+    base = snap(cfg, {"f": member("f"), "g": member("g", ("b",))}, (a, b))
+    unrelated = replace(base, digest="unrelated", overlays={"src/unrelated.c": b"changed"})
+    changed = replace(base, digest="changed", overlays={"include/shared.h": b"bad"})
+    pairs = [(base, a), (unrelated, a), (base, b), (changed, a), (base, alternate)]
+    monkeypatch.setattr(
+        compare.recipes,
+        "resolve",
+        lambda config, spec, overrides: replace(RECIPE, toolchain=spec.toolchain, digest=spec.toolchain),
+    )
+    named: list[Any] = []
+    built: list[Any] = []
+    dispatches: list[tuple[str, int]] = []
+
+    def stamp(tree: Snapshot, spec: UnitSpec, version: str, recipe: Recipe) -> str:
+        inputs = (spec.path, version, recipe.digest, tree.overlays.get("include/shared.h"))
+        named.append(inputs)
+        return digest(inputs)
+
+    def prove(item: tuple[Any, ...]) -> tuple[Any, ...]:
+        tree, spec, version, recipe, work, export = item
+        built.append((spec.path, version, recipe.digest, tree.overlays.get("include/shared.h")))
+        assert not export and work.is_relative_to(cfg.project.root)
+        exact = "include/shared.h" not in tree.overlays
+        return (fixture.proof(spec.path, spec.members[0], version, exact, () if exact else ("compile.error",)),)
+
+    def mapped(config: Config, name: str, function: Any, items: Any, key: Any = None) -> list[Any]:
+        dispatches.append((name, len(items)))
+        if key:
+            # Reading precomputed stamps must not evaluate native.stamp again, even with no cache hits.
+            assert len({key(item) for item in items}) == len(items)
+        return [function(item) for item in items]
+
+    monkeypatch.setattr(compare.native, "stamp", stamp)
+    monkeypatch.setattr(compare.native, "prove_args", prove)
+    monkeypatch.setattr(compare.pool, "map", mapped)
+    results = compare.measure_bound(cfg, pairs, {})
+    assert dispatches == [("compare.stamps", 9), ("compare.measure", 7)]
+    assert len(named) == 9 and len(built) == len(set(named)) == 7
+    assert results[0] == results[1]
+    assert [tuple(p.version for p in group) for group in results] == [
+        ("a", "b"),
+        ("a", "b"),
+        ("b",),
+        ("a", "b"),
+        ("a", "b"),
+    ]
+    assert all(p.unit == b.path for p in results[2])
+    assert all(not p.exact and p.missing == ("compile.error",) for p in results[3])
+    assert sum(row[2] == "gcc-alternative" for row in built) == 2
+
+
+def test_measure_bound_without_held_versions_dispatches_nothing(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("an empty proof request scheduled work")
+
+    monkeypatch.setattr(compare.pool, "map", unexpected)
+    snapshot = snap(cfg, {})
+    assert compare.measure_bound(cfg, [], {}) == []
+    assert compare.measure_bound(cfg, [(snapshot, unit())], {}) == [()]

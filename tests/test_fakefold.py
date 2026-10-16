@@ -359,4 +359,35 @@ def test_plan_builds_each_real_records_rows_once_and_never_scores_one_too_small(
     fakefold.plan({**reals, **fakes}, {}, {}, set(reals) | set(fakes))
     assert sorted(built.values()) == [1] * 5 and set(built) == {id(r) for r in reals.values()}
     assert scored and all(mine <= theirs for mine, theirs in scored)  # Real1, Real2 (4, 8 bytes) are never scored
-    assert len(scored) == 6 * 3
+    assert len(scored) == 3  # six fakes of one shape: scored against the three big enough reals once
+
+
+def test_plan_scores_each_structural_shape_once(monkeypatch):
+    """Eighteen fakes of three shapes against two real records make six comparisons, not thirty-six; the names
+    (member names, role prefixes) still decide each fake's own target."""
+    layouts = {"RealA": lay(8, (0, 4, "s32", "a"), (4, 4, "s32", "b")), "RealB": lay(4, (0, 4, "f32", "f"))}
+    shapes = [
+        lambda n: lay(8, (0, 4, "s32", f"x{n}"), (4, 4, "s32", f"y{n}")),
+        lambda n: lay(4, (0, 4, "f32", f"x{n}")),
+        lambda n: lay(2, (0, 1, "u8", f"x{n}")),
+    ]
+    for n in range(18):
+        layouts[f"R{n}_func_8010{n:04X}_de"] = shapes[n % 3](n)
+    calls = []
+    real_fits = fakefold._fits
+    monkeypatch.setattr(fakefold, "_fits", lambda *a: calls.append(1) or real_fits(*a))
+    rows, _ = fakefold.plan(layouts, {}, {}, set(layouts))
+    assert len(calls) == 3 * 2 - 1  # the 2-byte shape fits no real record that is smaller: only 2 of 3 reals can host
+    targets = {r["subject"]: r["target"] for r in rows}
+    assert targets["R0_func_80100000_de"] == "RealA" and targets["R1_func_80100001_de"] == "RealB"
+
+
+def test_fits_overlap_answer_matches_the_row_scan():
+    theirs = lay(16, (0, 4, "s32", "a"), (4, 8, "s64", "b"), (12, 4, "char[4]", "pad_0C"))
+    cases = [
+        lay(4, (6, 2, "s16", "x")),  # inside b: refused
+        lay(4, (2, 2, "s16", "x")),  # inside a: refused
+        lay(4, (12, 4, "s32", "x")),  # only over a pad row: allowed
+        lay(4, (0, 4, "s32", "x")),  # same member: scores
+    ]
+    assert [fakefold.fits(c, theirs) for c in cases] == [-1, -1, 0, 1]

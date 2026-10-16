@@ -97,13 +97,23 @@ def dangling(before: Snapshot, after: Snapshot, changed: Collection[str]) -> tup
     return tuple(p for p, rows in zip(paths, parsed, strict=True) if any(words & gone for _, words, _ in rows))
 
 
+def readers(before: Snapshot, after: Snapshot, changed: Collection[str]) -> set[str]:
+    """The units a change of these files can change: the consumers of a header that names a declaration nothing
+    declares now (`dangling`), and the consumers whose text reaches a changed, gained or lost declaration
+    (`reaching`). A changed include is no reason to prove every consumer: what it brings in or takes out is."""
+    found = consumers(after, changed)
+    return {*consumers(after, dangling(before, after, changed)), *reaching(before, after, changed, found)}
+
+
 def reaching(before: Snapshot, after: Snapshot, changed: Collection[str], units: Sequence[str]) -> tuple[str, ...]:
     """The units among `units` whose own text can reach a declaration the changed headers changed: it names a changed
     name, or a header name (macro, type, function) whose declaration uses one, transitively. A unit that names none
     reads the same reached declarations on both sides, so only these need preprocessing. Every unit when a header
     does not split. A header a changed one now reaches and did not before brings its every declaration in: a unit
-    naming one of those reads a declaration it never read (a conflicting local one breaks it)."""
+    naming one of those reads a declaration it never read (a conflicting local one breaks it); one it reached before
+    and no longer does takes its every declaration out."""
     gained = _closure(after, changed) - _closure(before, changed)
+    lost = _closure(before, changed) - _closure(after, changed)  # a unit naming what it brought reads it no more
     old = {p: _declarations.dependencies((before.peek(p) or b"").decode()) for p in changed if p.endswith(".h")}
     new = {p: _declarations.dependencies((after.peek(p) or b"").decode()) for p in changed if p.endswith(".h")}
     if any(rows is None for rows in (*old.values(), *new.values())):
@@ -113,11 +123,12 @@ def reaching(before: Snapshot, after: Snapshot, changed: Collection[str], units:
         for side, rows_of in (("old", old), ("new", new))
     }
     hit = {n for n, _ in texts["old"] ^ texts["new"]}
-    for path in gained:
-        rows = _declarations.dependencies((after.peek(path) or b"").decode())
-        if rows is None:
-            return tuple(units)
-        hit.update(n for names, _, _ in rows for n in names)
+    for side, paths_of in ((after, gained), (before, lost)):
+        for path in paths_of:
+            rows = _declarations.dependencies((side.peek(path) or b"").decode())
+            if rows is None:
+                return tuple(units)
+            hit.update(n for names, _, _ in rows for n in names)
     if not hit:
         return ()
     paths = sources(after)

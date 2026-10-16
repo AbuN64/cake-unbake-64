@@ -10,6 +10,7 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
+from functools import partial
 from typing import Any
 
 from unbake import (
@@ -90,7 +91,13 @@ class Edited:
     includes: dict[str, set[str]] = field(default_factory=dict)  # file -> headers a fold makes it include
 
 
-class _Types:
+@dataclass
+class _LayoutTypes:
+    records: dict[str, str]
+    typedefs: dict[str, str]
+
+
+class _Types(_LayoutTypes):
     """The type names of a batch as its type moves leave them: per record tag and typedef name its statement, and per
     current name the name the snapshot spells it with."""
 
@@ -256,6 +263,8 @@ def edit(
         bad: list[tuple[Move, Finding]] = []
         own = {m.subject for m in moves if m.op == "member"}
         types = _Types(snapshot) if any(m.op == "type" for m in moves) else None
+        if types is not None:
+            _warm_layouts(types, moves, table.keys() | known)
 
         def of(name: str) -> str:
             return next((g.name for g in groups.values() if name in g.members), "")
@@ -526,11 +535,18 @@ def _reshaped(text: str, tag: str, edits: Sequence[tuple[str, list[str]]]) -> st
     return text[: start + 1] + body + text[end:]
 
 
-def _probe_layouts(types: _Types, rows: dict[str, str]) -> dict[str, Any] | str:
+def _probe_layouts(types: _LayoutTypes, rows: dict[str, str]) -> dict[str, Any] | str:
     """The offset layouts of `rows` (key `struct TAG` -> its definition) parsed alone with the typedefs they spell
     and the record bodies they hold by value, as the batch's type names give them; else why they cannot be laid."""
-    from pycparser import CParser
+    key, read, _ = _probe_reader(types, rows)
+    laid: dict[str, Any] | str = effort.memo(key, read)
+    return laid
 
+
+def _probe_reader(
+    types: _LayoutTypes, rows: dict[str, str]
+) -> tuple[tuple[str, str], Callable[[], dict[str, Any] | str], _LayoutTypes]:
+    """A text-dependent probe key and its lazy reader; preparation never parses or lays a record."""
     lines: list[str] = []
     done: set[str] = set()
 
@@ -548,12 +564,42 @@ def _probe_layouts(types: _Types, rows: dict[str, str]) -> dict[str, Any] | str:
     rows = dict(rows)
     for row in list(rows.values()):
         need(row)
-    for _ in range(32):  # a record held by value is laid from its body: each one missing is added and parsed again
+    # the result is a function of the text laid: every round of a partial move edits the same moves again, and many
+    # folds lay one real record, so one text is parsed once per command (with the bodies a missing record takes)
+    bodies: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    pending = re.findall(r"[A-Za-z_]\w*", "\n".join([*lines, *rows.values()]))
+    while pending:  # include typedefs reached through a body that a later parse may need
+        word = pending.pop()
+        for source, found in ((types.records, bodies), (types.typedefs, aliases)):
+            if word not in found and word in source:
+                found[word] = source[word]
+                pending += re.findall(r"[A-Za-z_]\w*", found[word])
+    key = ("probe-layouts", digest((lines, rows, sorted(bodies.items()), sorted(aliases.items()))))
+    return key, lambda: _laid(types, rows, lines, need), _LayoutTypes(bodies, aliases)
+
+
+def _parsed_layouts(text: str, names: tuple[str, ...]) -> dict[str, Any] | str:
+    """Parse and canonicalize one actual translation unit once, even across different dependency probes."""
+    from pycparser import CParser
+
+    def read() -> dict[str, Any] | str:
         try:
-            ast = CParser().parse(headers.normal("\n".join(lines + list(rows.values()))))
-        except Exception as error:  # any parse failure: the records cannot be laid alone
+            ast = CParser().parse(text)
+        except Exception as error:
             return f"its records do not parse alone ({error})"
-        laid: dict[str, Any] = typedb.record_layouts(ast, list(rows))
+        return typedb.record_layouts(ast, names)
+
+    return effort.memo(("move.parsed_layouts", digest((text, names))), read)
+
+
+def _laid(
+    types: _LayoutTypes, rows: dict[str, str], lines: list[str], need: Callable[[str], None]
+) -> dict[str, Any] | str:
+    for _ in range(32):  # a record held by value is laid from its body: each one missing is added and parsed again
+        laid = _parsed_layouts(headers.normal("\n".join(lines + list(rows.values()))), tuple(rows))
+        if isinstance(laid, str):
+            return laid
         causes = [laid.get(k, {}).get("conflict", "no layout") for k in rows if "fields" not in laid.get(k, {})]
         missing = [
             (key, tag)
@@ -654,6 +700,68 @@ def _renamed(text: str, renames: Mapping[str, str]) -> str:
     return pattern.sub(swap, text)
 
 
+def _view_rows(types: _Types, subject: str, target: str, mine: str, theirs: str) -> dict[str, str] | None:
+    """The two record texts an offset fold lays, before any stateful access or member edit."""
+    record = types.records[theirs]
+    kind = re.search(rf"\b(struct|union)\s+{re.escape(theirs)}\s*\{{", record)
+    if kind is None:
+        return None
+    spelled = types.spelled(symbols.rewrite(symbols.rewrite(types.records[mine], subject, target), mine, theirs))
+    probe, real = f"{kind[1]} {_PROBE}", f"{kind[1]} {theirs}"
+    (a, b), (c, d) = _body(spelled), _body(record)
+    return {probe: f"{probe} {spelled[a : b + 1]};", real: f"{real} {types.spelled(record[c : d + 1])};"}
+
+
+def _probe_job(item: tuple[_LayoutTypes, dict[str, str]]) -> dict[str, Any] | str:
+    return _probe_layouts(*item)
+
+
+def _warm_layouts(types: _Types, moves: Sequence[Move], taken: Collection[str]) -> None:
+    """Lay independent initial record texts on the pool; moves still apply in order and look up their actual text.
+    A preceding rename or reshape changes that lookup, so a speculative layout can never replace a later one.
+    The private type catalogue keeps speculative source discovery out of the edit's mutable state."""
+    candidates = [m for m in moves if m.op == "type" and m.subject not in taken and _NAME.fullmatch(m.target)]
+    if len(candidates) < 2:
+        return
+    with effort.stage("move.type_layouts"):
+        initial = _Types(types.snapshot)
+        probes: list[dict[str, str]] = []
+        for move in candidates:
+            if not initial.known(move.subject) or not initial.known(move.target):
+                continue
+            mine, theirs = initial.tag(move.subject), initial.tag(move.target)
+            if not mine or not theirs or mine == theirs or "{" not in initial.records[mine]:
+                continue
+            if initial.records[mine].split()[0] != initial.records[theirs].split()[0]:
+                continue
+            spelled = symbols.rewrite(symbols.rewrite(initial.records[mine], move.subject, move.target), mine, theirs)
+            if not _layout_finding(
+                move.subject,
+                move.target,
+                headers.members(spelled) or [],
+                headers.members(initial.records[theirs]) or [],
+            ):
+                continue
+            rows = _view_rows(initial, move.subject, move.target, mine, theirs)
+            if rows is not None:
+                probes.append(rows)
+        jobs: dict[tuple[str, str], tuple[_LayoutTypes, dict[str, str]]] = {}
+        for rows in probes:  # source discovery is complete before any key is computed
+            key, _, dependencies = _probe_reader(initial, rows)
+            if effort.peek(key) is None:
+                jobs[key] = (dependencies, rows)
+        if len(jobs) < 2:  # one unique probe is already computed once by the serial edit
+            return
+        for key, value in zip(
+            jobs, pool.map(types.snapshot.config, "move.type_layouts", _probe_job, list(jobs.values())), strict=True
+        ):
+            effort.memo(key, partial(_given, value))
+
+
+def _given(value: Any) -> Any:
+    return value
+
+
 def _view_fold(types: _Types, subject: str, target: str, mine: str, theirs: str) -> Finding | None:
     """Folds record `mine` into `theirs` as a partial view of it, by member offset. Each member the users of `mine`
     access is the member of `theirs` at its offset and width (the accesses renamed; a placeholder of `theirs` takes
@@ -669,14 +777,11 @@ def _view_fold(types: _Types, subject: str, target: str, mine: str, theirs: str)
     def refuse(reason: str) -> Finding:
         return Finding("move.type_layout", f"{subject} cannot fold into {target} by offset: {reason}", unit=subject)
 
-    record = types.records[theirs]
-    kind = re.search(rf"\b(struct|union)\s+{re.escape(theirs)}\s*\{{", record)
-    if kind is None:
+    rows = _view_rows(types, subject, target, mine, theirs)
+    if rows is None:
         return refuse(f"{target} has no body")
-    spelled = types.spelled(symbols.rewrite(symbols.rewrite(types.records[mine], subject, target), mine, theirs))
-    probe, real = f"{kind[1]} {_PROBE}", f"{kind[1]} {theirs}"
-    (a, b), (c, d) = _body(spelled), _body(record)
-    rows = {probe: f"{probe} {spelled[a : b + 1]};", real: f"{real} {types.spelled(record[c : d + 1])};"}
+    probe, real = rows
+    record = types.records[theirs]
     laid = _probe_layouts(types, rows)
     if isinstance(laid, str):
         return refuse(laid)
@@ -1648,18 +1753,6 @@ def _rows(moves: Sequence[Move], ids: Sequence[int], finding: Finding) -> list[J
     ]
 
 
-def _readers(before: Snapshot, after: Snapshot, changed: Collection[str]) -> set[str]:
-    """The units a header change can change, as a publish judges its consumers: every consumer of a header whose
-    includes differ or that dropped a declaration a header names; of the others' consumers, those whose text reaches
-    a changed declaration (headers.reaching). A consumer that names none compiles to the same code: it is not
-    proved again."""
-    broad = [p for p in changed if headers.changed(before.peek(p), after.peek(p), p) is None]
-    narrow = [p for p in changed if p not in broad]
-    found = headers.consumers(after, narrow)
-    dead = headers.dangling(before, after, narrow)
-    return {*headers.consumers(after, [*broad, *dead]), *headers.reaching(before, after, narrow, found)}
-
-
 def _bytes_changed(gap: Finding) -> bool:
     """Whether a proof built the unit and its bytes differ (not a compile, link or symbol failure)."""
     return bool(gap.missing) and all(
@@ -2003,7 +2096,7 @@ def _apply(
                 rows = [(m, f) for p, f in broken.items() for m in _file_moves(snapshot, overlay, edited, live, p)]
                 return _refusal(moves, snapshot, rows)
         with effort.stage("move.readers"):
-            readers = _readers(snapshot, overlay, changed)
+            readers = headers.readers(snapshot, overlay, changed)  # as a publish judges its consumers
         affected = sorted({*(p for p in writes if p in overlay.layout.units), *readers})
         with effort.stage("move.proof"):
             proofs, gaps = publish._proofs(overlay, affected) if affected and not unproved else ((), ())

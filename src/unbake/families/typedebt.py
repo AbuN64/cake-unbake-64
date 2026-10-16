@@ -15,7 +15,9 @@ _SIZES = {1: "u8 s8 char bool", 2: "u16 s16 short", 4: "u32 s32 int long float f
 _BYTES = {name: size for size, names in _SIZES.items() for name in names.split()}
 _PRIMITIVE = frozenset(_BYTES) | {"unsigned", "signed", "const", "volatile", "size_t", "uintptr_t", "intptr_t"}
 _INTEGER = frozenset(_PRIMITIVE - {"float", "f32", "double", "f64", "void", "bool"})
-_PLACEHOLDER = re.compile(r"^(?:pad\w*|unk_?[0-9A-Fa-f]*|field_[0-9A-Fa-f]+|_[0-9A-Fa-f]+)$", re.I)  # an offset name
+_PLACEHOLDER = re.compile(  # an offset name: pad*, unk<hex>, unknown<hex>, field_<hex>, _<hex>
+    r"^(?:pad\w*|unk(?:nown)?_?[0-9A-Fa-f]*|field_[0-9A-Fa-f]+|_[0-9A-Fa-f]+)$", re.I
+)
 
 
 def _line(code: str) -> Callable[[int], int]:
@@ -84,21 +86,24 @@ def fake_type(code: str) -> dict[int, str]:
 
 
 def _padded(code: str, head: re.Match[str]) -> tuple[bool, int]:
-    """Whether the struct opened by `head` is mostly padding arrays, and where it ends."""
+    """Whether the struct opened by `head` is mostly padding arrays, and where it ends. Every declarator of a field
+    counts (`u32 a, b, c;` names three, a bitfield names one)."""
     start, stop = _body(code, head.end() - 1)
     pad = named = total = 0
     for field in code[start:stop].split(";"):
-        match = re.search(
-            r"([A-Za-z_]\w*)\s*(\*?)\s*([A-Za-z_]\w*)\s*(?:\[\s*(0[xX][0-9A-Fa-f]+|\d+)\s*\])?\s*$", field.strip()
-        )
-        if not match:
-            continue
-        size = 4 if match[2] else _BYTES.get(match[1], 4) * int(match[4] or "1", 0)
-        total += size
-        if match[4] and _PLACEHOLDER.match(match[3]):
-            pad += size
-        else:
-            named += 1
+        first = re.match(r"\s*(?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*([A-Za-z_]\w*)", field)
+        for part in field.split(","):
+            match = re.search(
+                r"(\*?)\s*([A-Za-z_]\w*)\s*(?:\[\s*(0[xX][0-9A-Fa-f]+|\d+)\s*\])?\s*(?::\s*\w+\s*)?$", part.strip()
+            )
+            if not first or not match or (match[2] == first[1] and not match.start(2)):
+                continue
+            size = 4 if match[1] else _BYTES.get(first[1], 4) * int(match[3] or "1", 0)
+            total += size
+            if match[3] and _PLACEHOLDER.match(match[2]):
+                pad += size
+            else:
+                named += 1
     return bool(pad and 2 * pad >= total and named <= 3), stop
 
 
@@ -125,11 +130,13 @@ def pad_view(code: str) -> dict[int, str]:
     """Struct definitions where pad arrays (offset-named: pad*, unk<hex>, field_<hex>) are at least half the bytes and
     at most three fields are named; a data symbol's owner-local record is none."""
     line = _line(code)
-    return {
-        line(head.start()): " ".join(head[0].split())
-        for head in re.finditer(r"\bstruct\s*(?:\w+\s*)?\{", code)
-        if _padded(code, head)[0] and not owner_record(code, _named(code, head))
-    }
+    found: dict[int, str] = {}
+    for head in re.finditer(r"\bstruct\s*(?:\w+\s*)?\{", code):
+        if _padded(code, head)[0] and not owner_record(code, name := _named(code, head)):
+            # an anonymous record is named by its alias: two distinct views never read as one subject
+            spelled = " ".join(head[0].split())
+            found[line(head.start())] = spelled if not name or name in spelled else f"struct {name} {{"
+    return found
 
 
 def placeholder_record(code: str) -> dict[int, str]:

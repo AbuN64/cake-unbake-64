@@ -9,6 +9,7 @@ import shutil
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,10 @@ def _key(item: tuple[Any, ...]) -> str:
     return native.stamp(snapshot, unit, version, recipe)
 
 
+def _known_key(stamps: dict[Path, str], item: tuple[Any, ...]) -> str:
+    return stamps[item[4]]
+
+
 def measure(snapshot: Snapshot, unit: UnitSpec, overrides: Json, out: Path | None) -> tuple[Proof, ...]:
     return measure_many(snapshot, unit, [overrides], out)[0]
 
@@ -142,7 +147,21 @@ def measure_bound(
             jobs.extend(
                 (derived_snapshot, derived, v, recipe, work / f"{n}-{digest(unit.path)[:16]}" / v, False) for v in held
             )
-        results = iter(pool.map(config, "compare.measure", native.prove_args, jobs, _key))
+        # Different candidate trees can read identical proof inputs. Concurrent cache misses would build
+        # every copy, whereas sequential groups reused the first result. Name them once, dispatch each
+        # distinct proof once, then restore every caller's pair/version order (including refusals).
+        stamps = pool.map(config, "compare.stamps", _key, jobs) if jobs else []
+        unique: dict[str, tuple[Any, ...]] = {}
+        for stamp, job in zip(stamps, jobs, strict=True):
+            unique.setdefault(stamp, job)
+        known = {job[4]: stamp for stamp, job in unique.items()}
+        measured = (
+            pool.map(config, "compare.measure", native.prove_args, list(unique.values()), partial(_known_key, known))
+            if unique
+            else []
+        )
+        by_stamp = dict(zip(unique, measured, strict=True))
+        results = iter(by_stamp[stamp] for stamp in stamps)
         return [tuple(p for _ in range(count) for p in next(results)) for count in spans]
 
 
@@ -304,13 +323,14 @@ def bind(
     content, renamed = _member_name(snapshot, file, content)
     if notes is not None:
         notes.extend([*rewritten, *renamed])
-    named = [n for n in (*headers.defined(content), *headers.variables(content)) if n in snapshot.layout.members]
+    given = [*headers.defined(content), *headers.variables(content)]
+    named = [n for n in given if n in snapshot.layout.members]
     if not named and function is None:
         raise Refusal(
             Finding(
                 "land.request",
                 reason="the source defines no member of the layout: it defines "
-                + (", ".join(headers.defined(content)) or "no function"),
+                + (", ".join(given) or "no function or storage"),
                 action="define a member of the layout or pass --function NAME",
             )
         )
@@ -325,13 +345,18 @@ def bind(
     )
     if shared is not None:
         unit, writes = shared
-    elif landed:
+    elif landed and Path(landed.path).suffix == file.suffix:
         unit, writes = landed, {landed.path: content}
-    else:
+    else:  # a source of another language than the landed unit's (C for library assembly) takes a unit of its own
         options = layout.unit_options(snapshot, member, content)
         if not options:
+            held = f": {landed.path} ({landed.kind}) holds it and takes no {file.suffix} source" if landed else ""
             raise Refusal(
-                Finding("land.request", reason=f"{member} has no standalone unit option", action="pass --function NAME")
+                Finding(
+                    "land.request",
+                    reason=f"{member} has no standalone unit option{held}",
+                    action="pass --function NAME" if not landed else f"score a {Path(landed.path).suffix} source",
+                )
             )
         unit, writes = options[-1]
     if rel and any(Path(rel).is_relative_to(folder) for folder in getattr(snapshot.config.project, "library_dirs", ())):
@@ -999,24 +1024,43 @@ def score_command(config: Config, params: Json) -> Json:
     --alloc the registers and the instruction order. --variants scores a JSON list of {file, overlays} in one process,
     side by side."""
     with effort.stage("compare.score"):
-        snapshot = layout.capture(config)
         if params.get("variants"):
-            return _score_variants(snapshot, params)
+            return _score_variants(config, params)
         if not params.get("file"):
             raise Refusal(Finding("land.request", reason="score needs a C source", action="pass FILE or --variants"))
-        return _score_one(snapshot, params)
+        return _score_one(layout.capture(config), params)
 
 
 def _variant_params(params: Json, row: Any) -> Json:
-    if not isinstance(row, dict) or not isinstance(row.get("file"), str):
+    if not isinstance(row, dict) or not isinstance(row.get("file"), str) or not row["file"]:
         raise Refusal(
             Finding(
                 "land.request",
-                reason=f"--variants rows must be objects with a file, got {str(row)[:80]}",
+                reason=f"--variants rows must be objects with a nonempty file path, got {str(row)[:80]}",
                 action="pass a JSON list of {file, overlays}",
             )
         )
-    return {**params, "file": Path(row["file"]), "extras": [Path(o) for o in row.get("overlays") or ()]}
+    unknown = sorted(set(row) - {"file", "overlays"})
+    if unknown:  # a misspelt key would score the variant without what it names
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason=f"--variants rows take file and overlays only, not {', '.join(unknown)}",
+                action="pass a JSON list of {file, overlays}",
+            )
+        )
+    overlays = row.get("overlays")
+    if overlays is not None and (
+        not isinstance(overlays, list) or any(not isinstance(o, str) or not o for o in overlays)
+    ):
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason="--variants overlays must be a list of nonempty path strings or null",
+                action="pass overlays as a JSON list of file paths or PATH=FILE strings",
+            )
+        )
+    return {**params, "file": Path(row["file"]), "extras": [Path(o) for o in overlays or ()]}
 
 
 def _variant_job(item: tuple[Snapshot, Json]) -> Json:
@@ -1028,15 +1072,50 @@ def _variant_job(item: tuple[Snapshot, Json]) -> Json:
     return {"file": str(params["file"]), "ok": True, "result": {k: v for k, v in result.items() if k != "proofs"}}
 
 
-def _score_variants(snapshot: Snapshot, params: Json) -> Json:
-    """Each variant is one whole score in a worker, so the captured snapshot is read once and every core is used."""
-    rows = json.loads(Path(params["variants"]).read_text(encoding="utf-8"))
+def _score_variants(config: Config, params: Json) -> Json:
+    """Validate the whole manifest before capturing once, then dispatch each variant as one complete score."""
+    manifest = Path(params["variants"])
+    try:
+        rows = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason=f"--variants is not JSON at line {error.lineno}, column {error.colno}: {error.msg}",
+                path=str(manifest),
+                line=error.lineno,
+                action="fix the JSON in the variants input file",
+            )
+        ) from error
+    except (OSError, UnicodeDecodeError) as error:
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason=f"cannot read --variants: {error}",
+                path=str(manifest),
+                action="pass a readable UTF-8 JSON file",
+            )
+        ) from error
     if not isinstance(rows, list):
         raise Refusal(
-            Finding("land.request", reason="--variants must hold a JSON list", action="pass {file, overlays} rows")
+            Finding(
+                "land.request",
+                reason="--variants must hold a JSON list",
+                path=str(manifest),
+                action="pass {file, overlays} rows",
+            )
         )
-    jobs = [(snapshot, _variant_params(params, row)) for row in rows]
-    return {"variants": pool.map(snapshot.config, "compare.variants", _variant_job, jobs)}
+    variants = []
+    for index, row in enumerate(rows, 1):
+        try:
+            variants.append(_variant_params(params, row))
+        except Refusal as error:
+            raise Refusal(
+                *(replace(f, path=str(manifest), reason=f"row {index}: {f.reason}") for f in error.findings)
+            ) from error
+    snapshot = layout.capture(config)
+    jobs = [(snapshot, variant) for variant in variants]
+    return {"variants": pool.map(config, "compare.variants", _variant_job, jobs)}
 
 
 def _score_one(snapshot: Snapshot, params: Json) -> Json:

@@ -31,12 +31,16 @@ def _part(text: str, name: str) -> str:
 
 def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Counter[str]]) -> list[Json]:
     """A row per register the target fills with another pseudo than the candidate's winner; `votes` maps each register
-    the candidate uses to the one the target uses in the same operand of the aligned instructions."""
+    the candidate uses to the one the target uses in the same operand of the aligned instructions. A pseudo local-alloc
+    placed (in the dispositions, never in the global order) is named too, with its allocator: "free" means no pseudo
+    of the function holds the register at all."""
     graph, local = _part(greg, function), _part(lreg, function)
     listed = re.search(r";; \d+ regs to allocate: (.*)", graph)
     order = [int(t) for t in listed[1].split() if t.isdigit()] if listed else []
     given = graph.partition(";; Register dispositions:")[2].partition(";; Hard regs")[0]
     placed = {int(p): int(r) for p, r in re.findall(r"(\d+) in (\d+)", given)}
+    for p, r in re.findall(r"^;; Register (\d+) in (\d+)\.", local, re.M):  # local-alloc's own dump of its choices
+        placed.setdefault(int(p), int(r))
     seen = re.findall(r"Register (\d+) used (\d+) times across (\d+) insns", local)
     stats = {int(n): (int(r), int(s)) for n, r, s in seen}
     start = asm.find(f'.stabs "{function}:F')  # the debug records name the variable each register holds
@@ -48,18 +52,32 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
     for pseudo in order:  # the first of the allocation order to be given a register keeps it
         if pseudo in placed:
             winner.setdefault(placed[pseudo], pseudo)
+    by_block: dict[int, int] = {}  # local-alloc placed the pseudos of one block that global allocation never ordered
+    for pseudo, reg in sorted(placed.items(), key=lambda t: -priority(*stats.get(t[0], (0, 1)))):
+        if pseudo not in order and reg not in winner:
+            by_block.setdefault(reg, pseudo)
 
     def who(reg: int) -> Json:
-        if reg not in winner:  # no pseudo of the candidate's global allocation holds it: free, or local only
-            return {"register": _SHOWN[reg], "pseudo": None, "refs": 0, "length": 0, "name": "free", "priority": 0.0}
-        refs, span = stats.get(winner[reg], (0, 1))
+        pseudo = winner.get(reg, by_block.get(reg))
+        if pseudo is None:  # no pseudo of the candidate holds it
+            return {
+                "register": _SHOWN[reg],
+                "pseudo": None,
+                "refs": 0,
+                "length": 0,
+                "name": "free",
+                "priority": 0.0,
+                "allocator": None,
+            }
+        refs, span = stats.get(pseudo, (0, 1))
         return {
             "register": _SHOWN[reg],
-            "pseudo": winner[reg],
+            "pseudo": pseudo,
             "refs": refs,
             "length": span,
-            "name": "/".join(named.get(reg, [f"pseudo {winner[reg]}"])),
+            "name": "/".join(named.get(reg, [f"pseudo {pseudo}"])),
             "priority": round(priority(refs, span), 4),
+            "allocator": "global" if reg in winner else "local",
         }
 
     # every pair the aligned operands disagree on, the minority too: one swapped site among a hundred agreeing ones
@@ -71,10 +89,15 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
     rows: list[Json] = []
     for count, have, want in pairs:
         a, b = HARD.get(have), HARD.get(want)
-        if a is None or b is None or (a not in winner and b not in winner):
+        if a is None or b is None or not {a, b} & (winner.keys() | by_block.keys()):
             continue
         ours, theirs = who(b), who(a)  # the target keeps in b the pseudo the candidate has in a
-        beaten = ours["pseudo"] is not None and theirs["pseudo"] is not None and theirs["priority"] < ours["priority"]
+        beaten = (
+            ours["pseudo"] is not None
+            and theirs["pseudo"] is not None
+            and ours["allocator"] == theirs["allocator"]  # one allocator's priority order decides between them
+            and theirs["priority"] < ours["priority"]
+        )
         rows.append(
             {
                 "register": ours["register"],

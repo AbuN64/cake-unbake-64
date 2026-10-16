@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import itertools
 import re
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -239,7 +240,7 @@ def _pad(name: str, kind: str) -> bool:
 class _Index:
     """One real record's field rows, built once per plan: by (offset, width), and all of them for the overlap test."""
 
-    __slots__ = ("rows", "same", "size")
+    __slots__ = ("ends", "rows", "same", "size", "starts")
 
     def __init__(self, layout: Mapping[str, Any]) -> None:
         self.size = layout.get("size", 0)
@@ -247,6 +248,11 @@ class _Index:
         self.same: dict[tuple[int, int], list[str]] = defaultdict(list)
         for offset, size, kind, _ in self.rows:
             self.same[offset, size].append(kind)
+        # the named members by start, with the furthest end among those up to each: one bisect answers "does any
+        # named member overlap [a, b)" (it starts before b and the furthest end of such members passes a)
+        spans = sorted((o, o + w) for o, w, k, n in self.rows if not _pad(n, k))
+        self.starts = [a for a, _ in spans]
+        self.ends = list(itertools.accumulate((b for _, b in spans), max))
 
 
 def _named(mine: Mapping[str, Any]) -> list[tuple[int, int, str, str]]:
@@ -264,7 +270,8 @@ def _fits(named: Sequence[tuple[int, int, str, str]], size: Any, theirs: _Index)
         ):
             hits += 1
             continue
-        if any(r[0] < offset + width and offset < r[0] + r[1] and not _pad(r[3], r[2]) for r in theirs.rows):
+        before = bisect_left(theirs.starts, offset + width)
+        if before and theirs.ends[before - 1] > offset:
             return -1
     return hits
 
@@ -375,6 +382,7 @@ def plan(
         return aliases.get(name, name)
 
     shapes: dict[tuple[Any, ...], list[str]] = defaultdict(list)
+    vectors: dict[tuple[Any, ...], list[tuple[int, str]]] = {}  # the scores of each shape against the real records
     joined: list[tuple[str, str]] = []
     for name in fakes:
         lay = layouts[name]
@@ -389,8 +397,13 @@ def plan(
             why[name] = ("d", f"cannot be laid: {lay.get('conflict', 'no layout')}")
             continue
         mine, size = _named(lay), lay.get("size", 0)
-        # a real record smaller than this one scores -1: it never makes a top, so it is never scored
-        scored = [(_fits(mine, size, index[name2]), name2) for name2 in real if index[name2].size >= size]
+        # a real record smaller than this one scores -1: it never makes a top, so it is never scored; one shape is
+        # scored once (_fits reads offsets, widths and types alone, never the member names)
+        shape = _shape(lay)
+        if (scored := vectors.get(shape)) is None:
+            scored = vectors[shape] = [
+                (_fits(mine, size, index[name2]), name2) for name2 in real if index[name2].size >= size
+            ]
         best = max((s for s, _ in scored), default=-1)
         named = len(mine)
         tops = sorted(n2 for s, n2 in scored if s == best and best > 0)
@@ -419,7 +432,7 @@ def plan(
                 target[name] = new
                 why[name] = ("c", f"only {symbol} reaches it")
                 continue
-        shapes[_shape(lay)].append(name)
+        shapes[shape].append(name)
         reason = (
             f"{len(tops)} real records fit equally"
             if best > 0 and best == named

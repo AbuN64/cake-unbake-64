@@ -63,3 +63,19 @@ def test_report_names_a_minority_swap_and_a_register_the_candidate_leaves_free()
     assert (rows[0]["target"]["name"], rows[0]["flip"]) == ("fmt", None)
     votes = {"$s0": Counter({"$s0": 40, "$s1": 2}), "$s1": Counter({"$s0": 2, "$s1": 30})}
     assert alloc.report("f", GREG, LREG, ASM, votes) == []  # neither register is held by a pseudo of f
+
+
+def test_report_names_pseudos_local_alloc_placed_and_flips_only_within_one_allocator() -> None:
+    # pseudos 140 and 141 live in one block each: local-alloc placed them (f0 = 32, f2 = 34), global never ordered them
+    greg = GREG.replace("116 in 30  \n", "116 in 30  140 in 32  \n")
+    lreg = LREG + (
+        "Register 140 used 6 times across 9 insns in block 2; set 1 time.\n"
+        "Register 141 used 3 times across 4 insns in block 3; set 1 time.\n"
+        ";; Register 141 in 34.\n"
+    )
+    (row,) = alloc.report("f", greg, lreg, ASM, {"$f0": Counter({"$f2": 3})})
+    assert (row["register"], row["candidate"]["pseudo"], row["candidate"]["allocator"]) == ("$f2", 141, "local")
+    assert (row["target"]["pseudo"], row["target"]["allocator"]) == (140, "local")
+    assert row["flip"] is None  # the target's 140 outranks 141 already: nothing to lift
+    (mixed,) = alloc.report("f", greg, lreg, ASM, {"$f0": Counter({"$s4": 2})})  # global winner vs local pseudo
+    assert (mixed["candidate"]["allocator"], mixed["target"]["allocator"], mixed["flip"]) == ("global", "local", None)

@@ -22,6 +22,7 @@ from unbake.contracts import (
     SourceView,
     UnitSpec,
 )
+from unbake.families import typedebt
 
 PATH = "src/unit.c"
 
@@ -1270,3 +1271,75 @@ def test_fresh_judges_a_view_rule_the_old_text_already_breaks_through_the_old_vi
     monkeypatch.setattr(policy, "evaluate", lambda s, p, t, view, sdk: seen.append(view) or (repeated,))
     assert policy.fresh(snapshot, PATH, [repeated], False) == ()
     assert seen == ["old view"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "((void **) arg0)[16 / sizeof(void *)] = 0;",
+        "x = ((s32 *) temp_a3)[176 / sizeof(s32)];",
+        "c = ((u16 **) arg4)[0x14 / sizeof(u16 *)];",
+        "y = ((unsigned char *)material)[6];",
+        "t = *((void **) ((u8 *) ((arg0 + (i * 4))) + 3932));",
+        "u32 *words = (u32 *)&scratch[0x18];",
+    ],
+)
+def test_raw_offset_indexes_a_primitive_view_by_a_constant(snapshot, text):
+    found = policy.evaluate(snapshot, PATH, text, None, False, only={"raw-offset"})
+    assert [f.key for f in found] == ["source.raw-offset"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "b = ((u8 *) buf)[i];",
+        "b = ((u8 *) buf)[0];",
+        "r = ((Record *) p)[2];",
+        "f = (float *)&buf[0];",
+        "e = &((s32 *)p)[i];",
+    ],
+)
+def test_raw_offset_leaves_variable_first_and_record_indexes(snapshot, text):
+    assert policy.evaluate(snapshot, PATH, text, None, False, only={"raw-offset"}) == ()
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "bits = (bits & 0x800FFFFF) | exponent;",
+        "bits &= 0x800fffff;",
+        "bits = 0x800FFFFF & bits;",
+        "bits = exponent | 0x800D7010;",
+        "bits = ~0x800D7010;",
+        "bits ^= (0x800D7010);",
+    ],
+)
+def test_address_literal_skips_bitwise_masks(snapshot, code):
+    _placed_snapshot(snapshot)
+    snapshot.layout.members["D_800D7000"] = Member(
+        "D_800D7000", "data", "data", "g", (Placement("us", ".data", 0, 0x400000, 0x800D7000),)
+    )
+    assert policy._address_literals(snapshot, PATH, code) == {}
+    assert policy._address_literals(snapshot, PATH, "p = (x && 0x800D7010);") == {1: "0x800D7010"}
+
+
+@pytest.mark.parametrize(
+    ("code", "subject"),
+    [
+        ("typedef struct L { u8 unknown00[0x2D8]; u32 flags; } L;", "struct L {"),
+        ("typedef struct { char pad0[0xD8]; s32 offset; } Voice;", "struct Voice {"),
+        ("struct A { u32 a : 1; u32 b:2; char pad[0x40]; };", "struct A {"),
+        ("struct A { u8 pad0[0x10]; s32 a, b, c; };", "struct A {"),
+    ],
+)
+def test_pad_view_reads_unknown_names_and_names_an_anonymous_view_by_alias(code, subject):
+    assert typedebt.pad_view(code) == {1: subject}
+
+
+def test_pad_view_counts_every_declarator_of_a_field():
+    code = (
+        "typedef struct { s32 active; char pad4[0x10]; u32 previous, current, pressed, released; "
+        "char pad7C[0x48]; s8 x, y; } Input;"
+    )
+    assert typedebt.pad_view(code) == {}  # seven named members: a record, not a view
+    assert typedebt.pad_view("struct A { u8 pad0[0x10]; s32 a, b, c, d; };") == {}

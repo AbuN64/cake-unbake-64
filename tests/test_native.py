@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import fixture
@@ -868,9 +869,9 @@ def test_objects_missing_source_requires_changed_capture_inputs(
 
 
 @pytest.mark.parametrize(
-    ("value", "referenced", "bound"), [(0x4F000000, True, True), (0x4E000000, True, False), (0x4F000000, False, False)]
+    ("value", "referenced", "bound"), [(0x4F000000, True, True), (0x4E000000, True, True), (0x4F000000, False, False)]
 )
-def test_measure_links_only_equal_referenced_owned_literals(case, monkeypatch, value, referenced, bound):
+def test_measure_links_referenced_owned_literals_and_proves_their_bytes(case, monkeypatch, value, referenced, bound):
     snapshot, unit, recipe, obj, work, linker = case
     address = 0x800C34FC
     datum = Member("constant", "data", "data", "g", (Placement("a", ".data", 0x2000, 0x2004, address),))
@@ -899,9 +900,10 @@ def test_measure_links_only_equal_referenced_owned_literals(case, monkeypatch, v
     monkeypatch.setattr(
         ownership, "emitted", lambda blob: {".rodata": (value.to_bytes(4, "big"), {}, [(4, 0)] if referenced else [])}
     )
-    _outputs(case)
+    monkeypatch.setattr(native.versions, "rom_bytes", lambda version, start, end: bytes(rom[start:end]))
+    _outputs(case, {".text": bytes(rom[0x1000:0x1008]), ".rodata": value.to_bytes(4, "big")})
     (proof,) = native.measure(snapshot, unit, "a", recipe, obj, work)
-    assert proof.exact and proof.member == "f"
+    assert proof.exact is (value == 0x4F000000) and proof.member == "f"  # a differing pool links, never proves
     placed = [p for p in linker.link.call_args.args[1] if p.section == ".rodata"]
     assert placed == ([Placement("a", ".rodata", 0x2000, 0x2004, address)] if bound else [])
     assert snapshot.layout.units[provider.path] == provider
@@ -951,3 +953,57 @@ def test_a_stamp_reads_only_the_version_facts_of_the_names_its_unit_spells(case,
     assert stamp({"spelled": 1}, {"elsewhere"}) == before  # a landing elsewhere
     assert stamp({"spelled": 5, "elsewhere_L1": 2}) != before
     assert stamp({"spelled": 1, "elsewhere_L1": 2}, {"spelled"}) != before
+
+
+@pytest.mark.parametrize("same", [True, False])
+def test_a_borrowed_pool_links_where_the_code_forms_it_and_must_be_the_roms_bytes(case, monkeypatch, same):
+    pool = Placement("a", ".rodata", 0x1004, 0x1008, 0x80000404)
+    monkeypatch.setattr(ownership, "borrowed", lambda *a: (pool,))
+    linker = _outputs(case, {".text": TARGET, ".rodata": TARGET[4:8] if same else b"\0\0\0\1"})
+    (proof,) = _measure(case)
+    assert linker.link.call_args.args[1][-1] == pool  # linked there either way: the code reads the target's address
+    assert proof.exact is same
+    assert same or proof.missing == ("version a: emitted .rodata differs from the ROM bytes at 0x1004 it is placed on",)
+
+
+@pytest.mark.parametrize(
+    ("exit", "files", "key"),
+    [
+        (33, (), "score.compile"),
+        (33, ("greg", "lreg"), "score.compile"),
+        (0, (), "land.request"),
+        (0, ("greg", "lreg"), None),
+        (0, ("greg", "lreg", "sched", "sched2"), None),
+    ],
+)
+def test_allocation_dumps_name_a_compile_error_as_one_and_a_dumpless_toolchain_as_one(
+    case, monkeypatch, exit, files, key
+):
+    snapshot, unit, recipe, _, work, _ = case
+    step = SimpleNamespace(argv=("cc1", "{in}", "-o", "{out}"))
+    monkeypatch.setattr(native, "_compile_inputs", lambda *a: ("int f;", (step,), "", "", ""))
+    monkeypatch.setattr(native, "_include", lambda *a: ())
+
+    def run(name, argv, cwd, **_):
+        assert name == "native.dumps" and cwd == work
+        assert argv == ["cc1", "f.i", "-o", "f.s", "-g", "-dg", "-dl", "-dS", "-dR"]
+        assert (cwd / "f.i").read_text() == "int f;"
+        for kind in files:
+            (cwd / f"f.i.{kind}").write_text(f";; Function f\n;; {kind}\n")
+        (cwd / "f.s").write_text("f:\n")
+        return fixture.native_result(argv=argv, exit=exit, stderr=b"f.c:3: structure has no member named `x'\n")
+
+    monkeypatch.setattr(native.process, "run", run)
+    monkeypatch.setattr(native.process, "scratch", lambda root: root)
+    if key is None:
+        assert native.dumps(snapshot, unit, "a", recipe, work) == (
+            ";; Function f\n;; greg\n",
+            ";; Function f\n;; lreg\n",
+            "f:\n",
+            {kind: f";; Function f\n;; {kind}\n" for kind in ("sched", "sched2") if kind in files},
+        )
+        return
+    with pytest.raises(Refusal) as refused:
+        native.dumps(snapshot, unit, "a", recipe, work)
+    found = refused.value.findings[0]
+    assert found.key == key and (key != "score.compile" or "no member named `x'" in found.reason)

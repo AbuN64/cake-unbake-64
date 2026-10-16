@@ -4,6 +4,7 @@ import json
 import struct
 from contextlib import nullcontext
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import fixture
@@ -51,6 +52,14 @@ def _unit(name, kind="c"):
     return UnitSpec(f"src/{name}.{kind}", kind, "g", (name,), "test", {})
 
 
+_CENSUS = ("bytes", "total", "modules", "perfect_modules", "boundary", "flags", "members", "named", "open_edges")
+
+
+def _no_perfect(snapshot, credits):
+    zero = {**dict.fromkeys(_CENSUS, 0), "contradictions": 0, "objects_estimate": 0, "module_starts": {}}
+    return {v: dict(zero) for v in snapshot.config.project.versions}, frozenset()
+
+
 @pytest.fixture
 def snapshot_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(report.effort, "stage", lambda name: nullcontext())
@@ -63,6 +72,9 @@ def snapshot_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(report.policy, "unclean", lambda s: frozenset())
     monkeypatch.setattr(report.policy, "unclean_rules", lambda s: {})
     monkeypatch.setattr(report.libasm, "recognised", lambda s, m: False)
+    # the edges of a map run here, never in workers; the perfect census reads ROMs a credit test never writes
+    monkeypatch.setattr(report.edges, "pool", SimpleNamespace(map=lambda c, n, f, items, key=None: [*map(f, items)]))
+    monkeypatch.setattr(report.perfect, "census", _no_perfect)
 
     def make(members=(), *, units=(), fuzzy=None, groups=None, versions=("a", "b"), overlays=None):
         vf = {v: VersionFiles(f"{v}.z64", "0" * 40, f"{v}.yaml", f"{v}.txt", {}) for v in versions}
@@ -144,6 +156,8 @@ def test_credit_is_layout_state(snapshot_factory, monkeypatch):
             "code_percent": 33.33,
             "data_percent": 0.0,
             "fuzzy_percent": 33.33,
+            "perfect_bytes": 0,
+            "perfect_percent": 0.0,
         }
         assert result["kinds"]["c"][version]["code_matched"] == 16
         assert result["kinds"]["asm"][version]["code_matched"] == 0
@@ -201,6 +215,8 @@ def test_fuzzy_bytes_and_percent(snapshot_factory, score, code_fuzzy, data_fuzzy
         "code_percent": 48.78,
         "data_percent": 0.0,
         "fuzzy_percent": fuzzy_percent,
+        "perfect_bytes": 0,
+        "perfect_percent": 0.0,
     }
 
 
@@ -480,6 +496,7 @@ def _readme_case(snapshot_factory):
             "functions_total": 4196,
             "functions_matched": 3769,
             "functions_fuzzy": 100,
+            "perfect_bytes": 108_854,
         },
         "eu": {
             "code_total": 4_467_256,
@@ -491,6 +508,7 @@ def _readme_case(snapshot_factory):
             "functions_total": 0,
             "functions_matched": 0,
             "functions_fuzzy": 0,
+            "perfect_bytes": 0,
         },
     }
     return snapshot, {"versions": values}
@@ -504,7 +522,8 @@ def test_readme_block_exact(snapshot_factory):
         f"{begin}\n"
         "<pre><code>all  [██████████████▒░░░░░]  72.64% (~75.94%)  4,035,952 of 5,555,804 bytes</code>"
         "<br><code>us   [██████████████▒░░░░░]  74.97% (~76.63%)  816,136 of 1,088,548 bytes</code>"
-        "<br><code>eu   [██████████████▒░░░░░]  72.07% (~75.77%)  3,219,816 of 4,467,256 bytes</code></pre>\n\n"
+        "<br><code>eu   [██████████████▒░░░░░]  72.07% (~75.77%)  3,219,816 of 4,467,256 bytes</code>"
+        "<br><code>perfect [░░░░░░░░░░░░░░░░░░░░]   1.95%  108,854 of 5,555,804 bytes</code></pre>\n\n"
         "| us (NUS-NRWE-0, North America). First NTSC release (black cartridge). SHA256 `" + "a" * 64 + "` |\n"
         "|---|\n"
         "| <pre><code>code      [██████████████▒░░░░░]  74.97% (~76.63%)  816,136 of 1,088,548</code>"

@@ -1034,12 +1034,15 @@ def test_the_feeder_writes_one_job_token_per_slot_that_frees(tmp_path, monkeypat
     monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a")])
     attempts = []
 
-    def until(pool_dir, mine, attempt, stop=None, idle=False):  # two host events, then make returns
+    def until(pool_dir, mine, attempt, stop=None, also=None, interval=None):  # two checks, then make returns
+        assert interval == pool._REBALANCE
         attempts.extend([attempt(), attempt()])
 
     monkeypatch.setattr(pool, "_until", until)
+    monkeypatch.setattr(pool, "_shed", lambda spare, taken, last: None)
+    monkeypatch.setattr(pool, "_idle", lambda spare: 0)  # make consumed every earlier token
     taken = []
-    pool._feed(write, -1, taken)
+    pool._feed(write, -1, -1, taken)
     assert attempts == [False, False]  # the feeder never ends on its own, only on its stop
     os.close(write)
     assert os.read(read, 10) == b"++" and taken == ["s1", "s2"]
@@ -1050,7 +1053,7 @@ def test_a_make_build_runs_on_a_jobserver_fed_from_the_slot_pool(tmp_path, monke
     calls, _ = _shell_pool(monkeypatch, tmp_path)
     monkeypatch.setattr(pool, "_dir", [tmp_path])
     monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a")])
-    monkeypatch.setattr(pool, "_feed", lambda tokens, stop, taken: None)
+    monkeypatch.setattr(pool, "_feed", lambda tokens, spare, stop, taken: None)
     pool.main(["--", "/usr/bin/make", "-j{j}", "check"])
     command, options = calls[0]
     assert command[-2:] == ["/usr/bin/make", "check"]  # no fixed -j: the first grant is only where the build starts
@@ -1064,7 +1067,7 @@ def test_the_jobserver_holds_the_grant_as_tokens_and_closes_its_pipe(tmp_path, m
     _shell_pool(monkeypatch, tmp_path, share=3)
     monkeypatch.setattr(pool, "_dir", [tmp_path])
     monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a")])
-    monkeypatch.setattr(pool, "_feed", lambda tokens, stop, taken: None)
+    monkeypatch.setattr(pool, "_feed", lambda tokens, spare, stop, taken: None)
     with pool.jobserver(_host(tmp_path)) as (j, env, fds):
         read, write = fds
         os.set_blocking(read, False)
@@ -1080,7 +1083,7 @@ def test_exactly_the_slots_the_feeder_added_go_back_when_make_returns(tmp_path, 
     monkeypatch.setattr(pool, "_dir", [tmp_path])
     monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a")])
 
-    def feed(tokens, stop, taken):
+    def feed(tokens, spare, stop, taken):
         fcntl.flock(files[1], fcntl.LOCK_EX)
         pool._slots.append(files[1])  # the feeder takes one more slot while make runs
         taken.append(files[1])
@@ -1842,3 +1845,111 @@ def test_warm_workers_hold_the_landing_lock_only_for_dispatches_sent_inside_it(t
             assert pool.map(config, "units", _holds, [root, root]) == [True, True]
         assert pool.map(config, "units", _holds, [root, root]) == [False, False]
     assert warm.forks == 1
+
+
+def test_a_command_declares_the_work_it_has_not_its_whole_budget():
+    """Fair share hands slots to commands that can use them: a command with 3 chunks says 3, with 2 in flight and
+    a larger target it keeps the in-flight count, and only a command with no known work says its whole budget."""
+    for cap, active, said in [(3, 0, "3 12"), (3, 5, "5 12"), (0, 0, "12 12")]:
+        pool._acquire(12, active, cap)
+        assert Path(pool._cmd[0].name).read_text() == said
+        pool._release()
+
+
+def test_a_make_in_a_serial_phase_gives_its_idle_tokens_above_its_share_back(tmp_path, monkeypatch):
+    read, write = os.pipe()
+    os.write(write, b"+++")  # make runs 2 jobs on 5 held slots: 3 tokens lie idle in its pipe
+    spare = os.open(f"/proc/self/fd/{read}", os.O_RDONLY | os.O_NONBLOCK)
+    slots = [(tmp_path / f"slot{i}").open("a") for i in range(5)]
+    given = []
+    monkeypatch.setattr(pool, "_dir", [tmp_path])
+    monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a+")])
+    monkeypatch.setattr(pool, "_slots", list(slots))
+    monkeypatch.setattr(pool, "_fed", [slots[4]])
+    monkeypatch.setattr(pool, "_want", 6)
+    peers = [tmp_path / "cmd-1.lock", tmp_path / "cmd-2.lock"]
+    monkeypatch.setattr(pool, "_divide", lambda *a: (peers, 6, 3))  # a peer wants work: this command's share is 3
+    monkeypatch.setattr(pool, "_give", given.append)
+    signals = []
+    monkeypatch.setattr(pool, "_signal", signals.append)
+    taken, last = [slots[4]], []
+    pool._shed(spare, taken, last)
+    assert given == [] and last == [3]  # tokens make may not have read yet: none is idle at a first look
+    pool._shed(spare, taken, last)
+    assert given == [slots[4], slots[3]] and pool._slots == slots[:3]  # the feeder's own first, down to the share
+    assert pool._fed == [] and taken == []
+    assert os.read(read, 10) == b"+"  # make keeps its 2 running jobs and one idle token within the share
+    assert Path(pool._cmd[0].name).read_text() == "3 6"  # two busy slots plus one token to detect growing demand
+    assert signals  # the change woke the peers
+    os.write(write, b"+")
+    pool._shed(spare, taken, last)  # within its share now: nothing more goes back
+    assert len(given) == 2 and os.read(read, 10) == b"+"
+    os.write(write, b"++")
+    peers[1:] = []  # the peer ended: no command could take a slot, so nothing goes back
+    pool._shed(spare, taken, last)
+    assert len(given) == 2 and os.read(read, 10) == b"++"
+    for fd in (read, write, spare):
+        os.close(fd)
+
+
+def test_a_serial_make_keeps_one_probe_token_without_reacquiring_idle_grants(monkeypatch):
+    """A feeder's own release wake must not take and return the same slots forever. Consuming its last idle
+    token during a later parallel phase must still grow the grant on the next check, without any peer event."""
+    pool._acquire(4)
+    peers = _commands(os.environ["XDG_RUNTIME_DIR"], 1)
+    Path(peers[0].name).write_text("1 4")
+    read, write = os.pipe()
+    os.write(write, b"+++")  # one serial job on four held slots
+    spare = os.open(f"/proc/self/fd/{read}", os.O_RDONLY | os.O_NONBLOCK)
+    taken, extra_calls = [], []
+    real_extra = pool._extra_slot
+
+    def extra():
+        extra_calls.append(len(pool._slots))
+        return real_extra()
+
+    def until(pool_dir, mine, attempt, stop=None, also=None, interval=None):
+        assert interval == pool._REBALANCE  # consumption has no readable pipe or host event
+        assert attempt() is False  # first look does not mistake startup tokens for idle work
+        assert len(pool._slots) == 4
+        assert attempt() is False  # two observations establish idle capacity
+        assert len(pool._slots) == 2 and pool._idle(spare) == 1
+        assert Path(pool._cmd[0].name).read_text() == "2 4"
+        for _ in range(4):  # own release wake, peer wakes, or periodic checks cannot reacquire an idle grant
+            assert attempt() is False
+            assert len(pool._slots) == 2 and pool._idle(spare) == 1
+        assert extra_calls == []
+        assert os.read(read, 1) == b"+"  # make's next phase starts a second parallel job
+        assert attempt() is False
+        assert len(pool._slots) == 3 and pool._idle(spare) == 1
+        assert Path(pool._cmd[0].name).read_text() == "3 4"
+        assert len(extra_calls) == 2  # one new grant, then the peer's one-slot share stops growth
+
+    monkeypatch.setattr(pool, "_extra_slot", extra)
+    monkeypatch.setattr(pool, "_until", until)
+    try:
+        pool._feed(write, spare, -1, taken)
+    finally:
+        for slot in taken:
+            pool._fed.remove(slot)
+        pool._release()
+        for peer in peers:
+            peer.close()
+        for fd in (read, write, spare):
+            os.close(fd)
+
+
+@pytest.mark.parametrize("interval", [None, 0.5])
+def test_a_slot_waiter_only_rechecks_without_an_event_when_its_caller_requests_it(tmp_path, monkeypatch, interval):
+    calls = []
+    monkeypatch.setattr(pool, "_inotify", lambda *paths: 501)
+    monkeypatch.setattr(pool, "_peers", lambda *args: [])
+    monkeypatch.setattr(pool.os, "close", lambda fd: None)
+
+    def select(readers, writers, errors, timeout):
+        calls.append(timeout)
+        return [502], [], []  # make returned: the stop fd is readable
+
+    monkeypatch.setattr(pool.select, "select", select)
+    pool._until(tmp_path, tmp_path / "cmd-1.lock", lambda: False, stop=502, interval=interval)
+    assert calls == [interval]

@@ -1806,3 +1806,72 @@ def test_physical_relaid_units_keep_their_old_file_names_so_one_new_unit_renames
         "src/grp_2.c": ("fc",),
     }
     assert list(result) == ["src/grp_10.c", "src/grp.c", "src/grp_2.c"]  # ROM order, as before
+
+
+_V = 0x8023C920  # the shape of func_8023C924_de (us-rev1): a loop that never returns, then a routine of its own
+_LOOP = [0x0C000000, 0, 0x08000000 | (_V >> 2 & 0x3FFFFFF), 0]  # jal; nop; j entry; nop
+_NEXT = [0x27BDFFB8, 0x03E00008, 0x27BD0048]  # addiu sp,-0x48; jr ra; addiu sp,+0x48
+
+
+def test_a_frame_the_entry_never_reaches_starts_a_routine_of_its_own() -> None:
+    assert layout._unreached([*_LOOP, *_NEXT], _V) == (16,)
+    junk = [0x1440FFFA, 0x02241821]  # func_80448A48_eu_x: two words no path reaches before the second frame
+    assert layout._unreached([*_LOOP, *junk, *_NEXT], _V) == (24,)
+    assert layout._unreached([*_LOOP, *junk, *_NEXT], _V, {_V + 16}) == ()  # a referenced word between: no cut
+    assert layout._unreached([*_LOOP, 0x24020001], _V) == ()  # no frame after the end: nothing to cut
+    assert layout._unreached([0x27BDFFE8, 0x03E00008, 0x27BD0018], _V) == ()  # one routine ends at its last word
+
+
+def test_a_detached_prologue_returns_to_a_body_that_never_gives_its_frame_back() -> None:
+    body = [0x26103950, 0xAFBF002C, *_LOOP]  # addiu s0; sw ra,0x2C(sp); a loop that never returns
+    assert layout._framed(body, _V, 0x30)
+    assert not layout._framed(body, _V, 0x28)  # it stores past a frame of 0x28: not that frame's body
+    assert not layout._framed([0x26103950, 0xAFBF002C, 0x03E00008, 0], _V, 0x30)  # it returns without the frame
+    assert layout._framed([0x26103950, 0x03E00008, 0x27BD0030], _V, 0x30)  # it gives the frame back
+
+
+def test_boundary_cuts_a_routine_no_entry_path_reaches_beside_compiled_code_named_by_its_address(scene, monkeypatch):
+    monkeypatch.setattr(layout.symbols, "edit", lambda snapshot: {})
+    loop = (0x0C000000, 0, 0x08000000 | (BASE + 8 >> 2 & 0x3FFFFFF), 0)  # jal; nop; j own entry; nop
+    after = (0x27BDFFB8, 0x03E00008, 0x27BD0048)
+    snapshot = scene((("func_80000400", "c", RETURN), ("func_80000408", "asm", (*loop, *after))))
+    plan, counts = layout.boundary_plan(snapshot)
+    rows = [r[:3] for r in yaml.safe_load(plan.writes["versions/a/Game.yaml"])["segments"][0]["subsegments"][:-1]]
+    assert counts["split"]["applied"] == 1  # beside a compiled member: no neighbour rule decides an unreached frame
+    assert rows[1:] == [[0x1008, "asm", "func_80000408"], [0x1018, "asm", "func_80000418"]]
+
+
+def test_boundary_withholds_a_cut_whose_piece_would_take_a_name_a_member_has(scene, monkeypatch):
+    monkeypatch.setattr(layout.symbols, "edit", lambda snapshot: {})
+    loop = (0x0C000000, 0, 0x08000000 | (BASE + 8 >> 2 & 0x3FFFFFF), 0)
+    after = (0x27BDFFB8, 0x03E00008, 0x27BD0048)
+    snapshot = scene((("func_80000400", "c", RETURN), ("func_80000418", "asm", (*loop, *after))))  # kept name: +0x10
+    counts = layout.boundary_plan(snapshot)[1]
+    assert counts["split"]["withheld"] == 1 and counts["withheld_reasons"] == {"name taken": 1}
+
+
+def test_a_leafs_first_words_are_its_start_when_the_body_reads_what_only_they_set() -> None:
+    # func_80278A08_de: move t0, zero; lw t1, 4(a0) were peeled as padding, the body starts blez t1 and counts in t0
+    before = (0x00004021, 0x8C890004)
+    body = (0x19200028, 0x25080001, 0x03E00008, 0)
+    assert layout._entry_reads(before, body, _V)
+    # func_802A4DE8_de: lui at; lwc1 f0 before a body that reads f0
+    assert layout._entry_reads((0x3C01800D, 0xC420C394), (0x46000004, 0x03E00008, 0), _V)
+    assert not layout._entry_reads(before, (0x24820001, 0x03E00008, 0), _V)  # it reads a0 only: an argument
+    assert not layout._entry_reads((0x24020001,), (0x00031021, 0x03E00008, 0), _V)  # it reads v1, which v0 is not
+
+
+def test_boundary_returns_a_prologue_that_ends_in_a_call_whose_slot_is_the_body(scene, monkeypatch):
+    monkeypatch.setattr(layout.symbols, "edit", lambda snapshot: {})
+    prologue = (0x27BDFFE8, 0xAFBF0014, 0x0C000100)  # addiu sp,-0x18; sw ra,0x14(sp); jal (its slot is the body's)
+    body = (0xAFB00010, 0x8FBF0014, 0x8FB00010, 0x03E00008, 0x27BD0018)
+    snapshot = scene(
+        (
+            ("func_80000400", "asm", RETURN),
+            ("func_80000408_padding_1008", "data", prologue),
+            ("func_80000414", "asm", body),
+        )
+    )
+    plan, counts = layout.boundary_plan(snapshot)
+    rows = [r[:3] for r in yaml.safe_load(plan.writes["versions/a/Game.yaml"])["segments"][0]["subsegments"][:-1]]
+    assert counts["heads"] == 1 and [0x1008, "asm", "func_80000414"] in rows

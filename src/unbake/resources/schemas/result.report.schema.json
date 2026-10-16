@@ -60,6 +60,13 @@
      },
      "fuzzy_percent": {
       "type": "number"
+     },
+     "perfect_bytes": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "perfect_percent": {
+      "type": "number"
      }
     },
     "required": [
@@ -75,7 +82,9 @@
      "data_fuzzy",
      "code_percent",
      "data_percent",
-     "fuzzy_percent"
+     "fuzzy_percent",
+     "perfect_bytes",
+     "perfect_percent"
     ],
     "additionalProperties": false
    }
@@ -135,6 +144,13 @@
       },
       "fuzzy_percent": {
        "type": "number"
+      },
+      "perfect_bytes": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "perfect_percent": {
+       "type": "number"
       }
      },
      "required": [
@@ -150,7 +166,9 @@
       "data_fuzzy",
       "code_percent",
       "data_percent",
-      "fuzzy_percent"
+      "fuzzy_percent",
+      "perfect_bytes",
+      "perfect_percent"
      ],
      "additionalProperties": false
     }
@@ -211,6 +229,13 @@
       },
       "fuzzy_percent": {
        "type": "number"
+      },
+      "perfect_bytes": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "perfect_percent": {
+       "type": "number"
       }
      },
      "required": [
@@ -226,7 +251,9 @@
       "data_fuzzy",
       "code_percent",
       "data_percent",
-      "fuzzy_percent"
+      "fuzzy_percent",
+      "perfect_bytes",
+      "perfect_percent"
      ],
      "additionalProperties": false
     }
@@ -367,6 +394,80 @@
    "items": {
     "type": "string"
    }
+  },
+  "perfect": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "bytes": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "modules": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "perfect_modules": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "boundary": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "flags": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "members": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "named": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "open_edges": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "contradictions": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "objects_estimate": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "module_starts": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "integer",
+       "minimum": 0
+      }
+     }
+    },
+    "required": [
+     "bytes",
+     "total",
+     "modules",
+     "perfect_modules",
+     "boundary",
+     "flags",
+     "members",
+     "named",
+     "open_edges",
+     "contradictions",
+     "objects_estimate",
+     "module_starts"
+    ],
+    "additionalProperties": false
+   }
   }
  },
  "required": [
@@ -377,7 +478,8 @@
   "debt",
   "boundary",
   "pending_boundary",
-  "inbox"
+  "inbox",
+  "perfect"
  ],
  "additionalProperties": false
 }

@@ -634,6 +634,42 @@ def test_reaching_keeps_the_units_naming_a_declaration_of_a_header_a_changed_one
     assert headers.reaching(before, after, ["include/a.h"], sorted(units)) == ("src/clash.c",)
 
 
+def test_reaching_keeps_the_units_naming_a_declaration_of_a_header_a_changed_one_no_longer_includes(
+    tmp_path, monkeypatch
+):
+    before = snap(tmp_path, {"include/a.h": '#include "b.h"\nint f(void);\n', "include/b.h": "extern int gTable[];\n"})
+    shrunk = b"int f(void);\n"
+    after = SimpleNamespace(
+        peek=lambda p: shrunk if p == "include/a.h" else units.get(p, before.peek(p)),
+        read=lambda p: shrunk if p == "include/a.h" else before.read(p),
+        config=before.config,
+    )
+    units = {
+        "src/uses.c": b'#include "a.h"\nint g(void) { return gTable[0]; }\n',  # loses gTable's declaration
+        "src/calls.c": b'#include "a.h"\nint g(void) { return f(); }\n',
+    }
+    monkeypatch.setattr(headers, "sources", lambda _: ["include/a.h", "include/b.h"])
+    assert headers.reaching(before, after, ["include/a.h"], sorted(units)) == ("src/uses.c",)
+
+
+def test_readers_prove_the_consumers_a_changed_include_reaches_not_every_consumer(tmp_path, monkeypatch):
+    before = snap(tmp_path, {"include/a.h": "int f(void);\n", "include/b.h": "extern int gTable[];\n"})
+    grown = b'#include "b.h"\nint f(void);\n'
+    units = {
+        "src/clash.c": b'#include "a.h"\nchar *gTable[2];\n',
+        "src/calls.c": b'#include "a.h"\nint g(void) { return f(); }\n',
+    }
+    after = SimpleNamespace(
+        peek=lambda p: grown if p == "include/a.h" else units.get(p, before.peek(p)),
+        read=lambda p: grown if p == "include/a.h" else before.read(p),
+        config=before.config,
+    )
+    monkeypatch.setattr(headers, "sources", lambda _: ["include/a.h", "include/b.h"])
+    monkeypatch.setattr(headers, "consumers", lambda snapshot, changed: tuple(sorted(units)) if changed else ())
+    monkeypatch.setattr(headers, "dangling", lambda *a: ())
+    assert headers.readers(before, after, ["include/a.h"]) == {"src/clash.c"}  # calls.c compiles to the same code
+
+
 def test_fold_keeps_a_declaration_in_the_source_when_its_type_header_includes_the_group_header(tmp_path, no_types):
     aggregate = '#include "main/grp.h"\ntypedef struct Late Late;\n'
     source = "typedef struct Late Late;\nvoid take(Late *);\nvoid fresh(int b);\nint f(void) { return 0; }\n"

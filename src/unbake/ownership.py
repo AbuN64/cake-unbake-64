@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
+from elftools.common.exceptions import ELFError
 from elftools.elf.elffile import ELFFile
 from elftools.elf.enums import ENUM_RELOC_TYPE_MIPS
 from elftools.elf.relocation import RelocationSection
@@ -212,7 +213,9 @@ def _content(index: _Index, data: bytes, words: dict[int, bool], vram: int | Non
 def borrowed(
     snapshot: Snapshot, unit: UnitSpec, version: str, blob: bytes, ranges: Sequence[Placement]
 ) -> tuple[Placement, ...]:
-    """Place an emitted constant pool at the exact bytes referenced by ROM code, without changing its owner."""
+    """Place an emitted constant pool where the ROM code forms its address, without changing its owner. Bytes that
+    differ there still link it there (the code then reads the target's addresses, not 0): native.measure compares the
+    linked pool with the ROM and a difference keeps the proof inexact."""
     text = next((p for p in ranges if p.section == ".text"), None)
     if text is None or any(p.section == ".rodata" for p in ranges):
         return ()
@@ -220,10 +223,39 @@ def borrowed(
     if not data or not refs:
         return ()
     index = _index(snapshot, version)
-    at = _placed(index, data, words, refs, (text.vram, text.rom_start))
+    refs = _aligned(index.rom, text.rom_start, _text_words(blob), refs)
+    at = _placed(index, data, words, refs, (text.vram, text.rom_start), loose=True)
     if at is None or not _whole(index.rows, at, at + len(data)):
         return ()
     return (Placement(version, ".rodata", at, at + len(data), _vram_of(index, at)),)
+
+
+def _text_words(blob: bytes) -> bytes:
+    """The object's .text bytes; none for a blob that is no ELF object (nothing to align then)."""
+    try:
+        section = ELFFile(io.BytesIO(blob)).get_section_by_name(".text")
+    except ELFError:
+        return b""
+    return section.data() if section is not None else b""
+
+
+_NEAR = 16  # words a candidate's %lo may sit from the target's: the inserted or dropped instructions before it
+
+
+def _aligned(rom: mmap.mmap, base: int, code: bytes, refs: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The refs at the target's own %lo instructions: a candidate a few words longer or shorter than the target has
+    its %lo at another offset, so the ROM word at the candidate's offset forms nothing. Each moves to the nearest
+    offset whose ROM word has the candidate's opcode and base register and forms an address."""
+    out = []
+    for offset, at in refs:
+        mine = int.from_bytes(code[offset : offset + 4], "big") if offset + 4 <= len(code) else None
+        near = sorted(range(offset - 4 * _NEAR, offset + 4 * _NEAR + 4, 4), key=lambda o: abs(o - offset))
+        for o in near if mine is not None else (offset,):
+            word = int.from_bytes(rom[base + o : base + o + 4], "big") if o >= 0 and base + o + 4 <= len(rom) else 0
+            if (mine is None or word >> 21 == mine >> 21) and _loaded(rom, base, o) is not None:
+                out.append((o, at))
+                break
+    return out
 
 
 def locate(index: _Index, blob: bytes, text: tuple[int, int] | None, loose: bool = False) -> Located:

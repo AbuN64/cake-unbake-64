@@ -669,7 +669,8 @@ def test_a_header_move_rewrites_the_include_in_every_includer_and_the_guard(tmp_
     assert sorted(rewritten) == ["include/main/gz.h", "src/f1.c", "src/fuzzy/q.c"]  # one write per includer, counted
     assert plan.writes["include/main/ga.h"] is None and "#ifndef X_GA_H" in text(plan, "include/x/ga.h")
     assert "void f1(void);" in text(plan, "include/x/ga.h")
-    assert seen.measured == [["src/f1.c", "src/f2.c"]] and result["applied"]["header"] == 1  # consumers, f3 untouched
+    # f2 reaches the moved header through gz.h but names nothing in it: its code is the same, only f1 is proved
+    assert seen.measured == [["src/f1.c"]] and result["applied"]["header"] == 1
 
 
 def _placed(tmp_path: Path, headers: dict[str, str]) -> Any:
@@ -1662,7 +1663,8 @@ def test_a_partial_view_folds_by_offset_renaming_accesses_filling_padding_and_ex
     assert "p->x = p->c + p->d;" in f1 and "New *p;" in f1  # the access by offset takes New's name
     ga = text(plan, "include/main/ga.h")
     assert "{" not in ga and '#include "main/gb.h"' in ga  # the body went: the header that defines New comes in
-    assert {"src/f1.c", "src/f3.c"} <= set(seen.measured[0])  # every unit reaching a header whose includes changed
+    assert "src/f1.c" in seen.measured[0]  # it spells Old: proved again
+    assert "src/f3.c" not in seen.measured[0]  # it newly reaches gb.h but names nothing there: the same code
 
 
 def test_a_real_member_name_is_never_traded_for_a_placeholder_the_placeholder_takes_it(

@@ -14,6 +14,7 @@ import select
 import shutil
 import signal
 import sys
+import termios
 import threading
 import time
 import traceback
@@ -42,6 +43,7 @@ _creating = threading.Lock()
 _slots: list[io.IOBase] = []  # the host-wide worker slots this process holds now: one flock each, freed on death
 _dir: list[Path] = []  # the slot directory this process takes from; empty under a holder that passed its cores down
 _want = 0  # this command's host budget, as the last acquisition declared it
+_said: dict[int, bytes] = {}  # per lock file descriptor, the demand last written into it
 _users = 0  # gathers using the pool now: the slots are released when the last one ends
 _users_lock = threading.Lock()
 _fed: list[io.IOBase] = []  # slots a jobserver feeder added for a running make: a pool rebalance never gives them back
@@ -172,6 +174,7 @@ def _register(pool: Path) -> Path:
     while True:
         if not _cmd:
             _cmd.append(mine.open("a"))
+            _said.pop(_cmd[0].fileno(), None)  # a new file says nothing yet, whatever a closed one on its number said
         fcntl.flock(_cmd[0], fcntl.LOCK_EX)
         try:
             if os.fstat(_cmd[0].fileno()).st_ino == mine.stat().st_ino:
@@ -192,11 +195,18 @@ def _pid(path: Path) -> int:
 
 def _demand(count: int, budget: int) -> None:
     """Writes the slots this command could use now and its host budget into its lock file: peers leave it no more than
-    the first, and the largest budget of any live command is how many slot files there are."""
+    the first, and the largest budget of any live command is how many slot files there are. A change wakes the
+    peers' waiters (a jobserver feeder sheds what its share no longer holds)."""
     if _cmd:
-        fd = _cmd[0].fileno()
+        fd, said = _cmd[0].fileno(), f"{count} {budget}".encode()
+        before = _said.get(fd)
+        if before == said:
+            return
+        _said[fd] = said
         os.ftruncate(fd, 0)
-        os.pwrite(fd, f"{count} {budget}".encode(), 0)
+        os.pwrite(fd, said, 0)
+        if before is not None and _dir:  # a first word needs none: the new lock file woke the waiters
+            _signal(_dir[0])
 
 
 def _declared(path: Path, want: int) -> tuple[int, int]:
@@ -226,12 +236,12 @@ def _fair(want: int, demands: dict[Path, int], mine: Path) -> int:
     return max(1, demands[mine])
 
 
-def _divide(pool: Path, mine: Path, want: int) -> tuple[list[Path], int, int]:
+def _divide(pool: Path, mine: Path, want: int, using: int = 0) -> tuple[list[Path], int, int]:
     """(live peers, slot files, this command's fair share). Every command of the host sees the same slot files: as
     many as the largest budget any live command declared, so a command with a small budget takes any free slot of
     them (at most its budget) and never waits on a few low slots while higher ones are free."""
     peers = _peers(pool, mine)
-    declared = {p: (want, want) if p == mine else _declared(p, want) for p in peers}
+    declared = {p: (using or want, want) if p == mine else _declared(p, want) for p in peers}
     size = max(budget for _, budget in declared.values())
     return peers, size, _fair(size, {p: demand for p, (demand, _) in declared.items()}, mine)
 
@@ -298,10 +308,19 @@ def _inotify(*paths: Path) -> int:
     return fd
 
 
-def _until(pool: Path, mine: Path, attempt: Callable[[], bool], stop: int | None = None) -> None:
+def _until(
+    pool: Path,
+    mine: Path,
+    attempt: Callable[[], bool],
+    stop: int | None = None,
+    also: Callable[[], int | None] | None = None,
+    interval: float | None = None,
+) -> None:
     """Calls `attempt` until it is true or `stop` is readable, sleeping between attempts only until something that can
     free a slot happens: a release (the write-close every holder makes), a new or finished command (its lock file),
-    or the death of a live command (its pidfd). Nothing is polled and no descriptor waits on one particular slot.
+    or the death of a live command (its pidfd), or `also` (a descriptor the caller names for the next wait, when
+    it names one). Ordinary slot waiters sleep only on events; a make feeder also rechecks at `interval` because
+    consuming a token makes no readable event. No descriptor waits on one particular slot.
     Idle workers stay up through the wait: they hold no slot (each closed the parent's locks when it forked) and
     their warm state is what the next dispatch runs on."""
     watch = _inotify(pool)  # watched before the first attempt: no release between the two is missed
@@ -311,7 +330,8 @@ def _until(pool: Path, mine: Path, attempt: Callable[[], bool], stop: int | None
             try:  # opened before the attempt: a death after it shows as a readable pidfd
                 if attempt():
                     return
-                ready = select.select([watch, *pids, *(() if stop is None else (stop,))], [], [])[0]
+                extra = [fd for fd in (stop, also() if also is not None else None) if fd is not None]
+                ready = select.select([watch, *pids, *extra], [], [], interval)[0]
             finally:
                 for fd in pids:
                     os.close(fd)
@@ -404,6 +424,7 @@ def _release() -> None:
     pooled = bool(_slots) and bool(_dir)
     _slots.clear()
     for f in _cmd:  # a finished command leaves no lock file behind
+        _said.pop(f.fileno(), None)
         Path(f.name).unlink(missing_ok=True)
         f.close()
     _cmd.clear()
@@ -1123,18 +1144,67 @@ def _extra_slot() -> io.IOBase | None:
         return got[0] if got else None
 
 
-def _feed(tokens: int, stop: int, taken: list[io.IOBase]) -> None:
+def _idle(spare: int) -> int:
+    """The job tokens lying in make's pipe now: slots this command holds that no job of make uses."""
+    return int.from_bytes(fcntl.ioctl(spare, termios.FIONREAD, b"\0\0\0\0"), sys.byteorder)
+
+
+def _shed(spare: int, taken: list[io.IOBase], last: list[int]) -> bool:
+    """Tells the peers what make uses plus one probe token, and gives back each idle token
+    above this command's fair share with its slot, the feeder's own first: a build in a serial phase holds no slot
+    another command's work could run on. `spare` reads the pipe through its own non-blocking description, so make's
+    descriptor keeps its flags. One idle token stays within its share: consuming it tells the feeder make needs
+    to grow, while a serial make never repeatedly takes and sheds an unused grant. A token is idle only when it
+    lay in the pipe at the feeder's last look too (`last`):
+    one make has not read yet (a build starting, a job just ended) is no idle slot. True while it still holds more
+    than its share and a peer could use a slot: the feeder then wakes when a token comes back to the pipe."""
+    with _users_lock:
+        if not _dir or not _cmd:
+            return False
+        now = _idle(spare)
+        idle, last[:] = min(now, last[0] if last else 0), [now]
+        using = min(_want, max(1, len(_slots) - idle + 1))
+        _demand(using, _want)
+        peers, _, share = _divide(_dir[0], Path(_cmd[0].name), _want, using)
+        if len(peers) < 2:  # no other command to give a slot to: a token make has not read yet stays
+            return False
+        given = False
+        while len(_slots) > max(1, share) and idle > 0:
+            try:
+                os.read(spare, 1)
+            except BlockingIOError:  # make took it first: that token is busy again
+                break
+            idle -= 1
+            slot = taken.pop() if taken else _slots[-1]
+            if slot in _fed:
+                _fed.remove(slot)
+            _slots.remove(slot)
+            _give(slot)
+            given = True
+        if given:
+            _signal(_dir[0])
+        return len(_slots) > max(1, share)
+
+
+def _feed(tokens: int, spare: int, stop: int, taken: list[io.IOBase]) -> None:
     """Gives a running GNU make one more job token whenever a host slot frees, so a build that started on a small share
-    grows into the cores other commands release instead of staying at its first grant. Sleeps on the host's slot
-    events and on `stop` (readable once make returned), never on a timer."""
+    grows into the cores other commands release instead of staying at its first grant, and takes idle tokens back
+    when its share shrinks (`_shed`). Sleeps on the host's slot events (a peer's changed demand is one) and on `stop`
+    (readable once make returned), and while it holds more than its share, on make's token pipe. Rechecks at the
+    pool's rebalance interval also notice token consumption, which has no readable event."""
+
+    last: list[int] = []
+    over = [False]  # holding more than its share while a peer waits: a token coming back is worth a look
 
     def attempt() -> bool:
-        while (slot := _extra_slot()) is not None:
-            taken.append(slot)  # the feeder's own: exactly these go back when make returns
-            os.write(tokens, b"+")
+        over[0] = _shed(spare, taken, last)
+        if not _idle(spare):  # make consumed every available token: only real demand grows the grant
+            while (slot := _extra_slot()) is not None:
+                taken.append(slot)  # the feeder's own: exactly these go back when make returns
+                os.write(tokens, b"+")
         return False
 
-    _until(_dir[0], Path(_cmd[0].name), attempt, stop)
+    _until(_dir[0], Path(_cmd[0].name), attempt, stop, lambda: spare if over[0] else None, interval=_REBALANCE)
 
 
 @contextmanager
@@ -1148,9 +1218,10 @@ def jobserver(host: Host, work: int = 0) -> Iterator[tuple[int, dict[str, str], 
             return
         read, write = os.pipe()
         os.write(write, b"+" * (j - 1))  # make itself holds the first job token
+        spare = os.open(f"/proc/self/fd/{read}", os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         stopped, stop = os.pipe()
         taken: list[io.IOBase] = []
-        feeder = threading.Thread(target=_feed, args=(write, stopped, taken), daemon=True)
+        feeder = threading.Thread(target=_feed, args=(write, spare, stopped, taken), daemon=True)
         feeder.start()
         try:
             yield j, {"UNBAKE_CORES": str(j), "MAKEFLAGS": f"-j{j} --jobserver-auth={read},{write}"}, (read, write)
@@ -1158,6 +1229,7 @@ def jobserver(host: Host, work: int = 0) -> Iterator[tuple[int, dict[str, str], 
             os.close(stop)  # the feeder's end reads EOF: it returns
             feeder.join()
             os.close(stopped)
+            os.close(spare)
             os.close(read)
             os.close(write)
             with _users_lock:  # the slots the feeder added go back as make returns, not when the command ends

@@ -1383,6 +1383,72 @@ def _end(code: Sequence[int], vram: int) -> int | None:
     return max(covered) + 1 if covered else None
 
 
+def _framed(code: Sequence[int], vram: int, frame: int) -> bool:
+    """Whether a body works in a frame of `frame` bytes it does not set up: it gives the frame back (`addiu sp,
+    +frame`), or it never returns (no `jr $ra` its entry reaches) and stores into the frame within its first words."""
+    if 0x27BD0000 | frame in code:
+        return True
+    end = _end(code, vram)
+    reached = code[:end] if end is not None else code
+    return 0x03E00008 not in reached and any(
+        w >> 26 in (0x2B, 0x39, 0x3D, 0x3F) and w >> 21 & 31 == 29 and (w & 0xFFFF) < frame for w in code[:8]
+    )
+
+
+_ENTRY = frozenset(  # registers that hold a value when a function is entered: arguments, saved, gp/sp/fp/ra
+    [("r", n) for n in (0, 4, 5, 6, 7, *range(16, 24), 28, 29, 30, 31)]
+    + [("f", n) for n in (12, 13, 14, 15, *range(20, 32))]
+)
+
+
+def _effects(word: int, vram: int) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:
+    """The registers an instruction reads and the ones it writes, as ("r" | "f", number)."""
+    ins = rabbitizer.Instruction(word, vram=vram)
+    reads: set[tuple[str, int]] = set()
+    writes: set[tuple[str, int]] = set()
+    for field, kind in (("rs", "r"), ("rt", "r"), ("rd", "r"), ("fs", "f"), ("ft", "f"), ("fd", "f")):
+        key = field[0].upper() + field[1:]
+        if getattr(ins, f"reads{key}")():
+            reads.add((kind, int(getattr(ins, field).value)))
+        if getattr(ins, f"modifies{key}")():
+            writes.add((kind, int(getattr(ins, field).value)))
+    if ins.isJumpWithAddress() and ins.getOpcodeName() == "jal":
+        writes.add(("r", 31))
+    return reads, writes
+
+
+def _entry_reads(before: Sequence[int], code: Sequence[int], vram: int) -> bool:
+    """Whether the body, from its first word to its first branch and slot, reads a register that holds nothing at a
+    function's entry before it writes it, and the words before it write that register: they are its real start."""
+    written = set().union(*(_effects(w, vram + 4 * i)[1] for i, w in enumerate(before)))
+    start = vram + 4 * len(before)
+    own: set[tuple[str, int]] = set()
+    unset: set[tuple[str, int]] = set()
+    for i, word in enumerate(code[:64]):
+        reads, writes = _effects(word, start + 4 * i)
+        unset |= reads - own - _ENTRY
+        own |= writes
+        if i and version_data.delay_slot(code[i - 1]):
+            break
+    return bool(unset & written)
+
+
+def _unreached(code: Sequence[int], vram: int, references: Collection[int] = ()) -> tuple[int, ...]:
+    """The word offsets where another routine starts inside a member: past the last word its entry's every path
+    reaches (`_end`), the first word that sets up a frame, when nothing references a word between. A piece that is
+    one jump and its slot is a fill the prelude rule peels, never a routine. Each piece is walked again from its own
+    entry."""
+    cuts: list[int] = []
+    start = 0
+    while (end := _end(code[start:], vram + 4 * start)) is not None and 2 < end < len(code) - start:
+        head = next((i for i in range(start + end, len(code)) if _frame(code[i])), None)
+        if head is None or any(vram + 4 * i in references for i in range(start + end, head)):
+            break
+        cuts.append(4 * head)
+        start = head
+    return tuple(cuts)
+
+
 def _ends(code: Sequence[int], vram: int) -> bool:
     """The member before ends at its last word: every path from its entry ends there, or (a jump table or a second
     function the walk cannot follow) its last two words are `jr $ra` and a slot that is no jump itself."""
@@ -1419,10 +1485,13 @@ def _heads(snapshot: Snapshot, counts: dict[str, Any]) -> tuple[dict[str, bytes 
                 blob = version_data.rom_bytes(version, prev.rom_start, prev.rom_end)
                 before = struct.unpack(f">{len(blob) // 4}I", blob)
                 k = next((j for j, w in enumerate(before) if _frame(w)), len(before))
+                if k == len(before) and prev.section == ".data" and _entry_reads(before, code, prev.vram):
+                    k = 0  # a leaf's first words: the body reads what only they set
                 if (
                     k == len(before)
                     or (prev.section == ".data" and k)
-                    or any(version_data.delay_slot(w) for w in before[k:])
+                    or any(version_data.delay_slot(w) for w in before[k:-1])
+                    or (version_data.delay_slot(before[-1]) and before[-1] >> 26 != 3)  # a jal's slot is the body's
                 ):
                     continue
                 if k and (
@@ -1432,10 +1501,12 @@ def _heads(snapshot: Snapshot, counts: dict[str, Any]) -> tuple[dict[str, bytes 
                 ):
                     continue
                 frame = _frame(before[k])
-                if 0x27BD0000 | frame not in code or any(prev.vram + j * 4 in refs for j in range(k + 1, len(before))):
+                if (frame and not _framed(code, p.vram, frame)) or any(
+                    prev.vram + j * 4 in refs for j in range(k + 1, len(before))
+                ):
                     continue
                 shift, prefix = (k - len(before)) * 4, (old, prev, k)
-            if frame:
+            if frame or shift or not any(_frame(w) for w in code):  # a leaf is held too: its versions must agree
                 held[name][h] = (shift, frame, prefix, p)
     writes: dict[str, Any] = {}
     table = symbols.edit(snapshot)
@@ -1829,6 +1900,11 @@ def _boundary(snapshot: Snapshot) -> tuple[Plan, dict[str, Any]]:
                     and "prelude" not in decisions
                 ):
                     decisions["merge"] = (0,)
+            if state == assembly and name not in protected and editable and "merge" not in decisions:
+                # a routine no entry path reaches is its own, whatever its neighbours are
+                shift = decisions.get("prelude", (0,))[0]
+                if pieces := _unreached(code[shift // 4 :], p.vram + shift, references):
+                    decisions["split"] = tuple(sorted({*decisions.get("split", ()), *(shift + c for c in pieces)}))
             candidates.setdefault(name, {})[holder] = decisions
     padding: dict[str, dict[str, str]] = {}
     for name, held in fills.items():
@@ -1859,22 +1935,26 @@ def _boundary(snapshot: Snapshot) -> tuple[Plan, dict[str, Any]]:
         agrees = set(by_version) == set(snapshot.layout.members[name].holders()) and (
             name in slots or name in padding or all(d == decisions for d in by_version.values())
         )
-        for rule in proposed:
-            total = max(len(offsets) for ds in by_version.values() for r, offsets in ds.items() if r == rule)
-            counts[rule]["proposed"] += total
-            counts[rule]["applied" if agrees else "withheld"] += total
-        if not agrees:
-            counts["withheld_reasons"]["versions disagree"] = counts["withheld_reasons"].get("versions disagree", 0) + 1
-            continue
         base = placements[reference, name].vram
         shift, splits = decisions.get("prelude", (0,))[0], decisions.get("split", ())
         drop = all("merge" in d for d in by_version.values())
         renamed = name if name in landed or name in snapshot.layout.fuzzy else _rename(name, base, base + shift)
+        auto = _AUTO.fullmatch(name)  # a piece is named by its own address, whatever address the kept name spells
         split_names = tuple(
-            _rename(name, base, base + offset) if _AUTO.fullmatch(name) else f"func_{base + offset:08X}"
+            f"{auto[1]}_{base + offset:08X}{auto[3] or ''}" if auto else f"func_{base + offset:08X}"
             for offset in splits
         )
         names = split_names if drop else (renamed, *split_names)
+        # a piece that would take a name a member already has would make the split rows name it twice
+        taken = len(set(names)) < len(names) or bool(set(split_names) & (snapshot.layout.members.keys() - {name}))
+        for rule in proposed:
+            total = max(len(offsets) for ds in by_version.values() for r, offsets in ds.items() if r == rule)
+            counts[rule]["proposed"] += total
+            counts[rule]["applied" if agrees and not taken else "withheld"] += total
+        if not agrees or taken:
+            reason = "versions disagree" if not agrees else "name taken"
+            counts["withheld_reasons"][reason] = counts["withheld_reasons"].get(reason, 0) + 1
+            continue
         if names != (name,):
             replacements[name] = names
         applied += sum(map(len, decisions.values()))

@@ -14,7 +14,22 @@ from typing import Any, NamedTuple
 import rabbitizer
 
 import unbake
-from unbake import adapters, effort, headers, infer, land, layout, libasm, policy, pool, present, store, versions
+from unbake import (
+    adapters,
+    edges,
+    effort,
+    headers,
+    infer,
+    land,
+    layout,
+    libasm,
+    perfect,
+    policy,
+    pool,
+    present,
+    store,
+    versions,
+)
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Member, Project, Refusal, Snapshot, UnitSpec, digest, sha256
 
@@ -208,6 +223,7 @@ def _tally(b: Json) -> Json:
         "code_percent": _pct(b["code_matched"], b["code_total"]),
         "data_percent": _pct(b["data_matched"], b["data_total"]),
         "fuzzy_percent": _pct(b["code_matched"] + b["data_matched"] + fuzzy, b["code_total"] + b["data_total"]),
+        "perfect_percent": _pct(b["perfect_bytes"], b["code_total"] + b["data_total"]),
     }
 
 
@@ -292,13 +308,17 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
             "functions_fuzzy",
             "code_fuzzy",
             "data_fuzzy",
+            "perfect_bytes",
         ),
         0,
     )
+    rows = credits(snapshot)
+    perfect_modules = perfect.census(snapshot, rows)[1]
     totals = {v: dict(zero) for v in snapshot.config.project.versions}
     segments: defaultdict[str, Buckets] = defaultdict(dict)
     kinds: defaultdict[str, Buckets] = defaultdict(dict)
-    for row in credits(snapshot):
+    for row in rows:
+        whole = bool(row.member.group) and row.member.group in perfect_modules  # its module is one perfect object
         for bucket in (
             totals[row.version],
             segments[row.segment].setdefault(row.version, dict(zero)),
@@ -315,13 +335,17 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
             bucket["functions_fuzzy"] += int(function and not row.exact and row.score > 0)
             bucket["code_fuzzy"] += round(row.score * (row.code - row.kept))
             bucket["data_fuzzy"] += round(row.score * row.data)
+            bucket["perfect_bytes"] += (row.code + row.data) if whole else 0
     return totals, segments, kinds
 
 
 def progress(snapshot: Snapshot) -> Json:
     """The per-version credit a published file shows: `current` without its debt and boundary census."""
     with effort.stage("report.progress"):
-        return {"versions": {v: _tally(b) for v, b in _tallies(snapshot)[0].items()}}
+        return {
+            "versions": {v: _tally(b) for v, b in _tallies(snapshot)[0].items()},
+            "perfect": perfect.census(snapshot, credits(snapshot))[0],
+        }
 
 
 def current(snapshot: Snapshot) -> Json:
@@ -346,6 +370,7 @@ def current(snapshot: Snapshot) -> Json:
             "segments": {s: {v: _tally(b) for v, b in rows.items()} for s, rows in segments.items()},
             "kinds": {k: {v: _tally(b) for v, b in rows.items()} for k, rows in kinds.items()},
             "debt": debt,
+            "perfect": perfect.census(snapshot, credits(snapshot))[0],
             "boundary": boundary,
             "pending_boundary": sum(row["applied"] for row in boundary.values()),
         }
@@ -540,6 +565,13 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     return f"{label} [{bar}]  {percent:5.2f}%{suffix}  {matched:,} of {total:,}"
 
 
+def _perfect_line(label: str, perfect_bytes: int, total: int, cells: int) -> str:
+    """The second art bar: bytes of modules that are one proven object with proven flags and only exact members."""
+    percent = _pct(perfect_bytes, total)
+    shade = int(percent // (100 / cells))
+    return f"{label} [{'▒' * shade}{'░' * (cells - shade)}]  {percent:5.2f}%  {perfect_bytes:,} of {total:,} bytes"
+
+
 def readme(text: str, snapshot: Snapshot, report: Json) -> str:
     with effort.stage("report.readme"):
         settings = configuration.load_resource("repo.toml")["readme"]
@@ -570,6 +602,14 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
             _line(label.ljust(width), bucket, cells) + " bytes"
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.versions)]
         ]
+        lines.append(
+            _perfect_line(
+                "perfect".ljust(width),
+                sum(versions[v]["perfect_bytes"] for v in project.versions),
+                total["code_total"] + total["data_total"],
+                cells,
+            )
+        )
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
             image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
@@ -737,9 +777,12 @@ def map_command(config: Config, params: Json) -> Json:
         lay, project = snapshot.layout, config.project
         order = [project.names_from, *(v for v in snapshot.versions if v != project.names_from)]
         scans: dict[str, Any] = {}
+        every = infer.scan(snapshot)  # once: every version's rows come from one pool pass
         for version in order:
-            for row in infer.scan(snapshot).get(version, ()):
+            for row in every.get(version, ()):
                 scans.setdefault(row[0], row)
+        found = edges.of(snapshot)
+        objects = perfect.objects(snapshot)
         sdk = infer.sdk(snapshot)
         roms = {v: snapshot.versions[v].rom.read_bytes() for v in snapshot.versions}
         spans: dict[str, list[tuple[int, int, Any]]] = defaultdict(list)
@@ -755,6 +798,7 @@ def map_command(config: Config, params: Json) -> Json:
             unit, fuzzy = layout.unit_of(snapshot, name), lay.fuzzy.get(name)
             scanned = scans.get(name)
             version = m.reference(project.names_from)
+            edge, edge_verdict = found.member(name, version) if m.kind == "function" else ({}, "")
             loads: list[str] = []
             strings: list[str] = []
             for address in sorted(scanned[1]) if scanned else ():
@@ -778,6 +822,8 @@ def map_command(config: Config, params: Json) -> Json:
                     "sdk_module": sdk[name].module if name in sdk else "",
                     "sdk_library": sdk[name].library if name in sdk else "",
                     "padded": bool(scanned and scanned[3]),
+                    "edge": dict(sorted(edge.items())),
+                    "edge_verdict": edge_verdict,
                     "placements": [
                         {
                             "version": p.version,
@@ -799,7 +845,7 @@ def map_command(config: Config, params: Json) -> Json:
             owners[g.header].append(g.name)
         files = headers.sources(snapshot)
         document = {
-            "schema": 1,
+            "schema": 2,
             "digest": lay.digest,
             "versions": list(snapshot.versions),
             "names_from": project.names_from,
@@ -818,6 +864,7 @@ def map_command(config: Config, params: Json) -> Json:
                     "source": g.source,
                     "header": g.header,
                     "evidence": g.evidence,
+                    "object": objects.get(g.name, {}),
                     "sdk": g.sdk,
                     "members": list(g.members),
                 }
@@ -846,6 +893,10 @@ def map_command(config: Config, params: Json) -> Json:
                 }
                 for h in files
             ],
+            "edges": {v: found.census(v) for v in snapshot.versions},
+            "open_edges": {v: found.census(v)["open"] for v in snapshot.versions},
+            "contradictions": found.contradictions(),
+            "data_edges": found.data_census({m.name: m.group for m in lay.members.values()}),
             "counts": {
                 "src_c": len(headers.sources(snapshot, "src", ".c")),
                 "include_h": len(files),

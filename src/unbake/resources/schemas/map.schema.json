@@ -4,7 +4,7 @@
  "type": "object",
  "properties": {
   "schema": {
-   "const": 1
+   "const": 2
   },
   "digest": {
    "type": "string",
@@ -92,6 +92,71 @@
      },
      "library": {
       "type": "string"
+     },
+     "object": {
+      "type": "object",
+      "properties": {
+       "start": {
+        "enum": [
+         "pad",
+         "segment",
+         "gap",
+         "version",
+         "sdk",
+         "evidence",
+         "flags",
+         "open",
+         "join"
+        ]
+       },
+       "end": {
+        "enum": [
+         "pad",
+         "segment",
+         "gap",
+         "version",
+         "sdk",
+         "evidence",
+         "flags",
+         "open",
+         "join"
+        ]
+       },
+       "inside": {
+        "enum": [
+         "joined",
+         "cut"
+        ]
+       },
+       "units": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "flags": {
+        "enum": [
+         "default",
+         "proven",
+         "conflict",
+         "open"
+        ]
+       },
+       "name": {
+        "enum": [
+         "evidence",
+         "library",
+         "sdk",
+         "assigned"
+        ]
+       },
+       "boundary": {
+        "type": "boolean"
+       },
+       "split_debt": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "additionalProperties": false
      }
     },
     "required": [
@@ -103,7 +168,8 @@
      "sdk",
      "members",
      "subsystem",
-     "library"
+     "library",
+     "object"
     ],
     "additionalProperties": false
    }
@@ -262,6 +328,27 @@
      },
      "sdk_library": {
       "type": "string"
+     },
+     "edge": {
+      "type": "object",
+      "additionalProperties": {
+       "enum": [
+        "pad",
+        "al0",
+        "unal",
+        "seg",
+        "gap"
+       ]
+      }
+     },
+     "edge_verdict": {
+      "enum": [
+       "",
+       "cut",
+       "join",
+       "open",
+       "contradiction"
+      ]
      }
     },
     "required": [
@@ -278,7 +365,9 @@
      "loads",
      "strings",
      "segment",
-     "sdk_name"
+     "sdk_name",
+     "edge",
+     "edge_verdict"
     ],
     "additionalProperties": false
    }
@@ -363,6 +452,110 @@
     "members"
    ],
    "additionalProperties": false
+  },
+  "edges": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "pairs": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "cut": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "cut_other": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "join": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "join_other": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "open": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "contradiction": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "objects_min": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "objects_estimate": {
+      "type": "integer",
+      "minimum": 0
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "open_edges": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer",
+    "minimum": 0
+   }
+  },
+  "contradictions": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "left": {
+      "type": "string"
+     },
+     "right": {
+      "type": "string"
+     },
+     "classes": {
+      "type": "object",
+      "additionalProperties": {
+       "enum": [
+        "pad",
+        "al0",
+        "unal",
+        "seg",
+        "gap"
+       ]
+      }
+     }
+    },
+    "required": [
+     "left",
+     "right",
+     "classes"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "data_edges": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "object",
+     "properties": {
+      "n": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "module_cut": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    }
+   }
   }
  },
  "required": [
@@ -375,7 +568,11 @@
   "units",
   "members",
   "headers",
-  "counts"
+  "counts",
+  "edges",
+  "open_edges",
+  "contradictions",
+  "data_edges"
  ],
  "additionalProperties": false
 }

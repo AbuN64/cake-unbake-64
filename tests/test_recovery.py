@@ -490,14 +490,16 @@ def test_coordinated_scoring_reuses_one_native_pool_map_for_all_units(cfg, monke
     monkeypatch.setattr(compare.ownership, "derive_pairs", lambda pairs, **kw: list(pairs))
     calls = []
 
-    def mapped(config, name, function, jobs, key):
-        calls.append((name, len(jobs), function, key))
+    def mapped(config, name, function, jobs, key=None):
+        calls.append((name, len(jobs), function))
+        if name == "compare.stamps":  # every unit and version reads its own inputs: four distinct stamps
+            return [f"{j[1].path}:{j[2]}" for j in jobs]
         return [(fixture.proof(j[1].path, j[1].members[0], j[2], True),) for j in jobs]
 
     monkeypatch.setattr(compare.pool, "map", mapped)
     proofs = compare.measure_units(snapshot, units, {})
     assert len(proofs) == 4
-    assert calls == [("compare.measure", 4, compare.native.prove_args, compare._key)]
+    assert calls == [("compare.stamps", 4, compare._key), ("compare.measure", 4, compare.native.prove_args)]
 
 
 ATTRIBUTED = (
