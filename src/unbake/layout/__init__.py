@@ -158,6 +158,21 @@ def overlay(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> Snapshot:
     return effort.memo(("overlay", snapshot.digest, digest(writes)), lambda: _overlay(snapshot, writes))
 
 
+def pure(snapshot: Snapshot, over: Snapshot) -> bool:
+    """Whether `over` is `snapshot` with writes laid and nothing derived again: its versions and map are the base's, so
+    its writes and digest alone make it anywhere, without reading a file."""
+    return over.versions is snapshot.versions and over.layout is snapshot.layout
+
+
+def lay(snapshot: Snapshot, writes: Mapping[str, bytes | None], digest_: str) -> Snapshot:
+    """A pure overlay made again from its base, its writes and the digest the parent gave it (never read again from
+    files a worker may see rewritten)."""
+    new = replace(snapshot, overlays={**snapshot.overlays, **writes}, digest=digest_)
+    effort.memo(("overlay", snapshot.digest, digest(writes)), lambda: new)
+    effort.memo(("parent", digest_), lambda: (snapshot, dict(writes)))
+    return new
+
+
 def _overlay(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> Snapshot:
     with effort.stage("layout.overlay"):
         overlays = {**snapshot.overlays, **writes}
@@ -181,17 +196,6 @@ def _overlay(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> Snapshot
             )
         effort.memo(("parent", new.digest), lambda: (snapshot, dict(writes)))  # indexes and pool items derive from it
         return new
-
-
-def fresh(snapshot: Snapshot) -> bool:
-    """Whether an overlay of this snapshot lays the same again now: every file its versions and map derive from reads
-    on disk as the snapshot read it. A setup apply rewrites splits and symbols under a snapshot still in use."""
-    files = (p for v in snapshot.versions.values() for p in (v.split, v.symbols_file))
-    for path in {"layout.toml", symbols.path(), *files} - snapshot.overlays.keys():
-        pin = view._pin(snapshot, path)
-        if snapshot.reads.get(path) != (None if pin == "missing" else pin):
-            return False
-    return True
 
 
 def split_states(snapshot: Snapshot, version: Version) -> list[tuple[str, str, Placement]]:

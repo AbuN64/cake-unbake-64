@@ -1696,44 +1696,6 @@ def test_every_tree_change_between_two_dispatches_reaches_the_warm_workers(tmp_p
     pool._forget_spills()
 
 
-@pytest.mark.parametrize("stale", [False, True])
-def test_an_overlay_of_a_base_whose_files_changed_on_disk_travels_whole(tmp_path, monkeypatch, stale):
-    # setup's boundary apply rewrote the splits under the snapshot it planned on; the next plan's overlays of that
-    # snapshot were laid again by warm workers from the new files: 'an overlay laid again in a worker has digest'.
-    from unbake import layout
-
-    monkeypatch.setattr(pool, "_SHARED", {})
-    monkeypatch.setattr(pool, "_laid", [])
-    monkeypatch.setattr(pool, "_spilled", {})
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        (tmp_path / "layout.toml").write_bytes(b"old")
-        base.reads["layout.toml"] = sha256(b"old")
-        pool._Pickler(io.BytesIO(), set()).dump(base)
-        monkeypatch.setattr(pool, "_forked", set(pool._SHARED))
-        over = layout.overlay(base, {"src/a.c": b"int a;"})
-        if stale:
-            (tmp_path / "layout.toml").write_bytes(b"new, as an apply wrote it")
-        stream = io.BytesIO()
-        pool._Pickler(stream, set(), ship=True).dump(over)
-        pool._SHARED.pop(pool._key(over), None)
-        assert len(pool._spilled) == int(stale)  # stale: the whole overlay in a file; fresh: its writes inline
-        back = pool._Unpickler(io.BytesIO(stream.getvalue())).load()
-        assert back.digest == over.digest
-        pool._forget_spills()
-
-
-def test_fresh_holds_while_every_watched_file_reads_as_the_snapshot_read_it(tmp_path):
-    from unbake import layout
-
-    snapshot = _snapshot(tmp_path)
-    assert layout.fresh(snapshot)  # nothing read, nothing there
-    (tmp_path / "layout.toml").write_bytes(b"map")
-    assert not layout.fresh(snapshot)  # appeared since
-    snapshot.reads["layout.toml"] = sha256(b"map")
-    assert layout.fresh(snapshot)
-
-
 def _versions_read(item):
     return effort.memo(("versions.read", "split"), lambda: "read now")
 
@@ -1761,3 +1723,32 @@ def test_follow_forgets_only_the_kinds_the_parent_forgot_since(monkeypatch):
     effort._memo[("b", 2)] = 1
     effort.follow({"a": 2, "b": 1})  # nothing new: nothing forgotten
     assert ("b", 2) in effort._memo
+
+
+@pytest.mark.parametrize("derived", [False, True])
+def test_only_a_pure_overlay_is_laid_again_in_a_worker_and_never_from_files(tmp_path, monkeypatch, derived):
+    # setup's boundary plan laid overlays that derive versions and the map from the splits and the asm; warm workers
+    # derived them again from files rewritten since: 'an overlay laid again in a worker has digest', three times.
+    from unbake import layout
+
+    monkeypatch.setattr(pool, "_SHARED", {})
+    monkeypatch.setattr(pool, "_laid", [])
+    monkeypatch.setattr(pool, "_spilled", {})
+    with effort.command("check", []):
+        base = _snapshot(tmp_path, "one")
+        pool._Pickler(io.BytesIO(), set()).dump(base)
+        monkeypatch.setattr(pool, "_forked", set(pool._SHARED))
+        writes = {"src/a.c": b"int a;"}
+        over = layout.overlay(base, writes)
+        if derived:  # as _overlay makes one whose split or symbols writes rebuilt the versions and the map
+            over = replace(over, versions=dict(base.versions), digest="derived")
+            effort.memo(("parent", "derived"), lambda: (base, dict(writes)))
+        stream = io.BytesIO()
+        pool._Pickler(stream, set(), ship=True).dump(over)
+        assert len(pool._spilled) == int(derived)  # derived: the whole overlay in a file; pure: its writes inline
+        pool._SHARED.pop(pool._key(over), None)
+        monkeypatch.setattr(layout, "_overlay", lambda *a: pytest.fail("a worker derived an overlay again"))
+        effort.forget("overlay")
+        back = pool._Unpickler(io.BytesIO(stream.getvalue())).load()
+        assert back.digest == over.digest and back.overlays == over.overlays
+        pool._forget_spills()
