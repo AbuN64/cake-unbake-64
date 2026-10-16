@@ -595,7 +595,7 @@ def record_pool(
                 for f in raw.get("findings", [])
             )
             shipped.append((StageRecord(**values), raw["span"] not in parents))
-    for folded, leaf in _fold(shipped):
+    for folded, leaf in fold(shipped):
         _emit(folded, leaf, True)
     record = _emit(
         _record(
@@ -619,9 +619,10 @@ def record_pool(
     _merge_cache(_stack.get()[-1].remote_cache, cache)
 
 
-def _fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord, bool]]:
-    """The worker records of one pool, one per path: thousands of jobs below the log floor each still add up to the
-    stage they spent their time in. A record with findings or a status other than ok stays on its own."""
+def fold(shipped: Sequence[tuple[StageRecord, bool]]) -> list[tuple[StageRecord, bool]]:
+    """Worker records, one per path: thousands of jobs below the log floor each still add up to the stage they spent
+    their time in. A worker folds its chunk's records, the parent a pool's chunks. A record with findings or a status
+    other than ok stays on its own."""
     groups: dict[tuple[str, tuple[str, ...]], list[tuple[StageRecord, bool]]] = {}
     alone: list[tuple[StageRecord, bool]] = []
     for record, leaf in shipped:

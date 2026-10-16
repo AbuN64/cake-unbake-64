@@ -548,20 +548,65 @@ def _prove(
     and unit: a consumer that is a member is proved with its draft applied, never as its old source. `pending` maps a
     sibling's unit path to the regressions of its old source, which refuse this candidate only if the sibling is
     refused."""
+    staged = _stage(config, snapshot, files, params, overrides, prepared, kin)
+    started = time.monotonic()
+    batch = staged["batch"] if staged["proved"]["proving"] else None  # alone it measures (and exports) itself
+    measured = measure_units(staged["bound"], batch, overrides) if batch is not None else None
+    return _finish(config, snapshot, params, overrides, out, staged, measured, time.monotonic() - started)
+
+
+def _stage(
+    config: Config,
+    snapshot: Snapshot,
+    files: Sequence[Path],
+    params: Json,
+    overrides: Json,
+    prepared: tuple[dict[str, bytes], UnitSpec, Snapshot, list[str]] | None,
+    kin: dict[str, tuple[Snapshot, UnitSpec]],
+) -> Json:
+    """A candidate's tree, unit and proof set, and `batch`: the units one dispatch can measure with every other
+    candidate's (None when it proves against sibling drafts)."""
     extras, unit, bound, rewritten = prepared or _prepare(snapshot, files, params)
     bound, unit = ownership.derive(bound, unit, recipe=recipes.resolve(config, unit, overrides))
     proved = _proof_set(snapshot, bound, unit, extras, bool(params.get("prove_extras")))
+    units = [unit if p == unit.path else bound.layout.units[p] for p in proved["changed"]] if proved["proving"] else []
+    siblings = {c: kin[c] for c in proved["consumers"] if c in kin} if proved["proving"] else {}
+    batch = None if siblings else [*units, *(bound.layout.units[p] for p in proved["consumers"])] or [unit]
+    return {
+        "extras": extras,
+        "unit": unit,
+        "bound": bound,
+        "rewritten": rewritten,
+        "proved": proved,
+        "units": units,
+        "siblings": siblings,
+        "batch": batch,
+    }
+
+
+def _finish(
+    config: Config,
+    snapshot: Snapshot,
+    params: Json,
+    overrides: Json,
+    out: Path | None,
+    staged: Json,
+    measured: tuple[Proof, ...] | None,
+    wall: float,
+) -> Json:
+    """Everything admission decides from a staged candidate and, when it was batched, its measured proofs."""
+    extras, unit, bound, rewritten = staged["extras"], staged["unit"], staged["bound"], staged["rewritten"]
+    proved, units, siblings = staged["proved"], staged["units"], staged["siblings"]
     pending: dict[str, tuple[Finding, ...]] = {}
     started = time.monotonic()
     if proved["proving"]:
-        units = [unit if p == unit.path else bound.layout.units[p] for p in proved["changed"]]
-        siblings = {c: kin[c] for c in proved["consumers"] if c in kin}
         if siblings:
             everyone, split = _prove_kin(config, snapshot, bound, unit, units, proved["consumers"], siblings, overrides)
             pending = {c: f for c, f in split.items() if c in siblings and f}
             found_here = split.get("", ())
         else:
-            everyone = measure_units(bound, [*units, *(bound.layout.units[p] for p in proved["consumers"])], overrides)
+            assert measured is not None  # a candidate without sibling drafts is measured in the batch
+            everyone = measured
             found_here = _regressions(snapshot, proved["consumers"], everyone, overrides)
         proofs = tuple(p for p in everyone if p.unit in proved["changed"])
         alike = bool(params.get("no_regression"))
@@ -569,9 +614,9 @@ def _prove(
         proofs = tuple(p for p in proofs if (p.member, p.version) not in standing)
         found += found_here
     else:
-        proofs = measure(bound, unit, overrides, out)
+        proofs = measured if measured is not None else measure(bound, unit, overrides, out)
         found = gaps(bound, unit, proofs)
-    proved["wall"] = round(time.monotonic() - started, 3)
+    proved["wall"] = round(wall + time.monotonic() - started, 3)
     code = [n for n in unit.members if bound.layout.members[n].kind == "function"]
     # its data rows are not another member; a bulk source names no single one, the proof set covers them all
     member = params["function"] or (code[0] if len(code) == 1 or (params.get("bulk") and code) else None)
@@ -812,13 +857,30 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
             recipe=[recipes.resolve(config, p[1], _overrides(params)) for p in bound.values()],
         )
         kin = {p[1].path: (p[2], p[1]) for p in bound.values()}  # every member's draft, by its unit path
-        proved: dict[int, Any] = {}
+        staged: dict[int, Any] = {}
         for n, group in enumerate(groups[at : at + chunk]):
             try:
                 if isinstance(prepared[n], Refusal):
                     raise prepared[n]
                 others = {path: tree for path, tree in kin.items() if path != prepared[n][1].path}
-                proved[n] = _prove(config, snapshot, group, chunk_params, _overrides(params), None, prepared[n], others)
+                staged[n] = _stage(config, snapshot, group, chunk_params, _overrides(params), prepared[n], others)
+            except Refusal as refusal:
+                staged[n] = refusal
+        # every candidate proving without sibling drafts is measured in ONE dispatch, never one small one per group
+        batched = {n: s["batch"] for n, s in staged.items() if not isinstance(s, Refusal) and s["batch"] is not None}
+        pairs = [(staged[n]["bound"], u) for n, units in batched.items() for u in units]
+        started = time.monotonic()
+        measured = iter(measure_bound(config, pairs, _overrides(params)) if pairs else [])
+        wall = time.monotonic() - started
+        proofs = {n: tuple(p for _ in units for p in next(measured)) for n, units in batched.items()}
+        proved: dict[int, Any] = {}
+        for n in range(len(groups[at : at + chunk])):
+            try:
+                if isinstance(staged[n], Refusal):
+                    raise staged[n]
+                proved[n] = _finish(
+                    config, snapshot, chunk_params, _overrides(params), None, staged[n], proofs.get(n), wall
+                )
             except Refusal as refusal:
                 proved[n] = refusal
         _settle(proved, {p[1].path: n for n, p in bound.items()})

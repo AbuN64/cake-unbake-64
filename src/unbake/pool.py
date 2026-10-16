@@ -552,7 +552,7 @@ def _get_executor(config: Config, needed: frozenset[str] = frozenset(), work: in
         return _executor
 
 
-def _job(function: Callable[[Any], Any], item: Any, floor: float) -> tuple[bool, Any, Json]:
+def _job(function: Callable[[Any], Any], item: Any) -> tuple[bool, Any, Json]:
     start_ns = time.monotonic_ns()
     before = resource.getrusage(resource.RUSAGE_SELF)
     spawned = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -580,7 +580,7 @@ def _job(function: Callable[[Any], Any], item: Any, floor: float) -> tuple[bool,
             "rss": after.ru_maxrss * 1024,
             "cache": dict(records[-1].cache),
             "wait_seconds": records[-1].wait_seconds,
-            "records": [asdict(r) for r in records if r.wall_seconds >= floor or r.findings or r.wait_seconds],
+            "records": list(records),  # every record: the chunk folds them by path, the parent applies the log floor
             "start_ns": start_ns,
             "end_ns": time.monotonic_ns(),
         },
@@ -783,9 +783,9 @@ class _Unpickler(pickle.Unpickler):
 
 
 def _chunk(
-    function: Callable[..., Any], items: Sequence[Any], floor: float, sink: tuple[Any, ...] | None
+    function: Callable[..., Any], items: Sequence[Any], sink: tuple[Any, ...] | None
 ) -> list[tuple[bool, Any, Json]]:
-    outcomes = [_job(function, item, floor) for item in items]
+    outcomes = [_job(function, item) for item in items]
     if sink and outcomes:
         clean = len(sink) > 3 and sink[3]  # a stable key stores only a result with nothing to report
         before = resource.getrusage(resource.RUSAGE_SELF)
@@ -808,20 +808,25 @@ def _chunk(
             {
                 **last,
                 "worker_cpu": last["worker_cpu"] + after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime,
-                "records": [*last["records"], *(asdict(r) for r in written if r.kind == "stage")],
+                "records": [*last["records"], *(r for r in written if r.kind == "stage")],
             },
         )
     if outcomes:  # the keys this chunk read or wrote travel back, so the parent writes one manifest per command
         outcomes[-1] = (*outcomes[-1][:2], {**outcomes[-1][2], "touched": take_touched()})
+    records = [r for _, _, envelope in outcomes for r in envelope["records"]]
+    parents = {r.parent for r in records}
+    folded = [asdict(r) for r, _ in effort.fold([(r, r.span not in parents) for r in records])]
+    for n, (ok, value, envelope) in enumerate(outcomes):  # the chunk's records travel once, in its last envelope
+        outcomes[n] = (ok, value, {**envelope, "records": folded if n == len(outcomes) - 1 else []})
     return outcomes
 
 
-def _dispatch(blob: bytes, floor: float) -> list[tuple[bool, Any, Json]]:
+def _dispatch(blob: bytes) -> list[tuple[bool, Any, Json]]:
     """One chunk travels as its own pickle, so a worker only unpacks the items it runs and stores their results."""
     stream = io.BytesIO(blob)
     effort.follow(pickle.load(stream))  # first: the items lay overlays from the memo
     function, items, sink = _Unpickler(stream).load()
-    return _chunk(function, items, floor, sink)
+    return _chunk(function, items, sink)
 
 
 def _raise_failure(config: Config, name: str, index: int, exc: Any) -> None:
@@ -983,7 +988,6 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             total = sum(len(r.todo) for r in runs)
             inline = total <= _INLINE_AT or _in_worker  # nothing to fan out: the jobs run here, one at a time
             width = 1
-            floor = config.host.serial_seconds
             fan = max(1, min(config.host.workers, _budget(config.host)))
             size = {r: 1 if inline else max(1, len(r.todo) // (fan * 32)) for r in runs}
             needed: set[str] = set()
@@ -1021,10 +1025,10 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                         future: Future[list[tuple[bool, Any, Json]]] = Future()
                         pending[future] = (run, picked)
                         future.set_result(
-                            _chunk(run.function, [run.items[i] for i in picked], floor, run.sink(config, picked))
+                            _chunk(run.function, [run.items[i] for i in picked], run.sink(config, picked))
                         )
                     else:
-                        pending[executor.submit(_dispatch, blob, floor)] = (run, picked)
+                        pending[executor.submit(_dispatch, blob)] = (run, picked)
                     _flight(1)
                     run.submitted, run.first = run.submitted + len(picked), run.first or time.monotonic_ns()
                 if not pending:

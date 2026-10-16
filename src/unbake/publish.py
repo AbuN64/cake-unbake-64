@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Collection, Iterator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -104,12 +105,17 @@ def _credits(path: str) -> bool:
     return path == "layout.toml" or path.endswith((".c", ".h"))
 
 
+_PRESENT: ContextVar[bool] = ContextVar("present", default=True)  # false while admission only asks whether land refuses
+
+
 def progress_block(snapshot: Snapshot, writes: Mapping[str, bytes | None]) -> dict[str, bytes]:
     """The README progress block and the presentation files (progress.json, memory maps, symbol lines) of the tree a
     plan leaves, from the report of that tree. Every plan that can move credit carries them (land, fuzzy, move,
     repair, generate), so what a lane commits with its change always equals a fresh report: no separate step to
     remember. {} when the plan writes the README itself, writes nothing that credits or the project has no README."""
-    if "README.md" in writes or not any(map(_credits, writes)) or snapshot.peek("README.md") is None:
+    if not _PRESENT.get() or "README.md" in writes or not any(map(_credits, writes)):
+        return {}
+    if snapshot.peek("README.md") is None:
         return {}
     after = layout.overlay(snapshot, writes)
     text = after.read("README.md")  # read through the snapshot: the journal refuses a README changed under the plan
@@ -595,10 +601,21 @@ def settle(only: Collection[str] | None = None) -> None:
 
 
 def accept(
-    snapshot: Snapshot, request: Json, extras: Mapping[str, bytes], partial: bool
+    snapshot: Snapshot, request: Json, extras: Mapping[str, bytes], partial: bool, *, present: bool = True
 ) -> tuple[Plan, tuple[Proof, ...], tuple[str, ...]]:
     """The one acceptance check of a publish: submit runs it at admission, land again when HEAD moved. It returns the
-    first layout plan whose proofs hold, or raises the Refusal of the last."""
+    first layout plan whose proofs hold, or raises the Refusal of the last. Without `present` the plans carry no
+    progress block: admission only asks whether land refuses, and land plans again with it."""
+    token = _PRESENT.set(present)
+    try:
+        return _accept(snapshot, request, extras, partial)
+    finally:
+        _PRESENT.reset(token)
+
+
+def _accept(
+    snapshot: Snapshot, request: Json, extras: Mapping[str, bytes], partial: bool
+) -> tuple[Plan, tuple[Proof, ...], tuple[str, ...]]:
     member = request["function"]
     unit = layout.unit_of(snapshot, member)
     file = Path(request["file"])

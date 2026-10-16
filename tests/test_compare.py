@@ -1041,7 +1041,7 @@ def test_bulk_submit_of_a_multi_member_file_is_an_error_not_a_silent_row(
     def refuse(*args: Any, **kwargs: Any) -> Any:
         raise Refusal(refusal)
 
-    monkeypatch.setattr(compare, "_prove", refuse)
+    monkeypatch.setattr(compare, "_stage", refuse)  # the bulk path stages each group, then measures them at once
     monkeypatch.setattr(compare, "_prepare", lambda snapshot, files, params: ({}, unit("a", "b"), snapshot, []))
     monkeypatch.setattr(compare.layout, "capture", lambda config: None)
     source = tmp_path / "two.c"
@@ -1360,3 +1360,43 @@ def test_bind_still_refuses_a_source_of_unrelated_names(cfg: Config, tmp_path: P
     with pytest.raises(Refusal) as error:
         compare.bind(s, file, None)
     assert "defines g, h" in error.value.findings[0].reason
+
+
+def test_bulk_submit_of_n_groups_measures_them_all_in_one_dispatch(
+    cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # RW submit --bulk b0d5a298: 84 groups in 1,972 s at 3.1 cores, each group its own small measure dispatch in turn
+    # (~33 s a group). Groups proving without sibling drafts are measured together, on every core at once.
+    count = 6
+    names = [f"f{i}" for i in range(count)]
+    calls: dict[str, Any] = {}
+    s = mock_run(monkeypatch, cfg, unit(*names), True, fixture.submission(id="sub"), calls)
+    files = []
+    for name in names:
+        files.append(tmp_path / f"{name}.c")
+        files[-1].write_bytes(b"int x;")
+    trees = {f.stem: replace(s, digest=f"tree-{f.stem}") for f in files}
+    monkeypatch.setattr(
+        compare,
+        "bind",
+        lambda snapshot, file, function, notes=None: (unit(file.stem, path=f"src/{file.stem}.c"), trees[file.stem]),
+    )
+    monkeypatch.setattr(ownership, "derive", REAL_DERIVE)
+    monkeypatch.setattr(ownership, "derive_pairs", REAL_PAIRS)
+    monkeypatch.setattr(ownership, "_emits_data", lambda snapshot, u: True)
+    monkeypatch.setattr(ownership, "_derived", lambda snapshot, u, result: (snapshot, u))
+    measured = compare.pool.map
+    dispatched: list[int] = []
+
+    def fake_map(config: Config, name: str, function: Any, items: list[Any], key: Any = None) -> list[Any]:
+        if name == "ownership.derive":
+            return [{item[2]: {}} for item in items]
+        if function is compare.native.prove_args:
+            dispatched.append(len(items))
+        return measured(config, name, function, items, key)
+
+    monkeypatch.setattr(compare.pool, "map", fake_map)
+    base = {"function": None, "note": None, "withhold": False, "bulk": True, "toolchain": None}
+    result = compare.submit_command(cfg, {**base, "files": files, "flag": [], "omit_flag": []})
+    assert [r["id"] for r in result["submissions"]] == ["sub"] * count
+    assert len(dispatched) == 1 and dispatched[0] >= count  # one measure dispatch holds every group

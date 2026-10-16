@@ -1101,3 +1101,19 @@ def test_a_landing_that_costs_a_credited_function_its_credit_is_refused(monkeypa
     assert seen == [["src/a.c", "src/b.c"]] and refused.value.findings[0].key == "move.unclean"
     monkeypatch.setattr(move, "newly_unclean", lambda b, a, f: ([], ()))
     publish.credit_guard(snapshot, {"src/a.c": b"x"})
+
+
+def test_admission_plans_carry_no_progress_block_and_land_plans_keep_it(monkeypatch):
+    # RW submit --bulk b0d5a298: land.submit 874 s over 83 groups, of it present.files 253 s and report.progress
+    # 160 s, made for every admission plan that only asks whether land refuses (land plans again, presented).
+    seen = []
+    monkeypatch.setattr(publish, "_accept", lambda *a: seen.append(publish._PRESENT.get()) or ("plan", (), ()))
+    assert publish.accept(None, {}, {}, False, present=False) == ("plan", (), ())
+    assert publish.accept(None, {}, {}, False) == ("plan", (), ())
+    assert seen == [False, True] and publish._PRESENT.get()
+    monkeypatch.setattr(publish.report, "progress", lambda after: pytest.fail("admission built the progress block"))
+    token = publish._PRESENT.set(False)
+    try:
+        assert publish.progress_block(Mock(), {"src/a.c": b"int a;"}) == {}
+    finally:
+        publish._PRESENT.reset(token)

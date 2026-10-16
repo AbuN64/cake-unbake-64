@@ -145,7 +145,7 @@ def submit(
         withheld = sorted({p.version for p in proofs} - exact) if withhold and exact else []
         if proofs and (all(p.exact for p in proofs) or withheld):
             operation = "publish"
-            publish.accept(snapshot, {**request, "function": member}, extras, bool(withheld))  # what land refuses
+            publish.accept(snapshot, {**request, "function": member}, extras, bool(withheld), present=False)  # refusal
         else:
             if extras:
                 return None

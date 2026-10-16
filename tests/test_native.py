@@ -929,3 +929,25 @@ def test_a_stored_unit_counts_no_live_object_miss(case, monkeypatch, toolchains)
     native.objects(snapshot, unit, "a", recipe, work / "first")  # new text: one miss of the shortcut
     native.objects(snapshot, unit, "a", recipe, work / "second")  # stored: it never tries the shortcut
     assert [c.args for c in counted.call_args_list if c.args[0] == "live-object"] == [("live-object", False)]
+
+
+def test_a_stamp_reads_only_the_version_facts_of_the_names_its_unit_spells(case, monkeypatch):
+    # every landing changed the version symbol table (a landed function's asm labels go), which moved every unit's
+    # stamp: RW land 76b2830d measured all 270 fuzzy rows again. A unit's proof reads only the names it spells.
+    snapshot, unit, recipe, *_ = case
+    project = replace(snapshot.config.project, version_macros={"a": ()})
+    snapshot = replace(snapshot, config=replace(snapshot.config, project=project))
+    monkeypatch.setattr(native.recipes, "resolve", Mock(return_value=recipe))
+    monkeypatch.setattr(native.adapters, "tool_identity", Mock(return_value="tools"))
+    monkeypatch.setattr(native.view, "closure", lambda *a: (("src/a.c", "pin"),))
+    monkeypatch.setattr(native.view, "names", lambda *a: frozenset({"spelled"}))
+    record = snapshot.versions["a"]
+
+    def stamp(symbols, code=frozenset()):
+        versions = {**snapshot.versions, "a": replace(record, symbols=symbols, code=frozenset(code))}
+        return native.stamp(replace(snapshot, versions=versions), unit, "a", pinned=True)
+
+    before = stamp({"spelled": 1, "elsewhere_L1": 2})
+    assert stamp({"spelled": 1}, {"elsewhere"}) == before  # a landing elsewhere
+    assert stamp({"spelled": 5, "elsewhere_L1": 2}) != before
+    assert stamp({"spelled": 1, "elsewhere_L1": 2}, {"spelled"}) != before

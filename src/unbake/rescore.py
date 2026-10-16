@@ -26,9 +26,18 @@ def _row_key(item: tuple[Snapshot, str, Json, str]) -> str:
     landing elsewhere re-keys no row."""
     snapshot, member, row, reach = item
     entry = snapshot.layout.members.get(member)
-    facts = [(v, versions.facts_digest(r)) for v, r in sorted(snapshot.versions.items())]
     text = snapshot.peek(row["path"])
+    facts = _facts(snapshot, row["path"])
     return digest((code_identity(_key_job), snapshot.config.digest, member, entry, reach, facts, text))
+
+
+def _facts(snapshot: Snapshot, path: str) -> list[tuple[str, str]]:
+    """Per version, the facts of the names a row's text and the headers it reaches spell: a landing elsewhere moves
+    other names only."""
+    names = frozenset().union(
+        versions.idents(snapshot.peek(path)), *(versions.idents(b) for b in _reached(snapshot, path).values())
+    )
+    return [(v, versions.facts_of(r, names)) for v, r in sorted(snapshot.versions.items())]
 
 
 _INCLUDE = re.compile(rb'^\s*#\s*include\s*"([^"]+)"', re.M)
@@ -80,9 +89,8 @@ def rows(snapshot: Snapshot) -> dict[str, Json]:
     """The fuzzy rows of the snapshot with moved rows scored again; only a row whose per-version key moved is measured.
     The keys are computed on all cores and cached per row, so an unchanged drain dispatches nothing."""
     current = snapshot.layout.fuzzy
-    facts = [(v, versions.facts_digest(r)) for v, r in sorted(snapshot.versions.items())]
-    # only a row whose text, reached headers or member row moved is keyed again: a tool install or a landing elsewhere
-    # re-derives no row (a row's record is a fact of its inputs, not of the tool code)
+    # only a row whose text, reached headers, member row or named version facts moved is keyed again: a tool install or
+    # a landing elsewhere re-derives no row (a row's record is a fact of its inputs, not of the tool code)
     found = delta.map(
         snapshot.config,
         "rescore.keys",
@@ -90,9 +98,11 @@ def rows(snapshot: Snapshot) -> dict[str, Json]:
         [(snapshot, m, r) for m, r in sorted(current.items())],
         key=_item_key,
         ident=lambda item: item[1],
-        stamp=lambda item: delta.fingerprint((item[1], snapshot.layout.members.get(item[1]), item[2]["path"])),
+        stamp=lambda item: delta.fingerprint(
+            (item[1], snapshot.layout.members.get(item[1]), item[2]["path"], _facts(snapshot, item[2]["path"]))
+        ),
         pin=lambda path: _pin(snapshot, path),
-        context=(snapshot.config.digest, facts),
+        context=(snapshot.config.digest,),
         code=False,
     )
     keys = {k[0]: k[1] for k in found if k}

@@ -114,8 +114,8 @@ def stamp(
     code: bool = True,
 ) -> str:
     """Everything a proof reads, named without building: the unit's source, the declarations its preprocessed text
-    reaches, rows, version facts and tools. A stored failure replays under the stamp, so any edit of a header the unit
-    includes moves it, reached declaration or not."""
+    reaches, rows, the version facts of the names it spells and tools. A stored failure replays under the stamp,
+    so any edit of a header the unit includes moves it, reached declaration or not."""
     cfg = snapshot.config
     recipe = recipe or recipes.resolve(cfg, unit, {})
     reach = view.closure(snapshot, unit, version) if pinned else view.reads(snapshot, unit, version, recipe, whole=True)
@@ -131,7 +131,7 @@ def stamp(
             _held(snapshot, unit, version),
             [snapshot.layout.members[n].state for n in unit.members],
             record.rom_sha256,
-            versions.facts_digest(record),
+            versions.facts_of(record, view.names(snapshot, unit, version)),
             cfg.project.build,
             cfg.project.version_macros[version],
             tools,

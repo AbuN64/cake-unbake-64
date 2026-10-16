@@ -15,6 +15,7 @@ from typing import Any
 
 from unbake import adapters, declarations, effort, pool, store
 from unbake import config as configuration
+from unbake import versions as version_data
 from unbake.contracts import (
     Config,
     Finding,
@@ -159,6 +160,16 @@ def closure(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[tuple[str
     """(path, pin) of the unit's source and every project file it can reach, pinned by content as the snapshot reads it,
     so two snapshots that give the unit the same files share every cache entry built from them."""
     return _closure(snapshot, unit, version)
+
+
+def names(snapshot: Snapshot, unit: UnitSpec, version: str) -> frozenset[str]:
+    """Every identifier the unit's source and the project files it reaches spell, and its members: what its proof can
+    name in the version's symbols."""
+    reach = _closure(snapshot, unit, version)
+    return effort.memo(
+        ("names", reach, unit.members),
+        lambda: frozenset(unit.members).union(*(version_data.idents(snapshot.peek(path)) for path, _ in reach)),
+    )
 
 
 def live_digest(config: Config, source: SourceView) -> str:

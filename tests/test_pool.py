@@ -137,12 +137,12 @@ def test_job_cache_and_metrics(tmp_path):
         effort.count("view", False)
         return value
 
-    ok, value, envelope = pool._job(work, 7, 2.0)
+    ok, value, envelope = pool._job(work, 7)
     assert (ok, value) == (True, 7)
     assert envelope["cache"] == {"object": (1, 0), "view": (0, 1)}
     assert envelope["worker_cpu"] >= 0
     assert envelope["rss"] > 0
-    assert envelope["records"] == []  # quick, uneventful jobs ship no stage records
+    assert [r.kind for r in envelope["records"]] == ["job"]  # every record: the chunk folds, the parent floors
 
 
 def test_broken_pool_dropped(tmp_path, monkeypatch, mocked_parallel):
@@ -250,7 +250,7 @@ def test_real_batched_work_count_order_and_worker_pids(tmp_path, monkeypatch):
     assert metrics.jobs == metrics.items == len(items)
     assert metrics.workers_used == len({pid for value, pid in values})
     assert metrics.workers_admitted == 2
-    assert all(r.wait_seconds for r in effort.closed() if r.kind == "job")
+    assert sum(r.spans for r in effort.closed() if r.kind == "job") == len(items)  # every job, folded
 
 
 def test_job_ships_only_notable_records(tmp_path):
@@ -261,10 +261,8 @@ def test_job_ships_only_notable_records(tmp_path):
             effort.waited(0.5)
         return value
 
-    _, _, kept = pool._job(work, 1, 1000.0)
-    assert [r["path"][-1] for r in kept["records"]] == ["waited"]
-    _, _, everything = pool._job(work, 1, 0.0)
-    assert {r["path"][-1] for r in everything["records"]} == {"quick", "waited", "job", "(own)"}
+    _, _, everything = pool._job(work, 1)
+    assert {r.path[-1] for r in everything["records"]} == {"quick", "waited", "job", "(own)"}
 
 
 def test_pool_record_measures_the_parent_and_the_workers(tmp_path, mocked_parallel):
@@ -308,7 +306,7 @@ def test_a_warm_keyed_group_costs_one_store_read(tmp_path, monkeypatch):
 
 def test_whoever_ran_a_keyed_chunk_stores_its_results(tmp_path):
     config = _config(tmp_path)
-    outcomes = pool._chunk(_square, [2, 3, 4], 0.0, (config, "units", ["a", None, "c"]))
+    outcomes = pool._chunk(_square, [2, 3, 4], (config, "units", ["a", None, "c"]))
     assert [o[1] for o in outcomes] == [4, 9, 16]
 
     def get(key):
@@ -316,13 +314,13 @@ def test_whoever_ran_a_keyed_chunk_stores_its_results(tmp_path):
 
     assert pickle.loads(get("a")) == 4 and get("c") is not None
     assert get("b") is None  # an unkeyed item is not stored
-    failed = pool._chunk(_fail, [1], 0.0, (config, "units", ["f"]))
+    failed = pool._chunk(_fail, [1], (config, "units", ["f"]))
     assert failed[0][0] is False and get("f") is None
-    assert [o[1] for o in pool._chunk(_square, [5], 0.0, None)] == [25]
+    assert [o[1] for o in pool._chunk(_square, [5], None)] == [25]
 
 
 def test_a_worker_crash_names_the_type_and_the_innermost_unbake_frame(tmp_path):
-    ok, error, _ = pool._job(sha256, "not bytes", 0.0)  # hashlib refuses inside contracts.sha256
+    ok, error, _ = pool._job(sha256, "not bytes")  # hashlib refuses inside contracts.sha256
     assert not ok and error.__notes__[0].startswith("at contracts:sha256:")
     with pytest.raises(Refusal) as raised:
         pool._raise_failure(_config(tmp_path), "stage", 3, error)
@@ -840,10 +838,10 @@ def test_a_keyed_group_records_its_store_write_as_one_pool_sink_stage_and_its_cp
         return SimpleNamespace(ru_utime=float(next(spent)), ru_stime=0.0, ru_maxrss=1)
 
     monkeypatch.setattr(pool.resource, "getrusage", usage)
-    outcomes = pool._chunk(_square, [1, 2, 3], 1e9, (_config(tmp_path), "units", ["a", "b", "c"]))
+    outcomes = pool._chunk(_square, [1, 2, 3], (_config(tmp_path), "units", ["a", "b", "c"]))
     stages = [r for o in outcomes for r in o[2]["records"] if r["path"][-1] == "pool.sink"]
     assert len(stages) == 1  # one write for the chunk, however many items
-    assert all(not o[2]["records"] or o[2] is outcomes[-1][2] for o in outcomes)  # sub-floor jobs ship no stage
+    assert all(not o[2]["records"] for o in outcomes[:-1])  # the chunk's records travel once, folded
     first, last = outcomes[0][2]["worker_cpu"], outcomes[-1][2]["worker_cpu"]
     assert first > 0 and last > first  # every sub-floor job counts, and the last envelope also carries the sink
 
@@ -980,7 +978,7 @@ def test_a_job_under_memory_pressure_leaves_only_the_memo_it_started_with(monkey
         effort.memo(("overlay", value), lambda: value)
         return value
 
-    outcomes = [pool._job(work, i, 2.0) for i in (1, 2, 3)]
+    outcomes = [pool._job(work, i) for i in (1, 2, 3)]
     assert [o[1] for o in outcomes] == [1, 2, 3]
     assert set(effort._memo) == {("base", 0)}
 
@@ -1506,7 +1504,7 @@ def test_a_jobs_native_cpu_counts_every_program_it_waited_for_even_under_an_inli
         return real(who)
 
     monkeypatch.setattr(pool.resource, "getrusage", getrusage)
-    ok, _, envelope = pool._job(lambda value: value, 1, 2.0)
+    ok, _, envelope = pool._job(lambda value: value, 1)
     assert ok and envelope["native_cpu"] == 5.0
 
 
@@ -1534,7 +1532,7 @@ def test_a_jobs_native_cpu_includes_what_a_nested_pool_record_rolled_up(monkeypa
         )
         return value
 
-    ok, _, envelope = pool._job(nested, 1, 2.0)
+    ok, _, envelope = pool._job(nested, 1)
     assert ok and envelope["native_cpu"] >= 3
 
 
@@ -1608,7 +1606,7 @@ def test_a_warm_dispatch_carries_a_large_overlay_once_whatever_its_task_count(tm
 
     sizes = []
     real = pool._dispatch
-    monkeypatch.setattr(pool, "_dispatch", lambda blob, floor: sizes.append(len(blob)) or real(blob, floor))
+    monkeypatch.setattr(pool, "_dispatch", lambda blob: sizes.append(len(blob)) or real(blob))
     monkeypatch.setattr(pool, "_warm", lambda config: True)
     monkeypatch.setattr(pool, "_SHARED", {})
     monkeypatch.setattr(pool, "_laid", [])
@@ -1752,3 +1750,22 @@ def test_only_a_pure_overlay_is_laid_again_in_a_worker_and_never_from_files(tmp_
         back = pool._Unpickler(io.BytesIO(stream.getvalue())).load()
         assert back.digest == over.digest and back.overlays == over.overlays
         pool._forget_spills()
+
+
+def _two_stages(value):
+    with effort.stage("native.objects"), effort.stage("view.get"):
+        pass
+    return value
+
+
+def test_a_chunk_ships_every_jobs_records_folded_by_path_once(tmp_path):
+    # setup layout.ownership: 5,439 jobs each under the 2 s floor shipped no record, so 1,258 of 1,594 busy
+    # worker-seconds had no stage to name what they waited on. A chunk now ships all of them, folded by path.
+    outcomes = pool._chunk(_two_stages, list(range(50)), None)
+    shipped = outcomes[-1][2]["records"]
+    assert all(not o[2]["records"] for o in outcomes[:-1])
+    by_path = {tuple(r["path"]): r for r in shipped}
+    assert {p[-1] for p in by_path} == {"job", "native.objects", "view.get", "(own)"}
+    assert by_path[("job", "native.objects")]["spans"] == 50 and by_path[("job",)]["spans"] == 50
+    view = by_path[("job", "native.objects", "view.get")]
+    assert view["parent"] == by_path[("job", "native.objects")]["span"]

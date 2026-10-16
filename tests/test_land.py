@@ -1392,8 +1392,9 @@ def test_submit_runs_the_landing_check_and_writes_nothing_when_it_refuses(lane, 
         _submit(lane)
     assert [f.key for f in raised.value.findings] == [key]
     assert not list((cfg.project.root / ".unbake/inbox").glob("*"))
-    (snapshot_arg, request, extras, partial), _ = check.call_args
+    (snapshot_arg, request, extras, partial), named = check.call_args
     assert snapshot_arg is snapshot and request["function"] == "f" and extras == {} and partial is False
+    assert named == {"present": False}  # admission asks only whether land refuses: no progress block
 
 
 def test_a_drain_under_memory_pressure_trims_the_memo_after_each_entry(lane, monkeypatch):
