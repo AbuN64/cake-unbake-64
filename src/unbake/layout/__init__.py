@@ -788,13 +788,21 @@ class _Declarations:
 
 
 def physical(
-    snapshot: Snapshot, layout: LayoutMap, split: list[Finding] | None = None, keep: Collection[str] = ()
+    snapshot: Snapshot,
+    layout: LayoutMap,
+    split: list[Finding] | None = None,
+    keep: Collection[str] = (),
+    reflow: Collection[str] | None = None,
 ) -> dict[str, UnitSpec]:
     """The units of a map, a function of its groups, the split rows and the unit toolchains (CONTRACTS 2.2): landed
     atoms in names_from order join the open unit of their module while holders, toolchain, options and withheld
     agree, every holder's rows of each section stay one gapless run and their units' declarations can share one file.
     A member the map records as a boundary (a proof found bytes change when it shared a file) starts a new unit, and
     a unit in `keep` (one whose proof failed this command) stays exactly as it is.
+    `reflow` names the modules laid again (None: every module, a relayout); any other module whose units already hold
+    exactly what it lists, under its own file names and with no recorded boundary inside a unit, keeps its units as
+    they are: a move that changes no module's members re-cuts no unit. A unit laid again keeps the file name of the
+    old unit its first member came from when that name is still its module's, so one new unit renames no other.
     Each name that keeps units apart is a non-blocking layout.decl_split in `split`."""
     with effort.stage("layout.physical"):
         apart: dict[str, set[str]] = {}
@@ -870,8 +878,35 @@ def physical(
         # a member several groups list joins one unit, never one per group (its bytes would link twice): the group
         # its unit names today, else the first that lists it
         home = {n: old[n].group if n in old and old[n].group in gs else gs[0] for n, gs in listing.items()}
+        by_group: defaultdict[str, list[UnitSpec]] = defaultdict(list)
+        for unit in layout.units.values():
+            if unit.path not in result:
+                by_group[unit.group].append(unit)
+
+        def scheme(group: str, path: str) -> bool:
+            """Whether a path is one of the file names unit_path gives the module's units."""
+            base = unit_path(layout, group, ())
+            return path == base or bool(
+                re.fullmatch(rf"{re.escape(base.removesuffix('.c'))}_(?:[2-9]|[1-9]\d+)\.c", path)
+            )
+
+        def settled(group: Group, landed: set[str]) -> bool:
+            """Whether the module's units already hold what it lists: laying them again could only re-cut them."""
+            units = by_group.get(group.name, [])
+            held = [n for u in units for n in u.members if n.count("/") != 2]
+            return (
+                bool(units)
+                and len(held) == len(set(held))
+                and set(held) == {n for n in landed if n.count("/") != 2}
+                and all(scheme(group.name, u.path) for u in units)
+                and not any(n in boundaries for u in units for n in u.members[1:])
+            )
+
         for group in layout.groups.values():
             landed = {n for n in group.members if n in old and n in members and home[n] == group.name}
+            if reflow is not None and group.name not in reflow and settled(group, landed):
+                result.update((u.path, u) for u in by_group[group.name])
+                continue
             # an owned member follows its owner; one whose name points at no member (an old unit's name: the row was
             # cut for a unit, not a function) follows the first member of its old unit, or the map drops its bytes
             mate = {
@@ -974,8 +1009,13 @@ def physical(
                 runs.append((list(atom), props, spans_of(rows)))
                 homes.append({old[n].path for n in atom})
                 sides.append(None)
-            for run, _, _ in runs:
-                path = unit_path(layout, group.name, result)
+            claimed: dict[int, str] = {}  # a run keeps its first member's old file name while it is the module's
+            for index, (run, _, _) in enumerate(runs):
+                was_at = old[run[0]].path
+                if was_at not in result and was_at not in claimed.values() and scheme(group.name, was_at):
+                    claimed[index] = was_at
+            for index, (run, _, _) in enumerate(runs):
+                path = claimed.get(index) or unit_path(layout, group.name, {*result, *claimed.values()})
                 kind = compiled if any(members[n].kind == "function" for n in run) else datum
                 unit = old[run[0]]
                 result[path] = UnitSpec(path, kind, group.name, tuple(run), unit.toolchain, unit.options, unit.withheld)

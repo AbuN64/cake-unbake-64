@@ -1761,3 +1761,48 @@ def test_declaration_tables_are_parsed_once_per_text_and_never_again_by_a_later_
     layout.effort._memo.clear()  # the next command
     _declaring(scene, monkeypatch, texts)
     assert parsed == []  # every table comes from the host cache
+
+
+def test_physical_keeps_a_settled_module_a_move_does_not_reflow_and_compose_recuts_nothing(scene):
+    # G d66a9347a: one type move (View_func_80225940_de -> View) changed no module's members, yet the write stages
+    # re-laid every module and compose returned 398 re-cut unit texts at new paths: the tree's units were not the ones
+    # physical would lay today (here two adjacent units it would join)
+    both = (("fa", "c", RETURN), ("fb", "c", RETURN))
+    units = (_unit(("fa",)), _unit(("fb",), "src/grp_2.c"))
+    snapshot = scene(both, units=units)
+    kept = layout.physical(snapshot, snapshot.layout, reflow=())
+    assert kept == snapshot.layout.units
+    texts, before, problems = layout.compose(snapshot, replace(snapshot.layout, units=kept), {}, lambda p: True)
+    assert (texts, before, problems) == ({}, {}, [])
+    relaid = layout.physical(snapshot, snapshot.layout)  # a relayout (every module) still joins them
+    assert {p: u.members for p, u in relaid.items()} == {"src/grp.c": ("fa", "fb")}
+    named = layout.physical(snapshot, snapshot.layout, reflow=("grp",))
+    assert {p: u.members for p, u in named.items()} == {"src/grp.c": ("fa", "fb")}
+
+
+@pytest.mark.parametrize("change", ["source", "boundary"])
+def test_physical_reflows_a_module_whose_units_no_longer_match_it(scene, change):
+    both = (("fa", "c", RETURN), ("fb", "c", RETURN))
+    if change == "source":  # a source move: the old file names are no longer the module's
+        snapshot = scene(both, units=(_unit(("fa",), "src/fa.c"), _unit(("fb",), "src/fb.c")))
+        result = layout.physical(snapshot, snapshot.layout, reflow=())
+        assert {p: u.members for p, u in result.items()} == {"src/grp.c": ("fa", "fb")}
+    else:  # a proof recorded a boundary inside a unit: the unit is split
+        snapshot = scene(both, units=(_unit(("fa", "fb")),))
+        bounded = replace(snapshot.layout, boundaries=("fb",))
+        result = layout.physical(snapshot, bounded, reflow=())
+        assert {p: u.members for p, u in result.items()} == {"src/grp.c": ("fa",), "src/grp_2.c": ("fb",)}
+
+
+def test_physical_relaid_units_keep_their_old_file_names_so_one_new_unit_renames_no_other(scene):
+    held = (("fa", "c", RETURN), ("hole", "asm", RETURN), ("fb", "c", RETURN), ("gap", "asm", RETURN))
+    held += (("fc", "c", RETURN),)
+    units = (_unit(("fa",), "src/grp_10.c"), _unit(("fb",)), _unit(("fc",), "src/grp_2.c"))
+    snapshot = scene(held, units=units)
+    result = layout.physical(snapshot, snapshot.layout)
+    assert {p: u.members for p, u in result.items()} == {
+        "src/grp_10.c": ("fa",),
+        "src/grp.c": ("fb",),
+        "src/grp_2.c": ("fc",),
+    }
+    assert list(result) == ["src/grp_10.c", "src/grp.c", "src/grp_2.c"]  # ROM order, as before
