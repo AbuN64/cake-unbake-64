@@ -894,9 +894,12 @@ def physical(
         carrier = {
             n: n.split("/")[1]
             if n.split("/")[1] in landed_names
-            else next((m for m in old[n].members if m in landed_names and m.count("/") != 2), "")
+            else next((m for m in old[n].members if m in landed_names), "")
             for n in owned
         }
+        for unit in layout.units.values():  # unlisted rows whose owner has no unit yet keep the unit they landed in
+            if unit.path not in result and all(n in carrier and not carrier[n] for n in unit.members):
+                result[unit.path] = unit  # kept before any module is laid, so no new unit takes its file name
         by_group: defaultdict[str, list[UnitSpec]] = defaultdict(list)
         for unit in layout.units.values():
             if unit.path not in result:

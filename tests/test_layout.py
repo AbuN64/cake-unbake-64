@@ -1647,6 +1647,29 @@ def test_physical_keeps_apart_a_type_one_unit_defines_and_a_header_of_the_other_
     assert len(units) == 2 and split  # one file would define Pair twice
 
 
+def test_physical_carries_an_unlisted_row_with_the_listed_data_row_of_its_old_unit(scene):
+    # G 56e49dbc1 relayout: src/DATA/OVLDAT1/800C1E68.CPP held the listed rodata/unresolved/800C1E68 and the unlisted
+    # data/unresolved/800C1E74; the carrier skipped listed rows with two slashes, so the second row lost its unit
+    listed, rider = "rodata/unresolved/80000408", "data/unresolved/8000040C"
+    entries = (("fa", "c", RETURN), (listed, "data", (1,)), (rider, "data", (2,)))
+    snapshot = scene(entries, units=(_unit(("fa",)), _unit((listed, rider), "src/d.c", kind="data")))
+    group = snapshot.layout.groups["grp"]
+    unlisted = replace(snapshot.layout, groups={"grp": replace(group, members=("fa", listed))})
+    held = {n for u in layout.physical(snapshot, unlisted).values() for n in u.members}
+    assert {listed, rider} <= held
+
+
+def test_physical_keeps_the_unit_of_a_row_whose_owner_has_no_unit_yet(scene):
+    # G 56e49dbc1 relayout: 72 rows such as rodata/func_8020EC14_de/800C1E68 sat in their own data unit while their
+    # function was still assembly; the relayout gave them no unit and refused "dropped existing data owners"
+    row = "rodata/fa/80000408"
+    snapshot = scene((("fa", "c", RETURN), (row, "data", (1,))), units=(_unit((row,), "src/r.c", kind="data"),))
+    group = snapshot.layout.groups["grp"]
+    unlisted = replace(snapshot.layout, groups={"grp": replace(group, members=("fa",))})  # no group lists the row
+    result = layout.physical(snapshot, unlisted)
+    assert {p: u.members for p, u in result.items()} == {"src/r.c": (row,)}
+
+
 @pytest.mark.parametrize("other", ["return x + 1.0f;", "return x;"])  # bodies that differ, and the same one
 def test_physical_keeps_apart_units_that_each_define_their_own_static_helper_of_one_name(scene, monkeypatch, other):
     helper = "static inline float wrap(float x) {{ {} }}\n"
