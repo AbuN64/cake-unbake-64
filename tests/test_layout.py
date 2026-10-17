@@ -2069,3 +2069,82 @@ def test_unrelated_structural_reflow_retains_existing_disjoint_holder_pool_units
     assert result[code.path] == code and result[provider.path] == provider
     assert result["src/changed.c"].members == ("fb",)
     assert sum(pool in u.members for u in result.values()) == 2
+
+
+@pytest.mark.parametrize("provider_first", [False, True])
+@pytest.mark.parametrize("rename_provider", [False, True])
+def test_compose_carries_complete_unit_before_shared_member_lookup(scene, monkeypatch, provider_first, rename_provider):
+    pool = "rodata/fa/80000408"
+    code = replace(_unit(("fa", pool), "src/old.c"), withheld=("a",))
+    provider = replace(_unit((pool,), "src/table.c", kind="data"), withheld=("b",))
+    units = (provider, code) if provider_first else (code, provider)
+    snapshot = scene((("fa", "c", RETURN), (pool, ".rodata", (1,))), units=units)
+    text = b"int fa(void) { return 1; }\n"
+    snapshot = replace(
+        snapshot,
+        overlays={**snapshot.overlays, code.path: text, provider.path: b"unsigned int alternate_pool[1] = {1};\n"},
+    )
+    carried = replace(code, path="src/renamed.CPP")
+    data = replace(provider, path="src/renamed_data.CPP") if rename_provider else provider
+    final = replace(snapshot.layout, units={carried.path: carried, data.path: data})
+    monkeypatch.setattr(layout.headers, "split_atoms", lambda *a: pytest.fail("a whole unit must not be repartitioned"))
+    writes, before, problems = layout.compose(snapshot, final, {}, lambda p: False)
+    expected = {carried.path: text}
+    prior = {carried.path: text.decode()}
+    if rename_provider:
+        expected[data.path] = snapshot.read(provider.path)
+        prior[data.path] = expected[data.path].decode()
+    assert writes == expected and before == prior and problems == []
+    assert data.withheld == provider.withheld and carried.withheld == code.withheld
+
+
+@pytest.mark.parametrize("change", ["members", "options", "withheld", "kind", "group", "toolchain"])
+def test_compose_identity_carry_does_not_replace_changed_unit_composition(scene, monkeypatch, change):
+    pool = "rodata/fa/80000408"
+    code = replace(_unit(("fa", pool), "src/old.c"), withheld=("a",))
+    provider = replace(_unit((pool,), "src/table.c", kind="data"), withheld=("b",))
+    snapshot = scene((("fa", "c", RETURN), (pool, ".rodata", (1,))), units=(code, provider))
+    code_text = b"int fa(void) { return 1; }\n"
+    provider_text = b"unsigned int alternate_pool[1] = {1};\n"
+    snapshot = replace(snapshot, overlays={**snapshot.overlays, code.path: code_text, provider.path: provider_text})
+    changes = {
+        "members": {"members": ("fa",)},
+        "options": {"options": {"add": ["-O0"], "omit": []}},
+        "withheld": {"withheld": ()},
+        "kind": {"kind": "data"},
+        "group": {"group": "other"},
+        "toolchain": {"toolchain": "another"},
+    }
+    changed = replace(code, path="src/changed.CPP", **changes[change])
+    groups = {**snapshot.layout.groups, "other": replace(snapshot.layout.groups["grp"], name="other")}
+    final = replace(snapshot.layout, groups=groups, units={changed.path: changed, provider.path: provider})
+    calls = []
+    split = layout.headers.split_atoms
+    monkeypatch.setattr(layout.headers, "split_atoms", lambda text, names: calls.append(text) or split(text, names))
+    layout.compose(snapshot, final, {}, lambda p: False)
+    assert code_text.decode() in calls
+
+
+def test_compose_identity_carry_requires_a_unique_original_unit(scene, monkeypatch):
+    pool = "rodata/fa/80000408"
+    first = replace(_unit(("fa", pool), "src/first.c"), withheld=("a",))
+    second = replace(first, path="src/second.c")
+    provider = replace(_unit((pool,), "src/table.c", kind="data"), withheld=("b",))
+    snapshot = scene((("fa", "c", RETURN), (pool, ".rodata", (1,))), units=(first, second, provider))
+    second_text = b"int fa(void) { return 2; }\n"
+    snapshot = replace(
+        snapshot,
+        overlays={
+            **snapshot.overlays,
+            first.path: b"int fa(void) { return 1; }\n",
+            second.path: second_text,
+            provider.path: b"unsigned int alternate_pool[1] = {1};\n",
+        },
+    )
+    changed = replace(first, path="src/changed.CPP")
+    final = replace(snapshot.layout, units={changed.path: changed, provider.path: provider})
+    calls = []
+    split = layout.headers.split_atoms
+    monkeypatch.setattr(layout.headers, "split_atoms", lambda text, names: calls.append(text) or split(text, names))
+    layout.compose(snapshot, final, {}, lambda p: False)
+    assert second_text.decode() in calls

@@ -2519,6 +2519,9 @@ def compose(
     else composed from the blocks of the old units that held them. Returns the texts, the old text each path is judged
     against and the old units' problems."""
     old = snapshot.layout.units
+    whole: defaultdict[tuple[str, ...], list[UnitSpec]] = defaultdict(list)
+    for unit in old.values():
+        whole[unit.members].append(unit)
     held = {n: u for u in old.values() for n in u.members}
 
     class Texts(dict[str, str]):  # an old unit is read when a unit takes from it, never otherwise
@@ -2534,10 +2537,17 @@ def compose(
     fed: defaultdict[str, list[tuple[UnitSpec, list[str]]]] = defaultdict(list)
     for unit in final.units.values():
         names = [renamed(n, was) for n in unit.members]
-        feeds = {held[n].path for n in names if n in held}
         same = old.get(unit.path)
         if same and same.members == tuple(names) and same.group == unit.group:
             continue  # nothing about this unit moved: only its include lines can change
+        # A complete unit retains its source even when a disjoint-holder provider shares one of its rows.
+        # Resolve that identity before the per-member table collapses multiple physical providers.
+        candidates = [
+            prior
+            for prior in whole.get(tuple(names), ())
+            if replace(prior, path=unit.path, members=unit.members) == unit
+        ]
+        feeds = {candidates[0].path} if len(candidates) == 1 else {held[n].path for n in names if n in held}
         lead = f'#include "{final.groups[unit.group].header.removeprefix("include/")}"'
         if len(feeds) == 1 and set(old[(only := next(iter(feeds)))].members) == set(names):
             before[unit.path] = text[only]
