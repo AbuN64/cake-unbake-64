@@ -11,6 +11,7 @@ from typing import Any
 import fixture
 import psutil
 import pytest
+from jsonschema import Draft202012Validator
 
 from unbake import config as configuration
 from unbake.contracts import Refusal
@@ -291,3 +292,9 @@ def test_project_evidence_rows_and_lattice_options_load(tmp_path: Path, toolchai
 def test_sources_and_headers_are_known_by_suffix_in_any_case(path: str, source: bool, header: bool, stem: str) -> None:
     found = (configuration.is_source(path), configuration.is_header(path), configuration.source_stem(path))
     assert found == (source, header, stem) and configuration.is_text(path) == (source or header)
+
+
+def test_project_schema_takes_named_subsystems() -> None:
+    validator = Draft202012Validator(configuration._schema("project")["properties"]["naming"])
+    assert not list(validator.iter_errors({"subsystems": {"MAIN/80208000": "AUDIO"}}))
+    assert list(validator.iter_errors({"subsystems": {"MAIN/80208000": ""}}))

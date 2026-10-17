@@ -351,6 +351,13 @@
       "upper",
       "lower"
      ]
+    },
+    "subsystems": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string",
+      "minLength": 1
+     }
     }
    }
   }
