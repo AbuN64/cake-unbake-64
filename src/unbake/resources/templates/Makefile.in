@@ -168,10 +168,10 @@ build/%.bin.o: asm/%.bin
 build/%/link.ld: $$(NAME).ld
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(CPP) -P -undef -D$$(VMACRO_$$*) $$< > $$@
-# Every fact of symbol_addrs.txt and every name splat left undefined, PROVIDEd: what no object defines (data outside
+# Every fact of symbol_addrs.txt and aliases.txt and every name splat left undefined, PROVIDEd: what no object defines (data outside
 # the ROM). So is every name splat made up that the extracted assembly spells, at the address the name carries: a .L
 # label the assembler keeps out of the object, or a label inside bytes a C file compiles.
-build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted
+build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(wildcard versions/$$$$*/aliases.txt)
 	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$^ > $$@
 	$$(Q)grep -rhoE --include='*.s' '${label}[0-9A-F]{8}\b' asm/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
 build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt:

@@ -707,3 +707,21 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
     assert lines[asm + 1] == "$(Q)$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")
+
+
+def test_undefined_syms_provide_the_aliases_too(tmp_path):
+    """make build/us/undefined_syms.ld PROVIDEs aliases.txt rows next to symbol_addrs.txt ones."""
+    import subprocess
+
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("f = 0x80200400; // type:func rom:0x1000\n")
+    (tmp_path / "versions/us/aliases.txt").write_text("g = 0x80200400;\n")
+    (tmp_path / "build/us").mkdir(parents=True)
+    for name in ("undefined_syms_auto.txt", "undefined_funcs_auto.txt"):
+        (tmp_path / "build/us" / name).write_text("")
+    (tmp_path / "asm/us").mkdir(parents=True)
+    (tmp_path / "asm/us/.extracted").write_text("")
+    subprocess.run(["make", "-s", "build/us/undefined_syms.ld"], cwd=tmp_path, check=True, capture_output=True)
+    rows = (tmp_path / "build/us/undefined_syms.ld").read_text().splitlines()
+    assert "PROVIDE(f = 0x80200400);" in rows and "PROVIDE(g = 0x80200400);" in rows
