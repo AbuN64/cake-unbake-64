@@ -79,7 +79,7 @@ Removed public functions: `store.claim`, `store.ledger_append`, `store.ledger`, 
 
 - `request` (admission) = `{"file": str, "function": str | None, "overrides": {"toolchain"?: str, "add": [str], "omit": [str]}, "note": str}`.
 - CLI `params` = the click parameter dict with the names declared in `commands.toml` (`-` becomes `_`).
-- Every CLI result validates against `schemas/result.<command>.schema.json` (`report --next` against `result.next`); the stdout line validates against `envelope`.
+- Every CLI result validates against `schemas/result.<command>.schema.json`; the stdout line validates against `envelope`.
 - DRAIN (`result.land`, embedded in submit/compare/check results) = `{running, landed: [{id, member, operation, files, message}], refused: [{id, member, findings}]}`.
 - Built bytes: `native.measure` stores each proof's built material (sections in placement order) with `store.put(config, "bytes", proof.built_sha256, material)`; readers fetch it with `store.cached(config, "bytes", sha, produce)` where `produce` raises `Refusal(Finding("store.corrupt", ...))`.
 - effort events passed to `listen` callbacks: `("open", {"path": [str]})`, `("close", {"path": [str], "wall": float, "status": str})`, `("progress", {"name": str, "done": int, "total": int})`, `("say", {"text": str})`.

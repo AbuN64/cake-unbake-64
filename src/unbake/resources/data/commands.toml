@@ -1,8 +1,7 @@
 # The whole command surface. cli.py builds click commands from this table and calls `handler` (module.function)
 # with (config, params) -- init gets (params) only. Option names map to params keys with "-" replaced by "_".
 # Global options --host (or UNBAKE_HOST) and --project (default: the working directory) are added by cli.py to
-# every command; init gets only --host. Every successful result validates against schemas/result.<command>.schema.json
-# (report --next against result.next).
+# every command; init gets only --host. Every successful result validates against schemas/result.<command>.schema.json.
 schema = 2
 
 [command.init]
@@ -107,11 +106,6 @@ params = [
 ]
 
 [command.report]
-help = "Progress per version, kind and segment; or the ordered work list."
+help = "Progress per version, kind and segment."
 handler = "report.run"
-params = [
-  { name = "next", kind = "flag", type = "str", required = false, multiple = false, help = "print the ordered work list instead" },
-  { name = "count", kind = "option", type = "int", required = false, multiple = false, help = "work items to list (with --next)" },
-  { name = "shard", kind = "option", type = "str", required = false, multiple = false, help = "I/K: only items whose stable hash mod K is I" },
-  { name = "segment", kind = "option", type = "str", required = false, multiple = false, help = "only items of this segment" },
-]
+params = []

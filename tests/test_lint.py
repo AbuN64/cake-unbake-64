@@ -164,7 +164,7 @@ def test_only_human_writes_stderr() -> None:
 
 def test_result_schemas_exist() -> None:
     commands = tomllib.loads((SRC / "resources/data/commands.toml").read_text(encoding="utf-8"))["command"]
-    wanted = {f"result.{name}.schema.json" for name in commands} | {"result.next.schema.json"}
+    wanted = {f"result.{name}.schema.json" for name in commands}
     present = {p.name for p in (SRC / "resources/schemas").glob("result.*.schema.json")}
     assert wanted <= present, f"missing result schemas: {sorted(wanted - present)}"
 
