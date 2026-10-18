@@ -92,6 +92,12 @@ def test_a_name_is_exact_only_in_a_version_that_links_exact(project):
     assert [(r.version, r.exact, r.kept) for r in rows] == [("a", True, 16), ("b", False, 0)]
 
 
+def test_a_name_with_no_rom_address_gets_no_row(project):
+    tree = _tree([_module("src/a.c", ["f"])], "absolute")
+    facts = {"a": {"f": (0x80000000, 0x1000, 16, "func"), "far": (0x810C210C, None, 0, "func")}}
+    assert [r.name for r in _credits(tree, facts)] == ["f"]
+
+
 def test_a_module_that_does_not_compile_earns_no_fuzzy_credit(project):
     tree = _tree([_module("src/a.c", [], ["f"], ["f"])], "broken")
     facts = _facts(f=(0x1000, 16, "func"))

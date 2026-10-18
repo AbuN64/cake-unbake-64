@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import suppress
@@ -35,9 +36,30 @@ def _capture(config: Any) -> Any:
 
 
 def _facts(config: Any) -> rescore.Facts:
-    """Per version the symbol_addrs facts: name -> (vram, rom, size, type)."""
+    """Per version the symbol_addrs facts: name -> (vram, rom, size, type), each size the file leaves out filled in."""
     read = import_module("unbake.api").symbols
-    return {v: read(config, v) for v in config.project.version}
+    return {v: _sized(config, v, read(config, v)) for v in config.project.version}
+
+
+def _sized(config: Any, v: str, table: Mapping[str, Any]) -> dict[str, Any]:
+    """`table` with a missing size taken from the ROM: a name of a code or data segment holds the bytes up to the next
+    name's address, the last one up to its segment's end; a name in a bin segment holds none. Every byte from a
+    segment's first name on is counted once, whatever the names in between."""
+    cuts = import_module("unbake.versions").segments(config, v)
+    kinds = [s.kind for s in config.project.version[v].segments]
+    starts = sorted({row[1] for row in table.values() if row[1] is not None})
+    out = dict(table)
+    for name, (vram, rom, size, kind) in table.items():
+        if size is not None or rom is None:
+            continue
+        at = bisect_right([c[1] for c in cuts], rom) - 1
+        if at < 0 or kinds[at] == "bin":
+            out[name] = (vram, rom, 0, kind)
+            continue
+        later = bisect_right(starts, rom)
+        end = min(cuts[at][2], starts[later]) if later < len(starts) else cuts[at][2]
+        out[name] = (vram, rom, max(0, end - rom), kind)
+    return out
 
 
 def _check(config: Any, tree: Any) -> Json | None:
@@ -122,11 +144,13 @@ def build_credits(
     broken: frozenset[str],
 ) -> tuple[Credit, ...]:
     """One row per (name, version) of the symbol_addrs facts. A name is exact in a version when C defines it and the
-    version links exact; otherwise it earns its cached fuzzy score, and none when its module does not compile."""
+    version links exact; otherwise it earns its cached fuzzy score, and none when its module does not compile. A name
+    with no ROM address (an absolute symbol) holds no ROM bytes and gets no row."""
     modules = {m.path: m for m in tree.modules}
     rows = []
     for v in versions:
-        for name, (_vram, rom, size, kind) in sorted(facts.get(v, {}).items(), key=lambda item: (item[1][1], item[0])):
+        held = [item for item in facts.get(v, {}).items() if item[1][1] is not None]
+        for name, (_vram, rom, size, kind) in sorted(held, key=lambda item: (item[1][1], item[0])):
             path = tree.owner(v, name)
             module = modules.get(path) if path else None
             stand_in = module is None or name in module.stand_ins.get(v, ())
