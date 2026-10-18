@@ -1,7 +1,8 @@
 """Symbol facts per version (versions/<v>/symbol_addrs.txt, splat format) and the cross-version name join.
 
 A line reads `name = 0xVRAM; // type:func rom:0x... size:0x...`. Each version owns its file; the join gives a name
-the spelling the source version (names_from) uses for the same thing, found from equal code, not from the name."""
+the spelling the source version (names_from) uses for the same thing, found from equal code, not from the name.
+Generic names/types input adds exact-address and measured-layout evidence through the same symbol codec."""
 
 from __future__ import annotations
 
@@ -10,10 +11,12 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
+from unbake import config as configuration
 from unbake import effort, pool, store
-from unbake.contracts import Config, Finding, Refusal, digest, sha256
+from unbake.contracts import Config, Finding, Json, Refusal, digest, sha256
 
 Symbol = tuple[int, int | None, int | None, str]  # vram, rom, size, type ("func" or the data type)
 Correspondence = tuple[str, str, str, str]  # (x, a, y, b): x in version a's code is y in version b's
@@ -329,3 +332,160 @@ def join(config: Config) -> tuple[Correspondence, ...]:
 def referenced(text: str, table: Collection[str]) -> set[str]:
     """The table names a source text uses."""
     return tokens(text) & set(table)
+
+
+# Generic names/types input joins the same symbol facts; Recipe owns source patch application.
+def _input_name(value: str) -> str:
+    identifier(value, "names input")
+    return value
+
+
+def _shape(row: Json) -> tuple[Any, ...] | None:
+    members = row.get("members", [])
+    if not row.get("complete") or not members or any(m.get("size") is None for m in members):
+        return None
+    if any(m.get("offset_unit", "bytes") != "bytes" for m in members):
+        return None
+    return row["size"], tuple((m["offset"], m["size"], m["type"]) for m in members)
+
+
+def names_plan(document: Json, tables: dict[str, dict[str, tuple[Any, ...]]], bindings: Json) -> Json:
+    """Build deterministic symbol/type moves, preserving every unmatched fact and reason."""
+    configuration.validate("symbols", document, "names input")
+    if document.get("schema") != 1:
+        raise Refusal(Finding("names.schema", "expected names/types schema 1"))
+    for key in ("functions", "structs", "typedefs", "enums"):
+        if not isinstance(document.get(key), list):
+            raise Refusal(Finding("names.schema", f"{key} must be a list"))
+    moves: list[Json] = []
+    unmatched: list[Json] = []
+    assigned: dict[str, str] = {}
+    used: dict[str, str] = {}
+
+    def add(op: str, old: str, new: str) -> None:
+        if old == new:
+            return
+        if (old in assigned and assigned[old] != new) or (new in used and used[new] != old):
+            raise Refusal(Finding("names.conflict", f"conflicting rename {old} -> {new}"))
+        if old not in assigned:
+            assigned[old], used[new] = new, old
+            moves.append({"op": op, "subject": old, "target": new})
+
+    for row in document["functions"]:
+        name = _input_name(row["name"])
+        table = tables.get(row["version"], {})
+        found = [n for n, values in table.items() if values[0] == row["address"] and values[3] == "func"]
+        if len(found) != 1:
+            unmatched.append(
+                {
+                    "kind": "function",
+                    "name": name,
+                    "version": row["version"],
+                    "address": row["address"],
+                    "reason": "address has no unique function symbol",
+                }
+            )
+            continue
+        if name in table and name != found[0]:
+            raise Refusal(Finding("names.collision", f"{name} already names another symbol"))
+        add("symbol", found[0], name)
+
+    accepted_tags: set[tuple[str, str]] = set()
+    for row in document["structs"]:
+        name = row["name"]
+        candidates = [b for b in bindings.get("types", []) if b["original"] == name and b["version"] == row["version"]]
+        if not _IDENTIFIER.fullmatch(name) or len(candidates) != 1 or _shape(row) is None:
+            unmatched.append(
+                {
+                    "kind": row["kind"],
+                    "name": name,
+                    "version": row["version"],
+                    "reason": "no unique complete measured layout binding",
+                }
+            )
+            continue
+        bound = candidates[0]
+        if _shape(bound) != _shape(row):
+            unmatched.append(
+                {
+                    "kind": row["kind"],
+                    "name": name,
+                    "version": row["version"],
+                    "reason": "member offsets, sizes or types disagree",
+                }
+            )
+            continue
+        current = _input_name(bound["name"])
+        aliases = [
+            t["name"]
+            for t in document["typedefs"]
+            if t["version"] == row["version"] and t["type"]["tag"] == name and not t["type"]["modifiers"]
+        ]
+        aliases = sorted(set(aliases))
+        if len(aliases) != 1:
+            unmatched.append({"kind": "typedef", "name": name, "reason": "no unique typedef for bound tag"})
+            continue
+        alias = _input_name(aliases[0])
+        accepted_tags.add((row["version"], name))
+        add("type", current, alias)
+        # Recipe's word-bounded type move also accepts a tag-qualified spelling.
+        prefix = "union" if row["kind"] == "union_tag" else "struct"
+        add("type", f"{prefix} {alias}", f"{prefix} {name}")
+        for old, new in zip(bound["members"], row["members"], strict=True):
+            if old["name"] != new["name"]:
+                unmatched.append(
+                    {
+                        "kind": "field",
+                        "name": new["name"],
+                        "owner": name,
+                        "current": old["name"],
+                        "reason": "existing rename path has no scoped member operation",
+                    }
+                )
+    unmatched.extend(
+        {
+            "kind": "typedef",
+            "name": t["name"],
+            "version": t["version"],
+            "reason": "no verified current typedef identity",
+        }
+        for t in document["typedefs"]
+        if (t["version"], t["type"]["tag"]) not in accepted_tags
+    )
+    unmatched.extend(
+        {
+            "kind": "enum",
+            "name": e["name"],
+            "version": e["version"],
+            "reason": "no verified current enum identity; equal integer values are insufficient",
+        }
+        for e in document["enums"]
+    )
+    return {"moves": moves, "unmatched": unmatched}
+
+
+def names_command(params: Json) -> Json:
+    """Read a reader-neutral catalog; no project files are written."""
+    from unbake.tree import LITERALS
+
+    root = Path(params["project"])
+    try:
+        document = json.loads(Path(params["input"]).read_text())
+        configuration.validate("symbols", document, str(params["input"]))
+        bindings = json.loads(Path(params["bindings"]).read_text()) if params.get("bindings") else {"types": []}
+        versions = {r["version"] for r in document["functions"]}
+        tables = {v: parse((root / path(v)).read_text(), path(v)) for v in sorted(versions)}
+        result = names_plan(document, tables, bindings)
+        renames = {m["subject"]: m["target"] for m in result["moves"] if m["op"] == "symbol"}
+        # Alias facts and compiler-owned literal pools follow the same symbol identity.
+        # Reuse the symbol codec; Recipe's symbol move currently covers symbol_addrs only.
+        renames.update({LITERALS + old: LITERALS + new for old, new in list(renames.items())})
+        changed = {}
+        for alias_file in sorted((root / "versions").glob("*/aliases.txt")):
+            before = alias_file.read_text()
+            after = rename_lines(before, renames)
+            if after != before:
+                changed[alias_file.relative_to(root).as_posix()] = after
+        return {**result, "symbol_files": changed}
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise Refusal(Finding("names.input", str(error))) from error

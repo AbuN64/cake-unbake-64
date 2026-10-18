@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "unbake:result.names",
+  "type": "object",
+  "required": ["moves", "unmatched"],
+  "properties": {
+    "moves": {"type": "array", "items": {"type": "object", "required": ["op", "subject", "target"]}},
+    "unmatched": {"type": "array", "items": {"type": "object", "required": ["kind", "name", "reason"]}},
+    "symbol_files": {"type": "object", "additionalProperties": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

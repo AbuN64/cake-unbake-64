@@ -135,3 +135,12 @@ handler = "build.verify"
 params = [
   { name = "status", kind = "argument", type = "int", required = false, multiple = false, help = "make exit status (default 0); a failure revokes matched credit" },
 ]
+
+[command.names]
+configured = false
+help = "Map generic debug names/types to Recipe structure moves; no project writes."
+handler = "symbols.names_command"
+params = [
+  { name = "input", kind = "argument", type = "path", required = true, multiple = false, help = "generic names/types JSON" },
+  { name = "bindings", kind = "option", type = "path", required = false, multiple = false, help = "complete measured current type layouts with original identities" },
+]

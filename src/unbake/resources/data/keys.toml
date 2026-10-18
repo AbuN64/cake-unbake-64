@@ -214,6 +214,22 @@ sentence = "a symbol fact is named with no C identifier"
 owner = "symbols"
 sentence = "a name is not in the symbol table and has no address in this version"
 
+[key."names.schema"]
+owner = "symbols"
+sentence = "the names input is not the expected schema-1 shape"
+
+[key."names.conflict"]
+owner = "symbols"
+sentence = "the names input renames one symbol to two different names"
+
+[key."names.collision"]
+owner = "symbols"
+sentence = "a new name is already used by another symbol"
+
+[key."names.input"]
+owner = "symbols"
+sentence = "the names input is not readable or fails its schema"
+
 [key."toolchain.download"]
 owner = "build"
 sentence = "a toolchain download does not match its pin"
