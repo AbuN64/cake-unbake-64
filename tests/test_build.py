@@ -624,3 +624,25 @@ def test_folded_data_symbols_have_a_finding_and_report_line(tmp_path, monkeypatc
         )
         assert "tail" in finding.reason and f"0x{0x80200410 + offset:08X}" in finding.reason
         assert "main/tail" not in text
+
+
+def test_code_sed_keeps_the_relocation_of_a_64_bit_load_and_words_the_rest(tmp_path):
+    """CODE_SED of the generated Makefile, run by make and sed on extracted lines."""
+    import subprocess
+
+    lines = build.makefile(make_config(tmp_path)).decode().splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith("CODE_SED :="))
+    end = next(i for i in range(at, len(lines)) if not lines[i].endswith("\\"))
+    (tmp_path / "rules.mk").write_text("\n".join(lines[at : end + 1]) + "\nrun:\n\t@sed -E $(CODE_SED) in.s\n")
+    (tmp_path / "in.s").write_text(
+        "/* 1234 80001234 DC820010 */  ld          $v0, %lo(D_80001000)($a0)\n"
+        "/* 1238 80001238 DC820008 */  ld          $v0, 0x8($a0)\n"
+        "/* 123C 8000123C 24020001 */  addiu       $v0, $zero, 0x1\n"
+    )
+    out = subprocess.run(["make", "-s", "-f", "rules.mk", "run"], cwd=tmp_path, capture_output=True, text=True).stdout
+    assert out.splitlines() == [
+        "/* 1234 80001234 DC820010 */  .reloc ., R_MIPS_LO16, D_80001000",
+        "    .word 0xDC820000",
+        "/* 1238 80001238 DC820008 */  .word 0xDC820008",
+        "/* 123C 8000123C 24020001 */  addiu       $v0, $zero, 0x1",
+    ]
