@@ -59,6 +59,7 @@ _spilled: dict[str, str] = {}  # snapshot or writes key -> the file a live pool'
 _spill_users: dict[str, int] = {}  # spill key -> gathers of this process whose tasks name it now
 _SPILL_KEEP = 8  # spill files kept past their last gather: the next dispatch of a round names the same snapshot
 _spill_lock = threading.Lock()
+_ticket: list[Path] = []  # this command's place in the queue for a free slot while it waits for one
 _short: list[int] = []  # (slots got, slots wanted) of the last short share reported
 _laid: list[str] = []  # in a worker, the overlay keys it laid again itself (not forked holding)
 KEEP = ("declarations", "words", "spelled", "typed")  # memo kinds keyed by content alone: valid for every overlay
@@ -198,7 +199,7 @@ def _demand(count: int, budget: int) -> None:
     """Writes the slots this command could use now and its host budget into its lock file: peers leave it no more than
     the first, and the largest budget of any live command is how many slot files there are. A change wakes the
     peers' waiters (a jobserver feeder sheds what its share no longer holds)."""
-    if _cmd:
+    if _cmd and not _cmd[0].closed:
         fd, said = _cmd[0].fileno(), f"{count} {budget}".encode()
         before = _said.get(fd)
         if before == said:
@@ -273,8 +274,51 @@ def _try(path: Path) -> io.FileIO | None:
     return slot
 
 
+def _queue(pool: Path) -> list[Path]:
+    """The tickets of the live commands waiting for a free slot, oldest first. A ticket whose command is gone is
+    removed."""
+    live = []
+    for ticket in sorted(pool.glob("wait-*")):
+        try:
+            owner = int(ticket.name.rsplit("-", 1)[1])
+        except ValueError:
+            continue
+        if owner == os.getpid() or _busy(pool / f"cmd-{owner}.lock"):
+            live.append(ticket)
+        else:
+            ticket.unlink(missing_ok=True)
+    return live
+
+
+def _queued(pool: Path) -> bool:
+    """Whether a command that asked before this one still waits for a slot: free slots are its, in arrival order. A
+    command takes a free slot ahead of nobody, so the longest waiter is never starved by newer commands."""
+    queue = _queue(pool)
+    return any(t < _ticket[0] for t in queue) if _ticket else bool(queue)
+
+
+def _enter(pool: Path) -> None:
+    """Takes a place in the queue for a free slot (once per wait)."""
+    if not _ticket:
+        ticket = pool / f"wait-{time.time_ns():020d}-{os.getpid()}"
+        os.close(os.open(ticket, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600))
+        _ticket.append(ticket)
+
+
+def _leave() -> None:
+    """Gives the place in the queue up and wakes the waiters, who may now be first."""
+    if _ticket:
+        ticket = _ticket.pop()
+        ticket.unlink(missing_ok=True)
+        if _dir:
+            _signal(_dir[0])
+
+
 def _take(pool: Path, size: int, take: int) -> list[io.IOBase]:
-    """Takes free slots of the `size` slot files without waiting until this process holds `take`: the ones it got."""
+    """Takes free slots of the `size` slot files without waiting until this process holds `take`: the ones it got.
+    None while an older waiter is queued."""
+    if _queued(pool):
+        return []
     held = {getattr(f, "name", None) for f in _slots}
     got: list[io.IOBase] = []
     for index in range(size):
@@ -406,13 +450,17 @@ def _acquire(want: int, active: int = 0, cap: int = 0) -> None:
             )
     if not _slots:  # every slot is held: wait for whichever frees first, as a stage of its own
         holders = [_pid(p) for p in peers if p != mine]
-        with effort.stage("pool.wait_slot") as span:
-            held = f"held by pids {', '.join(str(p) for p in holders)}" if holders else "held by no live command"
-            span.add(items=len(holders), findings=[Finding("pool.wait_slot", held, blocking=False)])
-            _wait_free(pool, mine, want)
-        _, size, share = _divide(pool, mine, want)  # a release frees whole shares: take the rest of this one too
-        _share = share
-        _take(pool, size, min(share, cap) if cap else share)
+        _enter(pool)  # first come, first served: a newer command takes no slot while this one waits
+        try:
+            with effort.stage("pool.wait_slot") as span:
+                held = f"held by pids {', '.join(str(p) for p in holders)}" if holders else "held by no live command"
+                span.add(items=len(holders), findings=[Finding("pool.wait_slot", held, blocking=False)])
+                _wait_free(pool, mine, want)
+            _, size, share = _divide(pool, mine, want)  # a release frees whole shares: take the rest of this one too
+            _share = share
+            _take(pool, size, min(share, cap) if cap else share)
+        finally:
+            _leave()
     effort.waited(time.perf_counter() - start)
 
 
@@ -1111,7 +1159,7 @@ def _extra_slot() -> io.IOBase | None:
     """Takes one more free host slot for this process if one is free now and its fair share has room (never waits):
     its file, None otherwise."""
     with _users_lock:
-        if not _dir or not _cmd:
+        if not _dir or not _cmd or _cmd[0].closed:  # a dropped executor closed the lock under a running make
             return None
         pool = _dir[0]
         _, size, share = _divide(pool, Path(_cmd[0].name), _want)
@@ -1137,7 +1185,7 @@ def _shed(spare: int, taken: list[io.IOBase], last: list[int]) -> bool:
     one make has not read yet (a build starting, a job just ended) is no idle slot. True while it still holds more
     than its share and a peer could use a slot: the feeder then wakes when a token comes back to the pipe."""
     with _users_lock:
-        if not _dir or not _cmd:
+        if not _dir or not _cmd or _cmd[0].closed:  # a dropped executor closed the lock under a running make
             return False
         now = _idle(spare)
         idle, last[:] = min(now, last[0] if last else 0), [now]
@@ -1191,7 +1239,7 @@ def jobserver(host: Host, work: int = 0) -> Iterator[tuple[int, dict[str, str], 
     only where the build starts: a feeder adds a job token whenever another host slot frees. With no slot files
     (no host pool) MAKEFLAGS pins -j to the grant and no fds pass. make itself must get no -j of its own."""
     with cores(host, work) as j:
-        if not _dir or not _cmd:
+        if not _dir or not _cmd or _cmd[0].closed:  # a dropped executor closed the lock under a running make
             yield j, {"UNBAKE_CORES": str(j), "MAKEFLAGS": f"-j{j}"}, ()
             return
         read, write = os.pipe()

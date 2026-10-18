@@ -1744,3 +1744,63 @@ def test_a_refusal_while_keys_resolve_reaches_the_caller_not_an_unbound_width(tm
     with effort.command("t", ()), pytest.raises(Refusal) as caught:
         pool.gather(_config(tmp_path), [("job", len, [b"a"], len)])
     assert caught.value is refusal
+
+
+def _queued_peer(runtime, pid, age):
+    """Another command waiting for a slot since `age` (smaller is older): its lock file held, its ticket queued."""
+    folder = _slots_dir(runtime)
+    lock = (folder / f"cmd-{pid}.lock").open("a")
+    pool.fcntl.flock(lock, pool.fcntl.LOCK_EX)
+    ticket = folder / f"wait-{age:020d}-{pid}"
+    ticket.touch()
+    return lock, ticket
+
+
+def test_a_freed_slot_goes_to_the_oldest_waiter_not_to_a_newer_command(tmp_path):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    held = _holder(runtime, 3)
+    lock, ticket = _queued_peer(runtime, 424242, 1)  # waiting since before this command began
+    held.pop().close()  # one slot frees
+    granted = []
+    thread = threading.Thread(target=lambda: (pool._acquire(3), granted.append(len(pool._slots))))
+    thread.start()
+    thread.join(0.3)
+    assert thread.is_alive() and pool._slots == [] and granted == []  # the slot is kept for the older waiter
+    ticket.unlink()  # the older waiter took its slot and left the queue
+    thread.join(5)
+    assert not thread.is_alive() and granted == [1]
+    pool._drop_executor()
+    pool._release()
+    lock.close()
+    for f in held:
+        f.close()
+
+
+def test_a_waiter_queues_behind_those_before_it_and_leaves_the_queue_when_served(tmp_path):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    held = _holder(runtime, 2)
+    lock, ticket = _queued_peer(runtime, 424243, 5)
+    thread = threading.Thread(target=pool._acquire, args=(2,))
+    thread.start()
+    thread.join(0.2)
+    queue = [t.name for t in pool._queue(_slots_dir(runtime))]
+    assert len(queue) == 2 and queue[0] == ticket.name  # this command's ticket stands behind the older one
+    ticket.unlink()
+    held.pop().close()
+    thread.join(5)
+    assert not thread.is_alive() and len(pool._slots) == 1
+    assert pool._queue(_slots_dir(runtime)) == [] and pool._ticket == []
+    pool._drop_executor()
+    pool._release()
+    lock.close()
+    for f in held:
+        f.close()
+
+
+def test_the_ticket_of_a_dead_command_holds_nobody_back(tmp_path):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    ghost = _slots_dir(runtime) / f"wait-{1:020d}-999999"
+    ghost.touch()
+    pool._acquire(2)
+    assert len(pool._slots) == 2 and not ghost.exists()
+    pool._drop_executor()
