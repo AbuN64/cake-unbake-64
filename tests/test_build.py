@@ -519,3 +519,63 @@ def test_splat_yaml_starts_no_data_piece_off_a_word_boundary(tmp_path):
     )
     text = build.splat_yaml(config, "us", make_tree()).decode()
     assert "main/d_1]" in text and "main/d_3]" in text and "d_2" not in text
+
+
+@pytest.mark.parametrize("suffix", [".c", ".s"])
+@pytest.mark.parametrize("before,after", [("0x10", "0x14"), ("0x10", None), (None, "0x10")])
+def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, before, after):
+    """Exercise the generated make rules with a mocked compiler/assembler and trim operation."""
+    import subprocess
+    import sys
+
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "asm/us").mkdir(parents=True)
+    (tmp_path / "asm/us/.extracted").touch()
+    targets = [f"build/us/src/{name}{suffix}.o" for name in ("a", "b")]
+    for name in ("a", "b"):
+        (tmp_path / f"src/{name}{suffix}").write_text(name)
+    compiler = tmp_path / "compiler.py"
+    compiler.write_text(
+        "from pathlib import Path\nimport sys\n"
+        "Path(sys.argv[-1]).write_bytes(Path(sys.argv[-3]).read_bytes())\n"
+        "with Path('compiled').open('a') as log: log.write(sys.argv[-1] + '\\n')\n"
+    )
+
+    def sizes(size):
+        rows = [f"{targets[1]}: TEXTSIZE := 0x20"]
+        if size is not None:
+            rows.append(f"{targets[0]}: TEXTSIZE := {size}")
+        (tmp_path / "versions/us/text_sizes.mk").write_text("\n".join(rows) + "\n")
+
+    def make():
+        (tmp_path / "compiled").write_text("")
+        result = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "-j1",
+                *targets,
+                "STAMPS=",
+                "TC=stub",
+                "CPP=true",
+                f"AS={sys.executable} {compiler}",
+                "COMPILE_stub=@$(AS) $< -o $@",
+                "TRIM_TEXT=true",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return sorted((tmp_path / "compiled").read_text().splitlines())
+
+    sizes(before)
+    assert make() == targets
+    assert make() == []
+    sizes(after)
+    assert make() == targets[:1]
+    assert make() == []
+    sizes(before)
+    assert make() == targets[:1]  # restoring an older value must rebuild too
