@@ -91,3 +91,17 @@ def test_correspondences_cache_on_asm_content(tmp_path: Path, monkeypatch: pytes
     )
     symbols.correspondences(config)
     assert len(calls) == 4
+
+
+@pytest.mark.parametrize("name", [".L8024D278", "a$b", "x@1"])
+def test_a_fact_named_with_no_c_identifier_is_refused_by_both_readers(name: str) -> None:
+    """Both readers of symbol_addrs.txt read the same rows: an assembler label is refused, never dropped by one."""
+    from unbake import versions
+
+    text = f"f = 0x80000400; // type:func rom:0x1000\n{name} = 0x80000410; // type:func rom:0x1010\n"
+    with pytest.raises(symbols.Refusal) as caught:
+        symbols.parse(text, "versions/de/symbol_addrs.txt")
+    assert caught.value.findings[0].key == "symbols.name"
+    assert caught.value.findings[0].path == "versions/de/symbol_addrs.txt:2"
+    with pytest.raises(symbols.Refusal):
+        versions.parse_symbol_addrs(text.encode())

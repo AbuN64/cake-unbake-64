@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from unbake import config as configuration
-from unbake import effort, store
+from unbake import effort, store, symbols
 from unbake.contracts import Config, Finding, Refusal, Version, digest, sha256
 
 _WORD = 0xFFFFFFFF
@@ -39,7 +39,7 @@ def _number(text: str) -> int:
 
 
 def parse_symbol_addrs(data: bytes, file: str = "symbol_addrs.txt") -> tuple[Row, ...]:
-    """The rows of a splat symbol file in file order. A name with two addresses is refused."""
+    """The rows of a splat symbol file in file order. A name with two addresses, or with no C identifier, is refused."""
     rows: list[Row] = []
     seen: dict[str, int] = {}
     for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
@@ -47,6 +47,7 @@ def parse_symbol_addrs(data: bytes, file: str = "symbol_addrs.txt") -> tuple[Row
         if not match:
             continue
         name, vram = match[1], _number(match[2])
+        symbols.identifier(name, f"{file}:{number}")
         attrs = dict(_ATTR.findall(match[3] or ""))
         if seen.setdefault(name, vram) != vram:
             raise Refusal(
@@ -91,6 +92,31 @@ def segments(config: Config, version: str) -> tuple[tuple[str, int, int, int], .
         (s.name, s.rom, rows[i + 1].rom if i + 1 < len(rows) else max(s.rom, last), s.vram or 0)
         for i, s in enumerate(rows)
     )
+
+
+def pieces(config: Config, version: str) -> tuple[tuple[str, int, int, int], ...]:
+    """`segments`, each with the name splat and the link give its piece. A segment name is the tag the sources'
+    stand-ins name (the asm folder), and several rows of a version may share one: one data segment that the version's
+    link cuts around blobs. splat and the link need a name per piece: the first row keeps the tag, a later row of the
+    same tag is `<tag>_<ROM>`."""
+    out: list[tuple[str, int, int, int]] = []
+    seen: set[str] = set()
+    rows = segments(config, version)
+    tags = {row[0] for row in rows}
+    for name, start, end, vram in rows:
+        piece = name if name not in seen else f"{name}_{start:X}"
+        if piece != name and piece in tags:
+            raise Refusal(
+                Finding(
+                    "config.segments",
+                    f"{version}: segment {name} at rom 0x{start:X} would be piece {piece}, the name of another segment",
+                    path="config.toml",
+                    versions=(version,),
+                )
+            )
+        seen.add(name)
+        out.append((piece, start, end, vram))
+    return tuple(out)
 
 
 def segment_of(config: Config, version: str, row: Row) -> str:

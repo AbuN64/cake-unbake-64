@@ -45,6 +45,10 @@ sentence = "the content cache is over its limit on a nearly full disk and holds 
 owner = "config"
 sentence = "a configured file or tool path is wrong"
 
+[key."config.segments"]
+owner = "versions"
+sentence = "a segment's piece name is the name of another segment"
+
 [key."config.file_unknown"]
 owner = "config"
 sentence = "a [file] row names a path no tracked file has"
@@ -202,6 +206,10 @@ sentence = "a ledger line cannot be read"
 owner = "versions"
 sentence = "a symbol has two addresses in one version"
 
+[key."symbols.name"]
+owner = "symbols"
+sentence = "a symbol fact is named with no C identifier"
+
 [key."symbols.unknown"]
 owner = "symbols"
 sentence = "a name is not in the symbol table and has no address in this version"
@@ -321,6 +329,10 @@ sentence = "an extern is declared differently in two headers; make the declarati
 [key."tree.duplicate"]
 owner = "tree"
 sentence = "a name is owned by two files in one version"
+
+[key."tree.literals"]
+owner = "tree"
+sentence = "a literals_<function> fact names a function no file owns; name the first function the file owns"
 
 [key."tree.segments"]
 owner = "tree"

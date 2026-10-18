@@ -21,6 +21,7 @@ from unbake import effort, pool, process, store, symbols
 from unbake.contracts import Config, Finding, Refusal, sha256
 
 KIND = "tree.file"
+LITERALS = "literals_"  # a fact `literals_<function>` places that function's file's compiler-emitted rodata
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
 _INCLUDE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
 _TOKEN = re.compile(
@@ -70,8 +71,9 @@ class Tree:
     def unowned(self, version: str) -> tuple[str, ...]:
         """The symbols of the version no file owns, by address. A label inside data needs no owner: a data name off a
         word boundary, and a data name whose nearest name before it in the same mapping (ROM and RAM both contiguous)
-        is data (owned, unowned or such a label): its bytes are that piece's. Nor does any name at the address of an owned
-        name (a second name of the same bytes)."""
+        is data (owned, unowned or such a label): its bytes are that piece's. Nor does any name at the address of an
+        owned name (a second name of the same bytes), nor a name the facts
+        type `label`: it lies inside the bytes before it."""
         table = self.symbols.get(version, {})
         rows = sorted(
             (s[1], (version, n) not in self._owners, n) for n, s in table.items() if s[1] is not None
@@ -84,7 +86,9 @@ class Tree:
                 inside, mapping = False, rom - vram
             if not free:
                 held = rom
-            if free and (rom == held or kind != "func" and (inside or symbols.inside_data(kind, vram))):
+            if free and (
+                rom == held or kind == "label" or (kind != "func" and (inside or symbols.inside_data(kind, vram)))
+            ):
                 continue
             if free:
                 out.append(name)  # its stand-in is a piece of its own: the data names after it are its labels
@@ -115,8 +119,8 @@ def _cppflags(config: Config) -> list[str]:
 # ---------------------------------------------------------------- one file
 def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
     """(names defined at depth 0, names whose stand-in the text assembles), each in text order. With `kinds`, also the
-    linker section of each name: a stand-in's own `.section`, `.rodata` for a const, `.data` for an initialised
-    variable, `.bss` for the rest."""
+    linker section of each name: `.text` for a function, a stand-in's own `.section`, `.rodata` for a const, `.data`
+    for an initialised variable, `.bss` for the rest."""
     text = re.sub(r"(?m)^[ \t]*#.*$", "", text)
     defined: list[str] = []
     stand_ins: list[str] = []
@@ -139,6 +143,8 @@ def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], li
                 name = _function_name(stmt)
                 if name and not _inlined(stmt):
                     defined.append(name)
+                    if kinds is not None:
+                        kinds[name] = ".text"  # code, though a version knows the name only from an untyped alias
                 stmt = [*stmt, "{}"]
                 stmt.append("<body>")
             elif depth == 0:
@@ -416,8 +422,10 @@ def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, byt
     versions: tuple[str, ...] = tuple(project.versions)
     tables = {
         v: symbols.merged(
-            *(blobs.get(f(v), b"").decode(errors="replace") for f in (symbols.path, symbols.aliases_path)),
+            blobs.get(symbols.path(v), b"").decode(errors="replace"),
+            blobs.get(symbols.aliases_path(v), b"").decode(errors="replace"),
             symbols.spans(config, v),
+            (symbols.path(v), symbols.aliases_path(v)),
         )
         for v in versions
     }
@@ -443,6 +451,7 @@ def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, byt
             sections[path][version] = {n: _section(table[n], kinds.get(n)) for n in names}
             fuzzy[path] |= {n for n in nm if n in table}
     findings = _duplicates(owned, versions)
+    findings += _literals(tables, owned, sections)
     modules = tuple(
         _module(config, path, owned[path], stand[path], fuzzy[path], sections[path], tables, findings, stale[path])
         for path in sorted({*owned, *stale})
@@ -450,6 +459,37 @@ def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, byt
     if findings:
         raise Refusal(*findings)
     return Tree(_digest(config, blobs), modules, tables)
+
+
+def _literals(
+    tables: Mapping[str, Mapping[str, symbols.Symbol]],
+    owned: dict[str, dict[str, list[str]]],
+    sections: dict[str, dict[str, dict[str, str]]],
+) -> list[Finding]:
+    """A fact `literals_<function>` places the read-only data the compiler emits for the file that owns <function>
+    (its literal pools, jump tables): the file owns it as `.rodata`. A row whose function no file owns is a finding."""
+    findings: list[Finding] = []
+    for version, table in tables.items():
+        owner = {n: path for path in owned for n in owned[path].get(version, ())}
+        for name in table:
+            if not name.startswith(LITERALS):
+                continue
+            path = owner.get(name[len(LITERALS) :])
+            if path is None:
+                findings.append(
+                    Finding(
+                        "tree.literals",
+                        f"{name} in {version} places literals for {name[len(LITERALS) :]}, which no file owns",
+                        path=symbols.path(version),
+                        unit=name,
+                        versions=(version,),
+                    )
+                )
+                continue
+            names = [*owned[path][version], name]
+            owned[path][version] = sorted(names, key=lambda n, t=table: (_rom(t, n), n))  # type: ignore[misc]
+            sections[path][version][name] = ".rodata"
+    return findings
 
 
 def _parse_all(

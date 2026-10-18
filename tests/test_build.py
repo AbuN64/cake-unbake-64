@@ -238,7 +238,7 @@ def test_splat_yaml_golden(tmp_path):
     assert text.endswith(
         "\n".join(
             [
-                "  compiler: SN64",
+                "  compiler: KMC",
                 "segments:",
                 "  - name: main",
                 "    type: code",
@@ -278,7 +278,8 @@ def test_splat_yaml_data_subsegment_per_symbol(tmp_path, monkeypatch):
         "      - [0x1300, c, main]\n      - [0x1320, c, main]\n  - name: assets\n" in text
     )  # untyped rows are data, the tree gives the section, the code after data or a sized function restarts c
     (tmp_path / "versions/us/symbol_addrs.txt").write_text("d_at_start = 0x80200400; // rom:0x1000\n")
-    assert "      - [0x1000, data, main/d_at_start]\n  - name" in build.splat_yaml(config, "us", held).decode()
+    alone = build.splat_yaml(config, "us", make_tree()).decode()
+    assert "      - [0x1000, data, main/d_at_start]\n  - name" in alone
     row = dict(build.configuration.toolchain("gcc-2.8.1-sn64"), data_split="symbol")
     monkeypatch.setattr(build.configuration, "toolchain", lambda id: row)
     assert "d_at_start" not in build.splat_yaml(config, "us", held).decode()  # a symbol-mode toolchain: one c row
@@ -307,7 +308,9 @@ def test_makefile_variable_blocks(tmp_path):
     assert [line.split(": ")[1].split(" ")[0] for line in lines] == ["TC", "CPPFLAGS", "CFLAGS"]
     assert lines[2].endswith("-mno-fix4300 -O1") and " -O2 " not in lines[2]
     assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
-    assert "sed -nE" in text and text.count("sed ") == 5  # PROVIDE lines (facts, .L labels); data files; code files; jump tables
+    assert (
+        "sed -nE" in text and text.count("sed ") == 5
+    )  # PROVIDE lines (facts, .L labels); data files; code files; jump tables
     assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
 
@@ -725,3 +728,76 @@ def test_undefined_syms_provide_the_aliases_too(tmp_path):
     subprocess.run(["make", "-s", "build/us/undefined_syms.ld"], cwd=tmp_path, check=True, capture_output=True)
     rows = (tmp_path / "build/us/undefined_syms.ld").read_text().splitlines()
     assert "PROVIDE(f = 0x80200400);" in rows and "PROVIDE(g = 0x80200400);" in rows
+
+
+def test_segments_sharing_a_name_are_pieces_of_one_tag(tmp_path):
+    """Rows of one version may share a name (one data segment the link cuts around a blob): splat and the link name
+    each piece apart, a later one `<name>_<ROM>`, its asm keeps the shared folder, and each lists only its own range."""
+    config = make_config(tmp_path)
+    config.project.version["us"].segments = (
+        Segment("main", 0x1000, 0x80200400, "code"),
+        Segment("blob", 0x1800, None, "bin"),
+        Segment("main", 0x1900, 0x80200D00, "code"),
+        Segment("assets", 0x2000, None, "bin"),
+    )
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("d_150 = 0x80200D60; // rom:0x1960\n")
+    tree = make_tree(module("src/a.c", "main", us=("f_1",)), module("src/b.c", "main", us=("d_150",)))
+    yaml = build.splat_yaml(config, "us", tree).decode()
+    assert [line for line in yaml.splitlines() if line.startswith("  - name:")] == [
+        "  - name: main",
+        "  - name: blob",
+        "  - name: main_1900",
+        "  - name: assets",
+    ]
+    assert "      - [0x1960, data, main/d_150]" in yaml
+    text = build.linker(config, tree).decode()
+    first, second = text.split("    .main_1900 ")
+    assert "src/a.c.o(.text)" in first and "src/b.c.o" not in first.split("    .blob ")[0]
+    assert "src/b.c.o(.data)" in second.split("}")[0] and "src/a.c.o" not in second
+
+
+def test_a_setup_make_writes_local_mk_first(tmp_path, monkeypatch):
+    """A clone has no local.mk: the tool paths (splat among them) reach make before any target runs."""
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(slots=0, workers=2))
+    monkeypatch.setattr(build, "local_mk", lambda config: b"SPLAT := /venv/bin/splat\n")
+    seen = []
+    monkeypatch.setattr(build.process, "make", lambda c, t, j: seen.append((t, (tmp_path / "local.mk").read_bytes())))
+    build.make(config, ["extract-us"])
+    assert seen == [(["extract-us"], b"SPLAT := /venv/bin/splat\n")]
+
+
+def test_owned_data_starts_its_own_piece_wherever_its_fact_lives(tmp_path):
+    """A data name a file owns (in C or behind a stand-in) gets a piece: known from aliases.txt alone, from a row with
+    no rom, or off a word boundary (the build fills each piece from the ROM). Off a word and owned by no file, a name
+    stays folded."""
+    config = make_config(tmp_path)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(
+        "d_1 = 0x80200500; // rom:0x1100\nd_norom = 0x80200600;\nd_odd = 0x80200703; // rom:0x1303\n"
+        "d_fold = 0x80200802; // rom:0x1402\n"
+    )
+    facts = {
+        "d_1": (0x80200500, 0x1100, None, "data"),
+        "d_alias": (0x80200580, 0x1180, None, "data"),
+        "d_norom": (0x80200600, 0x1200, None, "data"),
+        "d_odd": (0x80200703, 0x1303, None, "data"),
+        "d_fold": (0x80200802, 0x1402, None, "data"),
+    }
+    names = ("d_1", "d_alias", "d_norom", "d_odd")
+    kinds = {"us": {n: ".data" for n in names} | {"f_code": ".text"}}
+    facts["f_code"] = (0x80200900, 0x1500, None, "data")  # a code stand-in whose fact gives no type
+    module = Module("src/d.c", "main", {"us": (*names, "f_code")}, (), {"us": (*names[2:], "f_code")}, kinds)
+    held = Tree("digest", (module,), {"us": facts})
+    out = build.splat_yaml(config, "us", held).decode()
+    for row in ("[0x1100, data, main/d_1]", "[0x1180, data, main/d_alias]", "[0x1200, data, main/d_norom]"):
+        assert row in out
+    assert "[0x1303, data, main/d_odd]" in out and "d_fold" not in out and "f_code" not in out
+
+
+def test_a_function_a_file_owns_starts_a_c_piece(tmp_path):
+    """splat writes one file per `c` start: an owned function never reads as an entry inside the one before it."""
+    config = make_config(tmp_path)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("f_1 = 0x80200400; // type:func rom:0x1000\n")
+    facts = {"f_1": (0x80200400, 0x1000, None, "func"), "f_2": (0x80200410, 0x1010, None, "func")}
+    module = Module("src/a.c", "main", {"us": ("f_1", "f_2")}, (), {"us": ()}, {"us": {"f_2": ".text"}})
+    out = build.splat_yaml(config, "us", Tree("digest", (module,), {"us": facts})).decode()
+    assert "      - [0x1000, c, main]\n      - [0x1010, c, main]\n" in out

@@ -18,8 +18,9 @@ from unbake.contracts import Config, Finding, Refusal, digest, sha256
 Symbol = tuple[int, int | None, int | None, str]  # vram, rom, size, type ("func" or the data type)
 Correspondence = tuple[str, str, str, str]  # (x, a, y, b): x in version a's code is y in version b's
 KIND = "symbols.join"
-_LINE = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(0x[0-9A-Fa-f]+|\d+)(\s*;)(?:(\s*//)(.*))?$")
+_LINE = re.compile(r"^(\s*)([\w.$@]+)(\s*=\s*)(0x[0-9A-Fa-f]+|\d+)(\s*;)(?:(\s*//)(.*))?$")
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENTIFIER = _TOKEN
 _WORD = re.compile(r"/\*[^*]*?\b([0-9A-Fa-f]{8})\s*\*/\s+([a-z][\w.]*)")
 _OPERANDS = re.compile(r"%(?:hi|lo|gp_rel)\((\w+)\)|\bjal\s+(\w+)|\.word\s+(\w+)")
 _IMMEDIATE = frozenset(
@@ -73,11 +74,16 @@ def spans(config: Config, version: str) -> tuple[tuple[int, int, int], ...]:
     )
 
 
-def merged(text: str, aliases: str, held: Sequence[tuple[int, int, int]] = ()) -> dict[str, Symbol]:
+def merged(
+    text: str,
+    aliases: str,
+    held: Sequence[tuple[int, int, int]] = (),
+    where: tuple[str, str] = ("symbol_addrs.txt", "aliases.txt"),
+) -> dict[str, Symbol]:
     """symbol_addrs.txt facts, then the aliases.txt facts of names it does not list. An alias written without a rom
     takes the one the segment holding its vram gives (none when no segment or several do)."""
-    out = parse(text)
-    for name, (vram, rom, size, kind) in parse(aliases).items():
+    out = parse(text, where[0])
+    for name, (vram, rom, size, kind) in parse(aliases, where[1]).items():
         if rom is None:
             found = [start + vram - low for low, high, start in held if low <= vram < high]
             rom = found[0] if len(found) == 1 else None
@@ -85,12 +91,31 @@ def merged(text: str, aliases: str, held: Sequence[tuple[int, int, int]] = ()) -
     return out
 
 
-def parse(text: str) -> dict[str, Symbol]:
-    """name -> (vram, rom, size, type). A line without `type:` is data."""
+def identifier(name: str, where: str) -> None:
+    """Refuse a fact whose name is no C identifier. A fact names what the C names: a stand-in, then the body that
+    replaces it. An assembler's spelling (a local `.L` label, `$` or `@`) is no name any source can define, so the
+    piece it starts takes its default name, `func_<VRAM>` (code) or `D_<VRAM>` (data), the version suffix as the
+    project spells it."""
+    if not _IDENTIFIER.fullmatch(name):
+        raise Refusal(
+            Finding(
+                "symbols.name",
+                f"{name} is no C identifier: a symbol fact names what the C can name",
+                path=where,
+                unit=name,
+                action="give the row the piece's default name (func_<VRAM> or D_<VRAM>) and its stand-in the same",
+            )
+        )
+
+
+def parse(text: str, where: str = "symbol_addrs.txt") -> dict[str, Symbol]:
+    """name -> (vram, rom, size, type). A line without `type:` is data. A row named with no C identifier is refused,
+    never dropped: every reader of the file reads the same rows."""
     out: dict[str, Symbol] = {}
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), 1):
         found = _LINE.match(line)
         if found:
+            identifier(found[2], f"{where}:{number}")
             attrs = dict(a.split(":", 1) for a in (found[7] or "").split() if ":" in a)
             rom, size = (int(attrs[k], 0) if k in attrs else None for k in ("rom", "size"))
             out[found[2]] = (int(found[4], 0), rom, size, attrs.get("type", "data"))
@@ -105,7 +130,7 @@ def load(config: Config, version: str) -> dict[str, Symbol]:
             texts.append((config.project.root / name).read_text(errors="replace"))
         except FileNotFoundError:
             texts.append("")
-    return merged(*texts, spans(config, version))
+    return merged(texts[0], texts[1], spans(config, version), (path(version), aliases_path(version)))
 
 
 def segment_at(config: Config, version: str, rom: int) -> str | None:

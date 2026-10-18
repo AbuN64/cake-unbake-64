@@ -316,18 +316,23 @@ def _spelled(section: str) -> str:
     return section
 
 
-def _rows(config: Config, held: Tree, v: str, segment: str) -> list[tuple[int, str, str]]:
-    """(rom, path, section) of every name a file owns in one version's segment and of each file's compiled read-only
-    data, in ROM order."""
+def _piece(config: Config, v: str, piece: str) -> tuple[int, int, int]:
+    """(rom start, rom end, vram or 0) of one version's piece, by its name in `versions.pieces`."""
+    return next((start, end, vram) for name, start, end, vram in versions.pieces(config, v) if name == piece)
+
+
+def _rows(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str, str]]:
+    """(rom, path, section) of every name a file owns in one version's piece (its ROM range: pieces may share a segment
+    name), in ROM order."""
     rows: list[tuple[int, str, str]] = []
     table = held.symbols.get(v, {})
+    start, end, _ = _piece(config, v, piece)
     for module in held.modules:
         for name in module.owns.get(v, ()):
             fact = table.get(name)
-            if fact is None or fact[1] is None or symbols.segment_at(config, v, fact[1]) != segment:
+            if fact is None or fact[1] is None or not start <= fact[1] < end:
                 continue
             rows.append((fact[1], module.path, module.sections.get(v, {}).get(name, ".text")))
-    rows += [(rom, path, ".rodata") for path, rom in _compiled_rodata(config, v, segment)]
     return sorted(rows)
 
 
@@ -339,12 +344,13 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
     with effort.stage("build.text_sizes"):
         cuts = versions.segments(config, v)
         sizes: dict[str, int | None] = {}
-        for i, segment in enumerate(config.project.version[v].segments):
+        placed = zip(config.project.version[v].segments, versions.pieces(config, v), strict=True)
+        for i, (segment, (piece, *_)) in enumerate(placed):
             if segment.kind == "bin":
                 continue
             end = cuts[i + 1][1] if i + 1 < len(cuts) else None  # the ROM end needs the ROM: no row for the last
             runs: list[tuple[int, str, str]] = []
-            for rom, path, section in _rows(config, held, v, segment.name):
+            for rom, path, section in _rows(config, held, v, piece):
                 if not runs or runs[-1][1:] != (path, section):
                     runs.append((rom, path, section))
             for k, (rom, path, section) in enumerate(runs):
@@ -361,11 +367,11 @@ def _unaligned(config: Config, held: Tree, v: str) -> list[str]:
     """The files whose data starts a run of their own off a word boundary in the ROM: the ROM packs it at the byte, so
     the build drops the alignment the compiler asks for in that object's data sections (NOALIGN)."""
     found: set[str] = set()
-    for segment in config.project.version[v].segments:
+    for segment, (piece, *_) in zip(config.project.version[v].segments, versions.pieces(config, v), strict=True):
         if segment.kind == "bin":
             continue
         last = None
-        for rom, path, section in _rows(config, held, v, segment.name):
+        for rom, path, section in _rows(config, held, v, piece):
             if (path, section) != last and section != ".text":
                 vram = rom - segment.rom + (segment.vram or segment.rom)
                 found |= {path} if vram % 4 else set()
@@ -373,13 +379,13 @@ def _unaligned(config: Config, held: Tree, v: str) -> list[str]:
     return sorted(found)
 
 
-def _items(config: Config, held: Tree, v: str, segment: str, per_object: bool) -> list[str]:
+def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> list[str]:
     """The input sections of one version's segment in the order their bytes lie in the ROM: for each name a file owns
     in the segment, its section of that file's object (`.text` for code, the source's own section for data), the
-    first of each in address order. A file's compiled read-only data sits where its [file] row says; else a toolchain
-    that keeps a function's literals with its object (`per-object`) has them follow the code unless the file names
+    first of each in address order. A file's compiled read-only data sits where its `literals_` fact says; else a
+    toolchain that keeps a function's literals with its object (`per-object`) has them follow the code unless the file names
     rodata of its own in the segment."""
-    rows = _rows(config, held, v, segment)
+    rows = _rows(config, held, v, piece)
     named = {(path, section) for _, path, section in rows}
     items: list[tuple[str, str]] = []
     for _, path, section in rows:
@@ -388,19 +394,6 @@ def _items(config: Config, held: Tree, v: str, segment: str, per_object: bool) -
             if per_object and section == ".text" and (path, ".rodata") not in named:
                 items.append((path, ".rodata"))
     return [f"{path}.o({_spelled(section)})" for path, section in items]
-
-
-def _compiled_rodata(config: Config, v: str, segment: str) -> list[tuple[str, int]]:
-    """(path, rom) of the read-only data a file's compiler emits, where its [file] row places it in this segment."""
-    out = []
-    for path, facts in config.project.files.items():
-        for vid, vram in facts.rodata:
-            seg = next((s for s in config.project.version[v].segments if s.name == segment), None)
-            if vid == v and seg is not None and seg.vram is not None:
-                rom = vram - seg.vram + seg.rom
-                if symbols.segment_at(config, v, rom) == segment:
-                    out.append((path, rom))
-    return out
 
 
 def _header(name: str, by: Mapping[str, Segment], names: Sequence[str]) -> list[str]:
@@ -427,8 +420,8 @@ def linker(config: Config, held: Tree) -> bytes:
         per_object = configuration.toolchain(project.toolchain).get("link_sections", "per-section") == "per-object"
         found: dict[str, dict[str, Segment]] = {}
         for v in project.versions:
-            for segment in project.version[v].segments:
-                found.setdefault(segment.name, {})[v] = segment
+            for segment, (piece, *_) in zip(project.version[v].segments, versions.pieces(config, v), strict=True):
+                found.setdefault(piece, {})[v] = segment
         first = {name: min(s.rom for s in by.values()) for name, by in found.items()}
         out: list[str] = []
         for name in sorted(found, key=lambda n: (first[n], n)):
@@ -462,10 +455,13 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
     """versions/<v>/splat.yaml: the segments of config.toml and the fixed splat options. One `c` subsegment per code
     segment; with `data_split = "subsegment"` also one subsegment `<segment>/<name>` per data symbol of
     symbol_addrs.txt a file owns (a row whose type is not code, an untyped row included: splat accepts no `type:data`;
-    a data name no file owns is a label inside the piece before it), `rodata`
-    when the tree puts the name in .rodata, one `rodata` subsegment where a [file] row places compiled read-only data
-    (its bytes end there), and the code that follows data or a function of declared size starts a `c` subsegment again
-    (splat reads no function past a size it was given)."""
+    a data name no file owns is a label inside the piece before it) and per data name a file owns, in C or behind a
+    stand-in, wherever its fact lives (aliases.txt, a row with no rom) and on any byte (the build fills each piece from
+    the ROM): a stand-in needs its file, and the piece before C data must end where it starts, `rodata`
+    when the tree puts the name in .rodata (a `literals_<function>` fact is one), and the code
+    that follows data or a function of declared size starts a `c` subsegment again
+    (splat reads no function past a size it was given), as does each function a file owns, in C or behind a stand-in
+    (else splat may read it as an entry inside the function before it: the stand-in has no file, the C one a twin)."""
     with effort.stage("build.splat_yaml") as span:
         project = config.project
         row = configuration.toolchain(project.toolchain)
@@ -476,13 +472,30 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
             out.append(f"  {key}: {_scalar(value.format(**placeholders) if isinstance(value, str) else value)}")
         out += [f"  compiler: {row['splat']}", "segments:"]
         split = row.get("data_split", "symbol") == "subsegment"
-        rows = sorted((r for r in versions.symbol_addrs(config, v) if r.rom is not None), key=lambda r: r.rom or 0)
         sections = {n: s for m in held.modules for n, s in m.sections.get(v, {}).items()}
+        table = held.symbols.get(v, {})
+        stand = {n for m in held.modules for n in m.owns.get(v, ()) if sections.get(n, ".text") != ".text"}
+        entries = sorted(  # each function a file owns is its own: splat ends the one before at a `c` start
+            fact[1]
+            for m in held.modules
+            for n in m.owns.get(v, ())
+            if sections.get(n, ".text") == ".text" and (fact := table.get(n)) is not None and fact[1] is not None
+        )
+        rows = [r for r in versions.symbol_addrs(config, v) if r.rom is not None]
+        listed = {r.name for r in rows}
+        rows += [  # owned data starts its own piece, though aliases.txt alone or no rom of its row places it
+            versions.Row(n, fact[0], fact[3], fact[1], fact[2], 0)
+            for n in sorted(stand - listed)
+            if (fact := table.get(n)) is not None and fact[1] is not None
+        ]
+        rows.sort(key=lambda r: (r.rom or 0, r.name in stand))  # at one address the owned name wins
         free = set(held.unowned(v))
         labels = {n for n in held.symbols.get(v, {}) if n not in free and held.owner(v, n) is None}
-        for segment, (_, start, end, _) in zip(project.version[v].segments, cuts, strict=True):
+        for segment, (piece, start, end, _) in zip(
+            project.version[v].segments, versions.pieces(config, v), strict=True
+        ):
             out += [
-                f"  - name: {segment.name}",
+                f"  - name: {piece}",
                 f"    type: {'bin' if segment.kind == 'bin' else 'code'}",
                 f"    start: 0x{start:X}",
             ]
@@ -493,7 +506,7 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
             for r in rows:
                 if not start <= (r.rom or 0) < end or r.kind in _NOT_DATA:
                     continue
-                if symbols.inside_data(r.kind, r.vram):
+                if symbols.inside_data(r.kind, r.vram) and r.name not in stand:
                     finding = Finding(
                         "symbol.folded",
                         f"{v}: {r.name} at 0x{r.vram:08X} is folded into the preceding data chunk "
@@ -518,10 +531,7 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
                     continue  # a label inside the data before it: splat writes it into that piece
                 kind = "rodata" if sections.get(r.name, "").startswith(".rodata") else "data"
                 cells.append((r.rom or 0, kind, f"{segment.name}/{r.name}"))
-            cells += [
-                (rom, "rodata", f"{segment.name}/rodata_{rom:X}")
-                for _, rom in _compiled_rodata(config, v, segment.name)
-            ]
+            cells += [(rom, _C, segment.name) for rom in entries if start < rom < end]
             cells.sort(key=lambda c: (c[0], c[1] != _C))  # at one address, data outranks a restart of code
             kept = [c for c, after in zip(cells, [*cells[1:], None], strict=True) if after is None or after[0] > c[0]]
             out += ["    subsegments:", *(f"      - [0x{at:X}, {kind}, {name}]" for at, kind, name in kept)]
@@ -574,8 +584,16 @@ def local_mk(config: Config) -> bytes:
 
 
 # ---------------------------------------------------------------- running make
+def make(config: Config, targets: Sequence[str]) -> NativeResult:
+    """A setup make run (extract, check): local.mk first, then one make. The Makefile reads the machine's tool paths
+    (splat among them) from local.mk, and a clone has none until this writes it, so no target may run before it is
+    current; a land builds only in a set-up clone."""
+    store.write(config.project.root / "local.mk", local_mk(config))
+    return process.make(config, targets, config.host.slots or config.host.workers)
+
+
 def _make(config: Config, target: str) -> NativeResult:
-    return process.make(config, [target], config.host.slots or config.host.workers)
+    return make(config, [target])
 
 
 def extract(config: Config, version: str | None = None) -> NativeResult:

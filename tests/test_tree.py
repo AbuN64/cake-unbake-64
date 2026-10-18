@@ -73,6 +73,29 @@ def test_labels_inside_data_need_no_owner(tmp_path: Path) -> None:
     assert held.unowned("a") == ("after", "tail", "fuzzy", "first")
 
 
+def test_literals_fact_is_rodata_of_the_file_owning_its_function(tmp_path: Path) -> None:
+    """`literals_<fn>` is owned by the file that owns <fn>, as .rodata, and is never offered as unowned; a function
+    no file owns makes it a finding."""
+    rows = {"c_func": ("main", 0x0, "func"), "literals_c_func": ("main", 0x20, "data")}
+    text = fixture.symbol_file("a", rows)
+    sources = {"src/main/c.c": "s32 c_func(void) { return 1; }\n"}
+    held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
+    assert held.owner("a", "literals_c_func") == "src/main/c.c" and held.unowned("a") == ()
+    assert held.modules[0].sections["a"]["literals_c_func"] == ".rodata"
+    bad = fixture.symbol_file("a", {"literals_gone": ("main", 0x20, "data")})
+    with pytest.raises(Refusal) as error:
+        tree.capture(fixture.config(tmp_path / "bad", versions=("a",), sources=sources, symbols={"a": bad}))
+    assert error.value.findings[0].key == "tree.literals"
+
+
+def test_a_label_typed_name_inside_a_function_needs_no_owner(tmp_path: Path) -> None:
+    rows = {"c_func": ("main", 0x0, "func"), "inside_c_func": ("main", 0x10, "label"), "after": ("main", 0x30, "func")}
+    sources = {"src/main/c.c": "s32 c_func(void) { return 1; }\n"}
+    text = fixture.symbol_file("a", rows)
+    held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
+    assert held.unowned("a") == ("after",)
+
+
 def test_aliases_are_facts_with_a_rom_from_their_segment(tmp_path: Path) -> None:
     """versions/<v>/aliases.txt rows join the facts; a row without a rom takes its segment's."""
     extra = {"versions/a/aliases.txt": "other = 0x80000400;\nnowhere = 0x90000000;\n"}
@@ -291,3 +314,11 @@ def test_a_static_inline_copy_does_not_own_the_name_its_real_definition_owns() -
     text = "static inline s32 f(void) { return 1; }\ns32 g(void) { return f(); }\n"
     assert tree._scan(text)[0] == ["g"]
     assert tree._scan("static s32 f(void) { return 1; }\n")[0] == ["f"]
+
+
+def test_a_function_is_code_though_a_version_knows_it_only_from_an_untyped_alias(tmp_path: Path) -> None:
+    sources = {"src/main/f.c": "s32 c_func(void) { return 1; }\n"}
+    symbols = {"a": "c_func = 0x80000400; // type:func rom:0x1000\n", "b": "c_func = 0x80000400;\n"}
+    held = tree.capture(fixture.config(tmp_path, sources=sources, symbols=symbols))
+    (module,) = held.modules
+    assert module.sections["b"]["c_func"] == ".text"

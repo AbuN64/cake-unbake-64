@@ -346,13 +346,11 @@ class VersionFacts:
 
 @dataclass(frozen=True)
 class FileFacts:
-    """A [file] row: per-file toolchain, flags added to the defaults and flags removed from them, and per version the
-    address of the read-only data its compiler emits (literal pools, jump tables), which no name of the tree locates."""
+    """A [file] row: per-file toolchain, flags added to the defaults and flags removed from them."""
 
     toolchain: str | None = None
     cflags: tuple[str, ...] = ()
     omit: tuple[str, ...] = ()
-    rodata: tuple[tuple[str, int], ...] = ()  # (version, vram)
 
 
 @dataclass(frozen=True)

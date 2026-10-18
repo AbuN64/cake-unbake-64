@@ -249,6 +249,15 @@ def _line_of(name: str) -> re.Pattern[str]:
     return re.compile(rf'^[ \t]*INCLUDE_(?:ASM|DATA|RODATA)\(\s*"[^"]*"\s*,\s*{re.escape(name)}\s*\)\s*;[ \t]*$')
 
 
+def _definition_end(lines: Sequence[str], name: str) -> int | None:
+    """The index of the line that closes the C definition of `name` (a `}` in column 0), if the file has one."""
+    start = re.compile(rf"^[A-Za-z_][^;{{}}#]*\b{re.escape(name)}\s*\(")
+    first = next((i for i, text in enumerate(lines) if start.match(text) and not text.startswith("INCLUDE_")), None)
+    if first is None:
+        return None
+    return next((j for j in range(first, len(lines)) if lines[j].rstrip() == "}"), None)
+
+
 def _depths(lines: Sequence[str]) -> list[int]:
     """The `#if` nesting depth before each line."""
     out, depth = [], 0
@@ -295,7 +304,9 @@ def _drop(lines: list[str], names: Iterable[str]) -> None:
 
 def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
     """The files to write so that a name has a stand-in exactly when no file defines it in C: a stand-in a C body
-    supersedes is removed, and every name of tree.unowned(v) gets a line in the file owning the previous address of its
+    supersedes is removed, and every name of tree.unowned(v) gets a line, under the `#if` of the versions it is
+    unowned in when that is not every version (another version may know the name only as a second name of owned
+    bytes, or not at all: it has no extracted file of that name), in the file owning the previous address of its
     segment, right after that name's own stand-in (else at the end); when nothing precedes it, in the file owning the
     next address, right before that name's stand-in (else after the leading includes); a new src/<segment>/<ADDR>.<ext>
     only when the segment has no owner at all. A data name takes the section of the data next to it: its bytes were part
@@ -317,6 +328,7 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
             _drop(lines(module.path), sorted(every))
             touched.add(module.path)
     sections = {(v, n): s for m in current.modules for v, names in m.sections.items() for n, s in names.items()}
+    missing = {v: set(current.unowned(v)) for v in config.project.versions}
     for v in config.project.versions:
         unowned = current.unowned(v)
         if not unowned:
@@ -325,7 +337,7 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
         owners: dict[str, list[tuple[int, str, str]]] = {}
         for module in current.modules:
             for owned in module.owns.get(v, ()):
-                if owned in facts and facts[owned][1] is not None:
+                if owned in facts and facts[owned][1] is not None and not owned.startswith(tree.LITERALS):
                     segment = _segment_of(config, v, facts[owned][1] or 0)
                     if segment is not None:
                         owners.setdefault(segment, []).append((facts[owned][1] or 0, module.path, owned))
@@ -351,12 +363,20 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
             before_it = sections.get((v, anchor or ""), ".data")
             section = ".text" if kind == "func" else before_it if before_it in _DATA_SECTIONS else ".data"
             line = _stand_in(_MACRO.get(kind, _MACRO.get(section, "INCLUDE_DATA")), segment, name)
-            block = [f"#if {_macro(v)}", line, "#endif"] if elsewhere else [line]
+            held = [v] if elsewhere else [o for o in config.project.versions if name in missing[o]]
+            guard = " || ".join(_macro(o) for o in held) if len(held) < len(config.project.versions) else None
+            block = [f"#if {guard}", line, "#endif"] if guard else [line]  # only where the name lacks a file
             if not elsewhere:
                 placed.add(name)
             body = lines(path)
             pattern = _line_of(anchor) if anchor else None
-            at = next((i for i, text in enumerate(body) if pattern and pattern.match(text)), None)
+            module = next((m for m in current.modules if m.path == path), None)
+            c_body = bool(
+                anchor and module is not None and module.stand_ins.get(v) and anchor not in module.stand_ins[v]
+            )
+            at = _definition_end(body, anchor) if c_body and anchor else None  # C here: an `#if` stand-in is elsewhere
+            if at is None:
+                at = next((i for i, text in enumerate(body) if pattern and pattern.match(text)), None)
             if ahead:
                 where = _before(body, at) if at is not None else _head(body)
             else:
@@ -523,7 +543,6 @@ def setup(config: Config, params: Json) -> Json:
         again = [v for v in project.versions if f"versions/{v}/splat.yaml" in written]
         if again:  # the yaml changed under extraction: its output is the output of the old one
             extracted = sorted({*extracted, *_extract(config, again)})
-        store.write(project.root / "local.mk", build.local_mk(config))
         with effort.stage("repo.setup.make"):
             make = build.make_check(config, current)
         report.progress(config, current)
