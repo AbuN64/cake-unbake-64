@@ -436,3 +436,10 @@ def test_armips_missing_names_resource(adapter_config, native_mock, tmp_path, mo
     (finding,) = caught.value.findings
     assert finding.key == "native.missing_tool"
     assert "armips" in finding.reason and "resource" in finding.reason
+
+
+def test_an_assemble_template_without_includes_still_gets_the_include_directories(adapter_config, chains, recipe):
+    """The shipped gcc rows spell no {includes} (the Makefile adds $(ASINC) to $(ASFLAGS)): a stand-in's .include of
+    nonmatchings/... must still find the extracted assembly, so the directories follow the flags."""
+    steps = adapters.chain_steps(adapter_config, "fake-9", recipe, [Path("/project/asm/a")], "unit")
+    assert steps[1].argv[-4:] == ("-I/project/asm/a", "{in}", "-o", "{out}")

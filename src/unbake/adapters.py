@@ -206,10 +206,11 @@ class TemplateToolchain:
         with effort.stage("adapters.assemble"):
             if "assemble" not in self.row:
                 return GnuAssembler(self.config).assemble(source, recipe, include, out)
+            includes = [f"-I{p}" for p in include]
             argv = self.argv(
                 "assemble",
-                asflags=recipe.asflags,
-                includes=[f"-I{p}" for p in include],
+                asflags=_asflags(self.row, recipe, includes),
+                includes=includes,
                 name=[out.with_suffix("").name],
                 source=[str(source)],
                 out=[str(out)],
@@ -286,6 +287,12 @@ class N64Link:
             return replace(result, outputs=done.outputs)
 
 
+def _asflags(row: Json, recipe: Recipe, includes: Sequence[str]) -> list[str]:
+    """The assembler flags of a row's assemble template: a template without {includes} takes the include directories
+    after its flags, as the generated Makefile passes $(ASFLAGS) $(ASINC), so a stand-in's .include resolves."""
+    return [*recipe.asflags, *(() if "{includes}" in row["assemble"] else includes)]
+
+
 def chain_steps(config: Config, id: str, recipe: Recipe, include: Sequence[Path], stem: str) -> tuple[Step, ...]:
     """The compile and assemble commands of a unit with {in} and {out} for their files, for abucache's compile cache."""
     chain = toolchain(config, id)
@@ -300,7 +307,12 @@ def chain_steps(config: Config, id: str, recipe: Recipe, include: Sequence[Path]
     if row["emits_asm"]:
         argv = (
             chain.argv(
-                "assemble", asflags=recipe.asflags, includes=includes, name=[stem], source=["{in}"], out=["{out}"]
+                "assemble",
+                asflags=_asflags(row, recipe, includes),
+                includes=includes,
+                name=[stem],
+                source=["{in}"],
+                out=["{out}"],
             )
             if "assemble" in row
             else render(
