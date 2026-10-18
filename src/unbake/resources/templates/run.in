@@ -15,6 +15,7 @@ base() {
 
 case "$${1:-}" in
 check)
+    pip install "$$WHEEL"
     make check CHECK=tree
     ;;
 audit)

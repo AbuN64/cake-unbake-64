@@ -76,3 +76,15 @@ def test_no_forge_name_in_the_python_and_no_game_names():
     assert not [w for w in ("github", "gitlab") if w in code.replace("forge-neutral", "")]
     text = "".join(_files().values()).lower()
     assert not [word for word in ("ragewars", "battletanx", "turok") if word in text]
+
+
+def test_the_check_stage_installs_unbake_before_it_runs_make_in_every_forge():
+    """`make check CHECK=tree` calls `unbake sync --check`: each check job needs Python and the wheel."""
+    files = _files()
+    check = re.search(r"^check\)\n(.*?)\n    ;;", files[ci.RUN], re.M | re.S).group(1)
+    assert check.splitlines() == ['    pip install "$WHEEL"', "    make check CHECK=tree"]
+    steps = yaml.safe_load(files[".github/workflows/ci.yml"])["jobs"]["check"]["steps"]
+    assert steps[0]["uses"].startswith("actions/checkout") and steps[1]["uses"].startswith("actions/setup-python")
+    assert steps[1]["with"]["python-version"] == "3.13" and steps[-1]["run"] == "sh ci/run check"
+    gitlab = yaml.safe_load(files[".gitlab-ci.yml"])
+    assert gitlab["check"]["image"].startswith("python:3.13")

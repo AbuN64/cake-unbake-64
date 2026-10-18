@@ -113,7 +113,7 @@ Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/
 | include_asm.h.in | none (copied verbatim) | repo.init, repo.sync (absent only) |
 | run.in | wheel versions | ci.files |
 | ci.yml.in | checkout python | ci.files |
-| gitlab-ci.yml.in | image audit_image packages | ci.files |
+| gitlab-ci.yml.in | image packages | ci.files |
 | CONTRIBUTING.md.in | title roms | repo.init |
 | README.md.in | title begin end | repo.init |
 

@@ -10,7 +10,7 @@ check:
     - sh ci/run check
 
 audit:
-  image: ${audit_image}
+  image: ${image}
   rules:
     - if: $$CI_PIPELINE_SOURCE != "schedule"
   variables:

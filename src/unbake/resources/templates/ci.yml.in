@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: ${checkout}
+      - uses: ${python}
+        with:
+          python-version: "3.13"
       - run: sh ci/run check
   audit:
     runs-on: ubuntu-latest
