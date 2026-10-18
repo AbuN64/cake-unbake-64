@@ -17,12 +17,6 @@ Facts = Mapping[str, Mapping[str, Fact]]  # version -> name -> fact
 KIND = "score"
 
 
-class _Module(Protocol):
-    path: str
-    owns: Mapping[str, tuple[str, ...]]
-    fuzzy: tuple[str, ...]
-
-
 class _Tree(Protocol):
     digest: str
 

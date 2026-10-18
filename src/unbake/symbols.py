@@ -99,13 +99,6 @@ def asm_path(config: Config, version: str, name: str) -> str:
     return f"asm/{version}/{'nonmatchings' if row[3] == 'func' else 'data'}/{segment}/{name}.s"
 
 
-def by_address(table: Mapping[str, int]) -> defaultdict[int, list[str]]:
-    names: defaultdict[int, list[str]] = defaultdict(list)
-    for name, address in table.items():
-        names[address].append(name)
-    return names
-
-
 def tokens(text: str) -> set[str]:
     return set(_TOKEN.findall(text))
 

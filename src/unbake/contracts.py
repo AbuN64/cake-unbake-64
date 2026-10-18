@@ -436,13 +436,6 @@ class Version:
 
 
 @dataclass(frozen=True)
-class SdkHit:
-    name: str  # the SDK function the member is
-    module: str  # the SDK object it comes from, "" when the row names none
-    library: str  # "libultra", "libgultra", "libgcc", "libm", "" when the row names none
-
-
-@dataclass(frozen=True)
 class UnitSpec:
     path: str  # project-relative source file, e.g. "src/code_80200610.c"
     kind: str  # id from resources/data/units.toml: "c" | "asm" | "data" | "resource"
@@ -459,18 +452,6 @@ class Move:
     op: str
     subject: str
     target: str
-
-
-@dataclass(frozen=True)
-class Claim:
-    """The ROM bytes [start, end) of one section that a unit's object occupies in one version, and the row they are."""
-
-    unit: str
-    version: str
-    section: str
-    start: int
-    end: int
-    rows: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -201,20 +201,6 @@ def idents(data: bytes | None) -> frozenset[str]:
     return effort.memo(("idents", sha256(data)), lambda: frozenset(m.decode() for m in _IDENT.findall(data)))
 
 
-def facts_of(version: Version, names: frozenset[str]) -> str:
-    """A version's facts as a unit reads them: the address and code mark of each name its text can spell. A landing
-    elsewhere changes other names only (addresses are the ROM's), so it moves no other unit's stamp."""
-    table, code = version.symbols, version.code
-    return effort.memo(
-        ("facts-of", id(table), id(code), names),
-        lambda: (
-            table,
-            code,
-            sha256(repr(sorted((n, table.get(n), n in code) for n in names if n in table or n in code)).encode()),
-        ),
-    )[2]
-
-
 def _rom_sha(rom: Path) -> str:
     stat = rom.stat()
     return effort.memo(("rom", str(rom), stat.st_mtime_ns, stat.st_size), lambda: sha256(rom.read_bytes()))
