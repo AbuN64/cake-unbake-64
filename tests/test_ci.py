@@ -1,4 +1,7 @@
-"""The generated CI: one entry point, thin GitHub and GitLab callers, a daily boards workflow with a job per board."""
+"""The generated CI: one forge-neutral entry point (check and audit only) and thin wrappers that only call it."""
+
+import re
+from pathlib import Path
 
 import yaml
 
@@ -6,109 +9,70 @@ import unbake
 from unbake import ci
 from unbake import config as configuration
 
-VERSIONS = ("us", "eu-x")
-
 
 def _files():
-    return {path: data.decode() for path, data in ci.files(VERSIONS).items()}
+    return {path: data.decode() for path, data in ci.files().items()}
 
 
-def test_rendering_is_a_pure_function_of_the_rules_versions_and_release():
-    assert ci.files(VERSIONS) == ci.files(VERSIONS)
+def test_rendering_is_a_pure_function_of_the_rules_and_release():
+    assert ci.files() == ci.files()
     run = _files()[ci.RUN]
     assert f"releases/download/v{unbake.__version__}/unbake-{unbake.__version__}-py3-none-any.whl" in run
-    assert 'VERSIONS="us eu-x"' in run
 
 
-def test_every_job_calls_the_one_entry_point():
+def test_one_wrapper_per_forge_row_and_the_entry_point():
+    rows = configuration.load_resource("repo.toml")["forge"]
+    assert set(_files()) == {ci.RUN, *(row["path"] for row in rows)}
+
+
+def test_every_wrapper_only_calls_the_one_entry_point():
     files = _files()
-    github = yaml.safe_load(files[ci.GITHUB])
+    github = yaml.safe_load(files[".github/workflows/ci.yml"])
     assert set(github[True]) == {"pull_request", "push", "workflow_dispatch"}  # yaml reads the key `on` as True
+    assert set(github["jobs"]) == {"check", "audit"}
     runs = [step["run"] for job in github["jobs"].values() for step in job["steps"] if "run" in step]
     assert runs == ["sh ci/run check", "sh ci/run audit"]
-    gitlab = yaml.safe_load(files[ci.GITLAB])
+    gitlab = yaml.safe_load(files[".gitlab-ci.yml"])
     assert {name: job["script"][-1].split("sh ci/run ")[1] for name, job in gitlab.items()} == {
         "check": "check",
         "audit": "audit",
-        "board-bytematch": "board bytematch",
     }
     assert [path for path, text in files.items() if "unbake audit" in text] == [ci.RUN]
 
 
-def test_boards_run_daily_one_job_per_board_and_never_on_push():
-    boards = configuration.load_resource("boards.toml")["board"]
-    workflow = yaml.safe_load(_files()[ci.BOARDS])
-    assert set(workflow[True]) == {"schedule", "workflow_dispatch"}
-    assert len(workflow[True]["schedule"]) == 1 and workflow[True]["schedule"][0]["cron"].endswith("* * *")
-    assert set(workflow["jobs"]) == {b["id"] for b in boards}
-    for job in workflow["jobs"].values():
-        assert "needs" not in job  # one board failing never blocks another
-
-
-def test_a_board_publishes_only_after_progress_changed():
-    workflow = yaml.safe_load(_files()[ci.BOARDS])
-    for name, job in workflow["jobs"].items():
-        steps = {
-            s.get("id") or s.get("run") or s["uses"].split("@")[0] + s.get("with", {}).get("name", ""): s
-            for s in job["steps"]
-        }
-        seen = steps["seen"]
-        assert seen["uses"].startswith("actions/cache/restore@") and seen["if"] == "${{ !inputs.force }}"
-        assert seen["with"]["key"].startswith(f"board-{name}-${{{{ hashFiles('progress.json') }}}}")
-        save = steps["actions/cache/save"]
-        assert save["with"] == seen["with"] and "steps.seen.outputs.cache-hit != 'true'" in save["if"]
-        assert f"hashFiles('.boards/{name}') != ''" in save["if"]  # only a board that published records it
-        assert steps[f"sh ci/run board {name}"]["env"]["REPO"] == "${{ github.repository }}"
-
-
-def test_an_artifact_board_uploads_each_version_and_refreshes_monthly():
-    job = yaml.safe_load(_files()[ci.BOARDS])["jobs"]["recomp"]
-    uploads = [s["with"] for s in job["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
-    assert uploads == [
-        {"name": f"{v}_report", "path": f"versions/{v}/report.json", "retention-days": 90} for v in VERSIONS
-    ]
-    assert job["steps"][1]["id"] == "month" and job["steps"][2]["with"]["key"].endswith(
-        "-${{ steps.month.outputs.month }}"
-    )
-
-
-def test_an_upload_board_posts_every_report_with_its_secret():
+def test_the_entry_point_has_only_the_check_and_audit_stages():
     run = _files()[ci.RUN]
-    arm = run.split("    bytematch)\n")[1].split(";;")[0]
-    assert 'if [ -z "${BYTEMATCH_TOKEN:-}" ]' in arm and "exit 0" in arm  # no secret yet: nothing, and no record
-    assert '"https://bytematch.dev/api/v1/projects/$REPO/reports?version=$v&commit=$COMMIT"' in arm
-    assert 'gzip -c "versions/$v/report.json"' in arm and "curl -fsS" in arm
-    job = yaml.safe_load(_files()[ci.BOARDS])["jobs"]["bytematch"]
-    (step,) = [s for s in job["steps"] if s.get("run") == "sh ci/run board bytematch"]
-    assert step["env"]["BYTEMATCH_TOKEN"] == "${{ secrets.BYTEMATCH_TOKEN }}"
+    assert re.findall(r"^(\w+)\)$", run, re.M) == ["check", "audit"]
+    assert "make check CHECK=tree" in run
 
 
-def test_the_entry_point_records_a_board_only_after_it_published():
-    run = _files()[ci.RUN]
-    board = run.split("board)\n")[1]
-    assert (
-        board.index('if [ -f ".boards/$name" ]')
-        < board.index('    case "$name" in')
-        < board.index(': >".boards/$name"')
-    )
-    assert "set -eu" in run  # a failed upload ends the script before the record
+def test_nothing_generated_mentions_boards_or_the_external_site():
+    text = "".join(_files().values()).lower()
+    assert not [word for word in ("board", "bytematch", "recomp", "report.json", "progress.json") if word in text]
+    for name in ("run.in", "ci.yml.in", "gitlab-ci.yml.in"):
+        assert not [w for w in ("board", "bytematch", "recomp") if w in configuration.template(name).lower()]
 
 
 def test_audit_base_falls_back_for_a_new_branch_and_a_shallow_base():
     run = _files()[ci.RUN]
     assert "*0000000000000000000000000000000000000000) b=4b825dc642cb6eb9a060e54bf8d69288fbee4904" in run
     assert 'git cat-file -e "$b^{tree}" 2>/dev/null || b=HEAD' in run
+    assert "set -eu" in run
 
 
 def test_pins_are_full_digests():
     text = "".join(_files().values())
-    for row in configuration.load_resource("repo.toml")["github"].values():
-        assert f"{row['action']}@{row['sha']} # {row['tag']}" in text
     for line in text.splitlines():
         if "uses:" in line:
             assert "@" in line and len(line.split("@")[1].split()[0]) == 40
+    for row in configuration.load_resource("repo.toml")["forge"]:
+        for value in row["values"].values():
+            assert "@" not in value or re.search(r"@(?:[0-9a-f]{40}|sha256:[0-9a-f]{64})\b", value)
 
 
-def test_no_game_names():
-    text = "".join(_files().values()).lower() + str(configuration.load_resource("boards.toml")).lower()
+def test_no_forge_name_in_the_python_and_no_game_names():
+    source = ci.__file__ or ""
+    code = Path(source).read_text().lower()
+    assert not [w for w in ("github", "gitlab") if w in code.replace("forge-neutral", "")]
+    text = "".join(_files().values()).lower()
     assert not [word for word in ("ragewars", "battletanx", "turok") if word in text]

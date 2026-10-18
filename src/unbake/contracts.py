@@ -12,7 +12,7 @@ import re
 import sys
 import types
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
@@ -330,48 +330,60 @@ class Host:
 
 
 @dataclass(frozen=True)
-class Resident:
-    start: int
-    end: int
-    address: int
-    table_entry_bias: int
+class Segment:
+    name: str
+    rom: int  # start; the end is the next row's rom (or the end of the ROM)
+    vram: int | None  # None = not given (a bin segment, or splat detects it)
+    kind: str  # "code" | "bin" (default "code")
 
 
 @dataclass(frozen=True)
-class VersionFiles:
-    baserom: str
-    baserom_sha1: str
-    split: str
-    symbols: str
-    meta: Json  # optional [version.<id>] cartridge_id/region/description as given; {} when none (README rows)
+class VersionFacts:
+    sha1: str  # sha1 of roms/baserom.<v>.z64
+    segments: tuple[Segment, ...]
+    meta: Json  # cartridge_id, region and description (README rows); the first two default from the ROM header
+
+
+@dataclass(frozen=True)
+class FileFacts:
+    """A [file] row: per-file toolchain, flags added to the defaults and flags removed from them."""
+
+    toolchain: str | None = None
+    cflags: tuple[str, ...] = ()
+    omit: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Project:
     root: Path
-    id: str
     name: str
     title: str
-    versions: tuple[str, ...]
-    names_from: str
     toolchain: str  # default toolchain id from resources/data/toolchains.toml
-    build: Json  # [build]: cppflags, cflags, asflags, gnu_asflags (lists of str)
-    version_files: Mapping[str, VersionFiles]  # config owns all per-version paths and ROM sha1
-    version_macros: Mapping[str, tuple[str, ...]]  # version id -> -D tokens
-    resident: Mapping[str, tuple[Resident, ...]]
-    origins: Mapping[str, Origin]
+    names_from: str
+    libraries: tuple[str, ...]
+    cppflags: tuple[str, ...]
+    cflags: tuple[str, ...]
+    asflags: tuple[str, ...]
+    readme_map: str | None  # the version whose memory map the README progress block shows
+    readme_map_link: str | None  # the image links to this page at the anchor of the version's lower-cased cartridge id
+    versions: tuple[str, ...]  # the sorted [version] keys
+    version: Mapping[str, VersionFacts]
+    files: Mapping[str, FileFacts]  # [file] rows by path or "dir/" prefix
     digest: str
-    library_dirs: tuple[str, ...] = ()
-    version_differences: tuple[Json, ...] = ()
-    readme_map: str | None = None  # the version whose memory map the README progress block shows
-    readme_map_link: str | None = (
-        None  # the image links to this page at the anchor of the version's lower-cased cartridge id
-    )
-    # [[evidence.object]] rows: an original object the project proves (first, last, source, origin): its edges are
-    # proven cuts and its source path is evidenced, e.g. a debug record's __FILE__
-    evidence_objects: tuple[Json, ...] = ()
-    lattice: tuple[str, ...] = ()  # [flags] lattice: compiler options the project adds to the toolchain's lattice
-    layout: Json = field(default_factory=dict)  # [layout]: rows over repo.toml [layout] (config.layout_rows)
+    origins: Mapping[str, Origin] = field(default_factory=dict)
+
+
+def macro(version: str) -> str:
+    """The preprocessor macro naming a version."""
+    return "VERSION_" + version.upper().replace("-", "_")
+
+
+def file_facts(project: Project, path: str) -> FileFacts:
+    """The [file] row for a path: the exact key, else the longest "dir/" prefix, else no facts."""
+    if path in project.files:
+        return project.files[path]
+    prefixes = [k for k in project.files if k.endswith("/") and path.startswith(k)]
+    return project.files[max(prefixes, key=len)] if prefixes else FileFacts()
 
 
 @dataclass(frozen=True)
@@ -400,8 +412,6 @@ class Placement:
 class Member:
     name: str
     kind: str  # "function" | "data"
-    state: str  # splat row type: "asm" | "c" | "hasm" | "data" | "rodata" | "bin" | "resource"
-    group: str
     placements: tuple[Placement, ...]  # sorted by (version, section)
 
     def holders(self) -> tuple[str, ...]:
@@ -424,22 +434,6 @@ class Version:
 
 
 @dataclass(frozen=True)
-class Group:
-    name: str
-    segment: str
-    members: tuple[str, ...]  # address order of names_from version, then others
-    evidence: str  # "authored" | "proven" | "inferred"
-    signals: tuple[str, ...]
-    sdk: bool  # derived on load as `library != ""`: policy treats the module as SDK code
-    source: str  # path of the first physical unit
-    header: str  # module header path
-    subsystem: str = ""  # path below the repo.toml [layout] subsystem_source, e.g. "main/actor"; "" until placed
-    library: str = ""  # name below the repo.toml [layout] library_source, "" for game code
-    # one flag set per object: {"add": [...], "omit": [...]} every unit of the module compiles with ({} = defaults)
-    options: Json = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class SdkHit:
     name: str  # the SDK function the member is
     module: str  # the SDK object it comes from, "" when the row names none
@@ -450,11 +444,9 @@ class SdkHit:
 class UnitSpec:
     path: str  # project-relative source file, e.g. "src/code_80200610.c"
     kind: str  # id from resources/data/units.toml: "c" | "asm" | "data" | "resource"
-    group: str
     members: tuple[str, ...]  # contiguous run in ROM, address order
     toolchain: str
     options: Json  # validated per-unit option overrides
-    withheld: tuple[str, ...] = ()  # versions the unit is not built in: its compiled data has no exact home in the ROM
 
 
 @dataclass(frozen=True)
@@ -480,29 +472,12 @@ class Claim:
 
 
 @dataclass(frozen=True)
-class LayoutMap:
-    groups: Mapping[str, Group]
-    members: Mapping[str, Member]
-    units: Mapping[str, UnitSpec]  # by path
-    digest: str
-    authored: tuple[Json, ...]  # [[authored]] rows (layout.schema.json), preserved verbatim by dump_map
-    fuzzy: Mapping[
-        str, Json
-    ]  # member -> {"path", "scores": {version: 0..1}, "key": {version: compare.fuzzy_keys}}; not built
-    # members a file starts at: a proof found the bytes change when the member shared a file with the ones before it
-    boundaries: tuple[str, ...] = ()
-
-    def held(self, names: Iterable[str]) -> set[str]:
-        return {v for n in names for v in self.members[n].holders()}
-
-
-@dataclass(frozen=True)
 class Snapshot:
     """Immutable view of one project state; overlays are proposed writes not yet installed."""
 
     config: Config
     commit: str  # git HEAD sha at capture
-    layout: LayoutMap
+    files: Any  # the C7 unbake.tree.Tree (Any: tree imports contracts)
     versions: Mapping[str, Version]
     overlays: Mapping[str, bytes | None]  # project-relative path -> proposed bytes (None = delete)
     digest: str

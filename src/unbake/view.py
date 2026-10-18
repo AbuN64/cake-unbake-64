@@ -13,28 +13,16 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import adapters, declarations, effort, pool, store
+from unbake import adapters, effort, pool, store
 from unbake import config as configuration
-from unbake import versions as version_data
-from unbake.contracts import (
-    Config,
-    Finding,
-    Recipe,
-    Refusal,
-    Snapshot,
-    SourceView,
-    UnitSpec,
-    code_identity,
-    digest,
-    sha256,
-)
+from unbake.contracts import Config, Finding, Recipe, Refusal, Snapshot, SourceView, UnitSpec, digest, macro, sha256
 
 
 def _sha(value: bytes) -> str:
     return sha256(value)
 
 
-def _pin(snapshot: Snapshot, path: str) -> str:
+def pin(snapshot: Snapshot, path: str) -> str:
     """The hash of a project file as the snapshot reads it, hashed once per command until store.write replaces one."""
     try:
         if path in snapshot.overlays or snapshot.tree:  # the snapshot digest covers what it overlays or holds
@@ -99,7 +87,7 @@ def _walked(
     return effort.memo_valid(
         ("closure", root, unit.path, tuple(argv), identity),
         lambda: _walk(snapshot, unit, argv),
-        lambda kept: all(_pin(snapshot, path) == pin for path, pin in kept[1].items()),
+        lambda kept: all(pin(snapshot, path) == held for path, held in kept[1].items()),
     )
 
 
@@ -119,8 +107,8 @@ def _walk(
             content = snapshot.peek(path)
             return None if content is None else directives(content)
 
-        pin = asked[path] = _pin(snapshot, path)
-        return effort.memo(("includes", str(snapshot.config.project.root), path, pin), read)
+        held = asked[path] = pin(snapshot, path)
+        return effort.memo(("includes", str(snapshot.config.project.root), path, held), read)
 
     dirs: dict[str, list[str]] = {"-iquote": [], "-I": [], "-isystem": []}
     forced: list[str] = []
@@ -162,56 +150,6 @@ def closure(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[tuple[str
     return _closure(snapshot, unit, version)
 
 
-def names(snapshot: Snapshot, unit: UnitSpec, version: str) -> frozenset[str]:
-    """Every identifier the unit's source and the project files it reaches spell, and its members: what its proof can
-    name in the version's symbols."""
-    reach = _closure(snapshot, unit, version)
-    return effort.memo(
-        ("names", reach, unit.members),
-        lambda: frozenset(unit.members).union(*(version_data.idents(snapshot.peek(path)) for path, _ in reach)),
-    )
-
-
-def live_digest(config: Config, source: SourceView) -> str:
-    """The digest of what the unit's object can depend on in its preprocessed text (declarations never reached and
-    line markers left out), made once per command per view."""
-    return effort.memo(
-        ("live", source.key, code_identity(declarations.live)),
-        lambda: digest(
-            declarations.live(
-                source.text, source.unit, lambda key, produce: store.cached(config, "declarations", key, produce)
-            )
-        ),
-    )
-
-
-def reads(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, whole: bool = False) -> tuple[Any, ...]:
-    """What a proof of the unit reads, named without building it: its source and the live digest of its preprocessed
-    text, so a header edit changes only the units whose reached declarations it changes. A unit that does not
-    preprocess (or whose text will not) is read through every file its build can reach. With `whole`, the digest of the
-    complete text is added: a failure to compile is a fact of every declaration, reached or not."""
-    phases = configuration.kind(unit.kind)
-    if "preprocess" not in phases["phases"] or not phases["cacheable"]:
-        return closure(snapshot, unit, version)
-    try:
-        key = _key(snapshot, unit, version, recipe)[0]
-
-        def facts() -> tuple[str, str]:
-            seen = get(snapshot, unit, version, recipe, lines=False)
-            return live_digest(snapshot.config, seen), digest(seen.text)
-
-        # the view key names the text exactly, so its digests are kept by it: a warm key never loads or parses a view
-        live, text = effort.memo(
-            ("view.facts", key),
-            lambda: store.cached_object(
-                snapshot.config, "view.facts", digest((key, code_identity(declarations.live))), facts
-            ),
-        )
-    except Refusal:
-        return closure(snapshot, unit, version)
-    return ((unit.path, _pin(snapshot, unit.path)), live, *((text,) if whole else ()))
-
-
 def search(snapshot: Snapshot, version: str) -> list[str]:
     """The search flags a closure of the version walks with."""
     return _search(snapshot, version)
@@ -224,7 +162,7 @@ def _search(snapshot: Snapshot, version: str) -> list[str]:
 
 
 def _closure(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[tuple[str, str], ...]:
-    return tuple((n, _pin(snapshot, n)) for n in [unit.path, *headers(snapshot, unit, _search(snapshot, version))[0]])
+    return tuple((n, pin(snapshot, n)) for n in [unit.path, *headers(snapshot, unit, _search(snapshot, version))[0]])
 
 
 def _lines(
@@ -332,7 +270,7 @@ def _key(
             source_hash,
             recipe.digest,
             version,
-            snapshot.config.project.version_macros[version],
+            macro(version),
             _identity(snapshot.config, recipe),
             reads,
             overlaid,
@@ -406,7 +344,7 @@ def get(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, *, lin
             text = re.sub(rf'(?m)^(# \d+ "){re.escape(str(root))}/', r"\1", text)
             _, files = _lines(text, root, overlay, unit.path)
             files += [name for name in headers(snapshot, unit, _search(snapshot, version))[0] if name not in files]
-            deps = [(path, _pin(snapshot, path)) for path in files]
+            deps = [(path, pin(snapshot, path)) for path in files]
             return text, deps
 
         found = _kept(config, key)

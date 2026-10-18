@@ -1,128 +1,106 @@
-"""The project symbol table (symbols.toml): one name per symbol identity, an address per version. The name is a
-label only: nothing reads meaning, a version or an address out of it."""
+"""Symbol facts per version (versions/<v>/symbol_addrs.txt, splat format) and the cross-version name join.
+
+A line reads `name = 0xVRAM; // type:func rom:0x... size:0x...`. Each version owns its file; the join gives a name
+the spelling the source version (names_from) uses for the same thing, found from equal code, not from the name."""
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter, defaultdict
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
+from itertools import pairwise
 from typing import Any
 
-from unbake import config, effort
-from unbake.contracts import Finding, Refusal, Snapshot
+from unbake import effort, pool, store
+from unbake.contracts import Config, Finding, Refusal, digest, sha256
 
-Cached = Callable[[str, str, Callable[[], bytes]], bytes]  # store.content(config).cached
-PATH = "symbols.toml"
-_PARSED: list[Any] = [None, None]  # the last bytes loaded and their table (read-only)
+Symbol = tuple[int, int | None, int | None, str]  # vram, rom, size, type ("func" or the data type)
+Correspondence = tuple[str, str, str, str]  # (x, a, y, b): x in version a's code is y in version b's
+KIND = "symbols.join"
+_LINE = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(0x[0-9A-Fa-f]+|\d+)(\s*;)(?:(\s*//)(.*))?$")
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_WORD = re.compile(r"/\*[^*]*?\b([0-9A-Fa-f]{8})\s*\*/\s+([a-z][\w.]*)")
+_OPERANDS = re.compile(r"%(?:hi|lo|gp_rel)\((\w+)\)|\bjal\s+(\w+)|\.word\s+(\w+)")
+_IMMEDIATE = frozenset(
+    [
+        "lui",
+        "addiu",
+        "ori",
+        "lw",
+        "sw",
+        "lh",
+        "lhu",
+        "sh",
+        "lb",
+        "lbu",
+        "sb",
+        "lwc1",
+        "swc1",
+        "ldc1",
+        "sdc1",
+        "ld",
+        "sd",
+    ]
+)
+
+
+# ---------------------------------------------------------------- the facts
+def path(version: str) -> str:
+    return f"versions/{version}/symbol_addrs.txt"
+
+
+def parse(text: str) -> dict[str, Symbol]:
+    """name -> (vram, rom, size, type). A line without `type:` is data."""
+    out: dict[str, Symbol] = {}
+    for line in text.splitlines():
+        found = _LINE.match(line)
+        if found:
+            attrs = dict(a.split(":", 1) for a in (found[7] or "").split() if ":" in a)
+            rom, size = (int(attrs[k], 0) if k in attrs else None for k in ("rom", "size"))
+            out[found[2]] = (int(found[4], 0), rom, size, attrs.get("type", "data"))
+    return out
+
+
+def load(config: Config, version: str) -> dict[str, Symbol]:
+    try:
+        return parse((config.project.root / path(version)).read_text(errors="replace"))
+    except FileNotFoundError:
+        return {}
+
+
+def segment_at(config: Config, version: str, rom: int) -> str | None:
+    """The segment of the version whose rom range holds `rom`: a segment ends where the next row begins."""
+    project: Any = config.project
+    rows = sorted((s.rom, s.name) for s in project.version[version].segments)
+    held = [name for start, name in rows if start <= rom]
+    return held[-1] if held else None
+
+
+def asm_path(config: Config, version: str, name: str) -> str:
+    """Project-relative path of a symbol's extracted assembly: nonmatchings/ for code, data/ for data."""
+    row = load(config, version).get(name)
+    if row is None or row[1] is None:
+        raise Refusal(
+            Finding("symbols.unknown", f"{name} has no rom address in {version}", unit=name, versions=(version,))
+        )
+    segment = segment_at(config, version, row[1])
+    if segment is None:
+        raise Refusal(
+            Finding("tree.segments", f"{name} lies in no segment of {version}", unit=name, versions=(version,))
+        )
+    return f"asm/{version}/{'nonmatchings' if row[3] == 'func' else 'data'}/{segment}/{name}.s"
 
 
 def by_address(table: Mapping[str, int]) -> defaultdict[int, list[str]]:
-    """The names at each address of one version's name -> address table (an address with no name reads as empty)."""
     names: defaultdict[int, list[str]] = defaultdict(list)
     for name, address in table.items():
         names[address].append(name)
     return names
 
 
-def path() -> str:
-    return PATH
-
-
-def empty() -> bytes:
-    return dump({})
-
-
-def parse(data: bytes, versions: Collection[str], cache: Cached | None = None) -> dict[str, dict[str, Any]]:
-    """The rows of the table: name -> {"kind": function|data, <version>: vram}."""
-    document = config.toml("symbols", data, PATH, "symbols.table", cache)
-    for name, row in document["symbol"].items():
-        stray = sorted(set(row) - {"kind", *versions})
-        if stray or not any(v in row for v in versions):
-            raise Refusal(
-                Finding(
-                    "symbols.table",
-                    f"{name} must hold an address for a configured version"
-                    + (f"; {stray[0]} is not one" if stray else ""),
-                    path=PATH,
-                    unit=name,
-                )
-            )
-    table: dict[str, dict[str, Any]] = document["symbol"]
-    return table
-
-
-def load(
-    reader: Callable[[str], bytes], versions: Collection[str], cache: Cached | None = None
-) -> dict[str, dict[str, Any]]:
-    """The table for reading only: parsed once per distinct content."""
-    try:
-        data = reader(PATH)
-    except FileNotFoundError as error:
-        raise Refusal(Finding("config.missing", f"{PATH} does not exist", path=PATH, action="unbake setup")) from error
-    if _PARSED[0] != data:
-        _PARSED[:] = [data, parse(data, versions, cache)]
-    cached: dict[str, dict[str, Any]] = _PARSED[1]
-    return cached
-
-
-def edit(snapshot: Snapshot) -> dict[str, dict[str, Any]]:
-    """A table the caller may change."""
-    return parse(snapshot.read(PATH), snapshot.config.project.versions)
-
-
-def dump(table: Mapping[str, Mapping[str, Any]]) -> bytes:
-    lines = ["schema = 1", "", "[symbol]"]
-    for name in sorted(table):
-        row = table[name]
-        lines += [f"\n[symbol.{name}]", f'kind = "{row["kind"]}"']
-        lines += [f"{v} = 0x{row[v]:08X}" for v in sorted(row) if v != "kind"]
-    return ("\n".join(lines) + "\n").encode()
-
-
-def declared(table: Mapping[str, Mapping[str, Any]], version: str) -> dict[str, int]:
-    return {name: row[version] for name, row in table.items() if version in row}
-
-
-def render(table: Mapping[str, Mapping[str, Any]], version: str) -> bytes:
-    """The splat symbol file of one version: generated from the table, never edited by hand."""
-    rows = sorted((row[version], name, row["kind"]) for name, row in table.items() if version in row)
-    shared = Counter(address for address, _, _ in rows)
-    out = []
-    for address, name, kind in rows:
-        attrs = [
-            *(["type:func"] if kind == "function" else []),
-            *(["allow_duplicated:true"] if shared[address] > 1 else []),
-        ]
-        out.append(f"{name} = 0x{address:08X};" + (" // " + " ".join(attrs) if attrs else "") + "\n")
-    return "".join(out).encode()
-
-
-def files(table: Mapping[str, Mapping[str, Any]], paths: Mapping[str, str]) -> dict[str, bytes]:
-    """The table and every file generated from it; paths maps a version to its symbol file."""
-    return {PATH: dump(table), **{path: render(table, v) for v, path in paths.items()}}
-
-
-def rename(table: dict[str, dict[str, object]], old: str, new: str) -> None:
-    if old not in table:
-        raise Refusal(Finding("symbols.unknown", f"{old} is not a symbol of the project", path=PATH, unit=old))
-    if not _TOKEN.fullmatch(new):
-        raise Refusal(Finding("symbols.name", f"{new} is not a C identifier", path=PATH, unit=new))
-    if new in table:  # one object spelled differently in other versions: the two identities become one
-        clash = [v for v in table[old].keys() & table[new].keys() if v != "kind" and table[old][v] != table[new][v]]
-        if clash or table[old].get("kind") != table[new].get("kind"):
-            raise Refusal(
-                Finding(
-                    "symbols.exists",
-                    f"{new} already names a symbol that places itself otherwise",
-                    path=PATH,
-                    unit=new,
-                    versions=tuple(sorted(clash)),
-                )
-            )
-        table[new] = {**table[new], **table.pop(old)}
-        return
-    table[new] = table.pop(old)
+def tokens(text: str) -> set[str]:
+    return set(_TOKEN.findall(text))
 
 
 def rewrite(text: str, old: str, new: str) -> str:
@@ -130,57 +108,167 @@ def rewrite(text: str, old: str, new: str) -> str:
     return re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, text)
 
 
-def tokens(text: str) -> set[str]:
-    return set(_TOKEN.findall(text))
+def rename_lines(text: str, renames: Mapping[str, str]) -> str:
+    """The symbol file with the names of the lines renamed; every other byte is kept."""
+    out = []
+    for line in text.splitlines(keepends=True):
+        found = _LINE.match(line.rstrip("\n"))
+        if found and found[2] in renames:
+            line = line.replace(found[2], renames[found[2]], 1)
+        out.append(line)
+    return "".join(out)
 
 
-def referenced(snapshot: Snapshot, table: Mapping[str, Mapping[str, Any]]) -> set[str]:
-    """The table names that landed C sources use."""
-    with effort.stage("symbols.referenced"):
-        found: set[str] = set()
-        for unit in snapshot.layout.units.values():
-            if config.is_source(unit.path):
-                found |= tokens(snapshot.read(unit.path).decode(errors="replace")) & table.keys()
-        return found
+# ---------------------------------------------------------------- the join
+def _asm(config: Config, version: str, name: str) -> str:
+    try:
+        return (config.project.root / asm_path(config, version, name)).read_text(errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
-def join(table: dict[str, dict[str, Any]], a: str, b: str, used: Collection[str], source: str) -> str | None:
-    """Make identities a and b one: the name landed C uses survives, else the one with an address in the source
-    version. None (nothing changed) when both are used or both place themselves differently in one version."""
-    first, second = table[a], table[b]
-    if (a in used and b in used) or any(
-        v in first and v in second and first[v] != second[v] for v in set(first) & set(second) - {"kind"}
-    ):
-        return None
-    keep, drop = (a, b) if a in used or (b not in used and source in first) else (b, a)
-    kind = "function" if "function" in (first["kind"], second["kind"]) else "data"
-    table[keep] = {**table[drop], **table[keep], "kind": kind}
-    del table[drop]
-    return keep
+def _mask(text: str) -> bytes:
+    """The code of an asm file with immediates and jump targets cleared: equal in versions that move data."""
+    words = []
+    for word, op in _WORD.findall(text):
+        value = int(word, 16)
+        value &= 0xFFFF0000 if op in _IMMEDIATE else 0xFC000000 if op in {"j", "jal"} else 0xFFFFFFFF
+        words.append(value.to_bytes(4, "big"))
+    return b"".join(words)
 
 
-def join_pairs(
-    snapshot: Snapshot, table: dict[str, dict[str, Any]], pairs: Collection[tuple[str, str, str, str]]
-) -> int:
-    """Apply infer.correspondences to the table: two identities become one, or an identity gains the address another
-    version's code gives the same thing. The number of identities changed."""
-    if not pairs:
-        return 0
-    used, source, changed = referenced(snapshot, table), snapshot.config.project.names_from, 0
-    for x, a, y, b in pairs:
-        if x in table and y in table and x != y:
-            # Cross-version pairing can add an identity, but only compiled relocation
-            # evidence in infer.addresses may replace an existing version address.
-            changed += join(table, x, y, used, source) is not None
-        elif x in table and y not in table and b not in table[x]:
-            table[x][b], changed = snapshot.versions[b].symbols[y], changed + 1
-        elif y in table and x not in table and a not in table[y]:
-            table[y][a], changed = snapshot.versions[a].symbols[x], changed + 1
-    return changed
+def _align(item: tuple[Any, ...]) -> dict[str, str]:
+    """Names of one version mapped to the other's: unique equal masked code anchors, the rest pair between."""
+    (names_a, masks_a), (names_b, masks_b) = item
+    index: list[defaultdict[bytes, list[int]]] = [defaultdict(list), defaultdict(list)]
+    for table, masks in zip(index, (masks_a, masks_b), strict=True):
+        for i, mask in enumerate(masks):
+            table[mask].append(i)
+    matched = dict(
+        sorted((x[0], index[1][key][0]) for key, x in index[0].items() if len(x) == 1 == len(index[1].get(key, ())))
+    )
+    masks = (masks_a, masks_b)
+    bags: dict[tuple[int, int], Counter[bytes]] = {}
+
+    def bag(side: int, i: int) -> Counter[bytes]:
+        if (side, i) not in bags:
+            bags[side, i] = Counter(masks[side][i][o : o + 4] for o in range(0, len(masks[side][i]), 4))
+        return bags[side, i]
+
+    def share(i: int, j: int) -> float:
+        return sum((bag(0, i) & bag(1, j)).values()) * 4 / max(len(masks_a[i]), len(masks_b[j]), 1)
+
+    for (la, lb), (ra, rb) in pairwise([(-1, -1), *matched.items(), (len(masks_a), len(masks_b))]):
+        floor = lb
+        for i in range(la + 1, ra):
+            scores = sorted(((share(i, j), -j) for j in range(floor + 1, rb)), reverse=True)
+            if (
+                scores
+                and scores[0][0] >= 0.6
+                and (len(scores) == 1 or scores[0][0] - scores[1][0] >= 0.15 or masks_b[-scores[0][1]] == masks_a[i])
+            ):
+                floor = matched[i] = -scores[0][1]
+    return {names_a[i]: names_b[j] for i, j in matched.items()}
 
 
-def fix_rows(table: dict[str, dict[str, Any]], found: Mapping[tuple[str, str], tuple[int, bool]]) -> int:
-    """Apply infer.addresses: a name gains (or corrects) the address its version's own code uses. The number changed."""
-    for (name, version), (address, function) in found.items():
-        table.setdefault(name, {"kind": "function" if function else "data"})[version] = address
-    return len(found)
+def _votes_job(item: tuple[Any, ...]) -> Counter[tuple[str, str]]:
+    """Operand names the aligned functions use at the same place: how often x (in a) meets y (in b)."""
+    rows = item
+    counts: Counter[tuple[str, str]] = Counter()
+    for left, right in rows:
+        operands = [[next(x for x in m if x) for m in _OPERANDS.findall(text)] for text in (left, right)]
+        if len(operands[0]) == len(operands[1]):
+            counts.update((x, y) for x, y in zip(*operands, strict=True) if x != y)
+    return counts
+
+
+def _agreed(table: Mapping[str, Symbol], counts: Counter[tuple[str, str]]) -> dict[str, tuple[str, int]]:
+    targets: defaultdict[str, set[str]] = defaultdict(set)
+    for x, y in counts:
+        targets[x].add(y)
+    return {
+        x: (y, n)
+        for (x, y), n in counts.items()
+        if len(targets[x]) == 1 and y in table and (x not in table or (n > 1 and table[x][0] != table[y][0]))
+    }
+
+
+def _functions(table: Mapping[str, Symbol]) -> list[str]:
+    return [n for _, n in sorted((s[1], n) for n, s in table.items() if s[3] == "func" and s[1] is not None)]
+
+
+def correspondences(config: Config) -> tuple[Correspondence, ...]:
+    """(x, a, y, b): name x in version a's code and name y in version b for the same thing, all pairings agreeing.
+    The functions pair by masked code; the names their operands use then vote. Cached on the asm content."""
+    with effort.stage("symbols.correspondences"):
+        project: Any = config.project
+        versions: tuple[str, ...] = tuple(project.versions)
+        source = project.names_from
+        tables = {v: load(config, v) for v in versions}
+        names = {v: _functions(tables[v]) for v in versions}
+        texts = {v: {n: _asm(config, v, n) for n in names[v]} for v in versions}
+        key = digest(
+            [
+                source,
+                [
+                    (v, sorted((n, sha256(t.encode())) for n, t in texts[v].items()), sorted(tables[v].items()))
+                    for v in versions
+                ],
+            ]
+        )
+
+        def produce() -> bytes:
+            return json.dumps(_correspondences(config, source, versions, tables, names, texts)).encode()
+
+        rows = json.loads(store.cached(config, KIND, key, produce))
+        return tuple((x, a, y, b) for x, a, y, b in rows)
+
+
+def _correspondences(
+    config: Config,
+    source: str,
+    versions: Sequence[str],
+    tables: Mapping[str, Mapping[str, Symbol]],
+    names: Mapping[str, list[str]],
+    texts: Mapping[str, Mapping[str, str]],
+) -> list[Correspondence]:
+    directions = [(a, b) for v in versions if v != source for a, b in ((source, v), (v, source))]
+    masks = {v: (names[v], [_mask(texts[v][n]) for n in names[v]]) for v in versions}
+    found = pool.map(
+        config, "symbols.align", _align, [(masks[a], masks[b]) for a, b in directions], lambda item: digest(item)
+    )
+    jobs, owners = [], []
+    for (a, b), pairs in zip(directions, found, strict=True):
+        rows = [(texts[a][x], texts[b][y]) for x, y in pairs.items()]
+        for i in range(0, len(rows), 64):
+            jobs.append(rows[i : i + 64])
+            owners.append((a, b))
+    parts = pool.map(config, "symbols.votes", _votes_job, jobs, lambda item: digest(item))
+    total: dict[tuple[str, str], Counter[tuple[str, str]]] = defaultdict(Counter)
+    for owner, part in zip(owners, parts, strict=True):
+        total[owner].update(part)
+    return sorted((x, a, y, b) for (a, b), merged in total.items() for x, (y, _) in _agreed(tables[b], merged).items())
+
+
+def join(config: Config) -> tuple[Correspondence, ...]:
+    """Rename, in every other version's symbol_addrs.txt, the names the source version spells otherwise for the same
+    thing: x of the source code is y in version b, x is a symbol of the source and y one of b, b has no x. Returns
+    the renames made as (x, source, y, b)."""
+    project: Any = config.project
+    source = project.names_from
+    with effort.stage("symbols.join"):
+        tables = {v: load(config, v) for v in project.versions}
+        made: list[Correspondence] = []
+        for x, a, y, b in correspondences(config):
+            if a == source and x in tables[a] and y in tables[b] and x not in tables[b] and x != y:
+                made.append((x, a, y, b))
+        for b in sorted({m[3] for m in made}):
+            renames = {y: x for x, _, y, v in made if v == b}
+            file = config.project.root / path(b)
+            file.write_text(rename_lines(file.read_text(), renames))
+        return tuple(made)
+
+
+def referenced(text: str, table: Collection[str]) -> set[str]:
+    """The table names a source text uses."""
+    return tokens(text) & set(table)

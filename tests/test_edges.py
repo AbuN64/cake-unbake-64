@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from unbake import edges
-from unbake.contracts import Member, Placement
 
 JR, NOP, OP = 0x03E00008, 0, 0x27BDFFE8
 
@@ -65,11 +64,10 @@ def test_a_segment_change_and_a_long_gap_are_cuts(tmp_path):
     assert edges._version_job(("sha", str(rom), rows))[0] == (("a", "b", "gap"),)
 
 
-def test_data_pairs_skip_padding_members_and_runs_end_at_other_sections(tmp_path):
+def test_data_runs_end_at_other_sections(tmp_path):
     rom = _rom(tmp_path, "v", [])
     rows = (
         ("x", ".data", 0x1000, 0x1004, 0x80001000, 0),
-        ("x_padding_1004", ".data", 0x1004, 0x1010, 0x80001004, 0),
         ("y", ".data", 0x1010, 0x1014, 0x80001010, 0),
         ("z", ".data", 0x1014, 0x1018, 0x80001014, 0),
         ("fn", ".text", 0x1018, 0x1020, 0x80001018, 0),
@@ -117,14 +115,24 @@ def test_data_census_counts_module_changes_per_class():
 
 def _snapshot(tmp_path, functions):
     rom = _rom(tmp_path, "a", functions)
-    members = {
-        n: Member(n, "function", "asm", "g", (Placement("a", ".text", s, s + 4 * len(w), 0x80000000 + s),))
-        for n, s, w in functions
-    }
-    version = SimpleNamespace(rom=rom, rom_sha256="sha-a", segments=(("main", 0x1000, 0x2000, 0x80001000),))
-    return SimpleNamespace(
-        digest="d1", config=SimpleNamespace(), layout=SimpleNamespace(members=members), versions={"a": version}
+    version = SimpleNamespace(
+        rom=rom,
+        rom_sha256="sha-a",
+        segments=(("main", 0x1000, 0x2000, 0x80001000),),
+        symbols={n: 0x80000000 + s for n, s, _ in functions},
+        code=frozenset(n for n, _, _ in functions),
     )
+    return SimpleNamespace(digest="d1", config=SimpleNamespace(), versions={"a": version})
+
+
+def test_rows_come_from_the_symbols_of_a_version_and_end_where_the_next_starts(tmp_path):
+    snapshot = _snapshot(tmp_path, [("a", 0x1000, [OP, JR, NOP, NOP]), ("b", 0x1010, [OP, JR, NOP])])
+    snapshot.versions["a"].symbols["D_x"] = 0x80001100
+    assert edges._rows(snapshot)["a"] == [
+        ("a", ".text", 0x1000, 0x1010, 0x80001000, 0),
+        ("b", ".text", 0x1010, 0x1100, 0x80001010, 0),
+        ("D_x", ".data", 0x1100, 0x2000, 0x80001100, 0),
+    ]
 
 
 def test_of_maps_each_version_once_per_snapshot_keyed_by_rom_sha_and_rows(tmp_path, monkeypatch):

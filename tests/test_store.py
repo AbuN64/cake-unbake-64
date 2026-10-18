@@ -396,18 +396,7 @@ def test_flock_tracks_the_held_descriptor_only_while_held(tmp_path) -> None:
     assert not store._HELD_FDS
 
 
-@pytest.mark.parametrize(
-    ("kind", "shared"),
-    [
-        ("view", True),
-        ("view.chunk", True),
-        ("unit", True),
-        ("view.facts", True),  # 0570289 slice: views hit 14,140/14,140 across installs, their facts still missed
-        ("declarations", True),
-        ("live-object", True),
-        ("kind", False),
-    ],
-)
+@pytest.mark.parametrize(("kind", "shared"), [("view", True), ("view.chunk", True), ("unit", True), ("kind", False)])
 def test_content_named_kinds_survive_an_install_and_code_keyed_kinds_do_not(
     cfg: Config, monkeypatch: pytest.MonkeyPatch, kind: str, shared: bool
 ) -> None:
@@ -415,42 +404,3 @@ def test_content_named_kinds_survive_an_install_and_code_keyed_kinds_do_not(
     store.put(cfg, kind, "key", b"value")
     monkeypatch.setattr(store, "code", lambda: "install-two")
     assert (store.get(cfg, kind, "key") == b"value") is shared
-
-
-@pytest.fixture
-def builders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """A package folder of the modules that build the _BUILT kinds, read fresh for each install the test plays."""
-    folder = tmp_path / "package"
-    folder.mkdir()
-    for module in ("view", "declarations", "headers", "native"):
-        (folder / f"{module}.py").write_text(f"# {module} one\n")
-    monkeypatch.setattr(store, "_HERE", folder)
-    store.built.cache_clear()
-    yield folder
-    store.built.cache_clear()
-
-
-def test_a_built_kind_misses_only_when_a_module_that_builds_it_changes(
-    cfg: Config, monkeypatch: pytest.MonkeyPatch, builders: Path
-) -> None:
-    # the kinds view.facts, declarations and live-object carried the whole-tool prefix: every install (every slice
-    # sha) missed them once although none of the modules that make them changed
-    monkeypatch.setattr(store, "code", lambda: "install-one")
-    for kind in ("view.facts", "declarations", "live-object"):
-        store.put(cfg, kind, "content", kind.encode())
-    monkeypatch.setattr(store, "code", lambda: "install-two")  # another module of the tool changed
-    (builders / "headers.py").write_text("# headers two\n")  # makes declarations only
-    store.built.cache_clear()
-    assert store.get(cfg, "declarations", "content") is None
-    assert store.get(cfg, "view.facts", "content") == b"view.facts"
-    assert store.get(cfg, "live-object", "content") == b"live-object"
-    (builders / "declarations.py").write_text("# declarations two\n")  # cuts the live text all three are kept by
-    store.built.cache_clear()
-    assert store.get(cfg, "view.facts", "content") is None
-    assert store.get(cfg, "live-object", "content") is None
-
-
-def test_every_built_kind_names_modules_of_the_package() -> None:
-    for kind, modules in store._BUILT.items():
-        assert kind not in store._NAMED
-        assert all((store._HERE / f"{module}.py").is_file() for module in modules), kind

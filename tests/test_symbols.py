@@ -1,111 +1,93 @@
-"""symbols: the project table, its generated files, rename and joins."""
+"""symbols: symbol_addrs facts and the cross-version name join, over two fake versions."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import fixture
 import pytest
 
-from unbake import symbols
-from unbake.contracts import Refusal
-
-VERSIONS = ("a", "b")
-TABLE = b"""schema = 1
-
-[symbol.foo]
-kind = "function"
-a = 0x80000400
-b = 0x80000410
-
-[symbol.bar]
-kind = "data"
-a = 0x80000400
-"""
+from unbake import pool, symbols
 
 
-def test_parse_dump_round_trip_and_declared() -> None:
-    table = symbols.parse(TABLE, VERSIONS)
-    assert table == {
-        "foo": {"kind": "function", "a": 0x80000400, "b": 0x80000410},
-        "bar": {"kind": "data", "a": 0x80000400},
+@pytest.fixture(autouse=True)
+def _inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pool jobs run in this process, so spies see them."""
+    monkeypatch.setattr(pool, "_INLINE_AT", 10**6)
+
+
+def asm(*rows: tuple[str, str]) -> str:
+    return "".join(f"/* {i * 4:X} 8000{0x400 + i * 4:04X} {word} */  {op}\n" for i, (word, op) in enumerate(rows))
+
+
+CALLER = {
+    "a": asm(("0C000100", "jal callee_a"), ("00000000", "nop")),
+    "b": asm(("0C000104", "jal callee_b"), ("00000000", "nop")),
+}
+CALLEE = asm(("03E00008", "jr $ra"), ("00000000", "nop"))
+
+
+def project(tmp: Path) -> symbols.Config:
+    table = {
+        v: f"caller = 0x80000400; // type:func rom:0x1000 size:8\n{c} = 0x80000410; // type:func rom:0x1010 size:0x8\n"
+        for v, c in (("a", "callee_a"), ("b", "callee_b"))
     }
-    assert symbols.parse(symbols.dump(table), VERSIONS) == table
-    assert symbols.declared(table, "b") == {"foo": 0x80000410}
+    extra = {}
+    for v, callee in (("a", "callee_a"), ("b", "callee_b")):
+        extra[f"asm/{v}/nonmatchings/main/caller.s"] = CALLER[v]
+        extra[f"asm/{v}/nonmatchings/main/{callee}.s"] = CALLEE
+    return fixture.config(tmp, symbols=table, extra=extra)
 
 
-@pytest.mark.parametrize("row", ['kind = "function"', 'kind = "function"\nc = 0x1', "a = 0x1", 'kind = "x"\na = 0x1'])
-def test_parse_refuses_rows_without_a_known_version_address(row: str) -> None:
-    with pytest.raises(Refusal) as error:
-        symbols.parse(f"schema = 1\n\n[symbol.n]\n{row}\n".encode(), VERSIONS)
-    assert error.value.findings[0].key in {"symbols.table", "config.schema"}
-
-
-def test_render_marks_functions_and_shared_addresses() -> None:
-    table = symbols.parse(TABLE, VERSIONS)
-    assert symbols.render(table, "a") == (
-        b"bar = 0x80000400; // allow_duplicated:true\nfoo = 0x80000400; // type:func allow_duplicated:true\n"
-    )
-    assert symbols.render(table, "b") == b"foo = 0x80000410; // type:func\n"
-
-
-def test_files_name_the_table_and_every_version_file() -> None:
-    table = symbols.parse(TABLE, VERSIONS)
-    files = {v: f"versions/{v}/symbol_addrs.txt" for v in VERSIONS}
-    assert set(symbols.files(table, files)) == {"symbols.toml", *files.values()}
-
-
-def test_load_refuses_a_missing_table_by_name() -> None:
-    def reader(path: str) -> bytes:
-        raise FileNotFoundError(path)
-
-    with pytest.raises(Refusal) as error:
-        symbols.load(reader, VERSIONS)
-    assert (error.value.findings[0].key, error.value.findings[0].path) == ("config.missing", "symbols.toml")
-
-
-def test_join_keeps_the_name_c_uses_and_refuses_disagreement() -> None:
-    table = {"x": {"kind": "data", "a": 1}, "y": {"kind": "function", "b": 2}}
-    assert symbols.join(table, "x", "y", {"y"}, "a") == "y"
-    assert table == {"y": {"kind": "function", "a": 1, "b": 2}}
-    both = {"x": {"kind": "data", "a": 1}, "y": {"kind": "data", "a": 2}}
-    assert symbols.join(both, "x", "y", set(), "a") is None
-    used = {"x": {"kind": "data", "a": 1}, "y": {"kind": "data", "b": 2}}
-    assert symbols.join(used, "x", "y", {"x", "y"}, "a") is None
-    assert symbols.join(used, "x", "y", set(), "a") == "x"  # the source version's name survives
-
-
-def test_fix_rows_adds_and_corrects_the_address_a_versions_code_uses():
-    table = {"old": {"kind": "data", "a": 0x80000100}}
-    changed = symbols.fix_rows(
-        table, {("old", "a"): (0x80000104, False), ("old", "b"): (0x80000200, False), ("call", "a"): (0x80000400, True)}
-    )
-    assert changed == 3
-    assert table == {
-        "old": {"kind": "data", "a": 0x80000104, "b": 0x80000200},
-        "call": {"kind": "function", "a": 0x80000400},
+def test_parse_reads_splat_lines() -> None:
+    text = "# note\nfoo = 0x80000400; // type:func rom:0x1000 size:0x20\nbar = 0x80000500;\n"
+    text += "baz = 1; // type:u32 rom:0x2000\n"
+    assert symbols.parse(text) == {
+        "foo": (0x80000400, 0x1000, 0x20, "func"),
+        "bar": (0x80000500, None, None, "data"),
+        "baz": (1, 0x2000, None, "u32"),
     }
 
 
-def test_rename_to_a_name_that_places_itself_in_other_versions_joins_the_identities() -> None:
-    table = {"a": {"kind": "data", "de": 0x100}, "b": {"kind": "data", "eu": 0x200}, "c": {"kind": "data", "de": 0x300}}
-    symbols.rename(table, "b", "a")
-    assert table == {"a": {"kind": "data", "de": 0x100, "eu": 0x200}, "c": {"kind": "data", "de": 0x300}}
-    with pytest.raises(Refusal):
-        symbols.rename(table, "c", "a")
-
-
-def test_cross_version_correspondence_cannot_overwrite_existing_regional_address(monkeypatch):
-    from types import SimpleNamespace
-
-    table = {"canonical": {"kind": "data", "a": 0x100, "b": 0x100}, "regional": {"kind": "data", "b": 0x200}}
-    snapshot = SimpleNamespace(
-        config=SimpleNamespace(project=SimpleNamespace(names_from="a")),
-        versions={"b": SimpleNamespace(symbols={"regional": 0x200})},
+def test_asm_path_follows_the_segment_and_type(tmp_path: Path) -> None:
+    config = fixture.config(
+        tmp_path, symbols={"a": "d = 0x80100000; // type:u32 rom:0x3004\nf = 0x80000400; // type:func rom:0x1000\n"}
     )
-    monkeypatch.setattr(symbols, "referenced", lambda *_: {"canonical"})
-    assert symbols.join_pairs(snapshot, table, [("canonical", "a", "regional", "b")]) == 0
-    assert table["canonical"]["b"] == 0x100
-    del table["regional"]
-    assert symbols.join_pairs(snapshot, table, [("canonical", "a", "regional", "b")]) == 0
-    assert table["canonical"]["b"] == 0x100
-    snapshot.versions["a"] = SimpleNamespace(symbols={"other": 0x300})
-    assert symbols.join_pairs(snapshot, table, [("other", "a", "canonical", "b")]) == 0
-    assert table["canonical"]["a"] == 0x100
+    assert symbols.asm_path(config, "a", "d") == "asm/a/data/ovl/d.s"
+    assert symbols.asm_path(config, "a", "f") == "asm/a/nonmatchings/main/f.s"
+
+
+def test_rename_lines_keeps_every_other_byte() -> None:
+    text = "# keep\nold = 0x1; // type:func rom:0x2\nolder = 0x3;\n"
+    assert symbols.rename_lines(text, {"old": "new"}) == "# keep\nnew = 0x1; // type:func rom:0x2\nolder = 0x3;\n"
+
+
+def test_join_renames_the_other_version_to_the_source_spelling(tmp_path: Path) -> None:
+    config = project(tmp_path)
+    assert symbols.join(config) == (("callee_a", "a", "callee_b", "b"),)
+    root = config.project.root
+    assert "callee_a" in (root / "versions/b/symbol_addrs.txt").read_text()
+    assert "callee_b" not in (root / "versions/b/symbol_addrs.txt").read_text()
+    assert "callee_a" in (root / "versions/a/symbol_addrs.txt").read_text()
+    assert symbols.join(config) == ()  # the names agree now
+
+
+def test_join_reads_only_symbol_addrs(tmp_path: Path) -> None:
+    config = project(tmp_path)
+    symbols.join(config)
+    assert not (config.project.root / "symbols.toml").exists()
+
+
+def test_correspondences_cache_on_asm_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = project(tmp_path)
+    calls = []
+    real = symbols._align
+    monkeypatch.setattr(symbols, "_align", lambda item: calls.append(1) or real(item))
+    first = symbols.correspondences(config)
+    assert first and len(calls) == 2  # one alignment per direction
+    assert symbols.correspondences(config) == first and len(calls) == 2
+    (config.project.root / "asm/b/nonmatchings/main/caller.s").write_text(
+        CALLER["b"] + "/* 8 80000408 00000000 */  nop\n"
+    )
+    symbols.correspondences(config)
+    assert len(calls) == 4

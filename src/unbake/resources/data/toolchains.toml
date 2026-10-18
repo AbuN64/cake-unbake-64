@@ -1,6 +1,11 @@
 schema = 1
 
 [toolchain."ido-7.1"]
+cppflags = ["-D__UNBAKE_STDARG_IDO"]
+link_sections = "per-section"
+include_asm = "processor"
+stand_in_as = "{as}"
+data_split = "subsegment"
 title = "IDO 7.1"
 family = "ido"
 cc = "cc"
@@ -45,6 +50,11 @@ sha256 = "0d411696e178fcca34c31c3bf02011b928d7fd9c1fa7f8bf45070e0781b58e15"
 files = ["NCC", "acpp", "as0", "as1", "cc", "cfe", "edgcpfe", "err.english.cc", "ugen", "ujoin", "uld", "umerge", "uopt", "upas", "usplit"]
 
 [toolchain."ido-5.3"]
+cppflags = ["-D__UNBAKE_STDARG_IDO"]
+link_sections = "per-section"
+include_asm = "processor"
+stand_in_as = "{as}"
+data_split = "subsegment"
 title = "IDO 5.3"
 family = "ido"
 cc = "cc"
@@ -98,6 +108,11 @@ sha256 = "ab5c741561f80913d58c8b074771f23941a3edd312505a8ebed6d1dfeb65e506"
 files = ["acpp", "as0", "as1", "c++filt", "cc", "cfe", "copt", "crt1.o", "crtn.o", "err.english.cc", "ld", "libc.so", "libc.so.1", "libexc.so", "libgen.so", "libm.so", "strip", "ugen", "ujoin", "uld", "umerge", "uopt", "upas", "usplit"]
 
 [toolchain."gcc-2.7.2-kmc"]
+cppflags = ["-P", "-undef", "-nostdinc", "-D_LANGUAGE_C", "-D__GNUC__=2", "-D__UNBAKE_STDARG_GCC"]
+link_sections = "per-object"
+include_asm = "inline"
+stand_in_as = "{as}"
+data_split = "subsegment"
 title = "GCC 2.7.2 (KMC)"
 family = "gcc"
 cc = "cc1"
@@ -128,6 +143,11 @@ sha256 = "ff3e299c1d952c0a5cb39f7790a208d0c547cf93986eb5607f820c935cedc288"
 files = ["cc1"]
 
 [toolchain."gcc-2.8.1-sn64"]
+cppflags = ["-P", "-undef", "-nostdinc", "-D_LANGUAGE_C", "-D__GNUC__=2", "-D__UNBAKE_STDARG_GCC"]
+link_sections = "per-section"
+include_asm = "inline"
+stand_in_as = "{as}"
+data_split = "subsegment"
 title = "GCC 2.8.1 (SN64)"
 family = "gcc"
 cc = "cc1"

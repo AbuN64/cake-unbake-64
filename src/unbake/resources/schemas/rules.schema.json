@@ -60,11 +60,12 @@
        "fake-type",
        "pad-view",
        "placeholder-record",
-       "duplicate-record",
        "param-cast",
        "address-int",
        "raw-gfx",
-       "address-literal"
+       "address-literal",
+       "stand-in-body",
+       "duplicate-record"
       ]
      }
     },

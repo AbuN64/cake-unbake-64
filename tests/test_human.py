@@ -3,13 +3,11 @@
 import io
 import json
 import os
-import sys
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
-from unbake import cli, compare, config, effort, human, repo
+from unbake import cli, compare, config, effort, human
 from unbake.contracts import Finding, Origin, StageRecord
 
 
@@ -161,7 +159,7 @@ def test_written_files_print_the_exact_add_and_one_line_commit() -> None:
         "  git add -A -- 'src/a b.c' layout.toml",
         "  git commit -m 'publish f (it'\"'\"'s)'",
     ]
-    assert human._written("move", {"files": ["x"], "message": "move: a -> b"})[-1] == "  git commit -m 'move: a -> b'"
+    assert human._written("setup", {"files": ["x"], "message": "setup: a"})[-1] == "  git commit -m 'setup: a'"
     assert human._written("check", {"files": ["x"]}) == [] and human._written("land", None) == []
 
 
@@ -190,39 +188,6 @@ def test_a_said_line_reaches_the_person_as_one_line():
     human.attach(stream, False)
     effort.say("unbake: waiting for pids 7 to finish")
     assert stream.getvalue() == "unbake: waiting for pids 7 to finish\n"
-
-
-@pytest.mark.parametrize("installed", [True, False])
-def test_upgrade_command_finishes_after_install_without_reading_its_url_as_score_findings(
-    monkeypatch, capsys, installed
-):
-    # The real command used to emit ok JSON after pip succeeded, then crash in human.finish on source[0]['key'].
-    monkeypatch.setattr(repo.psutil, "process_iter", lambda attrs: [])
-    monkeypatch.setattr(repo, "_source", lambda: "https://example.invalid/tool")
-    ran = []
-
-    def install(name, argv, cwd, **kwargs):
-        ran.append(argv)
-        return SimpleNamespace(exit=0 if installed else 1, signal=None, stderr=b"install refused")
-
-    monkeypatch.setattr(repo.process, "run", install)
-    assert cli.main(["upgrade", "abc123"]) == (0 if installed else 1)
-    captured = capsys.readouterr()
-    assert len(captured.out.splitlines()) == 1
-    document = json.loads(captured.out)
-    config.validate("envelope", document, "envelope")
-    assert document["ok"] is installed
-    assert len(ran) == 1 and ran[0][0] == sys.executable
-    assert ran[0][-1] == "git+https://example.invalid/tool@abc123"
-    assert "Traceback" not in captured.err and "source rule" not in captured.err
-    if installed:
-        config.validate("result.upgrade", document["result"], "result.upgrade")
-        assert document["result"] == {"ref": "abc123", "prefix": sys.prefix, "source": "https://example.invalid/tool"}
-        assert document["findings"] == []
-    else:
-        assert document["result"] is None
-        assert document["findings"][0]["key"] == "upgrade.install"
-        assert "Refused:" in captured.err and "install refused" in captured.err
 
 
 @pytest.mark.parametrize("short", [False, True])
@@ -278,7 +243,7 @@ def test_score_command_still_renders_its_diagnostics_in_both_output_forms(cfg, m
     assert "sched: priority 4, input position 5" in captured.err and "move the load" in captured.err
 
 
-@pytest.mark.parametrize("command", ["setup", "move", "land", "submit"])
+@pytest.mark.parametrize("command", ["setup", "land", "submit"])
 def test_other_command_results_keep_written_file_feedback(cfg, monkeypatch, capsys, command):
     files, message = ["src/f.c"], "update f"
     result = {"files": files, "message": message}
@@ -288,7 +253,7 @@ def test_other_command_results_keep_written_file_feedback(cfg, monkeypatch, caps
             result = {"drain": result}
     monkeypatch.setattr(config, "load", lambda root, host: cfg)
     monkeypatch.setattr(cli, "_handler", lambda name: lambda cfg, params: result)
-    args = [command, *(["member", "f", "m"] if command == "move" else []), "--host", "host.toml"]
+    args = [command, "--host", "host.toml"]
     assert cli.main(args) == 0
     captured = capsys.readouterr()
     document = json.loads(captured.out)

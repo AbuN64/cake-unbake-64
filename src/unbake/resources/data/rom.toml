@@ -2,6 +2,8 @@
 # Fields with equal = true must match the names_from ROM; the rest are reported. Similarity is the share of
 # relocation-masked code windows of the names_from ROM found in each other ROM.
 schema = 1
+asflags = ["-march=vr4300", "-mabi=32", "-EB", "--no-pad-sections", "-mips3"]
+text_mask = 0x1FFFFFFF
 
 [order]
 z64 = 0x80371240
@@ -47,3 +49,25 @@ start = 0x1000
 length = 0x100000
 window = 32
 min = 0.5
+
+# Header byte 0x3E to region name, for the cartridge region a project does not configure.
+[country]
+A = "Asia"
+B = "Brazil"
+C = "China"
+D = "Germany"
+E = "North America"
+F = "France"
+G = "Gateway 64 (NTSC)"
+H = "Netherlands"
+I = "Italy"
+J = "Japan"
+K = "Korea"
+L = "Gateway 64 (PAL)"
+N = "Canada"
+P = "Europe"
+S = "Spain"
+U = "Australia"
+W = "Scandinavia"
+X = "Europe"
+Y = "Europe"

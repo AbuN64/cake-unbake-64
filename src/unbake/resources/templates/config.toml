@@ -1,21 +1,6 @@
-schema = 3
-
-[project]
-id = ${id}
+schema = 4
 name = ${name}
 title = ${title}
-versions = ${versions}
-names_from = ${names_from}
 toolchain = ${toolchain}
-
-[build]
-# Preprocessor flags passed to every compile.
-cppflags = []
-# Compiler code generation flags passed to every compile.
-cflags = []
-# Assembler flags for hand-written assembly units.
-asflags = []
-# GNU assembler flags for compiler-emitted assembly.
-gnu_asflags = []
-
+names_from = ${names_from}
 ${version_blocks}

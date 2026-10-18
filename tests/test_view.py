@@ -12,19 +12,7 @@ import fixture
 import pytest
 
 from unbake import store, view
-from unbake.contracts import (
-    Config,
-    Finding,
-    Host,
-    LayoutMap,
-    Project,
-    Recipe,
-    Refusal,
-    Snapshot,
-    UnitSpec,
-    digest,
-    sha256,
-)
+from unbake.contracts import Config, Finding, Host, Recipe, Refusal, Snapshot, UnitSpec, digest, macro, sha256
 
 _STORE = (store.get, store.put, store.put_many, store.content)  # the real cache, before a lane mocks it
 
@@ -42,19 +30,19 @@ def lane(tmp_path, monkeypatch):
     (root / "include/active.h").write_bytes(b"typedef int active;\n")
     (root / "include/z.h").write_bytes(b"typedef int z;\n")
     versions = ("a", "b", "c", "d", "e")
-    project = Project(
+    project = SimpleNamespace(
         root=root,
-        id="fixture",
         name="fixture",
         title="Fixture",
         versions=versions,
+        version={v: SimpleNamespace() for v in versions},
         names_from="a",
         toolchain="fake",
-        build={},
-        version_files={},
-        version_macros={v: (f"VERSION_{v.upper()}",) for v in versions},
-        resident={},
-        origins={},
+        cppflags=(),
+        cflags=(),
+        asflags=(),
+        files={},
+        libraries=(),
         digest=digest("project"),
     )
     host = Host(
@@ -75,10 +63,9 @@ def lane(tmp_path, monkeypatch):
         origins={},
         digest=digest("host"),
     )
-    config = Config(project, host, digest("config"))
-    unit = UnitSpec("src/unit.c", "c", "group", ("value",), "fake", {})
-    layout = LayoutMap({}, {}, {unit.path: unit}, digest("layout"), (), {})
-    snapshot = Snapshot(config, "0" * 40, layout, {}, {}, digest("snapshot"))
+    config = Config(project, host, digest("config"))  # type: ignore[arg-type]
+    unit = UnitSpec("src/unit.c", "c", ("value",), "fake", {})
+    snapshot = Snapshot(config, "0" * 40, None, {}, {}, digest("snapshot"))
     recipe = Recipe("fake", (), (), (), digest("recipe"))
     state = SimpleNamespace(
         root=root,
@@ -152,7 +139,7 @@ def _dir(lane, snapshot):
             _sha(snapshot.read(lane.unit.path)),
             lane.recipe.digest,
             "a",
-            snapshot.config.project.version_macros["a"],
+            macro("a"),
             view._identity(snapshot.config, lane.recipe),
             reads,
             True,
@@ -310,7 +297,6 @@ def test_new_include_refreshes_closure_without_changing_live_source(lane):
     (lane.root / "include/inactive.h").write_bytes(b"changed but inactive")
     second = _get(lane)
     assert second.text == first.text
-    assert view.live_digest(lane.snapshot.config, second) == view.live_digest(lane.snapshot.config, first)
     assert lane.preprocess.call_count == 2
 
 
@@ -345,7 +331,7 @@ def test_dependency_order_and_cache_keys(lane):
             _sha(lane.snapshot.read(lane.unit.path)),
             lane.recipe.digest,
             "a",
-            lane.snapshot.config.project.version_macros["a"],
+            macro("a"),
             view._identity(lane.snapshot.config, lane.recipe),
             reads,
             False,
@@ -512,12 +498,12 @@ def test_overlay_pin_hashes_once_per_stat_and_never_reuses_changed_source(lane, 
         return read(p)
 
     monkeypatch.setattr(Path, "read_bytes", counted)
-    first = view._pin(lane.snapshot, lane.unit.path)
-    assert view._pin(lane.snapshot, lane.unit.path) == first
+    first = view.pin(lane.snapshot, lane.unit.path)
+    assert view.pin(lane.snapshot, lane.unit.path) == first
     assert len(reads) == 1
     path.write_bytes(b"int changed(void) { return 2; }\n")
     os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns + 1))
-    assert view._pin(lane.snapshot, lane.unit.path) != first
+    assert view.pin(lane.snapshot, lane.unit.path) != first
     assert len(reads) == 2
 
 
@@ -532,7 +518,7 @@ def test_git_tree_view_materializes_only_captured_headers(lane):
     assert state.made["include/active.h"] == (b"typedef float active;\n", False)
     assert "include/z.h" not in state.made
     assert frozen.peek("include/z.h") is None
-    assert view._pin(frozen, "include/z.h") == "missing"
+    assert view.pin(frozen, "include/z.h") == "missing"
     include = state.preprocess.call_args.args[3]
     assert all(not p.is_relative_to(snapshot.config.project.root / "include") for p in include)
 
@@ -616,33 +602,6 @@ def test_the_view_text_construction_is_pinned_so_a_change_forces_the_format_bump
     assert view._FORMAT == 1
 
 
-def test_a_warm_view_key_names_its_digests_without_loading_or_parsing_the_view(lane, monkeypatch):
-    """A later command keys an unchanged unit from the kept digests: no view is loaded, no declaration is parsed."""
-    kept = {}
-
-    def cached_object(config, kind, key, produce):
-        if (kind, key) not in kept:
-            kept[kind, key] = produce()
-        return kept[kind, key]
-
-    monkeypatch.setattr(view.store, "cached_object", cached_object)
-    loads = Mock(side_effect=view.get)
-    monkeypatch.setattr(view, "get", loads)
-    live = Mock(side_effect=view.declarations.live)
-    monkeypatch.setattr(view.declarations, "live", live)
-
-    def keyed():
-        view.effort._memo.clear()  # each key is made by a command of its own
-        return view.reads(lane.snapshot, lane.unit, "a", lane.recipe, whole=True)
-
-    first = keyed()
-    assert [keyed() for _ in range(3)] == [first] * 3
-    assert (loads.call_count, live.call_count, lane.preprocess.call_count) == (1, 1, 1)
-    (lane.root / "include/active.h").write_bytes(b"typedef long active;\n")  # a reached file moves the key
-    keyed()
-    assert (loads.call_count, live.call_count) == (2, 2)
-
-
 @pytest.mark.parametrize("overlaid", [False, True])
 def test_a_view_stored_by_one_install_and_root_hits_in_another_with_the_same_content(lane, monkeypatch, overlaid):
     """Map's cold ownership pass missed 0/14,140 views on every new install while units hit: the view kinds were
@@ -655,7 +614,9 @@ def test_a_view_stored_by_one_install_and_root_hits_in_another_with_the_same_con
     first = _get(lane, _overlay(lane.snapshot, writes))
     other = lane.root.parent / "other"
     shutil.copytree(lane.root, other)
-    moved = replace(lane.snapshot.config, project=replace(lane.snapshot.config.project, root=other))
+    moved = replace(
+        lane.snapshot.config, project=SimpleNamespace(**{**vars(lane.snapshot.config.project), "root": other})
+    )
     lane.text = lane.text.replace(str(lane.root), str(other))
     monkeypatch.setattr(store, "code", lambda: "install-two")
     second = _get(lane, _overlay(replace(lane.snapshot, config=moved), writes))

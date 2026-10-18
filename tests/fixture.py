@@ -1,4 +1,4 @@
-"""Test support: schema-3 projects, host files and small native-shaped values. Tests `import fixture`."""
+"""Test support: schema-4 projects, host files and small native-shaped values. Tests `import fixture`."""
 
 from __future__ import annotations
 
@@ -7,31 +7,15 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
-from itertools import pairwise
 from pathlib import Path
-from string import Template
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
-from unbake.contracts import (
-    Config,
-    Host,
-    Json,
-    NativeResult,
-    Origin,
-    Project,
-    Proof,
-    Submission,
-    VersionFiles,
-    digest,
-    sha1,
-    sha256,
-)
+from unbake.contracts import Config, Json, NativeResult, Proof, Submission, digest, sha1, sha256
 
-VRAM_BASE, ROM_BASE, PAGE = 0x80000400, 0x1000, 0x1000
 TOOLS = (*("git", "make", "cpp", "mips_as", "mips_ld", "mips_objcopy", "mips_objdump"), *("n64link", "splat", "armips"))
-Placed = Mapping[str, Mapping[str, tuple[int, bytes]]]  # member name -> version id -> (rom offset, bytes)
 
 
 def _value(item: Any) -> str:
@@ -54,13 +38,6 @@ def _rows(name: str, rows: Sequence[Json]) -> str:
     return "".join(f"[[{name}]]\n" + "".join(f"{k} = {_value(v)}\n" for k, v in row.items()) + "\n" for row in rows)
 
 
-def _place(items: Placed, kind: str, version: str) -> list[tuple[int, str, str, bytes]]:
-    out = [(rom, kind, name, blob) for name, by in items.items() for v, (rom, blob) in by.items() if v == version]
-    if any(rom < ROM_BASE for rom, *_ in out):
-        raise ValueError(f"member offsets in {version} must be at least 0x{ROM_BASE:X}")
-    return out
-
-
 def _write(path: Path, data: bytes | str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data.encode() if isinstance(data, str) else data)
@@ -74,91 +51,112 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run(argv, check=True, capture_output=True, env=env)
 
 
+FAKE_CPP = r'''#!{python}
+"""A fake cpp for tests: #if/#ifdef/#else/#endif, -D macros, INCLUDE_* stand-ins; each run is logged."""
+import os
+import re
+import sys
+
+args = sys.argv[1:]
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cpp.log"), "a") as log:
+    log.write(" ".join(a for a in args if a.startswith("-D")) + "\n")
+defs = {a[2:].partition("=")[0]: a[2:].partition("=")[2] or "1" for a in args if a.startswith("-D")}
+text = sys.stdin.read() if "-" in args else open(args[-1]).read()
+
+
+def truth(expr):
+    expr = re.sub(r"defined\s*\(\s*(\w+)\s*\)|defined\s+(\w+)", lambda m: str(int((m[1] or m[2]) in defs)), expr)
+    expr = re.sub(r"[A-Za-z_]\w*", lambda m: defs.get(m[0], "0"), expr)
+    return bool(eval(expr.replace("&&", " and ").replace("||", " or ").replace("!", " not ")))
+
+
+out, stack = [], []
+for line in text.splitlines():
+    word = re.match(r"\s*#\s*(\w+)\s*(.*)", line)
+    if word:
+        kind, rest = word[1], word[2]
+        live = all(a for a, _ in stack)
+        if kind in ("if", "ifdef", "ifndef"):
+            value = truth(rest) if kind == "if" else (rest.strip() in defs) == (kind == "ifdef")
+            stack.append((value, value))
+        elif kind == "elif":
+            _, taken = stack.pop()
+            value = not taken and truth(rest)
+            stack.append((value, taken or value))
+        elif kind == "else":
+            _, taken = stack.pop()
+            stack.append((not taken, True))
+        elif kind == "endif":
+            stack.pop()
+        elif kind == "define" and live:
+            parts = rest.split(None, 1)
+            defs[parts[0]] = parts[1] if len(parts) > 1 else "1"
+        continue
+    if not all(a for a, _ in stack):
+        continue
+    stand = re.match(r"\s*INCLUDE_(ASM|DATA|RODATA)\(\s*\"?(\w+)\"?\s*,\s*(\w+)\s*\)\s*;?\s*$", line)
+    if stand:
+        folder = "nonmatchings" if stand[1] == "ASM" else "data"
+        section = {"ASM": ".text", "DATA": ".data", "RODATA": ".rodata"}[stand[1]]
+        out.append('__asm__(".section %s\\n.include \\"%s/%s/%s.s\\"");' % (section, folder, stand[2], stand[3]))
+    else:
+        out.append(line)
+sys.stdout.write("\n".join(out) + "\n")
+'''
+
+SEGMENTS = {"main": (0x1000, 0x80000400), "ovl": (0x3000, 0x80100000)}
+SOURCES = {
+    "src/main/c_func.c": "s32 c_func(void) {\n    return 1;\n}\n",
+    "src/main/stand_in.c": '#include "include_asm.h"\n\nINCLUDE_ASM(main, stand_in);\n',
+    "src/ovl/fuzzy.c": (
+        '#include "include_asm.h"\n\n#ifdef NON_MATCHING\ns32 fuzzy(s32 a) {\n    return a + 1;\n}\n#else\n'
+        "INCLUDE_ASM(ovl, fuzzy);\n#endif\n"
+    ),
+}
+HEADERS = {
+    "include/include_asm.h": (
+        '#define INCLUDE_ASM(SEG, NAME) __asm__(".include \\"nonmatchings/" #SEG "/" #NAME ".s\\"")\n'
+    )
+}
+# name -> (segment, offset in the segment, type) in every version; version b is laid 0x10 later in ovl
+SYMBOLS = {"c_func": ("main", 0x0, "func"), "stand_in": ("main", 0x10, "func"), "fuzzy": ("ovl", 0x0, "func")}
+
+
+def symbol_file(version: str, rows: Mapping[str, tuple[str, int, str]] = MappingProxyType(SYMBOLS)) -> str:
+    """versions/<v>/symbol_addrs.txt text; the second version is laid 0x10 further into ovl."""
+    shift = 0x10 if version != "a" else 0
+    lines = []
+    for name, (segment, offset, kind) in rows.items():
+        rom, vram = SEGMENTS[segment]
+        at = offset + (shift if segment == "ovl" else 0)
+        lines.append(f"{name} = 0x{vram + at:08X}; // type:{kind} rom:0x{rom + at:X} size:0x10\n")
+    return "".join(lines)
+
+
 def project(
     tmp: Path,
     *,
     versions: Sequence[str] = ("a", "b"),
-    names_from: str = "a",
-    functions: Placed,
-    data: Placed = MappingProxyType({}),
-    units: Sequence[Json] = (),
-    groups: Sequence[Json] | None = None,
-    headers: Mapping[str, str] = MappingProxyType({}),
-    sources: Mapping[str, str] = MappingProxyType({}),
-    symbols: Mapping[str, Mapping[str, int]] = MappingProxyType({}),
-    fuzzy: Sequence[Json] = (),
-    cartridge_id: Mapping[str, str] = MappingProxyType({}),
-    region: Mapping[str, str] = MappingProxyType({}),
-    description: Mapping[str, str] = MappingProxyType({}),
+    sources: Mapping[str, str] | None = None,
+    symbols: Mapping[str, str] | None = None,
+    extra: Mapping[str, str | bytes] = MappingProxyType({}),
 ) -> Path:
-    """Write a committed project under tmp/project; headers go under include/, sources under src/.
-
-    fuzzy rows are written as [[fuzzy]]; cartridge_id, region and description map version id -> value.
-    """
+    """Write a committed schema-4 project under tmp/project: two segments, three modules (a C function, an
+    INCLUDE_ASM stand-in, a NON_MATCHING body). sources replace src/, symbols replace a version's symbol file."""
     root = tmp / "project"
     root.mkdir(parents=True)
-    from unbake import config as configuration
-
-    table: dict[str, Any] = {}
-    named: dict[str, dict] = {}
-    for vid in versions:
-        placed = sorted(_place(functions, "asm", vid) + _place(data, "data", vid))
-        for (a_rom, _, a_name, a_blob), (b_rom, _, b_name, _) in pairwise(placed):
-            if a_rom + len(a_blob) > b_rom:
-                raise ValueError(f"{a_name} overlaps {b_name} in {vid}")
-        end = max([ROM_BASE] + [rom + len(blob) for rom, _, _, blob in placed])
-        rom = bytearray(-(-end // PAGE) * PAGE)
-        for at, _, _, blob in placed:
-            rom[at : at + len(blob)] = blob
-        _write(root / f"roms/{vid}.z64", bytes(rom))
-        subs: list[Any] = [[at, kind, name] for at, kind, name, _ in placed] + [[len(rom)]]
-        segment = {"name": "main", "type": "code", "start": ROM_BASE, "vram": VRAM_BASE, "subsegments": subs}
-        document = {"name": vid, "sha1": sha1(rom), "segments": [segment]}  # JSON is valid YAML
-        _write(root / f"versions/{vid}/Game.yaml", json.dumps(document, indent=1) + "\n")
-        rows = symbols.get(vid) or {name: VRAM_BASE + at - ROM_BASE for at, _, name, _ in placed}
-        for n, a in rows.items():
-            named.setdefault(n, {"kind": "function" if n in functions else "data"})[vid] = a
-        table[vid] = {
-            "baserom": f"roms/{vid}.z64",
-            "baserom_sha1": sha1(rom),
-            "split": f"versions/{vid}/Game.yaml",
-            "symbols": f"versions/{vid}/symbol_addrs.txt",
-            "macros": [f"VERSION_{vid.upper()}"],
-        }
-        for key, values in (("cartridge_id", cartridge_id), ("region", region), ("description", description)):
-            if vid in values:
-                table[vid][key] = values[vid]
-    from unbake import symbols as symbol_table
-
-    _write(root / "symbols.toml", symbol_table.dump(named).decode())
-    for vid in versions:
-        _write(root / f"versions/{vid}/symbol_addrs.txt", symbol_table.render(named, vid).decode())
-    info = {"id": "fixture", "name": "fixture", "title": "Fixture", "versions": list(versions)}
-    info["names_from"] = names_from
-    info |= {"toolchain": "gcc-test"}
-    build = {key: [] for key in ("cppflags", "cflags", "asflags", "gnu_asflags")}
-    config = "schema = 3\n\n" + _table("project", info) + _table("build", build) + "[resident]\n\n"
-    config += "".join(_table(f"version.{vid}", row) for vid, row in table.items())
-    _write(root / "config.toml", config)
-    first = sorted(_place(functions, "asm", names_from))
-    default_group = {"name": "code_80000400", "segment": "main", "members": [name for _, _, name, _ in first]}
-    default_group |= {"evidence": "authored", "signals": [], "subsystem": "", "library": ""}
-    empty = ("" if units else "unit = []\n") + ("group = []\n" if groups == [] else "")  # the schema requires both keys
-    named = [
-        {"source": f"src/{g['name']}.c", "header": f"include/{g['segment']}/{g['name']}.h", **g}
-        for g in ([default_group] if groups is None else groups)
-    ]
-    rows = _rows("group", named) + _rows("unit", units)
-    layout = f"schema = 5\n{empty}\n" + rows
-    _write(root / "layout.toml", layout + _rows("fuzzy", fuzzy))
-    _write(root / "types.toml", "schema = 1\n\n[function]\n\n[global]\n\n[struct]\n")
-    marks = configuration.load_resource("repo.toml")["readme"]
-    readme = Template(configuration.template("README.md.in"))
-    _write(root / "README.md", readme.substitute(title=info["title"], begin=marks["begin"], end=marks["end"]))
-    for relative, text in headers.items():
-        _write(root / "include" / relative, text)
-    for relative, text in sources.items():
-        _write(root / "src" / relative, text)
+    rom = bytes(0x4000)
+    segments = [{"name": n, "rom": r, "vram": v} for n, (r, v) in SEGMENTS.items()]
+    document = (
+        'schema = 4\nname = "Fixture"\ntoolchain = "gcc-test"\nnames_from = "a"\ncppflags = ["-DGAME"]\n\n'
+        + "".join(_table(f"version.{v}", {"sha1": sha1(rom), "segments": segments}) for v in versions)
+    )
+    _write(root / "config.toml", document)
+    for v in versions:
+        _write(root / f"roms/baserom.{v}.z64", rom)
+        _write(root / f"versions/{v}/symbol_addrs.txt", (symbols or {}).get(v, symbol_file(v)))
+    for relative, text in {**HEADERS, **(SOURCES if sources is None else sources), **extra}.items():
+        _write(root / relative, text)
     _git(root, "init", "-q", "-b", "main")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "fixture project")
@@ -179,6 +177,11 @@ def host(tmp: Path, **overrides: Any) -> Path:
     for name in TOOLS:
         shutil.copy2(true, tmp / "bin" / name)
         tools[name] = str(tmp / "bin" / name)
+    tools["git"] = shutil.which("git") or tools["git"]  # the tree lists files through the real git
+    fake = tmp / "bin" / "cpp"
+    fake.unlink()
+    fake.write_text(FAKE_CPP.replace("{python}", sys.executable))
+    fake.chmod(0o755)
     document: dict[str, dict[str, Any]] = {
         "resources": {
             "cores": 2,
@@ -202,45 +205,27 @@ def host(tmp: Path, **overrides: Any) -> Path:
 
 
 def config(tmp: Path, **kw: Any) -> Config:
-    """project() + host() + unbake.config.load. kw go to project(); kw["host"] is a dict of host overrides."""
+    """project() + host() + the config they describe. kw go to project(); kw["host"] is a dict of host overrides.
+
+    The project record has the schema-4 shape (versions, version[v].segments, cppflags, digest) of contracts.Project."""
     from unbake import config as configuration
 
     overrides = kw.pop("host", {})
-    if "functions" not in kw:
-        code = bytes.fromhex("03e0000800000000")
-        kw["functions"] = {"func_80000400": {v: (ROM_BASE, code) for v in kw.get("versions", ("a", "b"))}}
-    return configuration.load(project(tmp, **kw), host(tmp, **overrides))
-
-
-def bare_config(
-    root: Path,
-    *,
-    versions: Sequence[str] = ("a", "b"),
-    names_from: str | None = None,
-    toolchain: str = "gcc-test",
-    name: str = "fixture",
-    title: str = "Fixture",
-    cores: int = 2,
-    workers: int = 2,
-    memory: int = 1024,
-    toolchain_root: Path | None = None,
-    tools: Mapping[str, Path] | None = None,
-    author: tuple[str, str] = ("test", "test@example.invalid"),
-    origins: Mapping[str, Origin] | None = None,
-    macros: Mapping[str, tuple[str, ...]] | None = None,
-    version_files: Mapping[str, VersionFiles] | None = None,
-    resident: Mapping[str, tuple[Any, ...]] | None = None,
-) -> Config:
-    """Contract records for a project and host without projecting files, ROMs or Git (unlike config)."""
-    host = Host(
-        cores, workers, memory, memory, root / "cache", memory, toolchain_root or root / "tools", tools or {}, None,
-        2, 2, 0.8, 2, author, origins or {}, "host",
+    root = project(tmp, **kw)
+    names = sorted(v for v in ("a", "b") if (root / f"roms/baserom.{v}.z64").exists())
+    version = {
+        v: SimpleNamespace(
+            sha1=sha1(bytes(0x4000)),
+            segments=tuple(SimpleNamespace(name=n, rom=r, vram=m, kind="code") for n, (r, m) in SEGMENTS.items()),
+        )
+        for v in names
+    }
+    facts = SimpleNamespace(
+        root=root, name="Fixture", title="Fixture", toolchain="gcc-test", names_from="a", libraries=(),
+        cppflags=("-DGAME",), cflags=(), asflags=(), versions=tuple(names), version=version, files={}, digest="project",
     )  # fmt: skip
-    project = Project(
-        root, name, name, title, tuple(versions), versions[0] if names_from is None and versions else names_from or "",
-        toolchain, {}, version_files or {}, macros or {}, resident or {}, {}, "project",
-    )  # fmt: skip
-    return Config(project, host, "config")
+    host_config = configuration.load_host(host(tmp, **overrides))
+    return Config(facts, host_config, "config")  # type: ignore[arg-type]
 
 
 def elf_object(names: Sequence[str]) -> bytes:
@@ -368,3 +353,9 @@ def elf_with_symbols(defined: Sequence[str], undefined: Sequence[str]) -> bytes:
     sections += header(".strtab", 3, 0, strtab) + header(".shstrtab", 3, 0, shstr)
     ident = b"\x7fELF" + bytes([1, 2, 1, 0]) + bytes(8)
     return ident + struct.pack(">HHIIIIIHHHHHH", 1, 8, 1, 0, 0, shoff, 0, 52, 0, 0, 40, 5, 4) + body + sections
+
+
+def cpp_runs(tmp: Path) -> int:
+    """How many times the fake cpp of tmp/bin ran."""
+    log = tmp.resolve() / "bin" / "cpp.log"
+    return len(log.read_text().splitlines()) if log.exists() else 0

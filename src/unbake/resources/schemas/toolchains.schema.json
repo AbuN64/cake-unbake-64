@@ -175,6 +175,33 @@
        "type": "string",
        "minLength": 1
       }
+     },
+     "cppflags": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "link_sections": {
+      "enum": [
+       "per-object",
+       "per-section"
+      ]
+     },
+     "include_asm": {
+      "enum": [
+       "inline",
+       "processor"
+      ]
+     },
+     "stand_in_as": {
+      "type": "string",
+      "minLength": 1
+     },
+     "data_split": {
+      "type": "string",
+      "minLength": 1
      }
     },
     "required": [
@@ -195,7 +222,12 @@
      "downloads",
      "preprocess",
      "compile",
-     "refused_warnings"
+     "refused_warnings",
+     "cppflags",
+     "link_sections",
+     "include_asm",
+     "stand_in_as",
+     "data_split"
     ],
     "additionalProperties": false,
     "oneOf": [

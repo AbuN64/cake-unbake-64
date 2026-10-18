@@ -106,13 +106,37 @@
     "min"
    ],
    "additionalProperties": false
+  },
+  "asflags": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "text_mask": {
+   "type": "integer",
+   "minimum": 1,
+   "maximum": 4294967295
+  },
+  "country": {
+   "type": "object",
+   "description": "cartridge header country byte (one ASCII character) to the region name",
+   "additionalProperties": {
+    "type": "string",
+    "minLength": 1
+   },
+   "minProperties": 1
   }
  },
  "required": [
   "schema",
   "order",
   "field",
-  "similarity"
+  "similarity",
+  "asflags",
+  "text_mask",
+  "country"
  ],
  "additionalProperties": false
 }

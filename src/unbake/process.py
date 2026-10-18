@@ -221,3 +221,19 @@ def git(config: Config, *args: str) -> NativeResult:
                 )
             )
         return result
+
+
+def make(config: Config, targets: Sequence[str], jobs: int = 0) -> NativeResult:
+    """One `make -j<jobs> <targets>` under the pool jobserver: the only process a build spawns, whatever its steps.
+    `jobs` is the work the build expects (0: unknown); the jobserver grants the slots and grows into freed ones."""
+    from unbake import pool  # pool imports store, which imports this module
+
+    root = config.project.root
+    with effort.stage("make"), pool.jobserver(config.host, jobs) as (_, env, fds):
+        return run("make", [tool(config, "make"), "-k", *targets], root, tmp=scratch(root), env=env, pass_fds=fds)
+
+
+def tracked(root: Path) -> set[str]:
+    """The files git tracks under root; empty when root is no repository."""
+    done = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False)
+    return {name for name in done.stdout.decode().split("\0") if name}

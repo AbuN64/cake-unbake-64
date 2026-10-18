@@ -36,7 +36,7 @@ Runtime recognition currently proves one complete signed integer-to-double
 implementation and all of its actual ROM literals. Other implementations and
 other helper operations require further family evidence. No generic library
 catalogue is implied. Conflicting native addresses are refused. Bindings preserve
-ROM bytes; code/data split repair remains the layout owner's operation.
+ROM bytes; the source tree owns the code/data split.
 
 Public compiler headers are described by the family protocol. `unbake recompute
 compiler-headers` provisions missing providers without ROM extraction or a type

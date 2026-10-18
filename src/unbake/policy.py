@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import tomllib
@@ -13,10 +12,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import config, delta, effort, native, pool, process, recipes, store, symbols, types, versions
+from unbake import config, delta, effort, native, pool, process, recipes, store, tree
 from unbake import view as _view
 from unbake.contracts import Finding, Json, Refusal, Snapshot, SourceView, UnitSpec, code_identity, digest
-from unbake.families import typedebt
 
 
 def _numbered(text: str) -> Callable[[int], int]:
@@ -184,346 +182,8 @@ def _raw_gfx(code: str) -> set[int]:
     return result
 
 
-def _symbol_guards(snapshot: Snapshot, text: str) -> set[int]:
-    """Only symbol-selection guards with identical arms and distinct ROM functions are exempt; others are findings."""
-    pattern = (
-        r"^[ \t]*#[ \t]*if[ \t]+defined\s*\(\s*(VERSION_\w+)\s*\)[ \t]*\n"
-        r"([^#]*?)^[ \t]*#[ \t]*else[ \t]*\n([^#]*?)^[ \t]*#[ \t]*endif\b"
-    )
-    allowed, number = set(), _numbered(text)
-    clean = re.sub(
-        r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\'',
-        lambda m: _blank(m[0]) if m[0].startswith(("/*", "//")) else m[0],
-        text,
-    )
-    for match in re.finditer(pattern, clean, re.M):
-        tokens = [
-            re.findall(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[A-Za-z_]\w*|\S', arm) for arm in match.group(2, 3)
-        ]
-        if len(tokens[0]) != len(tokens[1]):
-            continue
-        changed = {(a, b) for a, b in zip(*tokens, strict=True) if a != b}
-        if len(changed) != 1:
-            continue
-        a, b = next(iter(changed))
-        members = snapshot.layout.members
-        if a not in members or b not in members or any(members[n].kind != "function" for n in (a, b)):
-            continue
-        code: dict[str, Any] = {}
-        arms = set()
-        for vid, flags in snapshot.config.project.version_macros.items():
-            name = a if f"-D{match[1]}" in flags else b
-            places = [
-                p
-                for p in members[name].placements
-                if p.version == vid and p.section == ".text" and snapshot.versions[vid].symbols.get(name) == p.vram
-            ]
-            if len(places) != 1:
-                break
-            p = places[0]
-            code.setdefault(name, versions.rom_bytes(snapshot.versions[vid], p.rom_start, p.rom_end))
-            arms.add(name)
-        else:
-            if arms == {a, b} and code[a] != code[b]:
-                allowed.add(number(match.start()))
-    return allowed
-
-
-_GUARD = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif)\b([^\n]*)$")
-_VERSION_ONLY = re.compile(r"(?:\s|defined|VERSION_\w+|[()!]|&&|\|\|)*")
-
-
-def _truth(expr: str, macros: Collection[str]) -> bool:
-    """The value of a version-only `#if` expression (`defined(X)`, `X`, `!`, `&&`, `||`, parentheses) when exactly the
-    `-D` macros given are set. A malformed expression raises ValueError."""
-    spelled = {"&&": "and", "||": "or", "!": "not", "(": "(", ")": ")"}
-    tokens = [t for t in re.findall(r"&&|\|\||[()!]|\w+", expr) if t != "defined"]
-    words = [spelled.get(t) or str(f"-D{t}" in macros) for t in tokens]
-    try:  # every word is and, or, not, a parenthesis, True or False: Python's precedence is C's
-        return bool(eval(" ".join(words), {"__builtins__": {}}))
-    except SyntaxError as error:
-        raise ValueError(f"malformed expression (unbalanced parenthesis or missing tokens): {expr}") from error
-
-
-def _guard_expression(found: re.Match[str]) -> str:
-    rest = found[2].strip()
-    return {"ifdef": f"defined({rest})", "ifndef": f"!defined({rest})"}.get(found[1], rest)
-
-
-def _data_guards(snapshot: Snapshot, path: str, text: str) -> set[int]:
-    """The version guards of a data unit whose bytes truly differ between its holders (proofs must still be exact)."""
-    unit = snapshot.layout.units.get(path)
-    if unit is None or "VERSION_" not in text:
-        return set()
-    if config.kind(unit.kind)["credit"] == "code":
-        return set()
-    differs = any(
-        len(
-            {
-                versions.rom_bytes(snapshot.versions[p.version], p.rom_start, p.rom_end)
-                for p in snapshot.layout.members[name].placements
-                if p.section != ".bss"
-            }
-        )
-        > 1
-        for name in unit.members
-    )
-    if not differs:
-        return set()
-    return {
-        n
-        for n, line in enumerate(text.splitlines(), 1)
-        if (m := _GUARD.match(line)) and "VERSION_" in line and _VERSION_ONLY.fullmatch(m[2])
-    }
-
-
-_ELSE = re.compile(r"^[ \t]*#[ \t]*else\b")
-_END = re.compile(r"^[ \t]*#[ \t]*endif\b")
-
-
-def _branches(
-    text: str, holders: Collection[str], macros: Json
-) -> list[tuple[dict[int, frozenset[str]], list[frozenset[str]]]]:
-    """Every version-only `#if` chain of text as ({guard line: holders taking that branch}, [every branch's holders]).
-    A branch is taken by the holders whose expression is true and no earlier one was; the `#else` takes the rest. A
-    chain with a condition that is not version-only has no truth table and is left out."""
-    done: list[tuple[dict[int, frozenset[str]], list[frozenset[str]]]] = []
-    stack: list[dict[str, Any]] = []
-    for n, line in enumerate(text.splitlines(), 1):
-        found = _GUARD.match(line)
-        if found and found[1] != "elif":
-            stack.append({"lines": {}, "sets": [], "left": frozenset(holders), "ok": True})
-        elif _ELSE.match(line) and stack:
-            stack[-1]["sets"].append(stack[-1]["left"])
-            stack[-1]["left"] = frozenset()
-            continue
-        elif _END.match(line) and stack:
-            chain = stack.pop()
-            if chain["ok"]:
-                done.append((chain["lines"], [s for s in (*chain["sets"], chain["left"]) if s]))
-            continue
-        if not found or not stack:
-            continue
-        chain = stack[-1]
-        try:
-            if not _VERSION_ONLY.fullmatch(found[2]):
-                raise ValueError(found[2])
-            raw = frozenset(v for v in holders if _truth(_guard_expression(found), macros[v]))
-        except ValueError:
-            chain["ok"] = False
-            continue
-        taken = raw & chain["left"]
-        chain["lines"][n] = taken
-        chain["sets"].append(taken)
-        chain["left"] -= taken
-    return done
-
-
-def _judge(
-    snapshot: Snapshot, path: str, text: str, function: str, sides: Sequence[Collection[str]]
-) -> tuple[set[int], str]:
-    """The guard lines of text a documented N-way difference of function stands for, and why not ("" when it does)."""
-    from unbake import layout, ownership
-
-    unit = snapshot.layout.units.get(path)
-    if unit is None or function not in unit.members:
-        return set(), "Version difference names a function this unit does not hold"
-    member = snapshot.layout.members[function]
-    holders = set(member.holders())
-    parts = [frozenset(s) for s in sides]
-    if len(parts) < 2 or not all(parts) or sum(map(len, parts)) != len(holders) or frozenset().union(*parts) != holders:
-        return set(), "Version difference must partition every holding version into disjoint sides"
-    macros = snapshot.config.project.version_macros
-    lines: set[int] = set()
-    for found, _ in _branches(text, holders, macros):
-        for n, taken in found.items():
-            if taken and all(part <= taken or not part & taken for part in parts):
-                lines.add(n)
-    if not lines:
-        return set(), "Version difference must name a guard whose branches are whole sides"
-    targets = {
-        v: b"".join(
-            versions.rom_bytes(snapshot.versions[v], p.rom_start, p.rom_end)
-            for p in member.placements
-            if p.version == v and p.section == ".text"
-        )
-        for v in holders
-    }
-    sets = [{targets[v] for v in part} for part in parts]
-    if not all(targets.values()) or any(a & b for i, a in enumerate(sets) for b in sets[i + 1 :]):
-        return set(), "Target function bytes do not differ between the documented version sides"
-    trial = layout.overlay(snapshot, {path: text.encode()})
-    recipe = recipes.resolve(trial.config, unit, unit.options)
-    row = {"function": function, "sides": sorted(sorted(part) for part in parts)}
-    key = ("version-difference", digest(row), tuple(native.stamp(trial, unit, v, recipe) for v in sorted(holders)))
-
-    def prove() -> bool:
-        own, candidate = ownership.derive(trial, replace(unit, withheld=()))
-        proofs = [p for v in sorted(holders) for p in native.prove_job((own, candidate, v))]
-        return bool(proofs) and {p.version for p in proofs} == holders and all(p.exact for p in proofs)
-
-    if not effort.memo(key, prove):
-        return set(), "Documented version difference is not exact in every holding version"
-    return lines, ""
-
-
-def _version_guards(snapshot: Snapshot, path: str, text: str, failures: list[Finding] | None = None) -> set[int]:
-    """A documented code guard needs different cart bytes per side and an exact compile in every holder. A difference
-    that does not stand is a finding of the text like any rule's (in `failures`), so a change is judged against what
-    its base text already had; without `failures` it refuses."""
-    unit = snapshot.layout.units.get(path)
-    allowed: set[int] = set()
-    for row in getattr(snapshot.config.project, "version_differences", ()):
-        if unit and row["function"] in unit.members:
-            lines, reason = _judge(snapshot, path, text, row["function"], row["sides"])
-            if reason:
-                failed = Finding("source.file-version-guard", reason, path=path, unit=row["function"])
-                if failures is None:
-                    raise Refusal(failed)
-                failures.append(failed)
-            allowed |= lines
-    return allowed
-
-
-def _derived_rows(snapshot: Snapshot) -> list[Json]:
-    """The version_differences rows the sources earn: for each code function, every `#if` chain of its unit that splits
-    its holders yields a row, kept only when `_judge` accepts it (different bytes per side, exact in every holder)."""
-    rows: dict[str, Json] = {}
-    kinds = config.kinds()
-    for path, unit in snapshot.layout.units.items():
-        if kinds[unit.kind]["credit"] != "code" or (text := snapshot.peek(path)) is None or b"VERSION_" not in text:
-            continue
-        source = text.decode()
-        for name in unit.members:
-            member = snapshot.layout.members[name]
-            holders = member.holders()
-            if member.kind != "function" or len(holders) < 2:
-                continue
-            for _, branches in _branches(source, holders, snapshot.config.project.version_macros):
-                sides = sorted(sorted(b) for b in dict.fromkeys(branches) if b)
-                if len(sides) > 1 and not _judge(snapshot, path, source, name, sides)[1]:
-                    rows[digest((name, sides))] = {"function": name, "sides": sides}
-    return sorted(rows.values(), key=lambda r: (r["function"], r["sides"]))
-
-
-_ROW = "[[project.version_differences]]"
-
-
-def _rows_text(text: str, rows: Sequence[Json]) -> str:
-    """config.toml text with its version_differences rows replaced by rows, in the place the first old row held."""
-    kept: list[str] = []
-    first: int | None = None
-    skipping = False
-    for line in text.splitlines():
-        if line.strip() == _ROW:
-            first = len(kept) if first is None else first
-            skipping = True
-        elif line.startswith("["):
-            skipping = False
-        if not skipping:
-            kept.append(line)
-    if first is None:  # before the first table that follows [project], else at the end
-        project = next((i for i, line in enumerate(kept) if line.strip() == "[project]"), None)
-        later = range(project + 1, len(kept)) if project is not None else ()
-        first = next((i for i in later if kept[i].startswith("[") and not kept[i].startswith("[project.")), len(kept))
-    block = []
-    for row in rows:
-        sides = ", ".join("[" + ", ".join(json.dumps(v) for v in side) + "]" for side in row["sides"])
-        block += [_ROW, f"function = {json.dumps(row['function'])}", f"sides = [{sides}]", ""]
-    while first and not kept[first - 1].strip() and not block:
-        first -= 1
-    out = [*kept[:first], *block, *kept[first:]]
-    return "\n".join(out).rstrip("\n") + "\n"
-
-
 _C_WORDS = ["if", "else", "while", "for", "do", "switch", "case", "return", "sizeof", "defined", "typeof"]
 _NOT_NAMES = frozenset([*_C_WORDS, "goto", "break", "continue", "default", "struct", "union", "enum"])
-_IDENT = re.compile(r"[A-Za-z_]\w*")
-_DECLARED = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)|\b([A-Za-z_]\w*)\s*(?=[(\[;,])", re.M)
-
-
-def _chain_names(text: str, start: int) -> set[str]:
-    """The names the version chain opening at line `start` (1-based) defines or declares: its macros and declarators."""
-    depth, body = 0, []
-    for line in text.splitlines()[start - 1 :]:
-        opens = _GUARD.match(line)
-        depth += bool(opens and opens[1] != "elif") - bool(_END.match(line))
-        body.append(line)
-        if depth == 0:
-            break
-    return {m[1] or m[2] for m in _DECLARED.finditer("\n".join(body))} - _NOT_NAMES
-
-
-def _header_guards(snapshot: Snapshot, path: str, text: str) -> set[int]:
-    """The guard lines of a header whose version-only `#if` chains really split the ROMs: the branches partition the
-    versions into sides, and a code function of a unit that mentions a name the chain defines or declares holds bytes
-    that differ between every pair of sides. The compile and ROM proof of those units still has to be exact."""
-    if not config.is_header(path) or "VERSION_" not in text or path in snapshot.layout.units:
-        return set()
-    return effort.memo(
-        ("header-guards", snapshot.digest, path, digest(text)), lambda: _header_guard_lines(snapshot, path, text)
-    )
-
-
-def _header_guard_lines(snapshot: Snapshot, path: str, text: str) -> set[int]:
-    from unbake import headers as _headers
-
-    macros = snapshot.config.project.version_macros
-    chains = _branches(text, set(snapshot.versions) & set(macros), macros)
-    if not chains:
-        return set()
-    users = [snapshot.layout.units[u] for u in _headers.consumers(snapshot, [path])]
-    users = [u for u in users if config.kind(u.kind)["credit"] == "code"]
-    words: dict[str, set[str]] = {}
-
-    def mentions(unit: UnitSpec) -> set[str]:  # tokenized when first asked, once per unit
-        if unit.path not in words:
-            words[unit.path] = set(_IDENT.findall((snapshot.peek(unit.path) or b"").decode(errors="replace")))
-        return words[unit.path]
-
-    allowed: set[int] = set()
-    for found, sides in chains:
-        parts = [frozenset(side) for side in sides]
-        lines = {n for n, taken in found.items() if taken and all(p <= taken or not p & taken for p in parts)}
-        if len(parts) < 2 or not lines:
-            continue
-        names = _chain_names(text, min(found))
-        for unit in users:
-            if names & mentions(unit) and any(
-                _sides_differ(snapshot, snapshot.layout.members[n], parts)
-                for n in unit.members
-                if snapshot.layout.members[n].kind == "function"
-            ):
-                allowed |= lines
-                break
-    return allowed
-
-
-def _sides_differ(snapshot: Snapshot, member: Any, parts: Sequence[frozenset[str]]) -> bool:
-    """Whether the member's .text bytes in the versions of each side share no value with any other side's."""
-    seen: list[set[bytes]] = []
-    for part in parts:
-        held = {
-            versions.rom_bytes(snapshot.versions[p.version], p.rom_start, p.rom_end)
-            for p in member.placements
-            if p.version in part and p.section == ".text"
-        }
-        if not held or any(held & earlier for earlier in seen):
-            return False  # a side without the member, or one sharing bytes with an earlier side, ends it at once
-        seen.append(held)
-    return True
-
-
-def _allowed_guards(snapshot: Snapshot, path: str, text: str) -> set[int]:
-    """The lines of `text` the file-version-guard rule lets stand: symbol selection, or proven data differences."""
-    if "VERSION_" not in text:
-        return set()
-    return (
-        _symbol_guards(snapshot, text)
-        | _data_guards(snapshot, path, text)
-        | _version_guards(snapshot, path, text, [])  # a difference that does not stand is evaluate's finding
-        | _header_guards(snapshot, path, text)
-    )
 
 
 _NUMBER = re.compile(  # a float is consumed whole so its fragments are no integers; the integer keeps its suffix out
@@ -555,48 +215,448 @@ def _mask(code: str, start: int, end: int) -> bool:
     return bool(_MASKED.search(code, max(0, start - 24), start) or _MASKS.match(code, end))
 
 
-def _vram_index(snapshot: Snapshot, version: str) -> tuple[list[int], list[int]]:
-    """The sorted vram starts and ends of every placed member in a version, once per command."""
+def _sdk(config_: Any, path: str) -> bool:
+    """Whether a path sits in a vendored library directory: its source idioms are not ours to judge."""
+    return any(Path(path).is_relative_to(folder) for folder in getattr(config_.project, "libraries", ()))
 
-    def build() -> tuple[list[int], list[int]]:
-        rows = sorted(
-            (p.vram, p.vram + p.size)
-            for member in snapshot.layout.members.values()
-            for p in member.placements
-            if p.version == version and p.size > 0
-        )
-        return [r[0] for r in rows], [r[1] for r in rows]
 
-    return effort.memo(("vram", snapshot.digest, version), build)
+def _tree(snapshot: Snapshot) -> tree.Tree:
+    return tree.capture(snapshot.config, snapshot.overlays)
+
+
+def _module(snapshot: Snapshot, path: str) -> tree.Module | None:
+    return next((m for m in _tree(snapshot).modules if m.path == path), None)
+
+
+def _held(module: tree.Module) -> list[str]:
+    return sorted(v for v, names in module.owns.items() if names)
+
+
+def _unit(snapshot: Snapshot, module: tree.Module) -> UnitSpec:
+    return recipes.unit(snapshot.config, module)
+
+
+def _extents(snapshot: Snapshot, version: str) -> tuple[list[int], list[int], dict[str, tuple[int, int]]]:
+    """The sorted start and end of every symbol address in a version (a symbol ends where the next starts, or where
+    its segment does) and each name's extent, once per command."""
+
+    def build() -> tuple[list[int], list[int], dict[str, tuple[int, int]]]:
+        ver = snapshot.versions[version]
+        segments = [(vram, vram + stop - start) for _, start, stop, vram in ver.segments]
+        starts = sorted(set(ver.symbols.values()))
+        stops: list[int] = []
+        for index, address in enumerate(starts):
+            cap = next((end for first, end in segments if first <= address < end), address + 4)
+            nxt = starts[index + 1] if index + 1 < len(starts) else cap
+            stops.append(min(nxt, cap) if min(nxt, cap) > address else address + 4)
+        table = dict(zip(starts, stops, strict=True))
+        named = {name: (address, table[address]) for name, address in ver.symbols.items()}
+        return starts, stops, named
+
+    return effort.memo(("extents", snapshot.digest, version), build)
 
 
 def _address_literals(snapshot: Snapshot, path: str, code: str) -> dict[int, str]:
-    """Lines that spell a ROM address as a number: a literal in the mapped address space (from _KSEG0) inside a placed
-    member's vram range in a version holding the unit, or `NAME + K` that reaches past the data member NAME in every
-    holder."""
-    unit = snapshot.layout.units.get(path)
-    if unit is None:
+    """Lines that spell a ROM address as a number: a literal in the mapped address space (from _KSEG0) inside a symbol's
+    range in a version holding the module, or `NAME + K` that reaches past the data symbol NAME in every holder."""
+    module = _module(snapshot, path)
+    if module is None:
         return {}
-    held = sorted({p.version for name in unit.members for p in snapshot.layout.members[name].placements})
-    indexes = [_vram_index(snapshot, v) for v in held]
+    held = _held(module)
+    indexes = [_extents(snapshot, v) for v in held]
     line = _numbered(code)
     hits: dict[int, str] = {}
     for match in _NUMBER.finditer(code):
         value = _integer(match["int"]) if match["int"] else None
         if value is None or value < _KSEG0 or _mask(code, match.start(), match.end()):
             continue
-        for starts, ends in indexes:
+        for starts, ends, _ in indexes:
             at = bisect_right(starts, value) - 1
             if at >= 0 and value < ends[at]:
                 hits.setdefault(line(match.start()), match["int"])
                 break
     for match in _OFFSET.finditer(code):
-        member = snapshot.layout.members.get(match[1])
-        if member is None or member.kind == "function" or not member.placements:
-            continue
-        if (reach := _integer(match[2])) is not None and all(reach >= p.size for p in member.placements):
+        sizes = [
+            e[2][match[1]][1] - e[2][match[1]][0]
+            for v, e in zip(held, indexes, strict=True)
+            if match[1] in e[2] and match[1] not in snapshot.versions[v].code
+        ]
+        if sizes and (reach := _integer(match[2])) is not None and all(reach >= size for size in sizes):
             hits.setdefault(line(match.start()), " ".join(match[0].split()))
     return hits
+
+
+_EXTERN = re.compile(r"^[ \t]*extern\b[^;{}]*;", re.M)
+_EXTERN_NAME = (
+    re.compile(r"\(\s*\*\s*(\w+)\s*\)"),
+    re.compile(r"(\w+)\s*\("),
+    re.compile(r"(\w+)\s*(?:\[[^\]]*\]\s*)*;$"),
+)
+
+
+def _externs(code: str) -> dict[str, tuple[str, ...]]:
+    """Every `extern` declaration of one header's code, by the name it declares, whitespace normalised."""
+    found: dict[str, list[str]] = defaultdict(list)
+    for match in _EXTERN.finditer(code):
+        text = " ".join(match[0].split())
+        name = next((m[1] for pattern in _EXTERN_NAME if (m := pattern.search(text))), None)
+        if name:
+            found[name].append(text)
+    return {name: tuple(rows) for name, rows in found.items()}
+
+
+def _header_externs(snapshot: Snapshot, text: str) -> dict[str, tuple[str, ...]]:
+    """The externs of one header, kept by its text (its blob sha) in the `header.names` kind."""
+    return store.cached_object(
+        snapshot.config, "header.names", digest(("externs", text)), lambda: _externs(_scopes(text)["code"])
+    )
+
+
+def _include_headers(snapshot: Snapshot) -> list[str]:
+    root = snapshot.config.project.root
+    found = {p.relative_to(root).as_posix() for p in (root / "include").rglob("*") if p.is_file()}
+    found |= {p for p, data in snapshot.overlays.items() if data is not None and p.startswith("include/")}
+    found -= {p for p, data in snapshot.overlays.items() if data is None}
+    return sorted(p for p in found if config.is_header(p))
+
+
+def header_lint(snapshot: Snapshot, only: Collection[str] | None = None) -> tuple[Finding, ...]:
+    """Each extern is declared at most once across include/, and one name has one declaration everywhere."""
+    seen: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for path in _include_headers(snapshot):
+        for name, found in _header_externs(snapshot, snapshot.read(path).decode(errors="replace")).items():
+            seen[name].extend((path, row) for row in found)
+    out: list[Finding] = []
+    for name, rows in sorted(seen.items()):
+        if len(rows) < 2:
+            continue
+        first = rows[0]
+        for path, row in rows[1:]:
+            key = "source.extern-conflict" if row != first[1] else "source.extern-redeclared"
+            reason = f"{config.sentence(key)}: {name} (first declared in {first[0]})"
+            if only is None or path in only:
+                out.append(Finding(key, reason, path=path, unit=name, blocking=False))
+    return tuple(out)
+
+
+# Type-debt checks over code text with comments and strings blanked: each returns {line: subject} per row.
+_SYMBOL = r"func_[0-9A-Fa-f]+"  # the project's function symbol: no record type may be named after one
+_NAMED = re.compile(rf"\b\w+?_{_SYMBOL}\w*")  # a name carrying a function symbol (Actor_func_802A274C_de)
+_VIEW = re.compile(rf"\b{_SYMBOL}(?:_\w+?)?_S\d+\b")  # a per-function view numbered _S<n>
+_TAG = re.compile(rf"\b(?:struct|union)\s+(\w*{_SYMBOL}\w*)")  # a tag that carries a function symbol
+_SIZES = {1: "u8 s8 char bool", 2: "u16 s16 short", 4: "u32 s32 int long float f32 void", 8: "u64 s64 double f64"}
+_BYTES = {name: size for size, names in _SIZES.items() for name in names.split()}
+_PRIMITIVE = frozenset(_BYTES) | {"unsigned", "signed", "const", "volatile", "size_t", "uintptr_t", "intptr_t"}
+_INTEGER = frozenset(_PRIMITIVE - {"float", "f32", "double", "f64", "void", "bool"})
+_PLACEHOLDER = re.compile(  # an offset name: pad*, unk<hex>, unknown<hex>, field_<hex>, _<hex>
+    r"^(?:pad\w*|unk(?:nown)?_?[0-9A-Fa-f]*|field_[0-9A-Fa-f]+|_[0-9A-Fa-f]+)$", re.I
+)
+
+
+def _line_of(code: str) -> Callable[[int], int]:
+    return lambda offset: code.count("\n", 0, offset) + 1
+
+
+def _body(code: str, start: int) -> tuple[int, int]:
+    """The span inside the brace at `start`."""
+    depth = 0
+    for index in range(start, len(code)):
+        depth += (code[index] == "{") - (code[index] == "}")
+        if depth == 0:
+            return start + 1, index
+    return start + 1, len(code)
+
+
+def _record_names(code: str) -> set[str]:
+    """Every name this text declares as a record type: struct and union tags and typedef aliases."""
+    names = {m[1] for m in re.finditer(r"\b(?:struct|union|enum)\s+(\w+)", code)}
+    names.update(m[1] for m in re.finditer(r"\btypedef\b[^;{]*?(\w+)\s*;", code))
+    for head in re.finditer(r"\btypedef\s+(?:struct|union|enum)\s*(?:\w+\s*)?\{", code):
+        alias = re.match(r"\}\s*(\w+)\s*;", code[_body(code, head.end() - 1)[1] :])
+        if alias:
+            names.add(alias[1])
+    return names
+
+
+def _fake_type(code: str) -> dict[int, str]:
+    """The first line of each distinct invented per-function record name: numbered views, and record types (declared
+    here or used as a type) whose name carries a function symbol. A data symbol carrying one is not a type."""
+    line = _line_of(code)
+    records = _record_names(code)
+    first: dict[str, int] = {}
+    for match in _VIEW.finditer(code):
+        first.setdefault(match[0], line(match.start()))
+    for match in _TAG.finditer(code):
+        first.setdefault(match[1], line(match.start(1)))
+    for match in _NAMED.finditer(code):
+        name = match[0]
+        after = code[match.end() :]
+        typed = name in records or re.match(r"\s*\**\s*[A-Za-z_]", after) or re.match(r"\s*\*", after)
+        if typed and not re.match(r"\s*\(", after):
+            first.setdefault(name, line(match.start()))
+    found: dict[int, str] = {}
+    for name, at in first.items():
+        found.setdefault(at, name)
+    return found
+
+
+def _padded(code: str, head: re.Match[str]) -> tuple[bool, int]:
+    """Whether the struct opened by `head` is mostly padding arrays, and where it ends. Every declarator of a field
+    counts (`u32 a, b, c;` names three, a bitfield names one)."""
+    start, stop = _body(code, head.end() - 1)
+    pad = named = total = 0
+    for field in code[start:stop].split(";"):
+        first = re.match(r"\s*(?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*([A-Za-z_]\w*)", field)
+        for part in field.split(","):
+            match = re.search(
+                r"(\*?)\s*([A-Za-z_]\w*)\s*(?:\[\s*(0[xX][0-9A-Fa-f]+|\d+)\s*\])?\s*(?::\s*\w+\s*)?$", part.strip()
+            )
+            if not first or not match or (match[2] == first[1] and not match.start(2)):
+                continue
+            size = 4 if match[1] else _BYTES.get(first[1], 4) * int(match[3] or "1", 0)
+            total += size
+            if match[3] and _PLACEHOLDER.match(match[2]):
+                pad += size
+            else:
+                named += 1
+    return bool(pad and 2 * pad >= total and named <= 3), stop
+
+
+_OWNER_RECORD = re.compile(r"Data[A-Z0-9][A-Za-z0-9]*")  # recipe's owner-local record of one data symbol
+
+
+def _owner_record(code: str, name: str) -> bool:
+    """Whether `name` is the owner-local record of a data symbol this text declares as it or as a pointer to it: its
+    members are every offset the symbol's users access, the bytes between no one reads (owner 2026-10-15), so its
+    padding is the evidence, not a view standing in for real fields."""
+    return bool(_OWNER_RECORD.fullmatch(name)) and bool(
+        re.search(rf"^[ \t]*extern\s+(?:struct\s+)?{name}\s*\*?\s*[A-Za-z_]\w*\s*;", code, re.M)
+    )
+
+
+def _named(code: str, head: re.Match[str]) -> str:
+    """The typedef alias, else the tag, of the struct opened by `head`."""
+    alias = re.match(r"\}\s*(\w+)\s*;", code[_body(code, head.end() - 1)[1] :])
+    tag = re.match(r"struct\s+(\w+)", head[0])
+    return alias[1] if alias else tag[1] if tag else ""
+
+
+def _pad_view(code: str) -> dict[int, str]:
+    """Struct definitions where pad arrays (offset-named: pad*, unk<hex>, field_<hex>) are at least half the bytes and
+    at most three fields are named; a data symbol's owner-local record is none."""
+    line = _line_of(code)
+    found: dict[int, str] = {}
+    for head in re.finditer(r"\bstruct\s*(?:\w+\s*)?\{", code):
+        if _padded(code, head)[0] and not _owner_record(code, name := _named(code, head)):
+            # an anonymous record is named by its alias: two distinct views never read as one subject
+            spelled = " ".join(head[0].split())
+            found[line(head.start())] = spelled if not name or name in spelled else f"struct {name} {{"
+    return found
+
+
+def _placeholder_record(code: str) -> dict[int, str]:
+    """Records this unit defines whose every field is an offset placeholder (unk4, field_8, pad0) and that the unit
+    then uses by name: a layout invented here instead of the project's real record."""
+    line = _line_of(code)
+    found: dict[int, str] = {}
+    for head in re.finditer(r"\b(typedef\s+)?struct\s*(\w+)?\s*\{", code):
+        start, stop = _body(code, head.end() - 1)
+        body = code[start:stop]
+        alias = re.match(r"\s*\}\s*(\w+)\s*;", code[stop:]) if head[1] else None
+        names = {n for n in (head[2], alias[1] if alias else None) if n}
+        if "{" in body or not names:
+            continue
+        fields = [re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*$", f.strip()) for f in body.split(";") if f.strip()]
+        if not fields or not all(f and _PLACEHOLDER.match(f[1]) for f in fields):
+            continue
+        defined = {head.start(2)} if head[2] else set()
+        if alias:
+            defined.add(stop + alias.start(1))
+        if any(m.start() not in defined for n in names for m in re.finditer(rf"\b{re.escape(n)}\b", code)):
+            found.setdefault(line(head.start()), " ".join(code[head.start() : head.end()].split()))
+    return found
+
+
+def _view_types(code: str) -> set[str]:
+    """The names (tag and typedef) of the records this text defines as a union or a pad view."""
+    names: set[str] = set()
+    for head in re.finditer(r"(?<![\w])(?:(typedef)\s+)?(struct|union)\s*(\w+)?\s*\{", code):
+        padded, stop = _padded(code, head) if head[2] == "struct" else (False, _body(code, head.end() - 1)[1])
+        alias = re.match(r"\}\s*(\w+)\s*;", code[stop:]) if head[1] else None
+        if padded and _owner_record(code, alias[1] if alias else head[3] or ""):
+            continue
+        if head[2] != "union" and not padded:
+            continue
+        names.update(n for n in (head[3], alias[1] if alias else None) if n)
+    return names
+
+
+def _views_named(code: str, views: set[str]) -> dict[int, str]:
+    """The first line on which this text names each of the given view records (a definition is not a use)."""
+    if not views:
+        return {}
+    line = _line_of(code)
+    first: dict[str, int] = {}
+    names = "|".join(map(re.escape, sorted(views)))
+    for match in re.finditer(rf"\b(?:(struct|union)\s+)?({names})\b(?!\s*\{{)", code):
+        first.setdefault(match[2], line(match.start()))
+    return {at: name for name, at in first.items()}
+
+
+def _parameters(code: str) -> list[dict[str, Any]]:
+    """Every definition parameter declared void* or integer: its function, name, index, span, and each cast of it.
+    A cast row holds the span from the cast's open parenthesis through the parameter name, the spelled target
+    and its qualifiers."""
+    line = _line_of(code)
+    rows: list[dict[str, Any]] = []
+    for head in re.finditer(r"^[ \t]*[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(([^()]*)\)\s*\{", code, re.M):
+        start, stop = _body(code, head.end() - 1)
+        at = head.start(2)
+        for index, param in enumerate(head[2].split(",")):
+            span = (at, at + len(param))
+            at += len(param) + 1
+            match = re.fullmatch(r"\s*((?:\w+\s+)*?)(\w+)(?:\s*(\*)\s*|\s+)(\w+)\s*", param)
+            if not match:
+                continue
+            words = set(match[1].split()) | {match[2]}
+            plain = (match[2] == "void" and match[3]) or (not match[3] and words <= _INTEGER)
+            if not plain:
+                continue
+            cast = rf"\(\s*((?:const\s+|volatile\s+)*)(?:struct\s+)?(\w+)\s*\*\s*\)\s*(\(?)\s*{match[4]}\b"
+            casts = [
+                {
+                    "span": (start + m.start(), start + m.end()),
+                    "target": m[2],
+                    "spelled": " ".join(re.sub(r"\s*\*\s*", " *", m[0][1 : m[0].index(")")].strip()).split()),
+                    "qualifiers": frozenset(m[1].split()),
+                    "open": bool(m[3]),
+                }
+                for m in re.finditer(cast, code[start:stop])
+            ]
+            rows.append(
+                {
+                    "function": head[1],
+                    "name": match[4],
+                    "index": index,
+                    "span": span,
+                    "line": line(head.start(1)),
+                    "pointer": bool(match[3]),
+                    "qualifiers": frozenset(match[1].split()) & {"const", "volatile"},
+                    "body": (start, stop),
+                    "casts": casts,
+                }
+            )
+    return rows
+
+
+def _param_cast(code: str) -> dict[int, str]:
+    """Function _parameters declared void* or integer that the body casts to a pointer of a non-primitive type. The
+    subject is the function called, "f()": its head holds every such parameter on one line, so retyping one of them
+    leaves the row of the others as it was instead of reading as new debt, and no bare name lets the row withhold the
+    function's callers."""
+    hits: dict[int, str] = {}
+    for row in _parameters(code):  # an integer parameter's debt is the address-int row of its callers, not this one
+        if row["pointer"] and any(c["target"] not in _PRIMITIVE for c in row["casts"]):
+            hits.setdefault(row["line"], row["function"] + "()")
+    return hits
+
+
+_ADDRESS_INT = re.compile(
+    r"(?<!sizeof)\(\s*((?:(?:unsigned|signed|const|volatile)\s+)*"
+    r"(?:u8|s8|u16|s16|u32|s32|u64|s64|int|long|short|size_t|uintptr_t|intptr_t))\s*\)"
+    r"\s*&(?!&)(?!\s*\(\s*\(\s*\w+\s*\*\s*\)\s*0\b)\s*\(*\s*(\w*)"
+)
+
+
+def _holders(code: str) -> list[tuple[int, int, str]]:
+    """(body start, body end, name) of every function definition of the code."""
+    spans = []
+    for head in re.finditer(r"^[ \t]*[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*\{", code, re.M):
+        start, stop = _body(code, head.end() - 1)
+        spans.append((start, stop, head[1]))
+    return spans
+
+
+def _address_int(code: str) -> dict[int, str]:
+    """An address taken and cast to an integer type (the null-base offsetof idiom is no address): the callee or field
+    is mistyped, or a ROM or segment symbol should be an array used without the address-of. Inside a function the
+    subject is the function, "f()" with the cast type: a retype that respells the operand (`(s32)&((T *)a)->f` ->
+    `(s32)&a->f`) is the same row, never new debt."""
+    line = _line_of(code)
+    holders = _holders(code) if _ADDRESS_INT.search(code) else []
+    hits: dict[int, str] = {}
+    for m in _ADDRESS_INT.finditer(code):
+        holder = next((name for start, stop, name in holders if start <= m.start() < stop), "")
+        cast = " ".join(m[1].split())
+        hits.setdefault(line(m.start()), f"({cast})&{holder}()" if holder else f"({cast})&{m[2]}")
+    return hits
+
+
+_STAND_IN = re.compile(r"\bINCLUDE_(?:ASM|DATA|RODATA|BSS)\s*\(")
+
+
+def _stand_in_body(code: str) -> dict[int, str]:
+    """A stand-in line is a whole item of the file: one inside a function body is inline assembly in disguise."""
+    line = _line_of(code)
+    found: dict[int, str] = {}
+    for match in _STAND_IN.finditer(code):
+        if code.count("{", 0, match.start()) > code.count("}", 0, match.start()):
+            found.setdefault(line(match.start()), match[0].rstrip("( \t"))
+    return found
+
+
+_RECORD = re.compile(r"\b(?:typedef\s+)?(?:struct|union)\s*(\w*)\s*\{")
+
+
+def _records(code: str) -> list[tuple[int, str, str]]:
+    """(line, name, body with whitespace squeezed) of every record this text defines. A record is named by its typedef
+    alias, else its tag; a body with fewer than two fields is not worth comparing."""
+    line, found = _line_of(code), []
+    for head in _RECORD.finditer(code):
+        start, stop = _body(code, head.end() - 1)
+        alias = re.match(r"\s*\*?\s*(\w+)\s*[;,\[]", code[stop + 1 :]) if head[0].startswith("typedef") else None
+        name = alias[1] if alias else head[1]
+        body = " ".join(code[start:stop].split())
+        if name and body.count(";") >= 2:
+            found.append((line(head.start()), name, body))
+    return found
+
+
+def _record_index(snapshot: Snapshot) -> dict[str, list[tuple[str, str]]]:
+    """body -> [(path, name)] over the headers and the modules of the tree, once per snapshot."""
+
+    def build() -> dict[str, list[tuple[str, str]]]:
+        index: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        paths = [*_include_headers(snapshot), *(m.path for m in _tree(snapshot).modules)]
+        for path in sorted(paths):
+            data = snapshot.peek(path)
+            if data is not None:
+                for _, name, body in _records(_scopes(data.decode(errors="replace"))["code"]):
+                    index[body].append((path, name))
+        return dict(index)
+
+    return effort.memo(("records", snapshot.digest), build)
+
+
+def _duplicate_records(snapshot: Snapshot, path: str, code: str) -> dict[int, str]:
+    """A record whose body is another record's under another name: the one defined first (by path) is the canonical
+    one, any later is a duplicate to fold into it. Fed from the tree's own sources, not a recovered census."""
+    index, found = _record_index(snapshot), dict[int, str]()
+    for number, name, body in _records(code):
+        others = sorted(index.get(body, ()))
+        canonical = next(((p, n) for p, n in others if n != name), None)
+        if canonical and (canonical[0], canonical[1]) < (path, name):
+            found.setdefault(number, f"{name} repeats {canonical[1]} ({canonical[0]})")
+    return found
+
+
+_DEBT = {
+    "fake-type": _fake_type,
+    "pad-view": _pad_view,
+    "placeholder-record": _placeholder_record,
+    "param-cast": _param_cast,
+    "address-int": _address_int,
+}
 
 
 def _hits(
@@ -607,7 +667,6 @@ def _hits(
     sdk_group: bool,
     snapshot: Snapshot | None,
     view: SourceView | None,
-    documented: set[int],
 ) -> dict[int, str]:
     """{line: subject} of one rule, the subject being the text that identifies the finding across edits around it."""
     code = scopes["code"]
@@ -622,20 +681,16 @@ def _hits(
         if rule["id"] == "union-view" and found:
             sdk = _sdk_union_lines(scoped)
             found = {n: t for n, t in found.items() if n not in sdk}
-        if rule["id"] == "file-version-guard" and found and snapshot:
-            allowed = _allowed_guards(snapshot, path, scopes["text"]) | documented
-            found = {n: t for n, t in found.items() if n not in allowed}
         return found
     check = rule["check"]
     if check == "placeholder-record" and config.is_header(path):
         return {}
-    if check in ("fake-type", "pad-view", "placeholder-record", "param-cast", "address-int"):
-        found = getattr(typedebt, check.replace("-", "_"))(code)
-        return dict(found)
+    if check in _DEBT:
+        return dict(_DEBT[check](code))
+    if check == "stand-in-body":
+        return _stand_in_body(code)
     if check == "duplicate-record":
-        from unbake import recovery  # recovery reads policy, so the import waits for the first use
-
-        return typedebt.duplicate_records(code, recovery.clones(snapshot)) if snapshot else {}
+        return _duplicate_records(snapshot, path, code) if snapshot else {}
     if check == "empty-loop":
         lines = _empty_loops(code)
     elif check == "volatile":
@@ -694,7 +749,6 @@ def _findings(
     view: SourceView | None,
     sdk_group: bool,
     only: Collection[str] | None,
-    documented: set[int],
 ) -> tuple[Finding, ...]:
     rules = config.load_resource("rules.toml")
     scopes, lines, findings = {**_scopes(text), "text": text}, text.splitlines(), []
@@ -703,7 +757,7 @@ def _findings(
             continue
         if snapshot is None and rule.get("needs"):
             continue
-        hits = _hits(rule, path, scopes, rules, sdk_group, snapshot, view, documented)
+        hits = _hits(rule, path, scopes, rules, sdk_group, snapshot, view)
         comment_lines = scopes["comments"].splitlines()
         for n in sorted(hits):
             adjacent = "\n".join(comment_lines[max(0, n - 2) : n])
@@ -717,7 +771,7 @@ def _findings(
 
 def text_findings(path: str, text: str, sdk_group: bool) -> tuple[Finding, ...]:
     """The findings of every rule that reads the text alone, with no snapshot, ROM or host."""
-    return _findings(None, path, text, None, sdk_group, None, set())
+    return _findings(None, path, text, None, sdk_group, None)
 
 
 def evaluate(
@@ -729,13 +783,9 @@ def evaluate(
     only: Collection[str] | None = None,
 ) -> tuple[Finding, ...]:
     with effort.stage("policy.evaluate"):
-        failures: list[Finding] = []
-        documented = _version_guards(snapshot, path, text, failures)
-        if any(Path(path).is_relative_to(folder) for folder in getattr(snapshot.config.project, "library_dirs", ())):
+        if _sdk(snapshot.config, path):
             return ()  # vendored source idioms; compile and ROM proof are still mandatory
-        if only is not None and "file-version-guard" not in only:
-            failures.clear()
-        return (*failures, *_findings(snapshot, path, text, view, sdk_group, only, documented))
+        return _findings(snapshot, path, text, view, sdk_group, only)
 
 
 def scope(
@@ -764,11 +814,12 @@ def fresh(snapshot: Snapshot, path: str, findings: Sequence[Finding], sdk_group:
     if old is None:
         return scope((), findings, {path})[0]
     viewed = None  # a rule that reads the preprocessed view judges the old text through the old view too
-    unit = snapshot.layout.units.get(path)
-    if unit is not None and {f.key.removeprefix("source.") for f in findings} & _VIEWED:
+    module = _module(snapshot, path)
+    if module is not None and {f.key.removeprefix("source.") for f in findings} & _VIEWED:
+        unit = _unit(snapshot, module)
         try:
             viewed = _view.get(
-                snapshot, unit, _census_version(snapshot, unit), recipes.resolve(snapshot.config, unit, {})
+                snapshot, unit, _census_version(snapshot, module), recipes.resolve(snapshot.config, unit, {})
             )
         except Refusal:  # the old text has no view: its view rules found nothing
             viewed = None
@@ -778,37 +829,28 @@ def fresh(snapshot: Snapshot, path: str, findings: Sequence[Finding], sdk_group:
 _VIEWED = frozenset({"shared-declarations", "volatile-storage"})  # the checks that read a source view (`_hits`)
 
 
-def _census_version(snapshot: Snapshot, unit: UnitSpec) -> str:
-    holders = sorted({p.version for name in unit.members for p in snapshot.layout.members[name].placements})
-    if not holders:
-        raise Refusal(
-            Finding(
-                "layout.map",
-                "compiled unit has no placed members",
-                path=unit.path,
-                unit=unit.path,
-                action="restore the unit's ownership or run unbake setup",
-            )
-        )
-    return snapshot.config.project.names_from if snapshot.config.project.names_from in holders else holders[0]
+def _census_version(snapshot: Snapshot, module: tree.Module) -> str:
+    """The version a module is read in: the naming version when it owns names there, else its first holder."""
+    holders = _held(module)
+    names = snapshot.config.project.names_from
+    return names if names in holders or not holders else holders[0]
 
 
-def _census_unit(item: tuple[Snapshot, UnitSpec]) -> tuple[Finding, ...]:
-    snapshot, unit = item
-    source = _view.get(snapshot, unit, _census_version(snapshot, unit), recipes.resolve(snapshot.config, unit, {}))
-    sdk = snapshot.layout.groups[unit.group].sdk
-    text = snapshot.read(unit.path).decode()
+def _census_unit(item: tuple[Snapshot, tree.Module]) -> tuple[Finding, ...]:
+    snapshot, module = item
+    unit = _unit(snapshot, module)
+    source = _view.get(snapshot, unit, _census_version(snapshot, module), recipes.resolve(snapshot.config, unit, {}))
+    sdk = _sdk(snapshot.config, module.path)
+    text = snapshot.read(module.path).decode()
     # evaluate reads the unit text and the active lines of the unit and its headers: other edits keep the verdict warm
-    files = [unit.path, *(p for p, _ in source.dependencies if config.is_header(p))]
-    guards = _allowed_guards(snapshot, unit.path, text)
+    files = [module.path, *(p for p, _ in source.dependencies if config.is_header(p))]
     key = digest(
         (
             text,
             sdk,
             config.load_resource("rules.toml"),
             snapshot.config.project.digest,
-            code_identity(evaluate, _view_uses, typedebt),
-            guards,
+            code_identity(evaluate, _view_uses, _stand_in_body, _duplicate_records, *_DEBT.values()),
             [_active(source, p) for p in files],
         )
     )
@@ -816,61 +858,61 @@ def _census_unit(item: tuple[Snapshot, UnitSpec]) -> tuple[Finding, ...]:
         snapshot.config,
         "census",
         key,
-        lambda: (*evaluate(snapshot, unit.path, text, source, sdk), *_view_uses(snapshot, unit, text, files[1:])),
+        lambda: (
+            *evaluate(snapshot, module.path, text, source, sdk),
+            *_view_uses(module.path, text, snapshot, files[1:]),
+        ),
     )
 
 
-def _view_uses(snapshot: Snapshot, unit: UnitSpec, text: str, reached: Sequence[str]) -> tuple[Finding, ...]:
+def _view_uses(path: str, text: str, snapshot: Snapshot, reached: Sequence[str]) -> tuple[Finding, ...]:
     """MEASURE ONLY (no rule, never unclean): one finding per union or pad-view record that a header defines and the
     unit names."""
-    views = set().union(*(typedebt.view_types(_scopes(snapshot.read(p).decode())["code"]) for p in reached))
-    found = typedebt.view_uses(_scopes(text)["code"], views)
+    views = set().union(*(_view_types(_scopes(snapshot.read(p).decode())["code"]) for p in reached))
+    found = _views_named(_scopes(text)["code"], views)
     return tuple(
         Finding(
             "source.uses-view-type",
             f"{config.sentence('source.uses-view-type')}: {name}",
-            path=unit.path,
+            path=path,
             line=at,
-            unit=unit.path,
+            unit=path,
         )
         for at, name in sorted(found.items())
     )
 
 
-def _census_warnings(item: tuple[Snapshot, UnitSpec]) -> tuple[Finding, ...]:
+def _census_warnings(item: tuple[Snapshot, tree.Module]) -> tuple[Finding, ...]:
     """The unit's landed view conversions as debt by count, read from what the build kept and never compiled here."""
-    snapshot, unit = item
-    found = native.recorded(snapshot, unit, _census_version(snapshot, unit), recipes.resolve(snapshot.config, unit, {}))
+    snapshot, module = item
+    unit = _unit(snapshot, module)
+    found = native.recorded(
+        snapshot, unit, _census_version(snapshot, module), recipes.resolve(snapshot.config, unit, {})
+    )
     if not found:
         return ()
     return (
         Finding(
             "land.view-conversion",
             f"{len(found)} integer-pointer conversions the compiler reports",
-            path=unit.path,
+            path=module.path,
             missing=found,
             action="type each variable as the pointer it holds",
         ),
     )
 
 
-def _census_key(item: tuple[Snapshot, UnitSpec]) -> str:
+def _census_key(item: tuple[Snapshot, tree.Module]) -> str:
     """Everything a build of the unit reads: warm while none of it changed, so the pool dispatches nothing."""
-    snapshot, unit = item
-    reads = _view.closure(snapshot, unit, _census_version(snapshot, unit))
-    text = snapshot.read(unit.path).decode()
-    guards = _allowed_guards(snapshot, unit.path, text)
-    from unbake import recovery  # recovery reads policy, so the import waits for the first use
-
+    snapshot, module = item
+    reads = _view.closure(snapshot, _unit(snapshot, module), _census_version(snapshot, module))
     return digest(
         (
             reads,
-            recovery.clones(snapshot),
-            snapshot.layout.groups[unit.group].sdk,
+            _sdk(snapshot.config, module.path),
             config.load_resource("rules.toml"),
             snapshot.config.project.digest,
-            code_identity(_census_unit, typedebt),
-            guards,
+            code_identity(_census_unit, _stand_in_body, _duplicate_records, *_DEBT.values()),
         )
     )
 
@@ -882,48 +924,39 @@ def _census_header(item: tuple[Snapshot, str, bool]) -> tuple[Finding, ...]:
 
 def _header_key(item: tuple[Snapshot, str, bool]) -> str:
     snapshot, path, sdk = item
-    text = snapshot.read(path).decode()
-    guards = _allowed_guards(snapshot, path, text)
     return digest(
         (
-            text,
+            snapshot.read(path).decode(),
             path,
             sdk,
             config.load_resource("rules.toml"),
             snapshot.config.project.digest,
-            code_identity(_census_header, typedebt),
-            guards,
+            code_identity(_census_header, *_DEBT.values()),
         )
     )
 
 
-def _changed_findings(snapshot: Snapshot, texts: Mapping[str, str], *, baseline: bool = False) -> list[Finding]:
-    """The findings of these texts in this snapshot. The baseline is the committed layout, which may list a unit whose
-    group it no longer defines: its old text has no group to classify it by and counts for nothing, so the new text is
-    judged strictly. The staged layout itself must be whole."""
-    headers: dict[str, Any] = {}
-    if any(config.is_header(p) for p in texts):
-        kinds = config.kinds()
-        for unit in snapshot.layout.units.values():
-            if (
-                kinds[unit.kind]["credit"] != "code"
-                or "compile" not in kinds[unit.kind]["phases"]
-                or not snapshot.layout.held(unit.members)
-            ):
-                continue
-            for path, _ in _view.closure(snapshot, unit, _census_version(snapshot, unit)):
-                if path in texts:
-                    headers[path] = headers.get(path, True) and snapshot.layout.groups[unit.group].sdk
+def _headers_read(snapshot: Snapshot, wanted: Collection[str] | None = None) -> dict[str, bool]:
+    """Every header some module reaches, SDK only when every module that reads it is."""
+    headers: dict[str, bool] = {}
+    for module in _tree(snapshot).modules:
+        if wanted is not None and module.path not in wanted:
+            continue
+        sdk = _sdk(snapshot.config, module.path)
+        for path, _ in _view.closure(snapshot, _unit(snapshot, module), _census_version(snapshot, module)):
+            if config.is_header(path):
+                headers[path] = headers.get(path, True) and sdk
+    return headers
+
+
+def _changed_findings(snapshot: Snapshot, texts: Mapping[str, str]) -> list[Finding]:
+    """The findings of these texts in this snapshot."""
+    headers = _headers_read(snapshot) if any(config.is_header(p) for p in texts) else {}
     findings: list[Any] = []
     for path, text in texts.items():
-        owner = snapshot.layout.units.get(path)
-        if not config.is_header(path):
-            if owner is None or (baseline and not snapshot.layout.held(owner.members)):
-                continue
-            _census_version(snapshot, owner)  # the staged source cannot silently lose policy with its holders
-        if baseline and owner and owner.group not in snapshot.layout.groups:
+        if not config.is_header(path) and _module(snapshot, path) is None:
             continue
-        sdk = snapshot.layout.groups[owner.group].sdk if owner else headers.get(path, False)
+        sdk = _sdk(snapshot.config, path) if not config.is_header(path) else headers.get(path, False)
         if text and not sdk:
             findings.extend(evaluate(snapshot, path, text, None, sdk))
     return findings
@@ -944,32 +977,13 @@ def census(
         if changes == {}:
             return (), []
         if changes is not None:
-            before = _changed_findings(baseline or snapshot, {p: old for p, (old, _) in changes.items()}, baseline=True)
+            before = _changed_findings(baseline or snapshot, {p: old for p, (old, _) in changes.items()})
             after = _changed_findings(snapshot, {p: new for p, (_, new) in changes.items()})
             blocking, debt = scope(before, after, changes)
             return (*blocking, *debt), []
-        from unbake import libasm
-
-        kinds = config.kinds()
         wanted = None if only is None else frozenset(only)
-        outside = [
-            Finding("source.asm-outside-library", config.sentence("source.asm-outside-library"), path=p, unit=p)
-            for p in libasm.outside(snapshot)
-            if wanted is None or p in wanted
-        ] + list(libasm.plan(snapshot)[1] if wanted is None else ())  # its rows name members, never a scoped unit
-        items = [
-            (snapshot, unit)
-            for unit in snapshot.layout.units.values()
-            if (wanted is None or unit.path in wanted)
-            and kinds[unit.kind]["credit"] == "code"
-            and "compile" in kinds[unit.kind]["phases"]
-        ]
-        unique = {}
-        headers: dict[str, Any] = {}
-        for _, unit in items:  # a header is judged once, as SDK only when every unit that reads it is
-            for path, _ in _view.closure(snapshot, unit, _census_version(snapshot, unit)):
-                if config.is_header(path):
-                    headers[path] = headers.get(path, True) and snapshot.layout.groups[unit.group].sdk
+        items = [(snapshot, m) for m in _tree(snapshot).modules if wanted is None or m.path in wanted]
+        headers = _headers_read(snapshot, wanted)
         found = pool.gather(
             snapshot.config,
             [
@@ -985,10 +999,9 @@ def census(
                 *also,
             ],
         )
-        conflicts = (
-            types.conflicts(snapshot) if wanted is None else types.conflicts(snapshot, [*sorted(wanted), *headers])
-        )
-        for findings in (*found[0], *found[1], *found[2], conflicts, outside):
+        unique = {}
+        lint = header_lint(snapshot, None if wanted is None else [*sorted(wanted), *headers])
+        for findings in (*found[0], *found[1], *found[2], lint):
             for finding in findings:
                 unique[(finding.key, finding.path, finding.line, finding.unit)] = replace(finding, blocking=False)
         return tuple(unique.values()), found[3:]
@@ -1003,16 +1016,12 @@ def unclean_rules(snapshot: Snapshot, only: Collection[str] | None = None) -> di
     """Per function a finding of an `unclean` rule of rules.toml withholds (see `withheld`), the keys of the rules
     that fire; with `only`, just the functions of those units are judged."""
     rules = config.load_resource("rules.toml")
-    ids, kinds = rules.get("unclean", ()), config.kinds()
+    ids = rules.get("unclean", ())
     if not ids:
         return {}
 
     def judge() -> dict[str, tuple[str, ...]]:
-        paths = [
-            u.path
-            for u in snapshot.layout.units.values()
-            if kinds[u.kind]["decompiled"] and (only is None or u.path in only)
-        ]
+        paths = [m.path for m in _tree(snapshot).modules if only is None or m.path in only]
         items = [(snapshot, path, ids, rules["rule"]) for path in paths]
         if only is not None:  # a few units judged for a caller: no record of the whole project
             verdicts = pool.map(snapshot.config, "policy.unclean", _unclean_unit, items, _unclean_key)
@@ -1025,7 +1034,7 @@ def unclean_rules(snapshot: Snapshot, only: Collection[str] | None = None) -> di
                 key=_unclean_key,
                 ident=lambda item: item[1],
                 stamp=lambda item: delta.fingerprint(_unclean_rows(item[0], item[1])),
-                pin=lambda path: _view._pin(snapshot, path),
+                pin=lambda path: _view.pin(snapshot, path),
                 context=(_unclean_context(snapshot), digest((ids, rules["rule"]))),
             )
         return {name: fired for verdict in verdicts for name, fired in verdict}
@@ -1041,55 +1050,27 @@ def _unclean_unit(item: tuple[Snapshot, str, Sequence[str], Any]) -> tuple[tuple
 
 
 def credited(snapshot: Snapshot, path: str, text: str | None = None) -> list[str]:
-    """The functions of a unit that earn credit of their own: its function members and every other function its text
-    defines that has an address of its own (a helper compiled inside a member's bytes). A defined function with no
-    address was inlined into the functions that name it, so its findings withhold them instead."""
-    unit, members = snapshot.layout.units[path], snapshot.layout.members
-    own = [n for n in unit.members if members[n].kind == "function"]
+    """The functions of a unit that earn credit of their own: every function its text defines that has an address in
+    the version it is read in. A defined function with no address was inlined into the functions that name it, so its
+    findings withhold them instead."""
+    module = _module(snapshot, path)
     text = snapshot.read(path).decode() if text is None else text
-    placed = snapshot.versions[_census_version(snapshot, unit)].symbols if own else {}
-    inner = [h for _, _, h, _, _ in _top(_scopes(text)["code"]) if h and h not in own and h in placed]
-    return [*own, *dict.fromkeys(inner)]
+    placed = snapshot.versions[_census_version(snapshot, module)].symbols if module else {}
+    return list(dict.fromkeys(h for _, _, h, _, _ in _top(_scopes(text)["code"]) if h and h in placed))
 
 
 def pieces(snapshot: Snapshot, member: str, version: str) -> list[tuple[str, int]]:
-    """(function, bytes) of each piece of a function member's .text in one version: its bytes split at the address
-    of each function inside them, a piece going with the function that starts it (the first with the member)."""
-    places = [p for p in snapshot.layout.members[member].placements if p.version == version and p.section == ".text"]
-    starts, out = _function_starts(snapshot, version), []
-    for place in places:
-        cuts = [(place.vram, member), *_starts_in(starts, place)]
-        for (start, name), (end, _) in zip(cuts, [*cuts[1:], (place.vram + place.size, "")], strict=True):
-            out.append((name, end - start))
-    return out
+    """(function, bytes) of a function's .text in one version: one piece, the bytes between its address and the next
+    symbol's. A version that does not hold the function has none."""
+    extent = _extents(snapshot, version)[2].get(member)
+    return [(member, extent[1] - extent[0])] if extent else []
 
 
 def withheld_bytes(snapshot: Snapshot, rules: Collection[str], member: str, version: str) -> int:
-    """The .text bytes of a function member in one version that unclean verdicts withhold (`pieces`), so a member
-    keeps the credit of its clean functions when a helper inside it is withheld."""
+    """The .text bytes of a function in one version that unclean verdicts withhold."""
     if not rules:
         return 0
     return sum(size for name, size in pieces(snapshot, member, version) if name in rules)
-
-
-def _starts_in(starts: Sequence[tuple[int, str]], place: Any) -> list[tuple[int, str]]:
-    """The (address, name) starts strictly inside one placement: its own start belongs to the member."""
-    low, high = place.vram, place.vram + place.size
-    return list(starts[bisect_right(starts, (low, "\uffff")) : bisect_left(starts, (high, ""))])
-
-
-def _function_starts(snapshot: Snapshot, version: str) -> list[tuple[int, str]]:
-    """(address, name) of every function of the symbol table in one version, sorted: where a function's bytes start. A
-    project with no symbol table knows no function inside a member."""
-
-    def starts() -> list[tuple[int, str]]:
-        if snapshot.peek(symbols.path()) is None:
-            return []
-        table = symbols.load(snapshot.read, snapshot.config.project.versions, store.content(snapshot.config).cached)
-        located = snapshot.versions[version].symbols
-        return sorted((located[n], n) for n, row in table.items() if row.get("kind") == "function" and n in located)
-
-    return effort.memo(("function-starts", snapshot.digest, version), starts)
 
 
 _C_KEYWORDS = _NOT_NAMES | {"char", "const", "double", "extern", "float", "int", "long", "short", "signed", "static"}
@@ -1172,40 +1153,32 @@ def _unclean_job(
 ) -> tuple[tuple[tuple[str, tuple[str, ...]], ...], dict[str, str]]:
     """A verdict and every file the unit's closure walk read or probed, pinned."""
     snapshot, path = item[0], item[1]
-    unit = snapshot.layout.units[path]
-    return _unclean_unit(item), _view.asked(snapshot, unit, _view.search(snapshot, _census_version(snapshot, unit)))
+    module = _module(snapshot, path)
+    assert module is not None
+    unit = _unit(snapshot, module)
+    return _unclean_unit(item), _view.asked(snapshot, unit, _view.search(snapshot, _census_version(snapshot, module)))
 
 
 def _unclean_rows(snapshot: Snapshot, path: str) -> tuple[Any, ...]:
-    """The layout rows a verdict reads: the unit and its members' rows (a version guard is judged on their bytes)."""
-    unit = snapshot.layout.units[path]
-    return unit, [snapshot.layout.members[n] for n in unit.members]
+    """The tree row a verdict reads: the module and the names it owns (a symbol's address is judged from them)."""
+    return (_module(snapshot, path),)
 
 
 def _unclean_context(snapshot: Snapshot) -> str:
-    """What every verdict reads besides its unit: the record clones a recovery found, the documented version
-    differences and the ROMs. The type map is not read: a type map row a landing changes judges nothing again."""
-    from unbake import recovery  # recovery reads policy, so the import waits for the first use
-
+    """What every verdict reads besides its module: each version's symbol table and segments."""
     return effort.memo(
         ("unclean-context", id(snapshot.config), id(snapshot.versions)),
-        lambda: digest(
-            (
-                sorted(recovery.clones(snapshot).items()),
-                list(getattr(snapshot.config.project, "version_differences", ())),
-                sorted((v, x.rom_sha256) for v, x in snapshot.versions.items()),
-            )
-        ),
+        lambda: digest([(v, sorted(x.symbols.items()), x.segments) for v, x in sorted(snapshot.versions.items())]),
     )
 
 
 def _unclean_key(item: tuple[Snapshot, str, Sequence[str], Any]) -> str:
-    """One verdict is a fact of the text, every file it reaches, its layout rows, the clones and version differences,
-    the rules and the job that judges it (its result shape moves the key): a header edit moves the verdict of each unit
-    that reads the header, a type map edit none."""
+    """One verdict is a fact of the text, every file it reaches, its tree row, the symbol tables, the rules and the job
+    that judges it (its result shape moves the key): a header edit moves the verdict of each unit that reads it."""
     snapshot, path, ids, rows = item
-    unit = snapshot.layout.units[path]
-    reach = _view.closure(snapshot, unit, _census_version(snapshot, unit))
+    module = _module(snapshot, path)
+    assert module is not None
+    reach = _view.closure(snapshot, _unit(snapshot, module), _census_version(snapshot, module))
     return digest(
         (
             snapshot.read(path),
@@ -1215,7 +1188,7 @@ def _unclean_key(item: tuple[Snapshot, str, Sequence[str], Any]) -> str:
             ids,
             rows,
             credited(snapshot, path),
-            code_identity(_unclean_unit, credited, typedebt),
+            code_identity(_unclean_unit, credited, *_DEBT.values()),
         )
     )
 
@@ -1239,13 +1212,8 @@ def audit_command(params: Json) -> Json:
             raise Refusal(Finding("native.exit", f"git {' '.join(args)} exit {result.exit}"))
         return result.stdout
 
-    layout_doc = tomllib.loads((root / "layout.toml").read_text()) if (root / "layout.toml").is_file() else {}
-    project = (
-        tomllib.loads((root / "config.toml").read_text()).get("project", {}) if (root / "config.toml").is_file() else {}
-    )
-    sdk_of = {g["name"]: g.get("sdk", False) for g in layout_doc.get("group", ())}
-    sdk = {u["path"]: sdk_of.get(u["group"], False) for u in layout_doc.get("unit", ())}
-    library = tuple(project.get("library_dirs", ()))
+    document = tomllib.loads((root / "config.toml").read_text()) if (root / "config.toml").is_file() else {}
+    library = tuple(document.get("libraries", ()))
     names = (
         run("diff", "--name-only", "-z", "--no-renames", against, "--", ":(icase)*.c", ":(icase)*.cpp", ":(icase)*.h")
         .decode()
@@ -1257,17 +1225,11 @@ def audit_command(params: Json) -> Json:
     for path in paths:
         old = process.run("git show", [git, "show", f"{against}:{path}"], root, tmp=tmp)
         new = root / path
-        group = sdk.get(path, False)
         if old.exit == 0:
-            before.extend(text_findings(path, old.stdout.decode(errors="replace"), group))
+            before.extend(text_findings(path, old.stdout.decode(errors="replace"), False))
         if new.is_file():
-            after.extend(text_findings(path, new.read_text(errors="replace"), group))
+            after.extend(text_findings(path, new.read_text(errors="replace"), False))
     blocking, _ = scope(before, after, paths)
     if blocking:
         raise Refusal(*blocking)
     return {"against": against, "paths": paths, "counts_before": counts(before), "counts_after": counts(after)}
-
-
-def version_config(snapshot: Snapshot) -> bytes:
-    """config.toml with its version_differences rows replaced by the rows the sources earn."""
-    return _rows_text(snapshot.read("config.toml").decode(), _derived_rows(snapshot)).encode()

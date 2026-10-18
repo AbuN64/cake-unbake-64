@@ -29,18 +29,6 @@ sentence = "the same long stage closed twice in one command"
 owner = "land"
 sentence = "the project has rule debt"
 
-[key."check.path"]
-owner = "land"
-sentence = "a path given to check is no unit or header of the project"
-
-[key."check.moved-during-run"]
-owner = "native"
-sentence = "the source changed while check ran; it is checked next run"
-
-[key."compare.out"]
-owner = "compare"
-sentence = "the artifact directory already exists"
-
 [key."compile.error"]
 owner = "adapters"
 sentence = "the compiler reported an error"
@@ -56,6 +44,10 @@ sentence = "the content cache is over its limit on a nearly full disk and holds 
 [key."config.file"]
 owner = "config"
 sentence = "a configured file or tool path is wrong"
+
+[key."config.file_unknown"]
+owner = "config"
+sentence = "a [file] row names a path no tracked file has"
 
 [key."config.missing"]
 owner = "config"
@@ -73,29 +65,9 @@ sentence = "a configuration or data file does not match its schema"
 owner = "effort"
 sentence = "stage records could not be written to build/stages.jsonl"
 
-[key."headers.conflict"]
-owner = "headers"
-sentence = "a local declaration disagrees with a header"
-
-[key."headers.prototype_conflict"]
-owner = "headers"
-sentence = "a name nothing types is declared with different types, so no one prototype can be hoisted"
-
-[key."headers.parse"]
-owner = "headers"
-sentence = "the preprocessed source cannot be parsed"
-
-[key."move.cycle"]
-owner = "headers"
-sentence = "two declarations of a merged header each need the other defined first"
-
 [key."land.view-conversion"]
 owner = "adapters"
 sentence = "the compiler converted between an integer and a pointer without a cast"
-
-[key."types.conflict"]
-owner = "headers"
-sentence = "a name is declared with different types and no source defines it"
 
 [key."internal.error"]
 owner = "cli"
@@ -113,45 +85,13 @@ sentence = "the project changed under a planned write"
 owner = "journal"
 sentence = "written files differ from the plan"
 
-[key."land.breaks_dependent"]
-owner = "publish"
-sentence = "the candidate stops another landed file from building exactly"
-
-[key."land.consumer_regressed"]
-owner = "compare"
-sentence = "a unit that includes a changed header builds worse with the change than without it"
-
 [key."land.not_exact"]
 owner = "compare"
 sentence = "the build does not match the ROM in every holding version"
 
-[key."types.usage"]
-owner = "types"
-sentence = "the function has no usage rows in that version"
-
 [key."land.request"]
 owner = "compare"
 sentence = "the request does not name a publishable function"
-
-[key."layout.map"]
-owner = "layout"
-sentence = "layout.toml names a member that the splits do not hold"
-
-[key."layout.ownership"]
-owner = "layout"
-sentence = "a unit's compiled data could not be placed exactly in the ROM"
-
-[key."layout.member"]
-owner = "layout"
-sentence = "the member is not an assembly row"
-
-[key."layout.nonconvergent"]
-owner = "layout"
-sentence = "applying the boundary plan produced another plan"
-
-[key."layout.decl_split"]
-owner = "layout"
-sentence = "units one file would hold declare a name differently, so they stay apart until the declarations agree"
 
 [key."link.error"]
 owner = "adapters"
@@ -182,37 +122,9 @@ sentence = "the same option is added and omitted"
 owner = "recipes"
 sentence = "a compiler option is unknown or absent"
 
-[key."setup.options"]
-owner = "repo"
-sentence = "a split yaml lacks splat options that setup requires"
-
 [key."setup.splat"]
 owner = "build"
 sentence = "splat failed"
-
-[key."library-asm.mixed"]
-owner = "policy"
-sentence = "a module mixes compiler output with code the toolchain never emits, so no library assembly is generated"
-
-[key."library-asm.scattered"]
-owner = "policy"
-sentence = "another module's code lies between this module's library routines, so no library assembly is generated"
-
-[key."library-asm.unnamed-target"]
-owner = "policy"
-sentence = "code the toolchain never emits jumps to an address with no symbol, so no library assembly is generated"
-
-[key."library-asm.unplaced"]
-owner = "policy"
-sentence = "code the toolchain never emits is in a module outside every library directory"
-
-[key."library-asm.version-split"]
-owner = "policy"
-sentence = "code the toolchain never emits reads differently across versions, so no library assembly is generated"
-
-[key."source.asm-outside-library"]
-owner = "policy"
-sentence = "assembly is allowed only in a configured library directory"
 
 [key."source.decompiler-placeholder"]
 owner = "policy"
@@ -221,10 +133,6 @@ sentence = "an unresolved decompiler placeholder is left in the source"
 [key."source.empty-loop"]
 owner = "policy"
 sentence = "an empty loop needs a FAKEMATCH reason"
-
-[key."source.file-version-guard"]
-owner = "policy"
-sentence = "a version guard is not allowed in a source file"
 
 [key."source.inline-asm"]
 owner = "policy"
@@ -270,10 +178,6 @@ sentence = "a struct is mostly padding arrays with at most three named fields; d
 owner = "policy"
 sentence = "a source file defines a record whose every field is an offset placeholder; use the real shared record"
 
-[key."source.duplicate-record"]
-owner = "policy"
-sentence = "a record is a duplicate of one shared canonical record; use the canonical"
-
 [key."source.param-cast"]
 owner = "policy"
 sentence = "a void pointer or integer parameter is cast to a struct pointer; type the parameter"
@@ -297,22 +201,6 @@ sentence = "a ledger line cannot be read"
 [key."symbols.conflict"]
 owner = "versions"
 sentence = "a symbol has two addresses in one version"
-
-[key."symbols.exists"]
-owner = "symbols"
-sentence = "the new name already names a symbol"
-
-[key."symbols.misnamed"]
-owner = "infer"
-sentence = "a unit spells a name where its version code forms the address of another symbol"
-
-[key."symbols.name"]
-owner = "symbols"
-sentence = "a symbol name is not a C identifier"
-
-[key."symbols.table"]
-owner = "symbols"
-sentence = "symbols.toml is malformed or names a version the project does not have"
 
 [key."symbols.unknown"]
 owner = "symbols"
@@ -370,15 +258,6 @@ sentence = "the candidate does not raise the item's best score by the fuzzy mini
 owner = "land"
 sentence = "an inbox entry does not validate against its schema"
 
-[key."upgrade.busy"]
-owner = "repo"
-sentence = "another process runs from the environment the upgrade would change"
-[key."upgrade.source"]
-owner = "repo"
-sentence = "the environment records no URL the tool was installed from"
-[key."upgrade.install"]
-owner = "repo"
-sentence = "pip could not install the requested ref"
 [key."init.request"]
 owner = "repo"
 sentence = "the init request is invalid"
@@ -399,17 +278,9 @@ sentence = "the ROM is not in big-endian z64 byte order"
 owner = "land"
 sentence = "the item is already landed with these bytes"
 
-[key."layout.busy"]
-owner = "layout"
-sentence = "the project changed three times while being read"
-
 [key."repo.readme_markers"]
 owner = "repo"
 sentence = "README.md lacks the progress markers"
-
-[key."report.request"]
-owner = "report"
-sentence = "the work-list request is invalid"
 
 [key."setup.busy"]
 owner = "repo"
@@ -419,10 +290,6 @@ sentence = "a landing or another setup holds the project write lock"
 owner = "build"
 sentence = "make check failed on the rendered build"
 
-[key."setup.not_exact"]
-owner = "repo"
-sentence = "the extracted assembly does not rebuild the ROM bytes"
-
 [key."source.union-view"]
 owner = "policy"
 sentence = "a union gives one storage two types; declare the one real type"
@@ -431,78 +298,38 @@ sentence = "a union gives one storage two types; declare the one real type"
 owner = "policy"
 sentence = "a cast through a per-function struct view; use the real shared struct type"
 
-[key."move.rounds"]
-owner = "move"
-sentence = "the partial apply used its rounds and left this move unproved"
-
-[key."move.syntax"]
-owner = "move"
-sentence = "the move input is not valid JSON moves or lacks a subject or target"
-
-[key."move.unknown"]
-owner = "move"
-sentence = "the symbol, type, member, module or header of the move does not exist"
-
-[key."move.name"]
-owner = "move"
-sentence = "the target is not a C identifier or a path under src/ or include/"
-
-[key."move.exists"]
-owner = "move"
-sentence = "the target is already taken by another identity"
-
-[key."move.type_layout"]
-owner = "move"
-sentence = "a type folds only into a record that holds each member its users read at the same offset and type, in padding or past its end"
-
-[key."move.type_members"]
-owner = "move"
-sentence = "two records lay out alike but name their members otherwise, so member accesses would need rewriting"
-
-[key."move.library"]
-owner = "move"
-sentence = "the move would change a library unit"
-
-[key."move.static"]
-owner = "move"
-sentence = "a file-local definition is used by atoms that land in different units"
-
-[key."move.directive"]
-owner = "move"
-sentence = "a preprocessor block spans atoms that land in different units"
-
-[key."move.member_conflict"]
-owner = "layout"
-sentence = "the old units of one new unit declare a name or define a type differently and cannot share one file"
-
-[key."headers.probe"]
-owner = "headers"
-sentence = "a header does not compile alone"
-
-[key."move.declaration"]
-owner = "move"
-sentence = "a header merge meets two different definitions of one name"
-
-[key."move.header"]
-owner = "move"
-sentence = "a header the move changed no longer compiles alone"
-
-[key."move.not_exact"]
-owner = "move"
-sentence = "a unit the move rewrote is not byte-identical in every version it is built in"
-
-[key."move.unclean"]
-owner = "move"
-sentence = "the move would withhold the exact credit of functions whose bytes stay exact"
-
-[key."move.stale"]
-owner = "move"
-sentence = "the move stream was made for another layout than the current one"
-
-[key."move.policy"]
-owner = "move"
-sentence = "the move creates a new blocking source finding"
-
 [key."land.rebase"]
 owner = "land"
 sentence = "the submission cannot be safely rebased onto the current project"
+
+[key."sync.changed"]
+owner = "repo"
+sentence = "the generated files or stand-in lines differ from what unbake sync writes"
+
+[key."sync.segment"]
+owner = "repo"
+sentence = "a symbol address lies in no segment of the project config"
+
+[key."source.extern-redeclared"]
+owner = "policy"
+sentence = "an extern is declared more than once across include/; keep one declaration"
+
+[key."source.extern-conflict"]
+owner = "policy"
+sentence = "an extern is declared differently in two headers; make the declarations agree"
+
+[key."tree.duplicate"]
+owner = "tree"
+sentence = "a name is owned by two files in one version"
+
+[key."tree.segments"]
+owner = "tree"
+sentence = "a file owns names of more than one segment, or a symbol lies in no segment"
+
+[key."source.stand-in-body"]
+owner = "policy"
+sentence = "a stand-in line sits inside a function body; INCLUDE_ASM, INCLUDE_DATA and INCLUDE_RODATA stand for a whole item"
+
+[key."source.duplicate-record"]
+owner = "policy"
+sentence = "a record repeats the body of another record; use the one record"

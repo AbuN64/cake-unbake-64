@@ -5,9 +5,18 @@ import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
+from typing import Protocol
 
 from unbake import effort, store
-from unbake.contracts import Config, Finding, Plan, Refusal, Snapshot, sha256
+from unbake.contracts import Config, Finding, Plan, Refusal, sha256
+
+
+class Reads(Protocol):
+    """What a plan was made from: the project, and the sha256 of every file it read (a `Snapshot` is one)."""
+
+    config: Config
+    reads: dict[str, str | None]
+
 
 _HELD: set[Path] = set()  # the projects whose journal lock this process holds across a whole landing
 
@@ -145,13 +154,13 @@ def _sha(content: bytes | None) -> str | None:
     return None if content is None else sha256(content)
 
 
-def changed(snapshot: Snapshot, paths: Sequence[str]) -> tuple[str, ...]:
+def changed(snapshot: Reads, paths: Sequence[str]) -> tuple[str, ...]:
     return tuple(
         p for p in paths if p in snapshot.reads and _sha(_read(snapshot.config.project.root / p)) != snapshot.reads[p]
     )
 
 
-def apply(config: Config, plan: Plan, snapshot: Snapshot) -> tuple[str, ...]:
+def apply(config: Config, plan: Plan, snapshot: Reads) -> tuple[str, ...]:
     """Write the plan's files into the working tree only (never Git): each path must hold what the snapshot read."""
     with effort.stage("journal.apply"):
         if plan.blocking:
@@ -167,7 +176,7 @@ def apply(config: Config, plan: Plan, snapshot: Snapshot) -> tuple[str, ...]:
 
 
 def _apply_locked(
-    config: Config, plan: Plan, snapshot: Snapshot, paths: list[str], staged: dict[str, str]
+    config: Config, plan: Plan, snapshot: Reads, paths: list[str], staged: dict[str, str]
 ) -> tuple[str, ...]:
     root = config.project.root
     journal = root / ".unbake" / "journal.json"

@@ -41,17 +41,19 @@ def process_config(tmp_path):
     )
     project = Project(
         root=tmp_path,
-        id="fixture",
         name="fixture",
         title="Fixture",
-        versions=(),
-        names_from="",
         toolchain="",
-        build={},
-        version_files={},
-        version_macros={},
-        resident={},
-        origins={},
+        names_from="",
+        libraries=(),
+        cppflags=(),
+        cflags=(),
+        asflags=(),
+        readme_map=None,
+        readme_map_link=None,
+        versions=(),
+        version={},
+        files={},
         digest="project",
     )
     return Config(project, host, "config")

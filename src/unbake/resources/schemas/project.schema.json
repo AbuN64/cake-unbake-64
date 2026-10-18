@@ -4,170 +4,72 @@
  "type": "object",
  "properties": {
   "schema": {
-   "const": 3
+   "const": 4
   },
-  "project": {
-   "type": "object",
-   "properties": {
-    "id": {
-     "type": "string",
-     "minLength": 1
-    },
-    "name": {
-     "type": "string",
-     "minLength": 1
-    },
-    "title": {
-     "type": "string",
-     "minLength": 1
-    },
-    "versions": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    },
-    "names_from": {
-     "type": "string",
-     "minLength": 1
-    },
-    "toolchain": {
-     "type": "string",
-     "minLength": 1
-    },
-    "version_differences": {
-     "type": "array",
-     "items": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-       "function",
-       "sides"
-      ],
-      "properties": {
-       "function": {
-        "type": "string",
-        "minLength": 1
-       },
-       "sides": {
-        "type": "array",
-        "minItems": 2,
-        "description": "the holding versions partitioned by the #if/#elif/#else branches of one guard chain",
-        "items": {
-         "type": "array",
-         "minItems": 1,
-         "uniqueItems": true,
-         "items": {
-          "type": "string",
-          "minLength": 1
-         }
-        }
-       }
-      }
-     }
-    },
-    "readme_map": {
-     "type": "string",
-     "minLength": 1,
-     "description": "the version whose memory map the README progress block shows"
-    },
-    "readme_map_link": {
-     "type": "string",
-     "minLength": 1,
-     "description": "the page the README memory map links to, at the anchor of the version's lower-cased cartridge id"
-    },
-    "library_dirs": {
-     "type": "array",
-     "uniqueItems": true,
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    }
-   },
-   "required": [
-    "id",
-    "name",
-    "title",
-    "versions",
-    "names_from",
-    "toolchain"
-   ],
-   "additionalProperties": false
+  "name": {
+   "type": "string",
+   "minLength": 1
   },
-  "build": {
-   "type": "object",
-   "properties": {
-    "cppflags": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    },
-    "cflags": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    },
-    "asflags": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    },
-    "gnu_asflags": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    },
-    "text_mask": {
-     "type": "integer",
-     "minimum": 1,
-     "maximum": 4294967295
-    }
-   },
-   "required": [
-    "cppflags",
-    "cflags",
-    "asflags",
-    "gnu_asflags"
-   ],
-   "additionalProperties": false
+  "title": {
+   "type": "string",
+   "minLength": 1
+  },
+  "toolchain": {
+   "type": "string",
+   "minLength": 1
+  },
+  "names_from": {
+   "type": "string",
+   "minLength": 1
+  },
+  "libraries": {
+   "type": "array",
+   "uniqueItems": true,
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "cppflags": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "cflags": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "asflags": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "readme_map": {
+   "type": "string",
+   "minLength": 1,
+   "description": "the version whose memory map the README progress block shows"
+  },
+  "readme_map_link": {
+   "type": "string",
+   "minLength": 1,
+   "description": "the page the README memory map links to, at the anchor of the version's lower-cased cartridge id"
   },
   "version": {
    "type": "object",
+   "minProperties": 1,
    "additionalProperties": {
     "type": "object",
     "properties": {
-     "baserom": {
-      "type": "string",
-      "minLength": 1
-     },
-     "baserom_sha1": {
+     "sha1": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
-     },
-     "split": {
-      "type": "string",
-      "minLength": 1
-     },
-     "symbols": {
-      "type": "string",
-      "minLength": 1
-     },
-     "macros": {
-      "type": "array",
-      "items": {
-       "type": "string",
-       "minLength": 1
-      }
      },
      "cartridge_id": {
       "type": "string",
@@ -180,194 +82,77 @@
      "description": {
       "type": "string",
       "minLength": 1
+     },
+     "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1
+        },
+        "rom": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "vram": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "kind": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "required": [
+        "name",
+        "rom"
+       ],
+       "additionalProperties": false
+      }
      }
     },
     "required": [
-     "baserom",
-     "baserom_sha1",
-     "split",
-     "symbols",
-     "macros"
+     "sha1"
     ],
     "additionalProperties": false
    }
   },
-  "resident": {
+  "file": {
    "type": "object",
    "additionalProperties": {
-    "type": "array",
-    "items": {
-     "type": "object",
-     "properties": {
-      "start": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "end": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "address": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "table_entry_bias": {
-       "type": "integer",
-       "minimum": 0
+    "type": "object",
+    "properties": {
+     "toolchain": {
+      "type": "string",
+      "minLength": 1
+     },
+     "cflags": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
       }
      },
-     "required": [
-      "start",
-      "end",
-      "address",
-      "table_entry_bias"
-     ],
-     "additionalProperties": false
-    }
-   }
-  },
-  "evidence": {
-   "type": "object",
-   "properties": {
-    "object": {
-     "type": "array",
-     "items": {
-      "type": "object",
-      "properties": {
-       "first": {
-        "type": "string",
-        "minLength": 1
-       },
-       "last": {
-        "type": "string",
-        "minLength": 1
-       },
-       "source": {
-        "type": "string",
-        "minLength": 1
-       },
-       "origin": {
-        "type": "string",
-        "minLength": 1
-       }
-      },
-      "required": [
-       "first",
-       "last",
-       "source",
-       "origin"
-      ],
-      "additionalProperties": false
+     "omit": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
      }
-    }
-   },
-   "additionalProperties": false
-  },
-  "flags": {
-   "type": "object",
-   "properties": {
-    "lattice": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "pattern": "^-"
-     }
-    }
-   },
-   "additionalProperties": false
-  },
-  "layout": {
-   "type": "object",
-   "properties": {
-    "subsystem_header": {
-     "type": "string",
-     "minLength": 1
     },
-    "library_header": {
-     "type": "string",
-     "minLength": 1
-    },
-    "subsystem_source": {
-     "type": "string",
-     "minLength": 1
-    },
-    "library_source": {
-     "type": "string",
-     "minLength": 1
-    },
-    "shared_headers": {
-     "type": "array",
-     "items": {
-      "type": "string",
-      "minLength": 1
-     }
-    }
-   },
-   "additionalProperties": false
-  },
-  "naming": {
-   "description": "The project's naming style for paths a structure tool assigns (read by recipe; unbake records paths as given).",
-   "type": "object",
-   "additionalProperties": false,
-   "properties": {
-    "case": {
-     "enum": [
-      "as-is",
-      "upper",
-      "lower"
-     ]
-    },
-    "stem_max": {
-     "type": "integer",
-     "minimum": 0
-    },
-    "source_ext": {
-     "type": "string",
-     "pattern": "^[.]"
-    },
-    "stem": {
-     "type": "string",
-     "minLength": 1
-    },
-    "subsystem": {
-     "type": "string",
-     "minLength": 1
-    },
-    "shared_dir": {
-     "type": "string",
-     "minLength": 1
-    },
-    "data_dir": {
-     "type": "string",
-     "minLength": 1
-    },
-    "part": {
-     "type": "string",
-     "minLength": 1
-    },
-    "evidence": {
-     "enum": [
-      "keep",
-      "upper",
-      "lower"
-     ]
-    },
-    "subsystems": {
-     "type": "object",
-     "additionalProperties": {
-      "type": "string",
-      "minLength": 1
-     }
-    }
+    "additionalProperties": false
    }
   }
  },
  "required": [
   "schema",
-  "project",
-  "build",
-  "version",
-  "resident"
+  "name",
+  "toolchain",
+  "version"
  ],
  "additionalProperties": false
 }

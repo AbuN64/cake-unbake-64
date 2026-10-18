@@ -128,7 +128,7 @@ def _written(command: str, result: Json | None) -> list[str]:
     result = result or {}
     drain = result.get("drain") or result
     groups = [(row["files"], row["message"]) for row in drain.get("landed", ())]
-    if command in ("setup", "move") and "files" in result:
+    if command == "setup" and "files" in result:
         groups.append((result["files"], result.get("message", "setup")))
     lines = []
     for files, message in groups:

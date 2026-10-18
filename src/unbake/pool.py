@@ -123,8 +123,8 @@ def _busy(path: Path) -> bool:
 
 
 def _budget(host: Host) -> int:
-    """The one host fact every caller divides: the slots of this machine (workers only for a host without it)."""
-    return host.slots or host.workers
+    """The one host fact every caller divides: the workers the host file or `auto` resolved to, never fewer."""
+    return host.workers
 
 
 def _foreign(base: Path) -> tuple[list[Path], list[Path]]:
@@ -533,8 +533,8 @@ def _flight(step: int) -> int:
 
 
 def _fan(host: Host) -> int:
-    """The workers one command forks: the host's worker count within its slots, whatever its share is now."""
-    return max(1, min(host.workers, _budget(host)))
+    """The workers one command forks: exactly the host's worker count, whatever its share is now."""
+    return max(1, host.workers)
 
 
 def _warm(config: Config) -> bool:
@@ -719,17 +719,6 @@ class _Pickler(pickle.Pickler):
         if key in _forked:
             self.needed.add(key)  # a refork after a broken pool forks holding it again
             return key
-        from unbake import layout
-
-        made = effort.peek(("parent", obj.digest))  # (snapshot, writes) it was laid over with
-        if made is not None and layout.pure(made[0], obj):  # derived versions or map travel whole: never derived twice
-            blob = self.blobs.get(obj.digest)
-            if blob is None:
-                blob = self.blobs[obj.digest] = pickle.dumps(dict(made[1]), protocol=5)
-            if len(blob) <= _INLINE_BYTES:  # small writes travel in each task over the base's reference
-                return ("over", self._ref(made[0]), key, obj.digest, blob)
-            if self.ship:  # large writes: one file, laid again once per worker over the base it holds
-                return ("over", self._ref(made[0]), key, obj.digest, self._spill(obj, f"w{obj.digest}", made[1]))
         if self.ship:  # a snapshot of its own (a capture): the whole of it, read once per worker
             return ("snap", key, self._spill(obj, f"s{key}", obj))
         _SHARED[key] = obj
@@ -755,7 +744,7 @@ def _chain(ref: Any) -> list[tuple[str, str | None]]:
         return [(ref, None)]
     if ref[0] == "snap":
         return [(ref[1], None)]
-    return [(ref[2], ref[3]), *_chain(ref[1])]
+    raise ValueError(ref)
 
 
 def _lay(ref: Any) -> Snapshot:
@@ -769,19 +758,7 @@ def _lay(ref: Any) -> Snapshot:
             _adopt(warmth)
             _laid.append(key)
         return _SHARED[key]
-    from unbake import layout
-
-    _, base, key, digest_, payload = ref
-    if key not in _SHARED:
-        under = _lay(base)  # first: the writes' file carries the newer indexes
-        if isinstance(payload, bytes):
-            writes = pickle.loads(payload)
-        else:
-            writes, warmth = pickle.loads(Path(payload).read_bytes())
-            _adopt(warmth)
-        _SHARED[key] = layout.lay(under, writes, digest_)
-        _laid.append(key)
-    return _SHARED[key]
+    raise ValueError(ref)
 
 
 class _Unpickler(pickle.Unpickler):
@@ -1026,7 +1003,7 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
             _resolve(config, runs)
             total = sum(len(r.todo) for r in runs)
             inline = total <= _INLINE_AT or _in_worker  # nothing to fan out: the jobs run here, one at a time
-            fan = max(1, min(config.host.workers, _budget(config.host)))
+            fan = _fan(config.host)
             size = {r: 1 if inline else max(1, len(r.todo) // (fan * 32)) for r in runs}
             needed: set[str] = set()
             tasks = [(r, r.todo[lo : lo + size[r]]) for r in runs for lo in range(0, len(r.todo), size[r])]

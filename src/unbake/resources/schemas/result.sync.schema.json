@@ -1,0 +1,29 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.sync",
+ "type": "object",
+ "properties": {
+  "written": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "stand_ins": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "array",
+    "items": {
+     "type": "string",
+     "minLength": 1
+    }
+   }
+  }
+ },
+ "required": [
+  "written",
+  "stand_ins"
+ ],
+ "additionalProperties": false
+}

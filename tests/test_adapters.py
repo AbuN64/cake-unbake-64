@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import fixture
@@ -10,7 +11,7 @@ import pytest
 
 from unbake import adapters, process
 from unbake import config as configuration
-from unbake.contracts import Finding, Placement, Recipe, Refusal
+from unbake.contracts import Config, Finding, Host, Placement, Recipe, Refusal
 
 
 @pytest.fixture(autouse=True)
@@ -22,13 +23,16 @@ def isolated_toolchains(toolchains):
 @pytest.fixture
 def adapter_config(tmp_path):
     tools = {name: tmp_path / "host-bin" / name for name in fixture.TOOLS}
-    return fixture.bare_config(
-        tmp_path,
-        toolchain_root=tmp_path / "chains",
-        tools=tools,
-        author=("test", "test@invalid"),
-        macros={"a": ("-DVERSION_A",), "b": ("-DVERSION_B",)},
-    )
+    host = Host(
+        2, 2, 1024, 1024, tmp_path / "cache", 1024, tmp_path / "chains", tools, None, 2, 2, 0.8, 2,
+        ("test", "test@invalid"), {}, "host",
+    )  # fmt: skip
+    project = SimpleNamespace(
+        root=tmp_path, name="fixture", title="Fixture", toolchain="gcc-test", versions=("a", "b"),
+        version={"a": SimpleNamespace(), "b": SimpleNamespace()}, cppflags=(), cflags=(), asflags=(), files={},
+        libraries=(), digest="project",
+    )  # fmt: skip
+    return Config(project, host, "config")  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)

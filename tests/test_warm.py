@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import replace
 from unittest.mock import Mock
 
+from test_native import _outputs, _tools, case, invocation  # noqa: F401  (fixtures)
+
 from unbake import config as configuration
-from unbake import effort, layout, pool, store, versions, view
+from unbake import effort, native, pool, process, store, view
 from unbake.contracts import digest
 
 
@@ -41,11 +44,11 @@ def test_a_pin_tracks_external_replacements_as_well_as_store_writes(cfg) -> None
     path.parent.mkdir(exist_ok=True)
     path.write_bytes(b"one")
     snapshot = Mock(overlays={}, tree=False, config=cfg)
-    before = view._pin(snapshot, "include/p.h")
+    before = view.pin(snapshot, "include/p.h")
     path.write_bytes(b"two")
-    assert view._pin(snapshot, "include/p.h") != before  # external writers invalidate the content pin
+    assert view.pin(snapshot, "include/p.h") != before  # external writers invalidate the content pin
     store.write(path, b"three")
-    assert view._pin(snapshot, "include/p.h") != before
+    assert view.pin(snapshot, "include/p.h") != before
 
 
 def test_a_validated_table_is_parsed_once_across_commands(cfg, monkeypatch) -> None:
@@ -82,64 +85,61 @@ def test_a_listing_is_read_once_until_a_stream_is_appended(cfg, monkeypatch) -> 
     assert "n.jsonl" in store.listing(cfg, "attempts") and len(listed) == 2
 
 
-def test_the_capture_pins_follow_contents_not_modification_times(cfg) -> None:
-    root = cfg.project.root
-    (root / "f.txt").write_text("same")
-    first = layout._pins(cfg, ["f.txt"])
-    os.utime(root / "f.txt", ns=(1, 1))
-    assert layout._pins(cfg, ["f.txt"]) == first  # rewritten identically: still warm
-    (root / "f.txt").write_text("other")
-    assert layout._pins(cfg, ["f.txt"]) != first
+def _text(monkeypatch, texts):
+    monkeypatch.setattr(native.view, "get", lambda snap, u, *a, **k: Mock(text=texts[u.path], unit=u.path))
 
 
-def test_a_split_file_is_parsed_once_across_commands(cfg) -> None:
-    parses = []
+def test_rename_keeps_object_key(case, monkeypatch, toolchains) -> None:  # noqa: F811
+    case, calls, _ = _tools(case, monkeypatch, toolchains)
+    snapshot, unit, recipe, _, work, _ = case
+    texts = {"src/f.c": "int f;\n", "src/renamed.c": "int f;\n"}
+    _text(monkeypatch, texts)
+    monkeypatch.setattr(native.versions, "rom_bytes", lambda *a: b"")
+    other = replace(unit, path="src/renamed.c")
+    snapshot = replace(snapshot, overlays={**snapshot.overlays, other.path: b"int f;\n"})
+    assert native.stamp(snapshot, unit, "a", recipe) == native.stamp(snapshot, other, "a", recipe)
+    native.objects(snapshot, unit, "a", recipe, work / "first")
+    native.objects(snapshot, other, "a", recipe, work / "renamed")
+    assert len(calls) == 1  # the renamed file is the same text: one compile
 
-    def parse(data: bytes) -> list:
-        parses.append(1)
-        return [data]
 
-    cached = store.content(cfg).cached
-    for _ in range(2):
-        effort._memo.clear()
-        assert versions._parsed("document", b"x", parse, cached) == [b"x"]
-    assert len(parses) == 1
-
-
-def test_derive_many_places_every_unit_and_holder_in_one_dispatch(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from unbake import ownership
-
-    maps = []
-
-    def fake_map(cfg, name, fn, items, key=None):
-        maps.append([(u.path, only) for _, u, only, *_ in items])
-        return [{only: f"{u.path}@{only}"} for _, u, only, *_ in items]
-
-    seen = []
-    monkeypatch.setattr(ownership.pool, "map", fake_map)
-    monkeypatch.setattr(ownership, "_emits_data", lambda snapshot, unit: unit.path != "data")
+def test_flag_change_misses(case, monkeypatch, toolchains) -> None:  # noqa: F811
+    case, calls, _ = _tools(case, monkeypatch, toolchains)
+    snapshot, unit, recipe, _, work, _ = case
+    _text(monkeypatch, {unit.path: "int f;\n"})
+    monkeypatch.setattr(native.versions, "rom_bytes", lambda *a: b"")
+    other = replace(recipe, digest="recipe-O3")
+    assert native.stamp(snapshot, unit, "a", recipe) != native.stamp(snapshot, unit, "a", other)
+    native.objects(snapshot, unit, "a", recipe, work / "first")
     monkeypatch.setattr(
-        ownership, "_derived", lambda snapshot, unit, result: seen.append(result) or ("derived", unit.path)
+        native.adapters,
+        "chain_steps",
+        Mock(return_value=(native.compile.Step("compile", "source.o", ("compile", "{in}", "{out}", "-O3")),)),
     )
-    layout = SimpleNamespace(held=lambda members: {"de", "us"} if members == "ab" else {"de"})
-    snapshot = SimpleNamespace(config=None, layout=layout)
-    units = [SimpleNamespace(path=p, members=m) for p, m in (("a", "ab"), ("data", "d"), ("b", "b"))]
-    got = ownership.derive_many(snapshot, units)
-    assert got == [("derived", "a"), (snapshot, units[1]), ("derived", "b")]
-    assert maps == [[("a", "de"), ("a", "us"), ("b", "de")]]  # one dispatch, one job per unit and holder
-    assert seen == [{"de": "a@de", "us": "a@us"}, {"de": "b@de"}]
-    assert ownership.derive_many(snapshot, units[1:2]) == [(snapshot, units[1])] and len(maps) == 1  # nothing to place
+    native.objects(snapshot, unit, "a", other, work / "flags")
+    assert len(calls) == 2  # other flags: a miss
 
 
-def test_a_map_only_overlay_reads_no_version_and_a_repeated_map_is_built_once(cfg, monkeypatch) -> None:
-    assert versions.read(cfg, lambda p: b"", only=set()) == {}  # nothing wanted: no table is read
-    built = []
-    monkeypatch.setattr(layout, "_load_map", lambda *a: built.append(1) or object())
-    effort._memo.clear()
-    one = {"a": object()}
-    first = layout.load_map(cfg, one, b"x", None)
-    assert layout.load_map(cfg, one, b"x", None) is first
-    layout.load_map(cfg, one, b"y", None)
-    assert len(built) == 2
+def test_warm_measure_compiles_nothing(case, monkeypatch, toolchains) -> None:  # noqa: F811
+    case, calls, _ = _tools(case, monkeypatch, toolchains)
+    snapshot, unit, recipe, _, work, _ = case
+    _text(monkeypatch, {unit.path: "int f;\n"})
+    for name in ("cold", "warm"):
+        native.objects(snapshot, unit, "a", recipe, work / name)
+    assert len(calls) == 1  # the second object came from the store: 0 compiles
+
+
+def test_workers_honour_host() -> None:
+    host = Mock(workers=7, slots=3)
+    assert pool._fan(host) == pool._budget(host) == 7
+
+
+def test_make_is_one_process_under_the_jobserver(cfg, monkeypatch) -> None:
+    ran = []
+    monkeypatch.setattr(
+        pool, "jobserver", lambda host, work=0: __import__("contextlib").nullcontext((4, {"MAKEFLAGS": "-j4"}, ()))
+    )
+    monkeypatch.setattr(process, "tool", lambda config, name, **k: cfg.project.root / "make")
+    monkeypatch.setattr(process, "run", lambda *a, **k: ran.append((a, k)) or "result")
+    assert process.make(cfg, ["check"], 4) == "result"
+    assert len(ran) == 1 and ran[0][0][1][-1] == "check" and ran[0][1]["env"] == {"MAKEFLAGS": "-j4"}

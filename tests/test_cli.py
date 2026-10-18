@@ -7,12 +7,12 @@ import json
 import sys
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-import fixture
 import pytest
 
-from unbake import cli, config, move, repo
+from unbake import cli, config, repo, store
 from unbake.contracts import Finding, Refusal
 
 Capture = pytest.CaptureFixture[str]
@@ -29,10 +29,13 @@ def _envelope(out: str) -> dict[str, Any]:
 
 
 @pytest.fixture
-def argv(tmp_path: Path, toolchains: dict[str, Any], monkeypatch: Patch) -> list[str]:
+def argv(tmp_path: Path, monkeypatch: Patch) -> list[str]:
     monkeypatch.delenv("UNBAKE_HOST", raising=False)
-    project = fixture.project(tmp_path, functions={"func_80000400": {"a": (0x1000, bytes(8)), "b": (0x1000, bytes(8))}})
-    return ["setup", "--host", str(fixture.host(tmp_path)), "--project", str(project)]
+    cfg = SimpleNamespace(host=SimpleNamespace(workers=4), project=SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(config, "load", lambda root, host: cfg)
+    monkeypatch.setattr(cli.effort, "bind", lambda cfg: None)
+    monkeypatch.setattr(cli.store, "finish_command", lambda cfg: None)
+    return ["setup", "--host", str(tmp_path / "host.toml"), "--project", str(tmp_path)]
 
 
 @pytest.mark.parametrize("name", sorted(COMMANDS))
@@ -142,7 +145,7 @@ def test_every_refused_bulk_row_fails_the_command_with_all_its_findings_at_once(
     rows = [
         row("f", True, "source.shared-declarations", "land.not_exact"),
         row("g", False, "land.not_exact"),  # a fuzzy entry carries its gaps but was not refused
-        row("h", True, "land.consumer_regressed"),
+        row("h", True, "land.rebase"),
     ]
     monkeypatch.setattr(repo, "setup", lambda cfg, params: {"submissions": rows, "drain": None})
     assert cli.main(argv) == 1
@@ -150,7 +153,7 @@ def test_every_refused_bulk_row_fails_the_command_with_all_its_findings_at_once(
     assert [(f["unit"], f["key"]) for f in document["findings"]] == [
         ("f", "source.shared-declarations"),
         ("f", "land.not_exact"),
-        ("h", "land.consumer_regressed"),
+        ("h", "land.rebase"),
     ]
     assert [r["member"] for r in document["result"]["submissions"]] == ["f", "g", "h"]  # the rows stay in the result
 
@@ -159,7 +162,7 @@ def test_every_refused_bulk_row_fails_the_command_with_all_its_findings_at_once(
 def test_a_dry_or_grouped_submission_result_is_read_not_crashed_on(
     argv: list[str], monkeypatch: Patch, capsys: Capture, nested: bool
 ) -> None:
-    # retype-params returns submissions None when dry and the whole submit result ({"submissions": [...]}) when not
+    # a submit returns submissions None when dry and the whole submit result ({"submissions": [...]}) when not
     bad = {"member": "f", "id": None, "refused": True, "findings": [Finding("land.not_exact", "f").__dict__]}
     held = {"submissions": [bad], "drain": None} if nested else None
     monkeypatch.setattr(repo, "setup", lambda cfg, params: {"submissions": held, "drain": None})
@@ -250,20 +253,38 @@ def test_score_short_prints_the_verdict_and_diff_without_the_stage_tree_or_proof
         assert document["result"]["diff"] == diff and (document["result"]["proofs"] == []) == small
 
 
-def test_move_and_map_are_commands_and_rename_is_gone() -> None:
-    assert {"move", "map"} <= COMMANDS.keys() and "rename" not in COMMANDS
-    assert [p["name"] for p in COMMANDS["move"]["params"]] == ["op", "subject", "target", "partial", "unproved"]
+def test_the_command_set_is_the_C9_set() -> None:
+    assert set(COMMANDS) == {
+        "init",
+        "setup",
+        "sync",
+        "check",
+        "audit",
+        "compare",
+        "score",
+        "submit",
+        "land",
+        "report",
+        "map",
+        "symbols",
+    }
+    assert [p["name"] for p in COMMANDS["sync"]["params"]] == ["check"]
 
 
-def test_refused_moves_fail_the_command_with_their_findings(
-    argv: list[str], monkeypatch: Patch, capsys: Capture
-) -> None:
-    found = Finding("move.not_exact", "u differs", unit="src/u.c", versions=("a",), missing=("size",))
-    row = {"index": 0, "move": {"op": "member", "subject": "f", "target": "m"}, "findings": [found.__dict__]}
-    monkeypatch.setattr(move, "run", lambda cfg, params: {"refused": [row], "files": []})
-    assert cli.main(["move", *argv[1:], "member", "f", "m"]) == 1
-    document = _envelope(capsys.readouterr().out)
-    assert document["ok"] is False and [f["key"] for f in document["findings"]] == ["move.not_exact"]
+def test_sync_check_reaches_the_handler(argv: list[str], monkeypatch: Patch, capsys: Capture) -> None:
+    seen: list[Any] = []
+    monkeypatch.setattr(repo, "sync", lambda cfg, params: seen.append(params) or {"written": [], "stand_ins": {}})
+    assert cli.main(["sync", "--check", *argv[1:]]) == 0
+    assert seen[0]["check"] is True and _envelope(capsys.readouterr().out)["ok"]
+
+
+def test_a_refused_sync_check_names_the_files(argv: list[str], monkeypatch: Patch, capsys: Capture) -> None:
+    def refuse(cfg: Any, params: Any) -> None:
+        raise Refusal(Finding("sync.changed", "2 files differ", missing=("Makefile", "game.ld")))
+
+    monkeypatch.setattr(repo, "sync", refuse)
+    assert cli.main(["sync", "--check", *argv[1:]]) == 1
+    assert _envelope(capsys.readouterr().out)["findings"][0]["missing"] == ["Makefile", "game.ld"]
 
 
 def test_short_score_keeps_missing(monkeypatch: Patch, capsys: Capture) -> None:
@@ -301,8 +322,6 @@ def test_audit_runs_without_host(tmp_path: Path, monkeypatch: Patch, capsys: Cap
 
 @pytest.mark.parametrize("outcome", ["ok", "refused", "crash"])
 def test_every_command_ends_with_exactly_one_finish(argv: list[str], monkeypatch: Patch, outcome: str) -> None:
-    from unbake import store
-
     def setup(cfg: Any, params: Any) -> dict[str, Any]:
         if outcome == "refused":
             raise Refusal(Finding("config.missing", "no value"))
@@ -312,7 +331,7 @@ def test_every_command_ends_with_exactly_one_finish(argv: list[str], monkeypatch
 
     ended: list[Any] = []
     monkeypatch.setattr(repo, "setup", setup)
-    monkeypatch.setattr(store, "finish", ended.append)
+    monkeypatch.setattr(store, "finish_command", ended.append)
     cli.main(argv)
     assert len(ended) == 1
 

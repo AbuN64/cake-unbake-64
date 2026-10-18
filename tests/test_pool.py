@@ -511,13 +511,10 @@ def test_slots_are_released_after_the_executor_is_dropped(tmp_path, monkeypatch)
 
 
 def _snapshot(tmp_path, digest="digest-1"):
-    from unbake.contracts import LayoutMap, Member, Placement, Snapshot
+    from unbake.contracts import Snapshot
 
-    members = {
-        f"m{i}": Member(f"m{i}", "function", "asm", "g", (Placement("a", ".text", i, i + 4, i, 0),))
-        for i in range(2000)
-    }
-    return Snapshot(_config(tmp_path), "head", LayoutMap({}, members, {}, "layout", (), {}), {}, {}, digest)
+    files = {f"src/m{i}.c": b"int m%d;\n" % i * 20 for i in range(2000)}  # a tree big enough to be worth sharing
+    return Snapshot(_config(tmp_path), "head", files, {}, {}, digest)
 
 
 def test_items_travel_without_the_snapshot_and_workers_read_the_shared_copy(tmp_path, monkeypatch):
@@ -570,42 +567,6 @@ def test_a_snapshot_the_warm_workers_were_not_forked_with_travels_in_one_spill_f
     assert back.digest == "two" and pool._Unpickler(io.BytesIO(blobs[1])).load()[0] is back
     pool._forget_spills()
     assert not list(files[0].parent.iterdir())
-
-
-def test_an_overlay_of_a_held_snapshot_travels_as_its_writes_and_forks_no_new_pool(tmp_path, monkeypatch):
-    from unbake import layout
-
-    made = []
-
-    class Executor:
-        def __init__(self, **kwargs):
-            made.append(self)
-
-        def submit(self, function):
-            f = Future()
-            f.set_result(None)
-            return f
-
-        def shutdown(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(pool, "ProcessPoolExecutor", Executor)
-    monkeypatch.setattr(pool, "_SHARED", {})
-    config = _config(tmp_path)
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        needed: set[str] = set()
-        pool._Pickler(io.BytesIO(), needed).dump(base)
-        first = pool._get_executor(config, frozenset(needed))
-        for wave in range(3):  # every wave's overlay: forks per apply stay the worker count
-            over = layout.overlay(base, {"src/a.c": b"int a = %d;" % wave})
-            stream, needed = io.BytesIO(), set()
-            pool._Pickler(stream, needed).dump(over)
-            assert pool._get_executor(config, frozenset(needed)) is first and len(made) == 1
-            assert len(stream.getvalue()) < 1000  # the writes, not the snapshot
-            pool._SHARED.pop(pool._key(over), None)
-            back = pool._Unpickler(io.BytesIO(stream.getvalue())).load()  # as a worker lays it again
-            assert back.digest == over.digest and back.overlays == over.overlays
 
 
 def test_real_forked_workers_see_the_parent_snapshot_unpickled(tmp_path):
@@ -768,9 +729,11 @@ def test_cores_never_exceeds_the_work(tmp_path, work, yielded):
         assert j == yielded == len(pool._slots)
 
 
-def test_the_budget_is_the_host_fact_not_the_callers_width(tmp_path):
-    with pool.cores(_host(tmp_path, slots=6, workers=2)):
-        assert len(pool._slots) == 6
+def test_workers_honour_host(tmp_path):
+    host = _host(tmp_path, slots=6, workers=2)
+    assert pool._budget(host) == pool._fan(host) == 2
+    with pool.cores(host):
+        assert len(pool._slots) == 2
 
 
 def test_a_gather_in_one_process_gives_slots_back_but_never_those_in_flight(tmp_path):
@@ -1170,9 +1133,9 @@ def test_a_share_short_of_the_work_shows_in_the_tree_once_naming_the_holders(tmp
     assert stages == ["pool.short_slots"] and recorded == ["2 of 4 slots; the rest are held by pids none live"]
 
 
-def test_a_free_host_grants_make_every_slot_never_one_job(tmp_path):
-    with pool.cores(_host(tmp_path, slots=6, workers=2)) as j:  # the -j for make: the host's free slots, not -j1
-        assert j == 6
+def test_a_free_host_grants_make_every_worker_never_one_job(tmp_path):
+    with pool.cores(_host(tmp_path, slots=6, workers=3)) as j:  # the -j for make: host.workers, not -j1
+        assert j == 3
 
 
 def test_every_key_function_given_to_a_pool_map_is_a_module_function_that_pickles():
@@ -1268,32 +1231,6 @@ def test_a_worker_is_refused_memory_only_well_above_the_budget_that_sizes_the_po
     assert budget == 1 << 30 and soft == hard == inherited + 4 * (1 << 30)
 
 
-def test_a_worker_holds_one_laid_overlay_and_drops_what_it_built_for_the_one_before(tmp_path, monkeypatch):
-    from unbake import layout
-
-    monkeypatch.setattr(pool, "_SHARED", {})
-    monkeypatch.setattr(pool, "_laid", [])
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        pool._Pickler(io.BytesIO(), set()).dump(base)
-        monkeypatch.setattr(pool, "_forked", set(pool._SHARED))
-        streams = []
-        for wave in range(3):
-            stream = io.BytesIO()
-            pool._Pickler(stream, set()).dump(layout.overlay(base, {"src/a.c": b"int a = %d;" % wave}))
-            streams.append(stream.getvalue())
-        monkeypatch.setattr(effort, "_memo", {("capture", "base"): 1})  # what the worker was forked holding
-        effort.mark_fork(0)
-        for wave, blob in enumerate(streams):
-            effort.memo(("pin", "wave", wave), lambda: [0] * 1000)  # an index built for the wave before
-            effort.memo(("words", wave), lambda: 1)  # keyed by content: valid for any overlay
-            pool._Unpickler(io.BytesIO(blob)).load()
-            assert len(pool._SHARED) == 2  # the forked base and this wave's overlay, never the waves before
-        assert [k for k in effort._memo if k[0] == "pin"] == []
-        assert ("capture", "base") in effort._memo and ("words", 2) in effort._memo
-        effort.mark_fork(-1)
-
-
 def test_one_pool_serves_every_round_and_holds_only_the_snapshot_it_forked_with(tmp_path, monkeypatch):
     made = []
 
@@ -1319,58 +1256,6 @@ def test_one_pool_serves_every_round_and_holds_only_the_snapshot_it_forked_with(
     assert [len(m) for m in made] == [1]  # forked once; no later round's map is held by the parent or copied
     assert len(pool._SHARED) == 1 and len(pool._spilled) == 2
     pool._forget_spills()
-
-
-@pytest.mark.parametrize("ship", [False, True])
-def test_an_overlay_with_large_writes_is_never_carried_by_every_task(tmp_path, monkeypatch, ship):
-    """Before the fork the large overlay is forked holding; once the workers are up its writes go to one file."""
-    from unbake import layout
-
-    monkeypatch.setattr(pool, "_SHARED", {})
-    monkeypatch.setattr(pool, "_laid", [])
-    monkeypatch.setattr(pool, "_INLINE_BYTES", 64)
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        pool._Pickler(io.BytesIO(), set()).dump(base)
-        monkeypatch.setattr(pool, "_forked", set(pool._SHARED))
-        small = layout.overlay(base, {"src/a.c": b"int a;"})
-        large = layout.overlay(base, {"src/a.c": b"int a[] = {%s};" % b",".join([b"1"] * 5000)})
-        sizes, needs = [], []
-        for over in (small, large):
-            stream, needed = io.BytesIO(), set()
-            pool._Pickler(stream, needed, ship=ship).dump(over)
-            sizes.append(len(stream.getvalue()))
-            needs.append(needed)
-        assert sizes[1] < 1000  # a key or a file name travels, never its 10 KB of writes
-        if not ship:
-            assert needs[0] == {pool._key(base)} and needs[1] == {pool._key(large)}  # the large one forks once
-        else:
-            assert needs == [{pool._key(base)}] * 2 and pool._key(large) not in pool._SHARED  # nothing forks
-            stream = io.BytesIO()
-            pool._Pickler(stream, set(), ship=True).dump(large)
-            pool._SHARED.pop(pool._key(large), None)
-            back = pool._Unpickler(io.BytesIO(stream.getvalue())).load()  # as a worker lays it over its base
-            assert back.digest == large.digest and back.overlays == large.overlays
-            pool._forget_spills()
-
-
-def test_one_dispatch_pickles_an_overlays_writes_once_and_keeps_none_after_it(tmp_path, monkeypatch):
-    from unbake import layout
-
-    monkeypatch.setattr(pool, "_SHARED", {})
-    dumped = []
-    real = pool.pickle.dumps
-    monkeypatch.setattr(pool.pickle, "dumps", lambda value, **kw: dumped.append(value) or real(value, **kw))
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        pool._Pickler(io.BytesIO(), set()).dump(base)
-        monkeypatch.setattr(pool, "_forked", set(pool._SHARED))
-        over = layout.overlay(base, {"src/a.c": b"int a;"})
-        writes: dict[str, bytes] = {}
-        for _ in range(3):  # three tasks of one dispatch
-            pool._Pickler(io.BytesIO(), set(), writes).dump((over, 1))
-        assert len(dumped) == 1 and list(writes) == [over.digest]
-        assert not [k for k in effort._memo if k[0] == "pool.writes"]  # nothing outlives the dispatch
 
 
 def _peer(runtime, pid, budget, slots):
@@ -1581,38 +1466,6 @@ def _parse_on(item):
     return snapshot.digest, len(snapshot.overlays), os.getpid(), len(_PARSES)
 
 
-def test_rounds_of_new_trees_and_overlays_run_on_one_warm_pool_that_parses_a_header_once(tmp_path, monkeypatch):
-    """The 2026-10-15 fakes move forked its workers again three times a round (a new capture, an overlay of an
-    overlay, writes over 4 MB). Three rounds of two dispatches now fork once: the fan of workers, each of which
-    parses a shared header once for the whole command, and each round's tree is spilled once and reused."""
-    from unbake import layout
-
-    made = []
-    real = pool.ProcessPoolExecutor
-
-    class Counting(real):
-        def __init__(self, **kwargs):
-            made.append(kwargs["max_workers"])
-            super().__init__(**kwargs)
-
-    monkeypatch.setattr(pool, "ProcessPoolExecutor", Counting)
-    monkeypatch.setattr(pool, "_INLINE_BYTES", 64)  # a round's writes travel in a spill file
-    seen: dict[int, int] = {}
-    with effort.command("check", []):
-        for r in range(3):
-            capture = _snapshot(tmp_path, f"round-{r}")  # each round captures the tree again
-            tree = layout.overlay(capture, {"src/a.c": b"int a[] = {%s};" % b",".join([b"%d" % r] * 100)})
-            for d in range(2):
-                over = layout.overlay(tree, {"src/b.c": b"int b = %d;" % d})
-                got = pool.map(capture.config, "units", _parse_on, [(over, i) for i in range(6)])
-                assert {g[:2] for g in got} == {(over.digest, 2)}
-                seen.update({g[2]: g[3] for g in got})
-        spills = effort.counters()["pool.spill"]
-    assert len(made) == 1 and len(seen) <= made[0]  # workers spawned per command: the fan, once
-    assert set(seen.values()) == {1}  # every worker parsed the shared header once across all rounds
-    assert spills == (4, 4)  # rounds 1 and 2: the tree and its writes spilled once, reused by the second dispatch
-
-
 def test_every_chunk_is_ready_at_once_so_the_workers_stay_full_while_work_remains(
     tmp_path, monkeypatch, mocked_parallel
 ):
@@ -1621,25 +1474,6 @@ def test_every_chunk_is_ready_at_once_so_the_workers_stay_full_while_work_remain
     with effort.command("check", []):
         assert pool.map(config, "units", _square, list(range(64))) == [v * v for v in range(64)]
     assert mocked_parallel[:4] == [1, 2, 3, 4] and set(mocked_parallel[3:]) == {4}  # in flight == workers to the end
-
-
-def test_a_warm_dispatch_carries_a_large_overlay_once_whatever_its_task_count(tmp_path, monkeypatch, mocked_parallel):
-    """The parent's own work per dispatch: the writes are pickled and written once, each task carries a reference."""
-    from unbake import layout
-
-    sizes = []
-    real = pool._dispatch
-    monkeypatch.setattr(pool, "_dispatch", lambda blob: sizes.append(len(blob)) or real(blob))
-    monkeypatch.setattr(pool, "_warm", lambda config: True)
-    monkeypatch.setattr(pool, "_SHARED", {})
-    monkeypatch.setattr(pool, "_laid", [])
-    config = replace(_config(tmp_path), host=_host(tmp_path, slots=4, workers=4))
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        over = layout.overlay(base, {f"src/{i}.c": b"%d;" % i * 1024 for i in range(256)})  # ~1 MB of writes
-        assert pool.map(config, "units", _digest_of, [(over, i) for i in range(200)])[0][0] == over.digest
-    assert len(sizes) == 200 and max(sizes) < 2000  # never the megabyte per task
-    pool._forget_spills()
 
 
 def test_a_spilled_tree_carries_the_parents_indexes_so_warm_workers_never_build_them(tmp_path, monkeypatch):
@@ -1678,45 +1512,6 @@ def _laid_tree(item):
 @pytest.mark.parametrize(
     "change", ["relaid", "new_capture", "same_writes_new_base", "new_middle", "large_writes", "unchanged"]
 )
-def test_every_tree_change_between_two_dispatches_reaches_the_warm_workers(tmp_path, monkeypatch, warm, change):
-    """The shared pool's callers (setup, report, move, retype, land) change the tree between dispatches in these ways;
-    the second dispatch must run on exactly the parent's tree on the same warm workers, never on what a worker held."""
-    from unbake import layout
-
-    real = layout._overlay
-    monkeypatch.setattr(pool, "_SHARED", {})
-    monkeypatch.setattr(pool, "_laid", [])
-    config = _config(tmp_path)
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        first = layout.overlay(base, {"src/a.c": b"int a;"})  # in the parent's memo when the workers fork
-        warmup = layout.overlay(base, {"src/z.c": b"int z;"})
-        assert pool.map(config, "units", _laid_tree, [(warmup, i) for i in range(3)])[0][0] == warmup.digest
-        if change == "relaid":  # setup rewrote what the overlay reads: the same base and writes lay another tree
-            effort.forget("overlay")
-
-            def relay(under, writes):
-                effort.memo(("parent", "relaid"), lambda: (under, dict(writes)))  # as the real _overlay records it
-                return replace(real(under, writes), digest="relaid")
-
-            monkeypatch.setattr(layout, "_overlay", relay)
-            second = layout.overlay(base, {"src/a.c": b"int a;"})
-        elif change == "new_capture":  # the next round captures the tree again
-            second = _snapshot(tmp_path, "two")
-        elif change == "same_writes_new_base":
-            second = layout.overlay(_snapshot(tmp_path, "two"), {"src/a.c": b"int a;"})
-        elif change == "new_middle":  # a wave's overlay laid over the one before
-            second = layout.overlay(layout.overlay(base, {"src/b.c": b"int b;"}), {"src/a.c": b"int a;"})
-        elif change == "large_writes":  # writes over the inline limit travel in a spill file
-            second = layout.overlay(base, {f"src/{i}.c": b"int x%d;" % i * 4000 for i in range(4)})
-        else:
-            second = first
-        got = pool.map(config, "units", _laid_tree, [(second, i) for i in range(3)])
-    assert got == [(second.digest, dict(second.overlays))] * 3  # never a tree a worker held from before
-    assert warm.forks == 1 and warm.dispatches == 6  # both dispatches on the same warm workers
-    pool._forget_spills()
-
-
 def _versions_read(item):
     return effort.memo(("versions.read", "split"), lambda: "read now")
 
@@ -1744,35 +1539,6 @@ def test_follow_forgets_only_the_kinds_the_parent_forgot_since(monkeypatch):
     effort._memo[("b", 2)] = 1
     effort.follow({"a": 2, "b": 1})  # nothing new: nothing forgotten
     assert ("b", 2) in effort._memo
-
-
-@pytest.mark.parametrize("derived", [False, True])
-def test_only_a_pure_overlay_is_laid_again_in_a_worker_and_never_from_files(tmp_path, monkeypatch, derived):
-    # setup's boundary plan laid overlays that derive versions and the map from the splits and the asm; warm workers
-    # derived them again from files rewritten since: 'an overlay laid again in a worker has digest', three times.
-    from unbake import layout
-
-    monkeypatch.setattr(pool, "_SHARED", {})
-    monkeypatch.setattr(pool, "_laid", [])
-    monkeypatch.setattr(pool, "_spilled", {})
-    with effort.command("check", []):
-        base = _snapshot(tmp_path, "one")
-        pool._Pickler(io.BytesIO(), set()).dump(base)
-        monkeypatch.setattr(pool, "_forked", set(pool._SHARED))
-        writes = {"src/a.c": b"int a;"}
-        over = layout.overlay(base, writes)
-        if derived:  # as _overlay makes one whose split or symbols writes rebuilt the versions and the map
-            over = replace(over, versions=dict(base.versions), digest="derived")
-            effort.memo(("parent", "derived"), lambda: (base, dict(writes)))
-        stream = io.BytesIO()
-        pool._Pickler(stream, set(), ship=True).dump(over)
-        assert len(pool._spilled) == int(derived)  # derived: the whole overlay in a file; pure: its writes inline
-        pool._SHARED.pop(pool._key(over), None)
-        monkeypatch.setattr(layout, "_overlay", lambda *a: pytest.fail("a worker derived an overlay again"))
-        effort.forget("overlay")
-        back = pool._Unpickler(io.BytesIO(stream.getvalue())).load()
-        assert back.digest == over.digest and back.overlays == over.overlays
-        pool._forget_spills()
 
 
 def _two_stages(value):

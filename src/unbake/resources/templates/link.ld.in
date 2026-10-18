@@ -1,0 +1,7 @@
+/* ${generated} */
+OUTPUT_ARCH(mips)
+SECTIONS
+{
+${segments}
+}
+INCLUDE undefined_syms.ld

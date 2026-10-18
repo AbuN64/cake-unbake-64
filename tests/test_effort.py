@@ -2,20 +2,28 @@
 
 import json
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import fixture
 import pytest
 
 from unbake import effort
-from unbake.contracts import Finding, Origin, Refusal
+from unbake.contracts import Config, Finding, Host, Origin, Refusal
 
 
 def _config(tmp_path):
     keys = ("resources.memory_parent_bytes", "resources.memory_worker_bytes", "budgets.serial_seconds")
     origins = {key: Origin(key, "/host.toml", "0" * 64) for key in keys}
-    return fixture.bare_config(
-        tmp_path, versions=(), toolchain="test", memory=1 << 30, origins=origins, author=("test", "test@invalid")
-    )
+    memory = 1 << 30
+    host = Host(
+        2, 2, memory, memory, tmp_path / "cache", memory, tmp_path / "tools", {}, None, 2, 2, 0.8, 2,
+        ("test", "test@invalid"), origins, "host",
+    )  # fmt: skip
+    project = SimpleNamespace(
+        root=tmp_path, name="fixture", title="Fixture", toolchain="test", versions=(), version={}, cppflags=(),
+        cflags=(), asflags=(), files={}, libraries=(), names_from="", digest="project",
+    )  # fmt: skip
+    return Config(project, host, "config")  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)

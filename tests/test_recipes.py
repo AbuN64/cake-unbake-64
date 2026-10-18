@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,13 +19,14 @@ PAIRED_ROW = {
 }
 
 
-def _config(cfg: Config, **build: list[str]) -> Config:
-    merged = {**cfg.project.build, **build}
-    return replace(cfg, project=replace(cfg.project, build=merged))
+def _config(cfg: Config, **flags: list[str]) -> Config:
+    """cfg with the project's cflags, cppflags or asflags replaced."""
+    project = SimpleNamespace(**{**vars(cfg.project), **{k: tuple(v) for k, v in flags.items()}})
+    return replace(cfg, project=project)  # type: ignore[arg-type]
 
 
 def _unit(path: str = "src/a.c", toolchain: str = "gcc-test", **options: list[str]) -> UnitSpec:
-    return UnitSpec(path, "c", "g", ("f",), toolchain, options)
+    return UnitSpec(path, "c", ("f",), toolchain, options)
 
 
 @pytest.fixture
@@ -44,10 +46,10 @@ def test_precedence_order(cfg: Config, toolchains: dict[str, Any]) -> None:
 
 
 def test_asflags_and_cppflags_from_build(cfg: Config) -> None:
-    cfg = _config(cfg, cppflags=["-DX"], asflags=["-a"], gnu_asflags=["-g1"])
+    cfg = _config(cfg, cppflags=["-DX"], asflags=["-a"])
     recipe = recipes.resolve(cfg, _unit(), {})
-    assert recipe.cppflags == ("-DX", "-D__UNBAKE_STDARG_GCC")
-    assert recipe.asflags == ("-a", "-g1")
+    assert recipe.cppflags == ("-DX",)
+    assert recipe.asflags == (*configuration.load_resource("rom.toml")["asflags"], "-a")
     assert recipe.digest == digest((recipe.toolchain, recipe.cppflags, recipe.cflags, recipe.asflags))
 
 
@@ -109,7 +111,7 @@ def test_a_units_omit_that_is_missing_names_the_unit(cfg: Config) -> None:
 
 def test_digest_changes_only_with_flags(cfg: Config) -> None:
     one = recipes.resolve(cfg, _unit("src/a.c"), {})
-    two = recipes.resolve(cfg, replace(_unit("src/b.c"), group="other", members=("x", "y")), {})
+    two = recipes.resolve(cfg, replace(_unit("src/b.c"), members=("x", "y")), {})
     assert one.digest == two.digest
     changed = recipes.resolve(cfg, _unit(), {"omit": ["-O2"], "add": ["-O1"]})
     assert changed.digest != one.digest
@@ -119,9 +121,9 @@ def test_a_unit_preprocessor_option_goes_to_the_preprocessor_and_codegen_stays_w
     cfg = _config(cfg, cppflags=["-DGBI", "-undef"])
     for toolchain in ("gcc-test", "ido-7.1"):
         recipe = recipes.resolve(cfg, _unit(toolchain=toolchain, add=["-UGBI", "-G8"]), {})
-        assert recipe.cppflags[:3] == ("-DGBI", "-undef", "-UGBI") and "-UGBI" not in recipe.cflags
+        assert recipe.cppflags[-3:] == ("-DGBI", "-undef", "-UGBI") and "-UGBI" not in recipe.cflags
         assert "-G8" in recipe.cflags
-    assert recipes.resolve(cfg, _unit(), {"omit": ["-DGBI"]}).cppflags[0] == "-undef"
+    assert recipes.resolve(cfg, _unit(), {"omit": ["-DGBI"]}).cppflags[-1] == "-undef"
 
 
 def test_gcc_rows_preprocess_as_they_always_did_and_only_ido_moved_to_the_shared_preprocessor() -> None:

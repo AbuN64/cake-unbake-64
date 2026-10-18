@@ -1,196 +1,44 @@
-"""The perfect metric per axis on a mocked ROM: boundary (B), flags (F), members (M) and name (N)."""
+"""The perfect metric on mocked modules: no stand-in in any version that links exact."""
 
-from __future__ import annotations
-
-import struct
 from types import SimpleNamespace
 
-import pytest
-
-from unbake import edges, perfect
-from unbake.contracts import Group, LayoutMap, Member, Placement, SdkHit, UnitSpec
-
-JR, NOP, OP = 0x03E00008, 0, 0x27BDFFE8
-# f1 | f2 f3 | f4: pad before f2 (a padding word), unal between f2 and f3, pad before f4 (12 zero bytes)
-FUNCTIONS = (
-    ("f1", 0x1000, [OP, JR, NOP, NOP]),
-    ("f2", 0x1010, [OP, JR, NOP]),
-    ("f3", 0x101C, [OP, OP, JR, NOP, OP, OP]),
-    ("f4", 0x1040, [OP, JR, NOP]),
-)
+from unbake import perfect
 
 
-def _snapshot(tmp_path, groups, units, *, boundaries=(), library="", evidence=(), functions=FUNCTIONS):
-    tmp_path.mkdir(exist_ok=True)
-    rom = bytearray(0x2000)
-    for _, start, words in functions:
-        rom[start : start + 4 * len(words)] = struct.pack(f">{len(words)}I", *words)
-    (tmp_path / "a.z64").write_bytes(bytes(rom))
-    group_of = {n: g for g, names in groups.items() for n in names}
-    members = {
-        n: Member(n, "function", "c", group_of[n], (Placement("a", ".text", s, s + 4 * len(w), 0x80000000 + s),))
-        for n, s, w in functions
-    }
-    lay = LayoutMap(
-        {
-            g: Group(g, "main", names, "authored", (), bool(library), f"src/{g}.c", f"include/{g}.h", "", library)
-            for g, names in groups.items()
-        },
-        members,
-        {u.path: u for u in units},
-        f"lay-{tmp_path.name}-{sorted(groups.items())}-{[u.path for u in units]}-{boundaries}-{library}-{evidence}",
-        (),
-        {},
-        tuple(boundaries),
+def _module(path, owns, stand_ins=None):
+    stand_ins = stand_ins or {}
+    return SimpleNamespace(path=path, owns=owns, stand_ins=stand_ins)
+
+
+def _row(version, group, code=16, data=0):
+    return SimpleNamespace(version=version, code=code, data=data, member=SimpleNamespace(group=group))
+
+
+def test_a_module_is_perfect_when_no_exact_version_holds_a_stand_in():
+    tree = SimpleNamespace(
+        digest="perfect-1",
+        modules=(
+            _module("src/c.c", {"a": ("f",), "b": ("f",)}),
+            _module("src/s.c", {"a": ("g",), "b": ("g",)}, {"a": ("g",)}),
+            _module("src/b.c", {"a": ("h",), "b": ("h",)}, {"b": ("h",)}),  # stand-in only where the link is not exact
+        ),
     )
-    version = SimpleNamespace(rom=tmp_path / "a.z64", rom_sha256="sha", segments=(("main", 0x1000, 0x2000, 0),))
-    project = SimpleNamespace(versions=("a",), names_from="a", evidence_objects=evidence, library_dirs=())
-    return SimpleNamespace(
-        digest=lay.digest, config=SimpleNamespace(project=project), layout=lay, versions={"a": version}
+    rows = [_row(v, p) for v in ("a", "b") for p in ("src/c.c", "src/s.c", "src/b.c")]
+    census, modules = perfect.census(tree, rows, {"a"})
+    assert modules == {"src/c.c", "src/b.c"}
+    assert census["a"] == {"bytes": 32, "total": 48, "modules": 3, "perfect_modules": 2}
+    assert census["b"]["bytes"] == 32 and census["b"]["total"] == 48
+
+
+def test_the_census_is_memoised_by_the_tree_digest():
+    tree = SimpleNamespace(digest="perfect-2", modules=(_module("src/c.c", {"a": ("f",)}),))
+    first = perfect.census(tree, [_row("a", "src/c.c")], {"a"})
+    rows = [_row("a", "src/c.c", code=999)]  # same digest: the rows are not read again
+    assert perfect.census(tree, rows, {"a"}) is first
+    assert (
+        perfect.census(SimpleNamespace(digest="perfect-3", modules=tree.modules), rows, {"a"})[0]["a"]["total"] == 999
     )
 
 
-def _unit(path, names, kind="c", options=None):
-    return UnitSpec(path, kind, "", tuple(names), "test", options or {})
-
-
-@pytest.fixture(autouse=True)
-def _inline(monkeypatch):
-    monkeypatch.setattr(edges, "pool", SimpleNamespace(map=lambda c, n, f, items, key=None: [*map(f, items)]))
-    monkeypatch.setattr(perfect.infer, "sdk", lambda s: {})
-
-
-def test_a_module_between_two_pad_cuts_laid_as_one_unit_is_a_proven_boundary(tmp_path):
-    snapshot = _snapshot(
-        tmp_path,
-        {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)},
-        [_unit("src/a.c", ["f1"]), _unit("src/m.c", ["f2", "f3"]), _unit("src/z.c", ["f4"])],
-    )
-    record = perfect.objects(snapshot)["m"]
-    assert record == {
-        "start": "pad",
-        "end": "pad",
-        "inside": "joined",
-        "units": 1,
-        "flags": "default",
-        "name": "assigned",
-        "boundary": True,
-        "split_debt": 0,
-    }
-    assert perfect.objects(snapshot)["a"]["start"] == "segment"
-
-
-def test_a_module_edge_at_a_proven_join_is_a_defect(tmp_path):
-    snapshot = _snapshot(
-        tmp_path,
-        {"m": ("f1", "f2"), "n": ("f3", "f4")},
-        [_unit("src/m.c", ["f1", "f2"]), _unit("src/n.c", ["f3", "f4"])],
-    )
-    records = perfect.objects(snapshot)
-    assert (records["m"]["end"], records["n"]["start"]) == ("join", "join")
-    assert records["m"]["inside"] == records["n"]["inside"] == "cut"  # each holds a pad cut inside
-    assert not records["m"]["boundary"] and not records["n"]["boundary"]
-
-
-def test_two_units_or_a_split_proof_inside_break_the_boundary(tmp_path):
-    groups = {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}
-    two = _snapshot(tmp_path, groups, [_unit("src/m.c", ["f2"]), _unit("src/m_2.c", ["f3"])])
-    assert perfect.objects(two)["m"]["units"] == 2 and not perfect.objects(two)["m"]["boundary"]
-    debt = _snapshot(tmp_path, groups, [_unit("src/m.c", ["f2", "f3"])], boundaries=["f3"])
-    assert perfect.objects(debt)["m"]["split_debt"] == 1 and not perfect.objects(debt)["m"]["boundary"]
-
-
-@pytest.mark.parametrize(
-    ("units", "flags"),
-    [
-        ([_unit("src/m.c", ["f2", "f3"], options={"add": [], "omit": []})], "default"),
-        ([_unit("src/m.c", ["f2", "f3"], options={"add": ["-ffast-math"], "omit": []})], "proven"),
-        ([_unit("asm/m.s", ["f2", "f3"], kind="asm")], "open"),  # not every member compiles from C yet
-    ],
-)
-def test_flags_are_default_without_options_proven_with_them_and_open_until_every_function_compiles(
-    tmp_path, units, flags
-):
-    snapshot = _snapshot(tmp_path, {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}, units)
-    assert perfect.objects(snapshot)["m"]["flags"] == flags
-
-
-def test_names_come_from_sdk_library_or_an_evidence_row(tmp_path, monkeypatch):
-    groups = {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}
-    units = [_unit("src/m.c", ["f2", "f3"])]
-    assert perfect.objects(_snapshot(tmp_path, groups, units))["m"]["name"] == "assigned"
-    assert perfect.objects(_snapshot(tmp_path, groups, units, library="libgcc"))["m"]["name"] == "library"
-    row = {"first": "f2", "last": "f3", "source": "AI/ENEMIES/TURRETAI.CPP", "origin": "debug stream"}
-    named = perfect.objects(_snapshot(tmp_path / "row", groups, units, evidence=(row,)))["m"]
-    assert named["name"] == "assigned" and (named["start"], named["end"]) == ("pad", "pad")  # src/m.c is not its file
-    row = {**row, "source": "AI/ENEMIES/M.CPP"}
-    assert perfect.objects(_snapshot(tmp_path / "file", groups, units, evidence=(row,)))["m"]["name"] == "evidence"
-    monkeypatch.setattr(perfect.infer, "sdk", lambda s: {n: SdkHit(n, "sqrtf", "libm") for n in ("f2", "f3")})
-    assert perfect.objects(_snapshot(tmp_path / "sdk", groups, units))["m"]["name"] == "sdk"
-
-
-def test_an_sdk_module_change_proves_an_open_edge(tmp_path, monkeypatch):
-    hits = {"f3": SdkHit("x", "one", "libultra"), "f4": SdkHit("y", "two", "libultra")}
-    monkeypatch.setattr(perfect.infer, "sdk", lambda s: hits)
-    functions = (*FUNCTIONS[:2], ("f3", 0x101C, [OP, OP, JR, NOP, OP]), ("f4", 0x1030, [OP, JR, NOP]))
-    snapshot = _snapshot(tmp_path, {"m": ("f1", "f2", "f3"), "z": ("f4",)}, [], functions=functions)
-    assert perfect.objects(snapshot)["z"]["start"] == "sdk"  # al0: open by the ROM alone
-
-
-def _credit(name, group, version, exact, code=16, data=0):
-    return SimpleNamespace(
-        name=name,
-        member=SimpleNamespace(group=group),
-        version=version,
-        exact=exact,
-        code=code,
-        data=data,
-        segment="main",
-    )
-
-
-def test_census_counts_axes_and_perfect_bytes_per_version(tmp_path):
-    snapshot = _snapshot(
-        tmp_path,
-        {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)},
-        [_unit("src/a.c", ["f1", "f4"]), _unit("src/m.c", ["f2", "f3"])],
-    )
-    credits = [
-        _credit("f1", "a", "a", True),
-        _credit("f2", "m", "a", True, code=12, data=8),
-        _credit("f3", "m", "a", True, code=20),
-        _credit("f4", "z", "a", False),
-    ]
-    census, whole = perfect.census(snapshot, credits)
-    assert whole == frozenset({"a", "m"})  # z misses an exact member
-    row = census["a"]
-    assert (row["bytes"], row["total"], row["modules"], row["perfect_modules"]) == (56, 72, 3, 2)
-    assert (row["boundary"], row["flags"], row["members"], row["named"]) == (3, 3, 2, 0)
-    assert row["module_starts"] == {"pad": 2, "segment": 1} and row["open_edges"] == 0 and row["contradictions"] == 0
-
-
-def test_a_module_flag_set_is_proven_between_cuts_and_a_conflict_at_a_join(tmp_path):
-    from dataclasses import replace
-
-    groups = {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}
-    units = [_unit("src/a.c", ["f1"]), _unit("src/m.c", ["f2", "f3"]), _unit("src/z.c", ["f4"])]
-    snapshot = _snapshot(tmp_path, groups, units)
-    flagged = {"add": ["-ffast-math"], "omit": []}
-    lay = snapshot.layout
-    snapshot.layout = replace(lay, groups={**lay.groups, "m": replace(lay.groups["m"], options=flagged)}, digest="m")
-    snapshot.digest = "m"
-    assert perfect.objects(snapshot)["m"]["flags"] == "proven"  # pad cuts on both sides: its own object
-    island = _snapshot(tmp_path / "island", {"a": ("f1", "f2"), "m": ("f3",), "z": ("f4",)}, units)
-    lay = island.layout
-    island.layout = replace(lay, groups={**lay.groups, "m": replace(lay.groups["m"], options=flagged)}, digest="i")
-    island.digest = "i"
-    assert perfect.objects(island)["m"]["flags"] == "conflict"  # f2|f3 is unal: one object cannot hold two sets
-
-
-def test_units_of_one_module_under_two_flag_sets_are_a_conflict(tmp_path):
-    units = [
-        _unit("src/m.c", ["f2"]),
-        _unit("src/m_2.c", ["f3"], options={"add": ["-fno-strength-reduce"], "omit": []}),
-    ]
-    snapshot = _snapshot(tmp_path, {"a": ("f1",), "m": ("f2", "f3"), "z": ("f4",)}, units)
-    assert perfect.objects(snapshot)["m"]["flags"] == "conflict"
+def test_an_empty_tree_has_an_empty_census():
+    assert perfect.census(SimpleNamespace(digest="perfect-4", modules=()), [], set()) == ({}, frozenset())

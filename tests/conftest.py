@@ -33,6 +33,7 @@ TOOLCHAIN_ROW = {
     "isa": [3],
     "pins": {},
     "downloads": [],
+    "cppflags": [],
     "preprocess": ["{cpp}", "-E", "{cppflags}", "{defines}", "{includes}", "{source}"],
     "compile": ["{cc}", "{codegen}", "-c", "{source}", "-o", "{out}"],
 }
@@ -65,7 +66,7 @@ def host_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def cfg(tmp_path: Path, toolchains: dict[str, Any]) -> Config:
-    """A loaded two-version config with one function."""
+    """A two-version schema-4 config (two segments, three modules)."""
     return fixture.config(tmp_path)
 
 
@@ -89,14 +90,6 @@ def _pinned_abucache(monkeypatch: pytest.MonkeyPatch) -> None:
     venv installed before a pin bump would fail every setup test. Tests judge the code, never the runner's install;
     test_adapters checks the pin reading itself on a canned requirement."""
     monkeypatch.setattr(adapters, "_pin", lambda: adapters.abucache.__version__)
-
-
-@pytest.fixture(autouse=True)
-def _no_recorded_clones(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Policy tests build mock snapshots: no recovery run has recorded clones for them."""
-    from unbake import recovery
-
-    monkeypatch.setattr(recovery, "clones", lambda snapshot: {})
 
 
 class WarmWorkers:

@@ -1,70 +1,74 @@
-"""rescore: the fuzzy rows scored again, keyed per row."""
+"""rescore: NON_MATCHING bodies measured once per content, through the `score` kind."""
 
-import pickle
+import json
+from types import SimpleNamespace
+
+import pytest
 
 from unbake import rescore
 
 
-def test_the_row_key_is_a_module_function_the_workers_can_pickle() -> None:
-    assert pickle.loads(pickle.dumps(rescore._row_key)) is rescore._row_key
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms/baserom.a.z64").write_bytes(bytes(range(64)))
+    (tmp_path / "roms/baserom.b.z64").write_bytes(bytes(range(64, 128)))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.c").write_text("#ifdef NON_MATCHING\nint f(void) { return 1; }\n#endif\n")
+    (tmp_path / "src/b.c").write_text("int g(void) { return 1; }\n")
+    stored, measured = {}, []
+    monkeypatch.setattr(rescore, "_lookup", lambda config, key: stored.get(key))
+    monkeypatch.setattr(rescore, "_record", lambda config, key, value: stored.__setitem__(key, value))
+    monkeypatch.setattr(
+        rescore, "_measure", lambda config, path, name, version: measured.append((name, version)) or 0.25
+    )
+    monkeypatch.setattr(rescore.pool, "map", lambda config, name, fn, items, key=None: [fn(i) for i in items])
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    tree = SimpleNamespace(
+        digest="r",
+        modules=(
+            SimpleNamespace(path="src/a.c", owns={"a": ("f",), "b": ("f",)}, fuzzy=("f",)),
+            SimpleNamespace(path="src/b.c", owns={"a": ("g",)}, fuzzy=()),
+        ),
+    )
+    facts = {"a": {"f": (0x80000000, 0x10, 16, "func"), "g": (0, 0, 8, "func")}, "b": {"f": (0, 0x20, 16, "func")}}
+    return config, tree, facts, stored, measured, tmp_path
 
 
-class _Tree:
-    """A snapshot stand-in: the files a row key reads, and nothing else."""
-
-    def __init__(self, files, layout="layout-1"):
-        from types import SimpleNamespace
-
-        self.files, self.digest = files, f"tree-{layout}"
-        self.layout = SimpleNamespace(members={"f": ("f", "placements")}, units={"other": layout})
-        self.versions = {}
-        self.config = SimpleNamespace(digest="config")
-
-    def peek(self, path):
-        return self.files.get(path)
+def test_only_non_matching_names_are_measured_one_per_version(world):
+    config, tree, facts, _stored, measured, _ = world
+    assert rescore.rows(config, tree, facts) == {"f": {"a": 0.25, "b": 0.25}}
+    assert sorted(measured) == [("f", "a"), ("f", "b")]
 
 
-FILES = {
-    "src/fuzzy/f.c": b'#include "a.h"\nint f(void) { return 1; }\n',
-    "include/a.h": b'#include "b.h"\n',
-    "include/b.h": b"typedef int B;\n",
-    "include/other.h": b"typedef int O;\n",
-}
+def test_a_changed_target_rekeys_only_that_version(world):
+    config, tree, facts, _stored, measured, root = world
+    rescore.rows(config, tree, facts)
+    (root / "roms/baserom.b.z64").write_bytes(bytes(range(65, 129)))
+    rescore.rows(config, tree, facts)
+    assert measured[2:] == [("f", "b")]
 
 
-def _key(tree):
-    row = {"path": "src/fuzzy/f.c"}
-    return rescore._row_key((tree, "f", row, rescore.reach(tree, row["path"])))
+def test_a_name_without_a_fact_in_a_version_is_skipped(world):
+    config, tree, facts, _stored, measured, _ = world
+    assert rescore.rows(config, tree, {"a": facts["a"]}) == {"f": {"a": 0.25}} and measured == [("f", "a")]
 
 
-def test_a_row_key_moves_with_what_its_score_reads_never_with_a_landing_elsewhere() -> None:
-    """Every drain that landed re-keyed all 267 fuzzy rows (~6 s each) as the key held the tree digest."""
-    before = _key(_Tree(dict(FILES)))
-    assert _key(_Tree({**FILES, "include/other.h": b"typedef int P;\n"}, layout="layout-2")) == before
-    assert _key(_Tree({**FILES, "include/b.h": b"typedef short B;\n"})) != before  # reached through a.h
-    assert _key(_Tree({**FILES, "src/fuzzy/f.c": FILES["src/fuzzy/f.c"] + b"\n"})) != before
+def test_the_key_names_content_never_a_path(world):
+    config, tree, facts, stored, _measured, root = world
+    rescore.rows(config, tree, facts)
+    keys = set(stored)
+    (root / "src/c.c").write_bytes((root / "src/a.c").read_bytes())  # the same text under another path
+    moved = SimpleNamespace(
+        digest="r2", modules=(SimpleNamespace(path="src/c.c", owns=tree.modules[0].owns, fuzzy=("f",)),)
+    )
+    rescore.rows(config, moved, facts)
+    assert set(stored) == keys
 
 
-def _versioned(files, symbols, code=frozenset()):
-    from types import SimpleNamespace
-
-    tree = _Tree(files)
-    tree.versions = {"us": SimpleNamespace(symbols=symbols, code=frozenset(code))}
-    return tree
-
-
-def test_a_landing_elsewhere_changes_version_facts_but_no_row_key() -> None:
-    """RW land 76b2830d: publish.generate 132 s, of it rescore.keys 83 s and rescore.measure 43 s over all 270 fuzzy
-    rows, as every key held the whole version symbol table a landing changes. A row reads the names it spells."""
-    symbols = {"f": 0x80001000, "B": 0x80002000, "elsewhere_L1": 0x80003000}
-    before = _key(_versioned(dict(FILES), symbols))
-    landed = {k: v for k, v in symbols.items() if k != "elsewhere_L1"}  # a label gone with a landed function
-    assert _key(_versioned(dict(FILES), landed, code={"elsewhere"})) == before
-    assert _key(_versioned(dict(FILES), {**symbols, "f": 0x80001004})) != before  # its own name moved
-    assert _key(_versioned(dict(FILES), symbols, code={"B"})) != before  # a name a reached header spells
-
-
-def test_a_landing_elsewhere_moves_no_row_stamp_in_the_delta() -> None:
-    symbols = {"f": 1, "elsewhere_L1": 2}
-    tree, landed = _versioned(dict(FILES), symbols), _versioned(dict(FILES), {"f": 1})
-    assert rescore._facts(tree, "src/fuzzy/f.c") == rescore._facts(landed, "src/fuzzy/f.c")
+def test_a_score_is_stored_as_json_in_the_score_kind(monkeypatch):
+    puts = []
+    monkeypatch.setattr(rescore.store, "put", lambda config, kind, key, value: puts.append((kind, key, value)))
+    monkeypatch.setattr(rescore.store, "get", lambda config, kind, key: json.dumps(0.5).encode())
+    rescore._record(None, "k", 0.5)
+    assert puts == [("score", "k", b"0.5")] and rescore._lookup(None, "k") == 0.5

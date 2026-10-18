@@ -9,13 +9,13 @@ import os
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
-import fixture
 import pytest
 
 from unbake import journal, process
-from unbake.contracts import Finding, Plan, Refusal, Snapshot, digest, sha256
+from unbake.contracts import Finding, Plan, Refusal, digest, sha256
 
 
 def _sha(content):
@@ -24,16 +24,7 @@ def _sha(content):
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    config = fixture.bare_config(
-        tmp_path,
-        versions=(),
-        name="test",
-        title="Test",
-        toolchain="test",
-        cores=1,
-        workers=1,
-        author=("Writer", "writer@example.invalid"),
-    )
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, name="test"))
     git_mock = Mock(side_effect=AssertionError("apply must not run Git"))
     monkeypatch.setattr(process, "git", git_mock)
     monkeypatch.setattr(process, "run", git_mock)
@@ -44,7 +35,7 @@ def repo(tmp_path, monkeypatch):
 
 def _snapshot(config, files=None):
     """A snapshot that read these files (None = it read the file absent)."""
-    return Snapshot(config, "h" * 40, None, {}, {}, "snapshot", {name: _sha(c) for name, c in (files or {}).items()})
+    return SimpleNamespace(config=config, reads={name: _sha(c) for name, c in (files or {}).items()})
 
 
 def _plan(writes, **changes):

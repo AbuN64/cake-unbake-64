@@ -8,11 +8,10 @@ the class of each adjacent pair of functions in one version proves where objects
 
 Pairs are matched by name across versions: a cut class in any version proves a cut, an unal in any version proves a
 join, both together are a contradiction. The .data section is classified by the same rule (padding there is the
-layout's `_padding_` members) and only measured, never used as proof."""
+zero fill between objects) and only measured, never used as proof."""
 
 from __future__ import annotations
 
-from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
@@ -24,7 +23,6 @@ from unbake import effort, pool
 from unbake.contracts import Json, Snapshot, digest
 
 CUT = frozenset({"pad", "seg", "gap"})
-PADDING = "_padding_"  # the layout names the zero fill between objects <member>_padding_<rom>
 
 Row = tuple[str, str, int, int, int, int]  # name, section, rom_start, rom_end, vram, segment index
 Pair = tuple[str, str, str]  # left, right, class
@@ -64,8 +62,6 @@ def _version_job(item: tuple[str, str, tuple[Row, ...]]) -> tuple[tuple[Pair, ..
     for row in rows:
         if row[1] != ".data":
             left = None  # a run of .data ends at any other section
-        elif PADDING in row[0]:
-            continue
         else:
             if left is not None:
                 data.append((left[0], row[0], classify(row[2] - left[3], row[4], left[5] == row[5])))
@@ -143,7 +139,7 @@ class Edges:
         ]
 
     def data_census(self, module_of: Mapping[str, str]) -> dict[str, dict[str, dict[str, int]]]:
-        """Per version and .data class: pairs, and the pairs whose layout modules differ. The 16-byte rule holds for
+        """Per version and .data class: pairs, and the pairs whose modules differ. The 16-byte rule holds for
         .data when no module change sits at unal."""
         out: dict[str, dict[str, dict[str, int]]] = {}
         for v, rows in self.data.items():
@@ -156,16 +152,18 @@ class Edges:
 
 
 def _rows(snapshot: Snapshot) -> dict[str, list[Row]]:
-    """Per version its function .text and .data placements in ROM order, each with its segment's index."""
-    starts = {v: [s[1] for s in ver.segments] for v, ver in snapshot.versions.items()}
-    rows: dict[str, list[Row]] = defaultdict(list)
-    for m in snapshot.layout.members.values():
-        for p in m.placements:
-            if (p.section == ".text" and m.kind == "function") or p.section == ".data":
-                seg = bisect_right(starts[p.version], p.rom_start) - 1
-                rows[p.version].append((m.name, p.section, p.rom_start, p.rom_end, p.vram, seg))
-    for v in rows:
-        rows[v].sort(key=lambda r: (r[2], r[0]))
+    """Per version its function .text and .data symbols in ROM order, each with its segment's index. A symbol ends where
+    the next one starts, or where its segment does; a name the version's code set holds is a function."""
+    rows: dict[str, list[Row]] = {}
+    for v, ver in snapshot.versions.items():
+        found: list[Row] = []
+        for index, (_, start, stop, vram) in enumerate(sorted(ver.segments, key=lambda s: s[1])):
+            end = vram + stop - start
+            placed = sorted((a, n) for n, a in ver.symbols.items() if vram <= a < end)
+            for (address, name), after in zip(placed, [*(a for a, _ in placed[1:]), end], strict=True):
+                section = ".text" if name in ver.code else ".data"
+                found.append((name, section, start + address - vram, start + after - vram, address, index))
+        rows[v] = sorted(found, key=lambda r: (r[2], r[0]))
     return rows
 
 

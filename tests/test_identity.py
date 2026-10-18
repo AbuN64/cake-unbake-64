@@ -109,25 +109,16 @@ def _moved(module, name: str, roots) -> bool:
 
 
 def test_the_census_identity_ignores_an_unrelated_policy_function_and_follows_a_reached_one():
-    roots = (policy.evaluate, policy._view_uses, policy.typedebt)
+    roots = (policy.evaluate, policy._view_uses, policy._stand_in_body)
     assert not _moved(policy, "_census_warnings", roots)
     assert not _moved(policy, "unclean", roots)
     assert _moved(policy, "_findings", roots)
 
 
 def test_the_stamp_identity_ignores_unrelated_native_functions_and_follows_a_reached_one():
-    roots = (
-        native.prove,
-        native.measure,
-        native.objects,
-        native.compiles,
-        native.warnings,
-        native.recorded,
-        native.dumps,
-    )
-    assert not _moved(native, "prove_args", roots)
-    assert not _moved(native, "prove_job", roots)
-    assert _moved(native, "_gaps", roots)
+    roots = (native.measure, native.objects, native.warnings, native.recorded, native.dumps)
+    assert not _moved(native, "stamp", roots)  # the stamp reads the measure's code, not the other way round
+    assert _moved(native, "_anchors", roots)
 
 
 def test_a_table_is_named_by_the_expression_that_built_it_not_by_what_it_holds(tmp_path):
@@ -226,7 +217,7 @@ def test_the_identity_of_a_producer_is_equal_in_every_process():
 
     program = (
         "from unbake import pool, rescore\nfrom unbake.contracts import code_identity\n"
-        "print(code_identity(pool._keys), code_identity(rescore._row_key))"
+        "print(code_identity(pool._keys), code_identity(rescore.scores))"
     )
     runs = {
         subprocess.run(

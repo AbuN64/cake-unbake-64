@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from unbake import adapters
-from unbake.contracts import Config, Finding, Json, Recipe, Refusal, UnitSpec, digest
+from unbake import config as configuration
+from unbake.contracts import Config, Finding, Json, Recipe, Refusal, UnitSpec, digest, file_facts
 
 _KNOWN = frozenset({"toolchain", "add", "omit"})
 
@@ -33,11 +35,18 @@ def _omit(lists: list[list[tuple[str, ...]]], omitted: Sequence[str], unit: str 
 
 
 def _make(toolchain: str, config: Config, cppflags: Sequence[str], cflags: Sequence[str]) -> Recipe:
-    build = config.project.build
-    cppflags = (*cppflags, f"-D__UNBAKE_STDARG_{adapters.row(toolchain)['family'].upper()}")
-    asflags = tuple(build["asflags"]) + tuple(build["gnu_asflags"])
+    asflags = (*configuration.load_resource("rom.toml").get("asflags", ()), *config.project.asflags)
     flags = tuple(cflags)
-    return Recipe(toolchain, cppflags, flags, asflags, digest((toolchain, cppflags, flags, asflags)))
+    cpp = tuple(cppflags)
+    return Recipe(toolchain, cpp, flags, asflags, digest((toolchain, cpp, flags, asflags)))
+
+
+def unit(config: Config, module: Any) -> UnitSpec:
+    """The compile identity of a tree module: its path, the names it owns and its [file] facts."""
+    facts = file_facts(config.project, module.path)
+    options = {k: list(v) for k, v in (("add", facts.cflags), ("omit", facts.omit)) if v}
+    names = tuple(sorted({n for names in module.owns.values() for n in names}))
+    return UnitSpec(module.path, "c", names, facts.toolchain or config.project.toolchain, options)
 
 
 def resolve(config: Config, unit: UnitSpec, overrides: Json) -> Recipe:
@@ -55,9 +64,9 @@ def resolve(config: Config, unit: UnitSpec, overrides: Json) -> Recipe:
     for text in adds:
         if text in omits:
             raise Refusal(Finding("recipe.conflict", f"{text} is both added and omitted", unit=unit.path))
-    base = [*row["cflags"], *config.project.build["cflags"], *unit.options.get("add", ())]
+    base = [*row["cflags"], *config.project.cflags, *unit.options.get("add", ())]
     groups, pre = _omit(
-        [_groups(_words(base), paired), _groups(config.project.build["cppflags"], paired)],
+        [_groups(_words(base), paired), _groups([*row.get("cppflags", ()), *config.project.cppflags], paired)],
         unit.options.get("omit", ()),
         unit.path,
     )

@@ -17,7 +17,7 @@ from abucache.compile import Step
 
 from unbake import config as configuration
 from unbake import effort, process
-from unbake.contracts import Assembler, Config, Finding, Json, Linker, NativeResult, Placement, Recipe, Refusal
+from unbake.contracts import Assembler, Config, Finding, Json, Linker, NativeResult, Placement, Recipe, Refusal, macro
 
 _VARIABLES = ('"$1"', '"$3"', '"$3.i"', '"$3.s"')
 
@@ -166,12 +166,12 @@ class TemplateToolchain:
     ) -> NativeResult:
         with effort.stage("adapters.preprocess"):
             project = self.config.project
-            if version not in project.version_macros:
+            if version not in project.version:
                 raise _unknown(f"version {version}")
             argv = self.argv(
                 "preprocess",
                 cppflags=recipe.cppflags,
-                defines=project.version_macros[version],
+                defines=[f"-D{macro(version)}"],
                 includes=[f"-I{p}" for p in include],
                 source=[str(source)],
             )
@@ -363,14 +363,17 @@ def script(config: Config, recipe: Recipe, version: str) -> str:
     """POSIX sh compiling "$1" to "$3" as a compile script; every word quoted except the "$n" words."""
     with effort.stage("adapters.script"):
         chain = toolchain(config, recipe.toolchain)
-        macros = config.project.version_macros
-        if version not in macros:
+        if version not in config.project.version:
             raise _unknown(f"version {version}")
         asm = chain.row["emits_asm"]
         steps = [
             (
                 chain.argv(
-                    "preprocess", cppflags=recipe.cppflags, defines=macros[version], includes=[], source=['"$1"']
+                    "preprocess",
+                    cppflags=recipe.cppflags,
+                    defines=[f"-D{macro(version)}"],
+                    includes=[],
+                    source=['"$1"'],
                 ),
                 ' > "$3.i"',
             ),

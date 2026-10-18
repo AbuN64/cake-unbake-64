@@ -26,7 +26,7 @@ pip install "splat64[mips]==0.50.0" spimdisasm==1.42.4 rabbitizer==1.16.2 \
   git+https://github.com/AbuN64/cake-unbake-64
 ```
 
-Later `unbake upgrade REF` installs another commit in place. It refuses while any command runs from the same environment.
+Install another commit with the same `pip install` line.
 
 ### Windows
 
@@ -50,27 +50,44 @@ unbake setup                      # installs toolchains, extracts and proves eve
 
 ## Work
 
+The source tree is the layout. A file owns the functions and data it defines, in the order it defines them, and a
+name still behind `INCLUDE_ASM(SEG, NAME)`, `INCLUDE_DATA(SEG, NAME)`, `INCLUDE_RODATA(SEG, NAME)` or
+`INCLUDE_BSS(SEG, NAME, SIZE)` belongs to the file that holds the line. `SEG` is the segment name, so moving a line
+between files never changes the path it assembles from. Fuzzy C sits in `#ifdef NON_MATCHING ... #else INCLUDE_ASM ...
+#endif`, and a difference between versions sits in `#if VERSION_X`. Move code by editing the files; `unbake sync`
+and `make check` prove the result.
+
 ```sh
+unbake sync                                          # write the extraction yaml, linker script, Makefile and CI files
+unbake sync --check                                  # fail if a committed generated file would change (no ROM needed)
 unbake report                                        # progress per version, kind and segment
 unbake report --next --count 20                      # the ordered work list
 unbake compare src/code_80200610.c --function NAME   # measure a source against every version
 unbake score src/code_80200610.c --function NAME     # one version and the instruction diff, nothing written
-unbake score src/code_80200610.c --alloc             # which value wins each register, and why a store sits where it does
 unbake submit src/code_80200610.c                    # put an exact source in the landing inbox
-unbake submit --batch-data data.json                 # atomically prove and publish independent extracted data
-unbake submit --bulk A.c B.c H=h.new C.c            # a source plus its PATH=FILE headers is one candidate; groups are admitted alone
 unbake land                                          # land every inbox submission, one commit each
 unbake check                                         # census the source rules over the whole project
-unbake move relayout                                 # once before moves: the units become the ones the modules lay out
-unbake move member func_A code_B                     # one structure move: OP SUBJECT TARGET, proved byte-identical or not written
-recipe structure | unbake move -                     # many moves from stdin, a JSON array or JSON lines
-unbake map                                           # write the layout map and its evidence to .unbake/map.json
+unbake audit --against REV                           # refuse the rule rows a change adds over REV
+unbake symbols                                       # the symbol table of a version
+unbake map                                           # write the layout map to .unbake/map.json
 ```
 
 A function that is exact in every version lands at once with a ROM proof and a commit.
-Run `unbake --help` for every verb: `init`, `setup`, `report`, `compare`, `score`, `submit`, `land`, `check`, `move` and `map`.
+The commands are `init`, `setup`, `sync`, `check`, `audit`, `compare`, `score`, `submit`, `land`, `report`, `map`
+and `symbols`.
 
-A move is `{"op": "symbol|member|module|source|header|file", "subject": "...", "target": "..."}`. Moves apply in order and one proof covers them all.
+## Project
+
+A project is `config.toml` at schema 4: `name`, `toolchain`, optional `title`, `names_from`, `libraries`, `cppflags`,
+`cflags`, `asflags`, one `[version.<id>]` table per ROM (`sha1`, `segments`, optional README inputs) and optional
+`[file."path or dir/"]` rows (`toolchain`, `cflags`, `omit`) where the most specific row wins. Everything else is
+derived: the baserom path, the `VERSION_<ID>` macro, `versions/<id>/` and the include directories. The facts on disk
+are `versions/<id>/symbol_addrs.txt` (splat format, `type:func|data rom:0x... size:0x...`) and the sources.
+
+Every function and data symbol of a version is owned by exactly one file; `unbake sync` appends `INCLUDE_ASM` or
+`INCLUDE_DATA` for an unowned name to the file that owns the previous address.
+
+Header lint: each `extern` is declared at most once across `include/`, and one name has one declaration everywhere.
 
 For a data batch, the manifest is a nonempty JSON list of `{"member": "data/unresolved/ADDRESS", "file": "candidate.c"}`
 records. File paths are relative to the manifest. Every member must be unpublished data. All holding versions are
@@ -84,16 +101,18 @@ See [compiler ownership](docs/compiler-families.md) and
 ## Build without unbake
 
 ```sh
-make setup
+make extract
 make check
 ```
 
+`make check CHECK=tree` checks only that the committed generated files are present and current, with no ROM.
+
 ## CI
 
-Setup writes the CI of a project. Every job calls `sh ci/run STAGE`.
-A push checks the tree and the files a site reads, which are `progress.json`, `docs/memory-map-<v>.svg` and `versions/<v>/symbols.json`.
-The boards workflow runs once a day and feeds each board only after `progress.json` changed.
-Upload boards need a repository secret, for example `BYTEMATCH_TOKEN`.
+Setup writes the CI of a project. `ci/run` is the only place CI logic lives and it is forge-neutral POSIX sh:
+stage `check` runs `make check CHECK=tree`, stage `audit` installs the pinned wheel and runs
+`unbake audit --against BASE`. The GitHub workflow and the GitLab pipeline are thin wrappers that only call
+`sh ci/run STAGE`.
 
 ## AI Usage
 
@@ -116,10 +135,3 @@ Unit tests mock external tools; use `bin/test -p 'test_config.py'` to select an 
 Process and real build proofs belong in `bin/integration`, outside the unit runner.
 
 Licensed under [GNU GPL version 3 or later](LICENSE).
-
-`unbake recover-structs --out DIR` reads landed C and ROM evidence using the
-project's existing cache, reports families and conflicts as JSON on stdout,
-and writes candidates to DIR outside the project. Use `--family ID` and
-`--exclude PATH` to select work; `--submit` scores affected sources and header
-consumers through the existing bulk submission and landing paths, returning
-receipts with the files and commit message.

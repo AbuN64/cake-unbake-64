@@ -1,215 +1,81 @@
-"""Layout credit, work lists, objdiff reports and README progress."""
+"""Progress from the source tree: credit per name and version, the README block and the map for Recipe Maker."""
 
 from __future__ import annotations
 
 import json
-import re
-import struct
-from bisect import bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping
 from contextlib import suppress
+from importlib import import_module
+from pathlib import Path
 from typing import Any, NamedTuple
 
-import rabbitizer
-
-import unbake
-from unbake import (
-    adapters,
-    edges,
-    effort,
-    headers,
-    infer,
-    layout,
-    libasm,
-    perfect,
-    policy,
-    pool,
-    present,
-    store,
-    versions,
-)
 from unbake import config as configuration
-from unbake.contracts import Config, Finding, Json, Member, Project, Refusal, Snapshot, UnitSpec, digest, sha256
+from unbake import effort, perfect, present, rescore, store
+from unbake.contracts import Finding, Json, Refusal, sha256_file
 
 
 def _pct(part: float, whole: float) -> float:
     return (10000 * int(part) // int(whole)) / 100 if whole else 0.0
 
 
-def _f32(value: float) -> float:
-    single = struct.unpack(">f", struct.pack(">f", value))[0]
-    for digits in range(1, 10):
-        shortest = float(f"{single:.{digits}g}")
-        if struct.unpack(">f", struct.pack(">f", shortest))[0] == single:
-            return shortest
-    return float(single)
+class Symbol(NamedTuple):
+    """What a credit row knows of its name: function or data, the module (source path) holding it, whether it is
+    C (`c`), a stand-in (`stand-in`), a NON_MATCHING body behind a stand-in (`fuzzy`) or in no module, and its ROM
+    offset."""
+
+    kind: str
+    group: str
+    state: str
+    rom: int
 
 
-def _text_starts(snapshot: Snapshot) -> dict[tuple[str, int], str]:
-    """The first member whose text starts at each (version, ROM offset), built once per command."""
-
-    def build() -> dict[tuple[str, int], str]:
-        starts: dict[tuple[str, int], str] = {}
-        for name, member in snapshot.layout.members.items():
-            for p in member.placements:
-                if p.section == ".text":
-                    starts.setdefault((p.version, p.rom_start), name)
-        return starts
-
-    return effort.memo(("text-starts", snapshot.digest), build)
+def _capture(config: Any) -> Any:
+    return import_module("unbake.tree").capture(config)
 
 
-def _text_spans(snapshot: Snapshot) -> dict[str, list[tuple[int, int, str]]]:
-    """Per version the (vram start, vram end, member) of every text placement in address order, built once."""
-
-    def build() -> dict[str, list[tuple[int, int, str]]]:
-        spans: dict[str, list[tuple[int, int, str]]] = {}
-        for name, member in snapshot.layout.members.items():
-            for p in member.placements:
-                if p.section == ".text":
-                    spans.setdefault(p.version, []).append((p.vram, p.vram + p.size, name))
-        return {v: sorted(rows) for v, rows in spans.items()}
-
-    return effort.memo(("text-spans", snapshot.digest), build)
+def _facts(config: Any) -> rescore.Facts:
+    """Per version the symbol_addrs facts: name -> (vram, rom, size, type)."""
+    read = import_module("unbake.api").symbols
+    return {v: read(config, v) for v in config.project.version}
 
 
-def _member_at(snapshot: Snapshot, version: str, vram: int) -> tuple[int, str] | None:
-    """The (start, member) of the text member of `version` that holds `vram`."""
-    rows = _text_spans(snapshot).get(version, [])
-    at = bisect_right(rows, (vram, 1 << 64, "")) - 1
-    return (rows[at][0], rows[at][2]) if at >= 0 and vram < rows[at][1] else None
+def _check(config: Any, tree: Any) -> Json | None:
+    """The last check's document when it checked this tree (`digest`), else None."""
+
+    path = Path(config.project.root) / ".unbake/check.json"
+
+    def read() -> Json | None:
+        with suppress(FileNotFoundError, ValueError, TypeError):
+            loaded: Json = json.loads(path.read_bytes())
+            if loaded.get("digest") == tree.digest:
+                return loaded
+        return None
+
+    stamp = path.stat().st_mtime_ns if path.exists() else 0  # a check made since the last read is read again
+    return effort.memo(("check", tree.digest, stamp), read)
 
 
-def _ends(word: int) -> bool:  # an unconditional jr, j or b, after which execution never reaches the next member
-    return (word >> 26 == 0 and word & 0x3F == 8) or word >> 26 == 2 or word >> 16 == 0x1000
+def record(config: Any, tree: Any, **fields: Any) -> None:
+    """Keep what a check learned of this tree in `.unbake/check.json` (`digest`, `exact`, `failing`, and what a source
+    check adds): what the file holds of another tree is dropped, so a verdict never outlives the text it judged."""
+    path = Path(config.project.root) / ".unbake/check.json"
+    kept: Json = {}
+    with suppress(FileNotFoundError, ValueError, TypeError):
+        loaded: Json = json.loads(path.read_bytes())
+        if loaded.get("digest") == tree.digest:
+            kept = loaded
+    document = {"exact": [], "failing": [], **kept, **fields, "digest": tree.digest}
+    store.write(path, json.dumps(document, sort_keys=True).encode())
 
 
-_ENTRY_WORDS = 64
-_DEFINED_AT_ENTRY = frozenset({0, 4, 5, 6, 7, 28, 29, 31})  # $zero, $a0-$a3, $gp, $sp, $ra
-_SAVED = frozenset({*range(16, 24), 30})  # $s0-$s7, $fp: defined only to be stored to the stack
+def exact_versions(config: Any, tree: Any) -> frozenset[str]:
+    """The versions whose last link matched the ROM (the `link` verdict the check recorded for this tree)."""
+    return frozenset((_check(config, tree) or {}).get("exact", ()))
 
 
-def _reads_before_writing(words: Sequence[int], vram: int) -> bool:
-    """Whether the straight-line entry block (up to the first jump or branch and its delay slot) reads a register
-    the calling convention leaves undefined at entry: such a symbol is a point inside a function."""
-    defined, slot = set(_DEFINED_AT_ENTRY), False
-    for index, word in enumerate(words):
-        instruction = rabbitizer.Instruction(word, vram + 4 * index)
-        if not instruction.isValid():
-            return False
-        reads = [
-            int(getattr(instruction, name).value)
-            for name, reading in (
-                ("rs", instruction.readsRs()),
-                ("rt", instruction.readsRt()),
-                ("rd", instruction.readsRd()),
-            )
-            if reading
-        ]
-        saving = instruction.doesStore() and instruction.readsRs() and int(instruction.rs.value) == 29
-        if any(r not in defined and not (r in _SAVED and saving) for r in reads):
-            return True
-        defined.update(
-            int(getattr(instruction, name).value)
-            for name, writing in (
-                ("rs", instruction.modifiesRs()),
-                ("rt", instruction.modifiesRt()),
-                ("rd", instruction.modifiesRd()),
-            )
-            if writing
-        )
-        if slot:
-            return False
-        slot = instruction.hasDelaySlot()
-    return False
-
-
-def _epilogue(words: Sequence[int]) -> bool:
-    """Whether the entry block (up to the first jump and its delay slot) hands stack back before it ever takes any:
-    `addiu sp, sp, +N` ahead of every negative adjustment is the tail of a function whose frame opened earlier."""
-    slot = False
-    for word in words:
-        if word >> 16 == 0x27BD:  # addiu sp, sp, imm
-            return word & 0xFFFF != 0 and word & 0x8000 == 0
-        if slot:
-            return False
-        slot = versions.delay_slot(word)
-    return False
-
-
-def _not_c(words: Sequence[int], vram: int, never: Sequence[str]) -> str:
-    """Why the words cannot be compiler output, or "": a non-jump instruction writing $zero (a destination, never a
-    source) is data; a coprocessor-0 or system instruction is what C cannot emit without inline assembly."""
-    for index, word in enumerate(words):
-        instruction = rabbitizer.Instruction(word, vram + 4 * index)
-        if not word or not instruction.isValid():
-            continue
-        if instruction.getOpcodeName() in never:
-            return "system code C cannot emit"
-        if not instruction.hasDelaySlot() and any(
-            int(getattr(instruction, name).value) == 0
-            for name, writing in (("rt", instruction.modifiesRt()), ("rd", instruction.modifiesRd()))
-            if writing
-        ):
-            return "data misclassified as code"
-    return ""
-
-
-def split_slot(snapshot: Snapshot, member: str) -> str | None:
-    """The member that `member` runs into: the one holding its last delay slot, or the one it falls through into. A
-    member whose entry reads an undefined register is "the middle of a function"; one writing $zero is data;
-    coprocessor-0 or system code is named so."""
-    never = adapters.row(snapshot.config.project.toolchain)["never_emits"]
-    reference = snapshot.layout.members[member].reference(snapshot.config.project.names_from)
-    for place in snapshot.layout.members[member].placements:
-        if place.section != ".text" or place.size < 4:
-            continue
-        version = snapshot.versions[place.version]
-        if place.version == reference:
-            text = versions.rom_bytes(version, place.rom_start, place.rom_end)
-            if why := _not_c(
-                [int.from_bytes(text[i : i + 4], "big") for i in range(0, len(text) - 3, 4)], place.vram, never
-            ):
-                return why
-        last = int.from_bytes(versions.rom_bytes(version, place.rom_end - 4, place.rom_end), "big")
-        pair = place.size >= 8 and int.from_bytes(
-            versions.rom_bytes(version, place.rom_end - 8, place.rom_end - 4), "big"
-        )
-        # a lone instruction that is no jump has no room for a return: it runs into the next member
-        if versions.delay_slot(last) or (place.size >= 8 and not _ends(pair)) or (place.size == 4 and last):
-            return _text_starts(snapshot).get((place.version, place.rom_end), "an unowned range")
-        data = versions.rom_bytes(version, place.rom_start, min(place.rom_end, place.rom_start + 4 * _ENTRY_WORDS))
-        entry = [int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data) - 3, 4)]
-        if _reads_before_writing(entry, place.vram) or _epilogue(entry):
-            return "the middle of a function"
-        if pair >> 26 == 2 and place.size >= 8:  # the member ends in `j`: a jump to the inside of another member
-            target = (place.vram + place.size - 4 & 0xF0000000) | (pair & 0x3FFFFFF) << 2
-            held = _member_at(snapshot, place.version, target)
-            if held and held[1] != member and held[0] != target:
-                return "the middle of a function"
-    return None
-
-
-def _credited(project: Project, unit: UnitSpec) -> bool:
-    """Whether the unit's source counts as matched code: decompiled source, or assembly in a library directory."""
-    kind = configuration.kind(unit.kind)
-    return bool(kind["decompiled"] or (kind["credit"] == "code" and configuration.library(project, unit.path)))
-
-
-def _inventory(snapshot: Snapshot) -> Iterator[tuple[str, Member, UnitSpec | None, bool, str]]:
-    for name, member in snapshot.layout.members.items():
-        if (unit := layout.unit_of(snapshot, name)) is None and member.state == "bin":
-            continue  # opaque ROM bytes are neither code nor data
-        matched = (
-            unit is not None and _credited(snapshot.config.project, unit) and not unit.withheld
-        )  # built in every version
-        yield name, member, unit, matched, snapshot.layout.groups[member.group].segment if member.group else "unknown"
-
-
-def _version_matched(project: Project, unit: UnitSpec | None, version: str) -> bool:
-    """A withheld holder does not remove the exact credit of the unit's other holders."""
-    return bool(unit is not None and _credited(project, unit) and version not in unit.withheld)
+def _broken(config: Any, tree: Any) -> frozenset[str]:  # modules the last check could not compile: no credit
+    return frozenset((_check(config, tree) or {}).get("failing", ()))
 
 
 Buckets = dict[str, dict[str, int]]  # version -> credit counters
@@ -226,30 +92,13 @@ def _tally(b: Json) -> Json:
     }
 
 
-def _check(snapshot: Snapshot) -> Json | None:
-    def read() -> Json | None:
-        with suppress(FileNotFoundError, ValueError):
-            loaded: Json = json.loads(snapshot.read(".unbake/check.json"))
-            return loaded
-        return None
-
-    return effort.memo(("check", snapshot.digest), read)
-
-
-def _broken(
-    snapshot: Snapshot,
-) -> frozenset[str]:  # units the last check could not compile, on the tree it checked: no credit
-    document = _check(snapshot) or {}
-    return frozenset(document.get("failing", ())) if document.get("digest") == snapshot.digest else frozenset()
-
-
 class Credit(NamedTuple):
-    """The credit one member earns in one version: its code and data bytes, the exact code bytes that earn credit
-    (`kept`), whether it is exact and its fuzzy score (1.0 for exact bytes an unclean finding withholds)."""
+    """The credit one name earns in one version: its code and data bytes, the exact code bytes that earn credit
+    (`kept`), whether it is exact and its fuzzy score."""
 
     name: str
-    member: Member
-    unit: UnitSpec | None
+    member: Symbol
+    unit: Any
     segment: str
     version: str
     code: int
@@ -260,41 +109,76 @@ class Credit(NamedTuple):
 
 
 def percent(credit: Credit) -> float:
-    """A function's match in one version, 0..100 with two decimals: 100 for exact bytes (withheld or not), else its
-    fuzzy score. The map titles and symbols.json read this one value."""
+    """A function's match in one version, 0..100 with two decimals: 100 for exact bytes, else its fuzzy score."""
     return 100.0 if credit.exact or credit.score >= 1.0 else round(credit.score * 100, 2)
 
 
-def credits(snapshot: Snapshot) -> tuple[Credit, ...]:
-    """Every (member, holding version) credit row of the inventory, computed once per snapshot: the README, the
-    progress file and the memory map all read these same rows."""
+def build_credits(
+    versions: list[str],
+    tree: Any,
+    facts: rescore.Facts,
+    exact: frozenset[str],
+    scored: Mapping[str, Mapping[str, float]],
+    broken: frozenset[str],
+) -> tuple[Credit, ...]:
+    """One row per (name, version) of the symbol_addrs facts. A name is exact in a version when C defines it and the
+    version links exact; otherwise it earns its cached fuzzy score, and none when its module does not compile."""
+    modules = {m.path: m for m in tree.modules}
+    rows = []
+    for v in versions:
+        for name, (_vram, rom, size, kind) in sorted(facts.get(v, {}).items(), key=lambda item: (item[1][1], item[0])):
+            path = tree.owner(v, name)
+            module = modules.get(path) if path else None
+            stand_in = module is None or name in module.stand_ins.get(v, ())
+            built = module is not None and not stand_in and v in exact
+            function = kind == "func"
+            state = "unowned" if module is None else "stand-in" if stand_in else "c"
+            state = "fuzzy" if module is not None and stand_in and name in module.fuzzy else state
+            code, data = (size, 0) if function else (0, size)
+            score = 0.0 if built else scored.get(name, {}).get(v, 0.0)
+            if module is not None and module.path in broken and not built:
+                score = 0.0  # it does not compile: no credit
+            rows.append(
+                Credit(
+                    name,
+                    Symbol("function" if function else "data", path or "", state, rom),
+                    module,
+                    module.segment if module else "unknown",
+                    v,
+                    code,
+                    data,
+                    code if built else 0,
+                    built,
+                    score,
+                )
+            )
+    return tuple(rows)
+
+
+def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
+    """Every (name, version) credit row, computed once per tree digest: the README, the overview and the map all read
+    these same rows."""
 
     def build() -> tuple[Credit, ...]:
-        rows = []
-        dirty, broken = policy.unclean(snapshot), _broken(snapshot)
-        for name, member, unit, _matched, segment in _inventory(snapshot):
-            for v in member.holders():
-                built = _version_matched(snapshot.config.project, unit, v)
-                # the bytes of the functions an unclean finding withholds earn none; the member's other functions and
-                # data keep theirs
-                held = policy.withheld_bytes(snapshot, dirty, name, v) if built and member.kind == "function" else 0
-                exact = built and not held
-                placements = [p for p in member.placements if p.version == v]
-                code = sum(p.size for p in placements if p.section == ".text")
-                data = sum(p.size for p in placements if p.section in (".data", ".rodata"))
-                kept = code - held if built else 0  # exact code bytes that earn credit
-                score = 0.0 if exact else snapshot.layout.fuzzy.get(name, {"scores": {}})["scores"].get(v, 0.0)
-                if unit is not None and unit.path in broken and not exact:
-                    score = 0.0  # it does not compile: no credit
-                elif built and not exact:
-                    score = 1.0  # exact bytes in unclean source: fuzzy at most
-                rows.append(Credit(name, member, unit, segment, v, code, data, kept, exact, score))
-        return tuple(rows)
+        facts = _facts(config)
+        return build_credits(
+            list(config.project.version),
+            tree,
+            facts,
+            exact_versions(config, tree),
+            rescore.rows(config, tree, facts),
+            _broken(config, tree),
+        )
 
-    return effort.memo(("credits", snapshot.digest), build)
+    return effort.memo(("credits", tree.digest), build)
 
 
-def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:
+def scores(config: Any, tree: Any) -> dict[str, dict[str, float]]:
+    """name -> version -> cached fuzzy score of every NON_MATCHING function (what `unbake score` and the API read)."""
+    return rescore.rows(config, tree, _facts(config))
+
+
+def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:
     """(per version, per segment, per kind) credit buckets of the inventory, summed in one pass."""
     zero = dict.fromkeys(
         (
@@ -311,9 +195,9 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
         ),
         0,
     )
-    rows = credits(snapshot)
-    perfect_modules = perfect.census(snapshot, rows)[1]
-    totals = {v: dict(zero) for v in snapshot.config.project.versions}
+    rows = credits(config, tree)
+    perfect_modules = perfect.census(tree, rows, exact_versions(config, tree))[1]
+    totals = {v: dict(zero) for v in config.project.version}
     segments: defaultdict[str, Buckets] = defaultdict(dict)
     kinds: defaultdict[str, Buckets] = defaultdict(dict)
     for row in rows:
@@ -321,7 +205,7 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
         for bucket in (
             totals[row.version],
             segments[row.segment].setdefault(row.version, dict(zero)),
-            kinds[row.unit.kind if row.unit else row.member.state].setdefault(row.version, dict(zero)),
+            kinds[row.member.state].setdefault(row.version, dict(zero)),
         ):
             function = row.member.kind == "function"
             for prefix, size, earned in (
@@ -338,217 +222,30 @@ def _tallies(snapshot: Snapshot) -> tuple[Buckets, dict[str, Buckets], dict[str,
     return totals, segments, kinds
 
 
-def progress(snapshot: Snapshot) -> Json:
-    """The per-version credit a published file shows: `current` without its debt and boundary census."""
+def progress(config: Any, tree: Any) -> Json:
+    """The per-version credit the README shows."""
     with effort.stage("report.progress"):
         return {
-            "versions": {v: _tally(b) for v, b in _tallies(snapshot)[0].items()},
-            "perfect": perfect.census(snapshot, credits(snapshot))[0],
+            "versions": {v: _tally(b) for v, b in _tallies(config, tree)[0].items()},
+            "perfect": perfect.census(tree, credits(config, tree), exact_versions(config, tree))[0],
         }
 
 
-def current(snapshot: Snapshot) -> Json:
+def current(config: Any, tree: Any) -> Json:
     with effort.stage("report.current"):
-        totals, segments, kinds = _tallies(snapshot)
-        debt = {"stale": True, "action": "unbake check"}
-        try:
-            document = _check(snapshot)
-            if document is not None and document["commit"] == snapshot.commit:
-                debt = {
-                    "commit": document["commit"],
-                    "counts": document["counts"],
-                    "type_debt": document.get("type_debt", {}),
-                }
-        except (KeyError, TypeError):
-            pass
-        counts = layout.boundary_plan(snapshot)[1]
-        boundary = {key: counts[key] for key in ("prelude", "split", "merge")}
+        totals, segments, kinds = _tallies(config, tree)
+        debt: Json = {"stale": True, "action": "unbake check"}
+        document = _check(config, tree)
+        if document is not None and "counts" in document:
+            debt = {"digest": tree.digest, "counts": document["counts"], "type_debt": document.get("type_debt", {})}
         return {
-            "commit": snapshot.commit,
+            "digest": tree.digest,
             "versions": {v: _tally(b) for v, b in totals.items()},
             "segments": {s: {v: _tally(b) for v, b in rows.items()} for s, rows in segments.items()},
             "kinds": {k: {v: _tally(b) for v, b in rows.items()} for k, rows in kinds.items()},
             "debt": debt,
-            "perfect": perfect.census(snapshot, credits(snapshot))[0],
-            "boundary": boundary,
-            "pending_boundary": sum(row["applied"] for row in boundary.values()),
+            "perfect": perfect.census(tree, credits(config, tree), exact_versions(config, tree))[0],
         }
-
-
-def items(snapshot: Snapshot, params: Json) -> list[dict[str, Any]]:
-    with effort.stage("report.items"):
-        segment, shard, count = (params.get(k) for k in ("segment", "shard", "count"))
-        if segment is not None and (
-            not isinstance(segment, str) or segment not in {g.segment for g in snapshot.layout.groups.values()}
-        ):
-            raise Refusal(Finding("report.request", "segment must be a segment name of the layout"))
-        if count is not None and (type(count) is not int or count < 1):
-            raise Refusal(Finding("report.request", "count must be an integer at least 1"))
-        index, modulus = 0, 1
-        if shard is not None and (
-            not isinstance(shard, str)
-            or not (m := re.fullmatch(r"([0-9]+)/([0-9]+)", shard))
-            or not 0 <= (index := int(m[1])) < (modulus := int(m[2]))
-        ):
-            raise Refusal(Finding("report.request", "shard must be I/K with 0 <= I < K"))
-        rows: list[dict[str, Any]] = []
-        inventory = list(_inventory(snapshot))
-        library = {
-            name
-            for name, member, _unit, done, _sid in inventory
-            if member.kind == "function" and not done and libasm.recognised(snapshot, name)
-        }
-        slots = {
-            name: None if name in library else split_slot(snapshot, name)
-            for name, member, *_ in inventory
-            if member.kind == "function"
-        }
-        successors = set(slots.values())
-        for name, member, unit, matched, sid in inventory:
-            sections = (".text",) if member.kind == "function" else (".data", ".rodata")
-            if matched or not any(p.section in sections for p in member.placements):
-                continue
-            if member.kind == "function" and (
-                (member.state == "hasm" and name not in library) or slots[name] is not None or name in successors
-            ):  # handwritten assembly is no target
-                continue
-            if segment is not None and sid != segment:
-                continue
-            if int(sha256(name.encode())[:8], 16) % modulus != index:
-                continue
-            version = member.reference(snapshot.config.project.names_from)
-            placement = next(p for p in member.placements if p.version == version)
-            rows.append(
-                {
-                    "member": name,
-                    "kind": "library-asm" if name in library else member.kind,
-                    "segment": sid,
-                    "size": placement.size,
-                    "address": placement.vram,
-                    **({"source": unit.path} if unit is not None and unit.withheld else {}),
-                }
-            )
-        # biggest first, fragments last
-        rows.sort(key=lambda r: (r["size"] < 16, -r["size"], r["address"], r["member"]))
-        return rows[:count]
-
-
-def _sum_measures(units: Sequence[Json]) -> Json:
-    counters = (
-        "total_code",
-        "matched_code",
-        "complete_code",
-        "total_data",
-        "matched_data",
-        "complete_data",
-        "total_functions",
-        "matched_functions",
-        "total_units",
-        "complete_units",
-    )
-    result: dict[str, Any] = {k: sum(int(u["measures"].get(k, 0)) for u in units) for k in counters}
-    for field in ("matched_code", "complete_code", "matched_functions", "matched_data", "complete_data"):
-        total = result["total_" + field.split("_", 1)[1]]
-        result[field + "_percent"] = _f32(100 * result[field] / total) if total else 0.0
-    weighted = sum(int(u["measures"].get("total_code", 0)) * u["measures"].get("fuzzy_match_percent", 0) for u in units)
-    result["fuzzy_match_percent"] = _f32(weighted / result["total_code"]) if result["total_code"] else 0.0
-    for field in counters[:6]:
-        result[field] = str(result[field])
-    return result
-
-
-def objdiff(
-    snapshot: Snapshot,
-    report: Json,
-    version: str,
-    rules: Mapping[str, Sequence[str]] | None = None,
-    broken: frozenset[str] | None = None,
-) -> Json:
-    """The version's report. The unclean rules per withheld function and the units that do not compile are read once
-    by the caller and passed in: every version needs the same two answers."""
-    with effort.stage("report.objdiff"):
-        units: list[dict[str, Any]] = []
-        rules = policy.unclean_rules(snapshot) if rules is None else rules
-        broken = _broken(snapshot) if broken is None else broken
-        for name, member, unit, matched, sid in _inventory(snapshot):
-            placements = [p for p in member.placements if p.version == version]
-            if not placements:
-                continue
-            built = (
-                unit is not None
-                and unit.path not in broken
-                and _version_matched(snapshot.config.project, unit, version)
-            )
-            function = member.kind == "function"
-            held = policy.withheld_bytes(snapshot, rules, name, version) if built and function else 0
-            matched = built and not held
-            dirty = built and not matched  # exact bytes, a function an unclean finding withholds: fuzzy 100
-            sections = (".text",) if function else (".data", ".rodata")
-            size = sum(p.size for p in placements if p.section in sections)
-            fuzzy = snapshot.layout.fuzzy.get(name) if not matched and not (unit and unit.path in broken) else None
-            percent = 100.0 if matched or dirty else _f32(fuzzy["scores"].get(version, 0.0) * 100) if fuzzy else 0.0
-            counter = "total_code" if function else "total_data"
-            prefix = counter.removeprefix("total_")
-            measures: dict[str, Any] = {counter: str(size), "total_units": 1}
-            if function:
-                measures.update(total_functions=1, fuzzy_match_percent=percent)
-            if dirty and held < size:  # the clean functions inside the member keep their exact bytes
-                measures["matched_" + prefix] = str(size - held)
-                measures["matched_" + prefix + "_percent"] = _f32((size - held) * 100 / size)
-            if matched:
-                for key in ("matched_", "complete_"):
-                    measures[key + prefix] = str(size)
-                    measures[key + prefix + "_percent"] = 100.0
-                measures["complete_units"] = 1
-                if function:
-                    measures.update(matched_functions=1, matched_functions_percent=100.0)
-            metadata: dict[str, Any] = {"complete": matched, "progress_categories": [sid]}
-            sourced = unit is not None and _credited(snapshot.config.project, unit)
-            if unit is not None and sourced:
-                metadata["source_path"] = unit.path
-            elif fuzzy:
-                metadata["source_path"] = fuzzy["path"]
-            address = next((p.vram for p in placements if p.section == ".text"), placements[0].vram)
-            functions: list[dict[str, Any]] = [
-                {"name": name, "size": str(size), "address": str(address), "metadata": {}}
-            ]
-            if sourced or fuzzy:
-                functions[0]["fuzzy_match_percent"] = percent
-            section_rows = (
-                [{"name": ".text", "size": str(size), "fuzzy_match_percent": percent, "metadata": {}}]
-                if function
-                else [
-                    {"name": p.section, "size": str(p.size), "fuzzy_match_percent": percent, "metadata": {}}
-                    for p in placements
-                ]
-            )
-            units.append(
-                {
-                    "name": name,
-                    "measures": measures,
-                    "sections": section_rows,
-                    "functions": functions if function else [],
-                    "metadata": metadata,
-                }
-            )
-        addresses = {
-            name: min(p.vram for p in m.placements if p.version == version)
-            for name, m in snapshot.layout.members.items()
-            if version in m.holders()
-        }
-        units.sort(key=lambda u: (addresses[u["name"]], u["name"]))
-        present = {u["metadata"]["progress_categories"][0] for u in units}
-        categories = [
-            {
-                "id": sid,
-                "name": sid,
-                "measures": _sum_measures([u for u in units if sid in u["metadata"]["progress_categories"]]),
-            }
-            for sid in sorted(present)
-        ]
-        result = {"measures": _sum_measures(units), "units": units, "categories": categories, "version": 2}
-        configuration.validate("objdiff", result, f"versions/{version}/report.json")
-        return result
 
 
 def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
@@ -571,7 +268,12 @@ def _perfect_line(label: str, perfect_bytes: int, total: int, cells: int) -> str
     return f"{label} [{'▒' * shade}{'░' * (cells - shade)}]  {percent:5.2f}%  {perfect_bytes:,} of {total:,} bytes"
 
 
-def readme(text: str, snapshot: Snapshot, report: Json) -> str:
+def _rom_sha256(config: Any, version: str) -> str:
+    path = Path(config.project.root) / "roms" / f"baserom.{version}.z64"
+    return effort.memo(("rom-sha256", str(path)), lambda: sha256_file(path))
+
+
+def readme(text: str, config: Any, report: Json) -> str:
     with effort.stage("report.readme"):
         settings = configuration.load_resource("repo.toml")["readme"]
         begin, end, cells = (settings[k] for k in ("begin", "end", "bar"))
@@ -581,9 +283,9 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
                     "repo.readme_markers", "README.md needs one begin and one end progress marker", path="README.md"
                 )
             )
-        project, versions = snapshot.config.project, report["versions"]
+        project, versions = config.project, report["versions"]
         total = {
-            k: sum(versions[v][k] for v in project.versions)
+            k: sum(versions[v][k] for v in project.version)
             for k in (
                 "code_total",
                 "code_matched",
@@ -596,15 +298,15 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
                 "data_fuzzy",
             )
         }
-        width = max(map(len, ("all", *project.versions))) + 1
+        width = max(map(len, ("all", *project.version))) + 1
         lines = [
             _line(label.ljust(width), bucket, cells) + " bytes"
-            for label, bucket in [("all", total), *((v, versions[v]) for v in project.versions)]
+            for label, bucket in [("all", total), *((v, versions[v]) for v in project.version)]
         ]
         lines.append(
             _perfect_line(
                 "perfect".ljust(width),
-                sum(versions[v]["perfect_bytes"] for v in project.versions),
+                sum(versions[v]["perfect_bytes"] for v in project.version),
                 total["code_total"] + total["data_total"],
                 cells,
             )
@@ -612,34 +314,32 @@ def readme(text: str, snapshot: Snapshot, report: Json) -> str:
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
             image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
-            link, cartridge = (
-                project.readme_map_link,
-                project.version_files[project.readme_map].meta.get("cartridge_id"),
-            )
+            link, cartridge = (project.readme_map_link, project.version[project.readme_map].meta.get("cartridge_id"))
             anchor = f"#{cartridge.lower()}" if cartridge else ""  # the site names each ROM by its cartridge id
             blocks.append(f'<a href="{link}{anchor}">{image}</a>' if link else image)
-        for v in project.versions:
-            meta = project.version_files[v].meta
+        for v in project.version:
+            meta = project.version[v].meta
             details = ", ".join(meta[k] for k in ("cartridge_id", "region") if meta.get(k))
             header = f"| {v}" + (f" ({details})" if details else "") + "."
             header += f" {meta['description']}" if meta.get("description") else ""
-            header += f" SHA256 `{snapshot.versions[v].rom_sha256}` |"
+            header += f" SHA256 `{_rom_sha256(config, v)}` |"
             rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
             blocks.append(header + "\n|---|\n| <pre><code>" + "</code><br><code>".join(rows) + "</code></pre> |")
         text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
         first, last = settings["dependencies_begin"], settings["dependencies_end"]
         if text.count(first) == 1 and text.count(last) == 1 and text.index(first) < text.index(last):
-            table = "\n".join(_dependencies(snapshot))
+            table = "\n".join(_dependencies(config))
             text = text[: text.index(first) + len(first)] + "\n" + table + "\n" + text[text.index(last) :]
         return text
 
 
-def _dependencies(snapshot: Snapshot) -> list[str]:
+def _dependencies(config: Any) -> list[str]:
     """The README table of the pinned build tools, from the pins the generated Makefile fetches: each row names the
     tool by its own identity and links the exact archive by its sha256 (where it is hosted shows only in the URL)."""
-    project = snapshot.config.project
+    project = config.project
     rows = configuration.toolchains()
-    used = sorted({u.toolchain for u in snapshot.layout.units.values()} | {project.toolchain})
+    rules = getattr(project, "file", {})
+    used = sorted({project.toolchain, *(r["toolchain"] for r in rules.values() if r.get("toolchain"))})
     lines = ["| Tool | Used for | Pinned archive |", "|---|---|---|"]
     for id in used:
         for download in rows.get(id, {}).get("downloads", [])[:1]:
@@ -658,447 +358,61 @@ def _archive(download: Mapping[str, Any]) -> str:
     return f"[{name}]({download['url']}) sha256 `{str(download['sha256'])[:12]}`"
 
 
-_Item = tuple[Snapshot, Json, str, Mapping[str, Sequence[str]], frozenset[str]]
-STAMP = "versions/stamp.json"  # beside the reports: objdiff refuses a report.json field it does not know
-
-
-def _compact(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def dump_objdiff(document: Json) -> bytes:
-    """A report as canonical JSON with one category and one unit per line: a landing changes a few lines of the
-    committed file instead of rewriting one line of megabytes."""
-    rows = {k: ",\n".join(map(_compact, document[k])) for k in ("categories", "units")}
-    rest = _compact({k: v for k, v in document.items() if k not in rows})[1:-1]
-    return f'{{"categories":[\n{rows["categories"]}\n],{rest},"units":[\n{rows["units"]}\n]}}\n'.encode()
-
-
-def _objdiff_job(item: _Item) -> bytes:
-    return dump_objdiff(objdiff(*item))
-
-
-def _objdiff_key(item: _Item) -> str:
-    """Everything one version's report reads: the snapshot, the credit it shows, the sources judged unclean and the
-    units the last check could not compile. Warm, the pool dispatches nothing."""
-    snapshot, report, version, rules, broken = item
-    return digest((snapshot.digest, version, report, sorted(rules.items()), sorted(broken)))
-
-
-def stamp(snapshot: Snapshot) -> Json:
-    """What the report.json files are made by and from (versions/stamp.json): the tool's release (never the digest of
-    an install, which differs with what else is installed beside it) and the tracked text they read (the map, every
-    unit and header), so a reader tells files a later commit left behind from current ones."""
-    paths = sorted({*snapshot.layout.units, *headers.sources(snapshot)})
-    tree = digest((snapshot.peek("layout.toml"), [(p, snapshot.peek(p)) for p in paths]))
-    return {"tool": f"unbake {unbake.__version__}", "tree": tree}
-
-
-def stale(snapshot: Snapshot) -> list[str]:
-    """The versions whose report.json was not made from this tree: a reader refuses its numbers."""
-    made = None
-    with suppress(ValueError, AttributeError):
-        made = json.loads(snapshot.peek(STAMP) or b"{}").get("tree")
-    return [] if made == stamp(snapshot)["tree"] else list(snapshot.config.project.versions)
-
-
-def files(snapshot: Snapshot) -> dict[str, bytes]:
+def files(config: Any, tree: Any) -> dict[str, bytes]:
+    """README.md with its progress block and the one image it embeds; nothing else is written."""
     with effort.stage("report.files"):
-        report = progress(snapshot)
-        ids = snapshot.config.project.versions
-        rules, broken = policy.unclean_rules(snapshot), _broken(snapshot)  # once, not again in every version's job
-        blobs = pool.map(
-            snapshot.config,
-            "report.objdiff",
-            _objdiff_job,
-            [(snapshot, report, v, rules, broken) for v in ids],
-            _objdiff_key,
-        )
-        result = {f"versions/{v}/report.json": blob for v, blob in zip(ids, blobs, strict=True)}
-        result[STAMP] = json.dumps(stamp(snapshot), sort_keys=True).encode() + b"\n"
-        result["README.md"] = readme(snapshot.read("README.md").decode(), snapshot, report).encode()
-        result.update(present.files(snapshot, report))
-        return result
+        document = progress(config, tree)
+        source = (Path(config.project.root) / "README.md").read_text()
+        return {"README.md": readme(source, config, document).encode(), **present.files(config, tree)}
 
 
-def run(config: Config, params: Json) -> Json:
+def run(config: Any, params: Json) -> Json:
     with effort.stage("report.run"):
-        snapshot = layout.capture(config)
-        if params["next"]:
-            return {"items": items(snapshot, params)}
-        pending = sum(p.is_file() for p in (config.project.root / ".unbake/inbox").glob("*.json"))
-        return {**current(snapshot), "inbox": pending, "stale": stale(snapshot)}
+        pending = sum(p.is_file() for p in (Path(config.project.root) / ".unbake/inbox").glob("*.json"))
+        return {**current(config, _capture(config)), "inbox": pending}
 
 
-def _strings(rom: bytes, start: int, limit: int = 4, width: int = 40) -> list[str]:
-    """The printable ASCII runs of at least four characters at the start of a rodata block, at most `limit`."""
-    runs = re.findall(rb"[\x20-\x7e]{4,}", rom[start : start + 256])
-    return [run[:width].decode() for run in runs[:limit]]
+def _moves_stream(tree: Any) -> Json:
+    """The restructure census Recipe Maker reads: modules per folder, and how many names each version still stands in
+    for."""
+    folders = Counter(m.path.rpartition("/")[0] for m in tree.modules)
+    return {"count": len(tree.modules), "folders": dict(sorted(folders.items()))}
 
 
-class Segments:
-    """Segments by VRAM: a member sits in the names_from segment whose VRAM range holds its names_from placement (the
-    first holder's when names_from lacks it), so per-version spans of one range are one segment."""
-
-    def __init__(self, snapshot: Snapshot) -> None:
-        self.versions = snapshot.versions
-        self.base = snapshot.config.project.names_from
-        order = [self.base, *(v for v in self.versions if v != self.base)]
-        self.ranges = [(t[3], t[3] + t[2] - t[1], t[0]) for v in order for t in self.versions[v].segments]
-
-    def of(self, member: Any) -> str:
-        holder = member.reference(self.base)
-        vram = next(p.vram for p in member.placements if p.version == holder)
-        return next((name for lo, hi, name in self.ranges if lo <= vram < hi), "")
-
-    def listed(self, used: set[str]) -> list[dict[str, Any]]:
-        """Each used segment with the span every version holds of its VRAM range."""
-        out = []
-        for name in sorted(used - {""}):
-            lo, hi, _ = next(r for r in self.ranges if r[2] == name)
-            versions: dict[str, list[int]] = {}
-            for v, ver in self.versions.items():
-                span = next((t for t in ver.segments if t[0] == name), None) or next(
-                    (t for t in ver.segments if t[3] < hi and lo < t[3] + t[2] - t[1]), None
-                )
-                if span:
-                    versions[v] = list(span[1:])
-            out.append({"name": name, "versions": versions})
-        return out
-
-
-def map_command(config: Config, params: Json) -> Json:
-    """Write the layout map with its objective evidence to .unbake/map.json (CONTRACTS 3.2); nothing tracked changes."""
-    if params.get("fakes"):
-        with effort.stage("report.fakes"):
-            return _fakes_stream(layout.capture(config))
-    with effort.stage("report.map"):
-        snapshot = layout.capture(config)
-        lay, project = snapshot.layout, config.project
-        order = [project.names_from, *(v for v in snapshot.versions if v != project.names_from)]
-        scans: dict[str, Any] = {}
-        every = infer.scan(snapshot)  # once: every version's rows come from one pool pass
-        for version in order:
-            for row in every.get(version, ()):
-                scans.setdefault(row[0], row)
-        found = edges.of(snapshot)
-        objects = perfect.objects(snapshot)
-        sdk = infer.sdk(snapshot)
-        roms = {v: snapshot.versions[v].rom.read_bytes() for v in snapshot.versions}
-        spans: dict[str, list[tuple[int, int, Any]]] = defaultdict(list)
-        for m in lay.members.values():
-            for p in m.placements:
-                if p.section != ".text":
-                    spans[p.version].append((p.vram, p.vram + p.size, p))
-        starts = {v: sorted(rows, key=lambda r: r[0]) for v, rows in spans.items()}
-        names = {id(p): m.name for m in lay.members.values() for p in m.placements}
-        place = Segments(snapshot)
-        rows = []
-        for name, m in sorted(lay.members.items()):
-            unit, fuzzy = layout.unit_of(snapshot, name), lay.fuzzy.get(name)
-            scanned = scans.get(name)
-            version = m.reference(project.names_from)
-            edge, edge_verdict = found.member(name, version) if m.kind == "function" else ({}, "")
-            loads: list[str] = []
-            strings: list[str] = []
-            for address in sorted(scanned[1]) if scanned else ():
-                table = starts.get(version, [])
-                at = bisect_right([r[0] for r in table], address) - 1
-                if at >= 0 and address < table[at][1]:
-                    p = table[at][2]
-                    loads.append(names[id(p)])
-                    strings += _strings(roms[version], p.rom_start + address - p.vram)
-            rows.append(
-                {
-                    "name": name,
-                    "kind": m.kind,
-                    "state": "c" if unit else m.state,
-                    "module": m.group,
-                    "unit": unit.path if unit else None,
-                    "fuzzy": fuzzy["path"] if fuzzy else None,
-                    "segment": place.of(m) or "-",
-                    "sdk": name in sdk,
-                    "sdk_name": sdk[name].name if name in sdk else "",
-                    "sdk_module": sdk[name].module if name in sdk else "",
-                    "sdk_library": sdk[name].library if name in sdk else "",
-                    "padded": bool(scanned and scanned[3]),
-                    "edge": dict(sorted(edge.items())),
-                    "edge_verdict": edge_verdict,
-                    "placements": [
-                        {
-                            "version": p.version,
-                            "section": p.section,
-                            "rom_start": p.rom_start,
-                            "rom_end": p.rom_end,
-                            "vram": p.vram,
-                        }
-                        for p in m.placements
-                    ],
-                    "calls": sorted(scanned[2]) if scanned else [],
-                    "loads": sorted(set(loads)),
-                    "strings": strings[:4],
-                }
-            )
-        included, declared = headers.included_by(snapshot), headers.declares(snapshot)
-        owners = defaultdict(list)
-        for g in lay.groups.values():
-            owners[g.header].append(g.name)
-        files = headers.sources(snapshot)
-        document = {
-            "schema": 2,
-            "digest": lay.digest,
-            "versions": list(snapshot.versions),
-            "names_from": project.names_from,
-            "segments": place.listed({place.of(m) for m in lay.members.values()}),
-            "modules": [
-                {
-                    "name": g.name,
-                    "segment": (
-                        place.of(live)
-                        if (live := next((lay.members[m] for m in g.members if m in lay.members), None))
-                        else ""
-                    )
-                    or g.segment,  # a member no version has is skipped: the group still lists it
-                    "subsystem": g.subsystem,
-                    "library": g.library,
-                    "source": g.source,
-                    "header": g.header,
-                    "evidence": g.evidence,
-                    "object": objects.get(g.name, {}),
-                    "sdk": g.sdk,
-                    "members": list(g.members),
-                }
-                for g in sorted(lay.groups.values(), key=lambda g: g.name)
-            ],
-            "units": [
-                {
-                    "path": u.path,
-                    "kind": u.kind,
-                    "module": u.group,
-                    "members": list(u.members),
-                    "toolchain": u.toolchain,
-                    "options": u.options,
-                    "withheld": list(u.withheld),
-                }
-                for u in sorted(lay.units.values(), key=lambda u: u.path)
-            ],
-            "members": rows,
-            "headers": [
-                {
-                    "path": h,
-                    "modules": sorted(owners.get(h, ())),
-                    "declares": sorted(set(declared.get(h, ()))),
-                    "includes": sorted(t for t, by in included.items() if h in by),
-                    "included_by": sorted(included.get(h, ())),
-                }
-                for h in files
-            ],
-            "edges": {v: found.census(v) for v in snapshot.versions},
-            "open_edges": {v: found.census(v)["open"] for v in snapshot.versions},
-            "contradictions": found.contradictions(),
-            "data_edges": found.data_census({m.name: m.group for m in lay.members.values()}),
-            "counts": {
-                "src_c": len(headers.sources(snapshot, "src", ".c")),
-                "include_h": len(files),
-                "units": len(lay.units),
-                "modules": len(lay.groups),
-                "members": len(lay.members),
-            },
-        }
-        path = project.root / ".unbake/map.json"
-        store.write(path, json.dumps(document, sort_keys=True).encode())
-        result: dict[str, Any] = {"path": ".unbake/map.json", "digest": lay.digest, "counts": document["counts"]}
-        if params.get("moves"):
-            result["moves"] = _moves_stream(snapshot)
-        return result
-
-
-def _facts_job(item: tuple[Snapshot, str]) -> Json:
-    snapshot, path = item
-    from unbake import fakefold
-
-    return fakefold.facts(policy.scopes(snapshot.read(path).decode(errors="replace"))["code"])
-
-
-_REACH_CHUNK = 32  # sources per reach job: the name alternation ships once per chunk, not once per file
-
-
-def _reach_job(item: tuple[Snapshot, tuple[str, ...], tuple[str, ...]]) -> dict[str, dict[str, dict[str, int]]]:
-    """`fakefold.reaches` over one run of sources, as plain dicts (the pool pickles them)."""
-    snapshot, paths, names = item
-    from unbake import fakefold
-
-    found = fakefold.reaches({p: snapshot.read(p).decode(errors="replace") for p in paths}, names)
-    return {name: {kind: dict(held) for kind, held in kinds.items()} for name, kinds in found.items()}
-
-
-def _reaches(snapshot: Snapshot, paths: Sequence[str], names: Sequence[str]) -> dict[str, dict[str, Counter[str]]]:
-    """`fakefold.reaches` of every source on all cores: runs of sources in order, merged in order, so each counter
-    holds the same counts in the same first-seen order as one serial scan."""
-    wanted = tuple(sorted(set(names)))
-    found: dict[str, dict[str, Counter[str]]] = defaultdict(lambda: defaultdict(Counter))
-    if not wanted:
-        return found
-    runs = [tuple(paths[i : i + _REACH_CHUNK]) for i in range(0, len(paths), _REACH_CHUNK)]
-    with effort.stage("report.fakes.reach"):
-        for part in pool.map(snapshot.config, "report.fakes.reach", _reach_job, [(snapshot, r, wanted) for r in runs]):
-            for name, kinds in part.items():
-                for kind, held in kinds.items():
-                    found[name][kind].update(held)
-    return found
-
-
-def _weights_job(item: tuple[Snapshot, str]) -> dict[str, list[str]]:
-    """Per fake-type subject (an invented record name) of one unit the functions its finding withholds."""
-    snapshot, path = item
-    text = snapshot.read(path).decode(errors="replace")
-    functions = policy.credited(snapshot, path, text)
-    out: dict[str, list[str]] = {}
-    for finding in policy.evaluate(snapshot, path, text, None, False, ["fake-type"]):
-        name = finding.reason.rpartition(": ")[2]
-        out.setdefault(name, []).extend(policy.withheld(text, [finding], functions))
-    return out
-
-
-def _fake_pieces(snapshot: Snapshot, version: str) -> tuple[dict[str, int], dict[str, set[str]], dict[str, set[str]]]:
-    """(bytes of each exact function piece unclean rules withhold in `version`, the rules of each, the invented names
-    whose fake-type finding withholds each): the census weights, judged on all cores."""
-    rules = policy.unclean_rules(snapshot)
-    project, broken = snapshot.config.project, _broken(snapshot)
-    pieces: dict[str, int] = defaultdict(int)
-    paths: set[str] = set()
-    with effort.stage("report.fakes.pieces"):
-        for name, member, unit, _, _ in _inventory(snapshot):
-            if member.kind != "function" or version not in member.holders() or unit is None:
-                continue
-            if not _version_matched(project, unit, version) or unit.path in broken:
-                continue
-            for fn, size in policy.pieces(snapshot, name, version):
-                if fn in rules:
-                    pieces[fn] += size
-                    if "source.fake-type" in rules[fn]:
-                        paths.add(unit.path)
-    names: dict[str, set[str]] = defaultdict(set)
-    with effort.stage("report.fakes.weights"):
-        for found in pool.map(
-            snapshot.config, "report.fakes.weights", _weights_job, [(snapshot, p) for p in sorted(paths)]
-        ):
-            for name, fns in found.items():
-                for fn in fns:
-                    names[fn].add(name)
-    return dict(pieces), {fn: set(r) for fn, r in rules.items()}, dict(names)
-
-
-def _movable(snapshot: Snapshot, rows: list[Json], census: list[Json]) -> list[Json]:
-    """The rows `unbake move` accepts, by move's own map edit (one layout rule: the plan is what move takes). A row
-    the edit refuses leaves the plan with move's reason in the census (class d). One edit judges them all: a refused
-    move changes nothing the rows after it see (move.edit), so the rest are judged as they will be applied."""
-    from unbake import move
-    from unbake.contracts import Move
-
-    if not rows:
-        return rows
-    why = {r["record"]: n for n, r in enumerate(census)}
-    with effort.stage("report.fakes.movable"):
-        bad = move.edit(snapshot, [Move(i, r["op"], r["subject"], r["target"]) for i, r in enumerate(rows)]).bad
-        gone = {m.index: f for m, f in bad}
-        for index, finding in gone.items():
-            at = why.get(rows[index]["subject"])
-            if at is not None:
-                census[at] = {
-                    **census[at],
-                    **{"class": "d", "target": None, "reason": f"move refuses it: {finding.reason}"},
-                }
-    return [r for i, r in enumerate(rows) if i not in gone]
-
-
-def _modules(snapshot: Snapshot) -> dict[str, str]:
-    """Per function symbol stem (func_<8 hex>) the module holding it: its own member's, else the member whose bytes
-    hold its address (a helper compiled inside a member), in the version names come from."""
-    version = snapshot.config.project.names_from
-    spans = sorted(
-        (p.vram, p.vram + p.size, member.group)
-        for member in snapshot.layout.members.values()
-        if member.group
-        for p in member.placements
-        if p.version == version and p.section == ".text"
-    )
-    starts = [lo for lo, _, _ in spans]
-    out: dict[str, str] = {}
-    for name, address in snapshot.versions[version].symbols.items():
-        stem = re.match(r"func_([0-9A-Fa-f]{8})", name)
-        at = bisect_right(starts, address) - 1
-        if stem and at >= 0 and address < spans[at][1]:
-            out.setdefault("func_" + stem[1].upper(), spans[at][2])
-    for name, member in snapshot.layout.members.items():
-        if (stem := re.match(r"func_([0-9A-Fa-f]{8})", name)) and member.group:
-            out["func_" + stem[1].upper()] = member.group
-    return out
-
-
-def _fakes_stream(snapshot: Snapshot) -> Json:
-    """Write the fold plan of every invented per-function record and every record only a source defines to
-    .unbake/fakes.jsonl (input of `unbake move - --partial`) and its census to .unbake/fakes.json: per class the
-    records and the withheld bytes (in the README version) of the pieces whose worst fake subject is in that class,
-    and the ceiling of fake-only pieces fully planned. Every pass runs on the pool."""
-    from unbake import fakefold, move
-
-    laid, aliases = move.record_layouts(snapshot)
-    paths = [*headers.sources(snapshot), *headers.sources(snapshot, "src", ".c")]
-    with effort.stage("report.fakes.flow"):
-        found = pool.map(snapshot.config, "report.fakes.flow", _facts_job, [(snapshot, p) for p in paths])
-    edges = fakefold.flow(found, laid, aliases)
-    local = {n for n in move.source_records(snapshot) if n in laid}
-    wanted = [n for n in laid if fakefold.invented(n) or n in local]
-    reached = _reaches(snapshot, paths, wanted)
-    taken = {*laid, *aliases, *snapshot.layout.members, *(g.name for g in snapshot.layout.groups.values())}
-    modules = _modules(snapshot)
-    project = snapshot.config.project
-    version = project.readme_map or project.names_from
-    pieces, rules, subjects = _fake_pieces(snapshot, version)
-    weight: Counter[str] = Counter()
-    for fn, names in subjects.items():
-        for name in names:
-            weight[name] += pieces.get(fn, 0)
-    with effort.stage("report.fakes.plan"):
-        rows, census = fakefold.plan(laid, aliases, reached, taken, weight, edges, local, modules)
-    rows = _movable(snapshot, rows, census)
-    root = snapshot.config.project.root
-    store.write(
-        root / ".unbake/fakes.jsonl",
-        "".join(json.dumps(r, sort_keys=True) + "\n" for r in [{"layout": snapshot.layout.digest}, *rows]).encode(),
-    )
-    store.write(root / ".unbake/fakes.json", json.dumps(census, indent=1, sort_keys=True).encode())
-    cls_of = {r["record"]: r["class"] for r in census}
-    rank = {"a": 0, "b": 1, "c": 2, "e": 3, "d": 4}
-    classes: dict[str, dict[str, int]] = {}
-    for row in census:
-        classes.setdefault(row["class"], {"names": 0, "bytes": 0})["names"] += 1
-    ceiling = 0
-    for fn, names in subjects.items():
-        worst = max((cls_of.get(n, "d") for n in names), key=lambda c: rank.get(c, 4), default="d")
-        classes.setdefault(worst, {"names": 0, "bytes": 0})["bytes"] += pieces.get(fn, 0)
-        if worst != "d" and rules.get(fn, set()) == {"source.fake-type"}:
-            ceiling += pieces.get(fn, 0)
-    reasons = Counter(re.sub(r"\d+", "N", r["reason"]) for r in census if r["class"] == "d")
+def _fakes_stream(tree: Any) -> Json:
+    """The census of what is not yet C: per version the names behind stand-ins and the NON_MATCHING names."""
+    versions = sorted({v for m in tree.modules for v in m.stand_ins})
     return {
-        "path": ".unbake/fakes.jsonl",
-        "census": ".unbake/fakes.json",
-        "rows": len(rows),
-        "version": version,
-        "edges": len(edges),
-        "classes": dict(sorted(classes.items())),
-        "ceiling": ceiling,
-        "unplanned": dict(reasons.most_common(8)),
+        "stand_ins": {v: sum(len(m.stand_ins.get(v, ())) for m in tree.modules) for v in versions},
+        "fuzzy": sum(len(m.fuzzy) for m in tree.modules),
     }
 
 
-def _moves_stream(snapshot: Snapshot) -> Json:
-    """Write the restructure move stream to .unbake/moves.jsonl; its count and files per target folder."""
-    from unbake.layout.subsystems import moves
-
-    rows = [{"layout": snapshot.layout.digest}, *moves(snapshot)]
-    out = snapshot.config.project.root / ".unbake/moves.jsonl"
-    store.write(out, "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows).encode())
-    folders = Counter(r["target"].rpartition("/")[0] for r in rows if r.get("op") == "source")
-    return {"path": ".unbake/moves.jsonl", "count": len(rows) - 1, "folders": dict(sorted(folders.items()))}
+def map_command(config: Any, params: Json) -> Json:
+    """Write the module map to .unbake/map.json; nothing tracked changes. `fakes` and `moves` add their census."""
+    with effort.stage("report.map"):
+        tree = _capture(config)
+        if params.get("fakes"):
+            return _fakes_stream(tree)
+        document = {
+            "schema": 3,
+            "digest": tree.digest,
+            "versions": list(config.project.version),
+            "names_from": config.project.names_from,
+            "modules": [
+                {
+                    "path": m.path,
+                    "segment": m.segment,
+                    "owns": {v: list(names) for v, names in m.owns.items()},
+                    "fuzzy": list(m.fuzzy),
+                    "stand_ins": {v: list(names) for v, names in m.stand_ins.items()},
+                }
+                for m in sorted(tree.modules, key=lambda m: m.path)
+            ],
+            "counts": {"modules": len(tree.modules), "fuzzy": sum(len(m.fuzzy) for m in tree.modules)},
+        }
+        store.write(Path(config.project.root) / ".unbake/map.json", json.dumps(document, sort_keys=True).encode())
+        result: dict[str, Any] = {"path": ".unbake/map.json", "digest": tree.digest, "counts": document["counts"]}
+        if params.get("moves"):
+            result["moves"] = _moves_stream(tree)
+        return result

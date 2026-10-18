@@ -167,3 +167,46 @@ def test_result_schemas_exist() -> None:
     wanted = {f"result.{name}.schema.json" for name in commands} | {"result.next.schema.json"}
     present = {p.name for p in (SRC / "resources/schemas").glob("result.*.schema.json")}
     assert wanted <= present, f"missing result schemas: {sorted(wanted - present)}"
+
+
+DELETED = (
+    "layout",
+    "ownership",
+    "infer",
+    "move",
+    "moved",
+    "headers",
+    "types",
+    "declarations",
+    "retype",
+    "recovery",
+    "libasm",
+    "families",
+)
+PROJECT_NAMES = ("RageWars", "BattleTanx", "Turok")
+
+
+@pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)
+def test_deleted_modules_are_not_imported(path: Path) -> None:
+    for node in ast.walk(_tree(path)):
+        for name in _imported(node):
+            parts = name.split(".")
+            assert not (parts[0] == "unbake" and len(parts) > 1 and parts[1] in DELETED), f"{path.name} imports {name}"
+        if isinstance(node, ast.ImportFrom) and node.module == "unbake":
+            bad = [a.name for a in node.names if a.name in DELETED]
+            assert not bad, f"{path.name}:{node.lineno} imports deleted modules {bad}"
+
+
+def test_deleted_modules_are_gone() -> None:
+    assert not [m for m in DELETED if (SRC / f"{m}.py").exists() or (SRC / m).exists()]
+
+
+def test_no_project_name_in_the_tool_source() -> None:
+    found = [
+        f"{p.relative_to(SRC)}: {name}"
+        for p in sorted(SRC.rglob("*"))
+        if p.is_file() and p.suffix in {".py", ".toml", ".in", ".json", ".md"}
+        for name in PROJECT_NAMES
+        if name.lower() in p.read_text(encoding="utf-8", errors="replace").lower()
+    ]
+    assert not found, f"project names in src/: {found}"

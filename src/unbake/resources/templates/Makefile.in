@@ -1,11 +1,13 @@
 # ${title}: matching build.
-# make check        builds every version ROM from the committed sources and verifies its SHA-1.
-# make check CHECK=tree  verifies only the committed progress reports (no ROMs needed).
+# make check             builds every version ROM from the committed sources and verifies its SHA-1.
+# make check CHECK=tree  verifies only that the committed generated files are present and current (no ROMs needed).
+# make extract           splits every baserom into asm/<version>/ with splat.
 # Tool commands default to conventional names; put local paths in local.mk.
 SHELL := /bin/sh
 .SUFFIXES:
 .DELETE_ON_ERROR:
 .SECONDARY:
+.SECONDEXPANSION:
 Q = $$(if $$(filter 1,$$(V)),,@)
 NAME := ${name}
 VERSIONS := ${versions}
@@ -17,17 +19,72 @@ MAKEFLAGS += -j$$(JOBS)
 endif
 endif
 ${tool_defaults}
-.PHONY: all check
+UNBAKE ?= unbake
+${version_vars}
+STAMPS := ${stamps}
+
+# The first path word under build/ is the version: build/<version>/<source path>.o
+ver = $$(firstword $$(subst /, ,$$1))
+src = $$(patsubst $$(call ver,$$1)/%,%,$$1)
+DEFINES = -D$$(VMACRO_$$(call ver,$$*))
+INCLUDES = -Iinclude -I$$(dir $$<)
+ASINC = -Iasm/$$(call ver,$$*)
+TC := ${toolchain}
+CPPFLAGS := ${cppflags}
+CFLAGS := ${cflags}
+ASFLAGS := ${asflags}
+
+# One recipe per toolchain in use; a path picks its toolchain and flags below.
+${compile_recipes}
+# Per-file facts ([file] rows of config.toml): a toolchain and flags for a path or a directory.
+${file_blocks}
+
+.PHONY: all check extract
 all: check
 ifeq ($$(CHECK),tree)
 check:
-${tree_checks}
+	$$(Q)for f in Makefile $$(NAME).ld include/include_asm.h $$(VERSIONS:%=versions/%/splat.yaml); do test -s $$$$f || { echo "$$$$f is missing" >&2; exit 1; }; done
+	$$(Q)$$(UNBAKE) sync --check
 else ifeq ($$(CHECK),rom)
-check: ${roms}
-${rom_checks}
+check: $$(VERSIONS:%=build/%/$$(NAME).z64)
 else
 $$(error CHECK must be rom or tree)
 endif
+
+extract: $$(VERSIONS:%=extract-%)
+extract-%:
+	$$(Q)$$(SPLAT) split versions/$$*/splat.yaml
+	$$(Q)find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do mv "$$$$f" "$$$${f%.*.s}.s"; done
+
+# The link script names every object, so no rule here lists a file.
+$$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
+-include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
+
+build/%.o: $$$$(call src,$$$$*) | $$(STAMPS)
+	$$(Q)mkdir -p $$(@D)
+	$$(COMPILE_$$(TC))
+build/%.s.o: $$$$(call src,$$$$*).s | $$(STAMPS)
+	$$(Q)mkdir -p $$(@D)
+	$$(Q)$$(AS) $$(ASFLAGS) $$(ASINC) -Iinclude $$< -o $$@
+build/%.bin.o: asm/%.bin
+	$$(Q)mkdir -p $$(@D)
+	$$(Q)$$(OBJCOPY) -I binary -O elf32-bigmips -B mips $$< $$@
+
+# The whole ROM links once per version, from build/<version>/, so object paths in the script stay short.
+build/%/link.ld: $$(NAME).ld
+	$$(Q)mkdir -p $$(@D)
+	$$(Q)$$(CPP) -P -undef -D$$(VMACRO_$$*) $$< > $$@
+build/%/undefined_syms.ld: build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt
+	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$^ > $$@
+build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt:
+	$$(error $$@ is missing: run make extract)
+build/%/$$(NAME).elf: $$$$(OBJS_$$$$*) build/%/link.ld build/%/undefined_syms.ld
+	$$(Q)cd build/$$* && $$(LD) -T link.ld -o $$(NAME).elf
+build/%/$$(NAME).bin: build/%/$$(NAME).elf
+	$$(Q)$$(OBJCOPY) -O binary --gap-fill 0 $$< $$@
+build/%/$$(NAME).z64: build/%/$$(NAME).bin roms/baserom.%.z64
+	$$(Q){ head -c $$(ROM0_$$*) roms/baserom.$$*.z64; cat $$<; } > $$@
+	$$(Q)truncate -s $$$$(wc -c < roms/baserom.$$*.z64) $$@
+	$$(Q)test "$$$$(sha1sum < $$@ | cut -d' ' -f1)" = $$(SHA1_$$*)
+
 ${toolchain_rules}
-${units}
-${rom_rules}

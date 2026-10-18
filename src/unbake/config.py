@@ -6,7 +6,7 @@ import json
 import math
 import os
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import cache, partial
 from importlib import resources
 from pathlib import Path
@@ -15,16 +15,18 @@ from typing import Any
 import psutil
 from jsonschema import Draft202012Validator
 
+from unbake import process
 from unbake.contracts import (
     Config,
+    FileFacts,
     Finding,
     Host,
     Json,
     Origin,
     Project,
     Refusal,
-    Resident,
-    VersionFiles,
+    Segment,
+    VersionFacts,
     digest,
     pickled,
     sha1,
@@ -40,7 +42,6 @@ SCHEMA_OF = {
     "flow.toml": "flow",
     "rom.toml": "rom",
     "repo.toml": "repo",
-    "boards.toml": "boards",
 }
 
 
@@ -127,18 +128,12 @@ def kinds() -> Json:
 
 def library(project: Project, path: str) -> bool:
     """Whether the project-relative path is inside one of the configured library directories."""
-    return any(Path(path).is_relative_to(folder) for folder in project.library_dirs)
+    return any(Path(path).is_relative_to(folder) for folder in project.libraries)
 
 
 @cache
 def _suffixes(role: str) -> tuple[str, ...]:
     return tuple(load_resource("units.toml")["files"][role])
-
-
-def layout_rows(project: Project) -> Json:
-    """repo.toml [layout] with the project's own [layout] rows over it: where its module sources and headers live and
-    which headers are the shared base (a project may keep its evidence's style, e.g. src/{subsystem}, upper case)."""
-    return {**load_resource("repo.toml")["layout"], **project.layout}
 
 
 def is_source(path: str) -> bool:
@@ -282,9 +277,13 @@ def load_host(path: Path) -> Host:
             counts[name] = len(os.sched_getaffinity(0))
             note = f"auto: os.sched_getaffinity -> {counts[name]}"
             if name == "workers":
-                cap, load = res.get("cap", 0.75), int(os.getloadavg()[0])
-                counts[name] = max(1, math.floor(counts[name] * cap) - load)  # leave the host its share and busy cores
-                note = f"auto: max(1, floor({counts['cores']} cores * {cap}) - load {load}) -> {counts[name]}"
+                load = round(os.getloadavg()[0])
+                counts[name] = max(1, counts["cores"] - load)  # the cores load leaves free
+                note = f"auto: max(1, {counts['cores']} cores - load {load}) -> {counts[name]}"
+                if "cap" in res:  # a cap applies only when the host file sets one
+                    counts[name] = max(1, min(counts[name], math.floor(counts["cores"] * res["cap"])))
+                    cap = res["cap"]
+                    note = f"auto: max(1, min({counts['cores']} cores - load {load}, cap {cap})) -> {counts[name]}"
                 by_memory = max(1, (_usable_memory() - res["memory_parent_bytes"]) // res["memory_worker_bytes"])
                 if by_memory < counts[name]:
                     note = f"auto: min({counts[name]} by capacity, {by_memory} by memory) -> {by_memory}"
@@ -313,86 +312,98 @@ def load_host(path: Path) -> Host:
         origins=origins,
         digest=digest(document),
         move_wait_s=float(res.get("move_wait_s", 600)),
-        # the pool never forks more than a host file's own workers; auto workers (sized by this moment's load) leave
-        # the slots at the cap, which every command shares
+        # the pool never forks more than the workers, and a host file's cap bounds it further
         slots=max(
-            1,
-            min(
-                counts["workers"] if res["workers"] != "auto" else counts["cores"],
-                math.floor(counts["cores"] * res.get("cap", 0.75)),
-            ),
+            1, min(counts["workers"], math.floor(counts["cores"] * res["cap"])) if "cap" in res else counts["workers"]
         ),
     )
 
 
-def version_files(table: Json) -> dict[str, VersionFiles]:
-    """Validated version config rows to the sole per-version path records."""
-    return {
-        v: VersionFiles(
-            row["baserom"],
-            row["baserom_sha1"],
-            row["split"],
-            row["symbols"],
-            {k: row[k] for k in ("cartridge_id", "region", "description") if k in row},
-        )
-        for v, row in table.items()
-    }
+def _header(raw: bytes) -> tuple[str, str]:
+    """(cartridge id, region) of a ROM header: bytes 0x3B-0x3E are the game code and 0x3F the version."""
+    code, country, revision = raw[0x3B:0x3F].decode("ascii", "replace"), chr(raw[0x3E]), raw[0x3F]
+    return f"NUS-{code}-{revision}", _table("rom.toml", "country").get(country, f"country {country}")
 
 
-def load_project(root: Path, reader: Callable[[str], bytes] | None = None) -> Project:
+def _tracked(root: Path) -> set[str]:
+    return process.tracked(root)
+
+
+def load_project(
+    root: Path, reader: Callable[[str], bytes] | None = None, tracked: Callable[[], Iterable[str]] | None = None
+) -> Project:
     read = reader or (lambda path: (root / path).read_bytes())
     document, _, origins = _read(root / "config.toml", "project", lambda path: read(path.name))
-    info, table = document["project"], document["version"]
-    versions = tuple(info["versions"])
+    table = document["version"]
+    versions = tuple(sorted(table))
+    names_from = document.get("names_from", versions[0])
     problems: list[Finding] = []
     bad = partial(_bad, "project", origins=origins)
-    if info["names_from"] not in versions:
-        problems.append(bad("project.names_from", f"{info['names_from']} is not in project.versions"))
-    if info.get("readme_map", info["names_from"]) not in versions:
-        problems.append(bad("project.readme_map", f"{info['readme_map']} is not in project.versions"))
-    if set(table) != set(versions):
-        problems.append(bad("version", f"[version] keys {sorted(table)} differ from versions"))
-    extra = sorted(set(document["resident"]) - set(versions))
-    if extra:
-        problems.append(bad("resident", f"[resident] names unknown versions {extra}"))
-    if info["toolchain"] not in load_resource("toolchains.toml")["toolchain"]:
-        problems.append(bad("project.toolchain", f"{info['toolchain']} is not in toolchains.toml"))
-    for folder in info.get("library_dirs", ()):
+    if names_from not in versions:
+        problems.append(bad("names_from", f"{names_from} is not a [version] table"))
+    readme_map = document.get("readme_map")
+    if readme_map is not None and readme_map not in versions:
+        problems.append(bad("readme_map", f"{readme_map} is not a [version] table"))
+    if document["toolchain"] not in load_resource("toolchains.toml")["toolchain"]:
+        problems.append(bad("toolchain", f"{document['toolchain']} is not in toolchains.toml"))
+    for folder in document.get("libraries", ()):
         path = Path(folder)
         if path.is_absolute() or ".." in path.parts or len(path.parts) < 2 or path.parts[0] != "src":
-            problems.append(bad("project.library_dirs", f"{folder} must be a source subdirectory"))
+            problems.append(bad("libraries", f"{folder} must be a source subdirectory"))
+    version: dict[str, VersionFacts] = {}
     for vid, row in table.items():
-        for field in ("baserom", "split", "symbols"):
-            try:
-                raw = read(row[field])
-            except FileNotFoundError:
-                problems.append(bad(f"version.{vid}.{field}", f"{row[field]} does not exist"))
-                continue
-            if field == "baserom" and (got := sha1(raw)) != row["baserom_sha1"]:
-                problems.append(bad(f"version.{vid}.baserom_sha1", f"configured {row['baserom_sha1']}, rom is {got}"))
+        try:
+            raw = read(f"roms/baserom.{vid}.z64")
+        except FileNotFoundError:
+            problems.append(bad(f"version.{vid}.sha1", f"roms/baserom.{vid}.z64 does not exist"))
+            continue
+        if (got := sha1(raw)) != row["sha1"]:
+            problems.append(bad(f"version.{vid}.sha1", f"configured {row['sha1']}, rom is {got}"))
+        cartridge_id, region = _header(raw)
+        segments = tuple(
+            Segment(s["name"], s["rom"], s.get("vram"), s.get("kind", "code")) for s in row.get("segments", ())
+        ) or (Segment("main", 0x1000, None, "code"),)
+        meta = {"cartridge_id": cartridge_id, "region": region}
+        meta.update({k: row[k] for k in ("cartridge_id", "region", "description") if k in row})
+        version[vid] = VersionFacts(row["sha1"], segments, meta)
+    files = {
+        path: FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())))
+        for path, row in document.get("file", {}).items()
+    }
+    for path, row in files.items():
+        if row.toolchain is not None and row.toolchain not in load_resource("toolchains.toml")["toolchain"]:
+            problems.append(bad(f"file.{path}.toolchain", f"{row.toolchain} is not in toolchains.toml"))
+    if files:
+        have = set((tracked or (lambda: _tracked(root)))())
+        for path in files:
+            if not any(h.startswith(path) for h in have) if path.endswith("/") else path not in have:
+                problems.append(
+                    Finding(
+                        "config.file_unknown",
+                        f"[file] key {path} matches no tracked file",
+                        path=f"project:file.{path}",
+                        origin=origins.get(f"file.{path}"),
+                    )
+                )
     if problems:
         raise Refusal(*problems)
     return Project(
         root=root,
-        id=info["id"],
-        name=info["name"],
-        title=info["title"],
+        name=document["name"],
+        title=document.get("title", document["name"]),
+        toolchain=document["toolchain"],
+        names_from=names_from,
+        libraries=tuple(document.get("libraries", ())),
+        cppflags=tuple(document.get("cppflags", ())),
+        cflags=tuple(document.get("cflags", ())),
+        asflags=tuple(document.get("asflags", ())),
+        readme_map=readme_map,
+        readme_map_link=document.get("readme_map_link"),
         versions=versions,
-        names_from=info["names_from"],
-        toolchain=info["toolchain"],
-        build=document["build"],
-        version_files=version_files(table),
-        version_macros={v: tuple(f"-D{m}" for m in row["macros"]) for v, row in table.items()},
-        resident={v: tuple(Resident(**r) for r in document["resident"].get(v, ())) for v in versions},
-        origins=origins,
+        version=version,
+        files=files,
         digest=digest(document),
-        library_dirs=tuple(info.get("library_dirs", ())),
-        version_differences=tuple(info.get("version_differences", ())),
-        readme_map=info.get("readme_map"),
-        readme_map_link=info.get("readme_map_link"),
-        evidence_objects=tuple(document.get("evidence", {}).get("object", ())),
-        lattice=tuple(document.get("flags", {}).get("lattice", ())),
-        layout=dict(document.get("layout", {})),
+        origins=origins,
     )
 
 

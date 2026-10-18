@@ -1,38 +1,25 @@
-"""Resource-driven native object production and per-member ROM proofs."""
+"""Native object production and the proof of one function: a module's object linked alone at the addresses the symbol
+facts give and compared with the ROM bytes of the function."""
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
-import shutil
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, nullcontext, suppress
-from contextvars import ContextVar
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, replace
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 import abucache
 from abucache import compile
 
-from unbake import (
-    adapters,
-    build,
-    config,
-    declarations,
-    effort,
-    journal,
-    process,
-    recipes,
-    store,
-    symptoms,
-    versions,
-    view,
-)
+from unbake import adapters, config, effort, process, recipes, store, symbols, symptoms, tree, versions, view
 from unbake.contracts import (
     Config,
     Finding,
+    Json,
     NativeResult,
     Origin,
     Placement,
@@ -41,13 +28,17 @@ from unbake.contracts import (
     Refusal,
     Snapshot,
     UnitSpec,
+    Version,
     code_identity,
     digest,
+    file_facts,
     proof_from,
     sha256,
 )
 
 _WORD = 0xFFFFFFFF
+_INPUT = "unit"  # the one name every compile input has: a rename or a move never reaches a key
+_FUZZY = "-DNON_MATCHING"  # a measured module compiles its NON_MATCHING bodies, which the real build never does
 
 
 @contextmanager
@@ -70,136 +61,22 @@ def _tools(unit: UnitSpec, *context: Any) -> Iterator[None]:  # context: snapsho
         ) from error
 
 
-def _phases(unit: UnitSpec) -> tuple[str, ...]:
-    return tuple(config.kind(unit.kind)["phases"])
-
-
-def _held(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[tuple[str, Placement], ...]:
-    return tuple(
-        (name, p) for name in unit.members for p in snapshot.layout.members[name].placements if p.version == version
-    )
-
-
-def sections(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[Placement, ...]:
-    """One contiguous ROM/memory range per section owned by this unit in a holder."""
-    held, output = _held(snapshot, unit, version), []
-    for section in sorted({p.section for _, p in held}):
-        placements = sorted((p for _, p in held if p.section == section), key=lambda p: p.vram)
-        first, last = placements[0], placements[-1]
-        if any(
-            a.vram + a.size != b.vram or (section != ".bss" and a.rom_end != b.rom_start)
-            for a, b in pairwise(placements)
-        ):
-            raise Refusal(Finding("link.error", f"owned {section} run is not contiguous", unit=unit.path))
-        vram = first.vram & snapshot.config.project.build.get("text_mask", _WORD) if section == ".text" else first.vram
-        output.append(
-            Placement(
-                version,
-                section,
-                first.rom_start,
-                last.rom_end,
-                vram,
-                sum(p.size for p in placements) if section == ".bss" else 0,
-            )
-        )
-    return tuple(output)
-
-
-def stamp(
-    snapshot: Snapshot,
-    unit: UnitSpec,
-    version: str,
-    recipe: Recipe | None = None,
-    *,
-    pinned: bool = False,
-    code: bool = True,
-) -> str:
-    """Everything a proof reads, named without building: the unit's source, the declarations its preprocessed text
-    reaches, rows, the version facts of the names it spells and tools. A stored failure replays under the stamp,
-    so any edit of a header the unit includes moves it, reached declaration or not."""
+def stamp(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe | None = None, *, code: bool = True) -> str:
+    """Everything a compile reads, named by content alone: the preprocessed text, the recipe and the tools. No path,
+    member list or layout row is in the key, so a rename or a move between files keeps it."""
     cfg = snapshot.config
     recipe = recipe or recipes.resolve(cfg, unit, {})
-    reach = view.closure(snapshot, unit, version) if pinned else view.reads(snapshot, unit, version, recipe, whole=True)
-    record = snapshot.versions[version]
-    tools = effort.memo(
-        ("tools", recipe.toolchain), lambda: (adapters.host_tools(cfg), adapters.tool_identity(cfg, recipe.toolchain))
-    )
+    text = view.get(snapshot, unit, version, recipe, lines=False).text
+    tools = effort.memo(("tools", recipe.toolchain), lambda: adapters.tool_identity(cfg, recipe.toolchain))
     return digest(
         (
-            replace(unit, withheld=()),
-            reach,
+            sha256(text.encode()),
             recipe.digest,
-            _held(snapshot, unit, version),
-            [snapshot.layout.members[n].state for n in unit.members],
-            record.rom_sha256,
-            versions.facts_of(record, view.names(snapshot, unit, version)),
-            cfg.project.build,
-            cfg.project.version_macros[version],
             tools,
             abucache.__version__,
-            code_identity(prove, measure, objects, compiles, warnings, recorded, dumps) if code else "",
+            code_identity(measure, objects, warnings, recorded, dumps) if code else "",
         )
     )
-
-
-def _literal_reads(
-    snapshot: Snapshot, version: str, base: Placement | None, built: bytes
-) -> tuple[Callable[[int, int], bytes], Callable[[int, int], bytes]]:
-    """Readers of `size` bytes at a vram in the built rodata and in the target's, empty outside them."""
-    start = base.vram if base else 0
-
-    def ours(address: int, size: int) -> bytes:
-        return built[address - start : address - start + size] if base and address >= start else b""
-
-    def theirs(address: int, size: int) -> bytes:
-        if not base or not start <= address < start + base.size:
-            return b""
-        at = base.rom_start + address - start
-        return versions.rom_bytes(snapshot.versions[version], at, at + size)
-
-    return ours, theirs
-
-
-def _gaps(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, object_sha: str, missing: tuple[str, ...]
-) -> tuple[Proof, ...]:
-    source_sha = sha256(snapshot.read(unit.path))
-    return tuple(
-        Proof(
-            unit.path,
-            name,
-            version,
-            recipe.digest,
-            source_sha,
-            object_sha,
-            "",
-            "",
-            False,
-            missing,
-            0.0,
-            symptoms.from_missing(missing),
-        )
-        for name in dict.fromkeys(n for n, _ in _held(snapshot, unit, version))
-    )
-
-
-_EXACT: ContextVar[bool] = ContextVar(
-    "native.exact", default=False
-)  # set: an object is reused only from its whole text
-
-
-@contextmanager
-def exactly() -> Iterator[None]:
-    """Within, an object is reused only when the whole preprocessed text it was built from is unchanged."""
-    token = _EXACT.set(True)
-    try:
-        yield
-    finally:
-        _EXACT.reset(token)
-
-
-def _cacheable(unit: UnitSpec) -> bool:
-    return bool(config.kind(unit.kind)["cacheable"])
 
 
 def _replayed[T](cfg: Config, key: str, produce: Callable[[], T]) -> T:
@@ -217,170 +94,94 @@ def _replayed[T](cfg: Config, key: str, produce: Callable[[], T]) -> T:
 
 
 def _compile_inputs(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, include: tuple[Path, ...], stem: str
-) -> tuple[str, tuple[compile.Step, ...], str, str, str]:
+    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, include: tuple[Path, ...]
+) -> tuple[str, tuple[compile.Step, ...], str, str]:
     seen = view.get(snapshot, unit, version, recipe, lines=False)
     text = seen.text
     # The assembler reads a file only through a directive the compiled text carries. Without one, the include
     # directories (absolute paths of this checkout) are not an input, so they stay out of the key and every
     # worktree of the project shares its objects.
     reads = re.search(r"\.(?:include|incbin)\b", text) is not None
-    steps = adapters.chain_steps(snapshot.config, recipe.toolchain, recipe, include if reads else (), stem)
+    steps = adapters.chain_steps(snapshot.config, recipe.toolchain, recipe, include if reads else (), _INPUT)
     tools = str(
         effort.memo(
             ("tool-identity", recipe.toolchain), lambda: adapters.tool_identity(snapshot.config, recipe.toolchain)
         )
     )
-    live = view.live_digest(
-        snapshot.config, seen
-    )  # a declaration the unit never reaches cannot change its object: it is not in the key
-    return text, steps, tools, compile.key(live.encode(), f"{stem}.i", steps, tools), seen.unit
+    return text, steps, tools, compile.key(text.encode(), f"{_INPUT}.i", steps, tools)
 
 
-def _compiled(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path, include: tuple[Path, ...], stem: str
+def _include(snapshot: Snapshot, version: str) -> tuple[Path, ...]:
+    project = snapshot.config.project
+    macros = config.load_resource("repo.toml")["splat"]["options"]["generated_asm_macros_directory"]
+    return (project.root / "include", project.root / macros.format(version=version, name=project.name))
+
+
+def objects(
+    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path
 ) -> tuple[Path, tuple[NativeResult, ...]]:
-    """Preprocess, compile, assemble through abucache's cache keyed by preprocessed bytes, commands and tools."""
+    """Preprocess, compile and assemble one module through abucache's cache keyed by the preprocessed bytes, the
+    commands and the tools. The same text compiles once, whatever file, version or checkout asks."""
+    with effort.stage("native.objects"), _tools(unit, snapshot, unit, version, recipe):
+        cfg = snapshot.config
+        work.mkdir(parents=True, exist_ok=True)
+        text, steps, tools, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
+        source, obj = (
+            work / f"{_INPUT}.i",
+            work / f"{Path(unit.path).stem}.o",
+        )  # the input is named by nothing of the file
+        source.write_text(text, encoding="utf-8")
+
+        def run(phase: str, argv: Sequence[str], cwd: Path) -> NativeResult:
+            return process.run(phase, argv, cwd, tmp=process.scratch(cfg.project.root))
+
+        def build() -> tuple[bytes, list[NativeResult]]:
+            value, results = compile.build(
+                store.content(cfg),
+                run,
+                steps,
+                source,
+                tools,
+                work,
+                after=adapters.toolchain(cfg, recipe.toolchain).check,
+            )
+            return value, results
+
+        value, results = _replayed(cfg, key, build)
+        obj.write_bytes(value)
+        if results:  # the compile that ran keeps its refused warnings, so nothing compiles again to count them
+            found = adapters.toolchain(cfg, recipe.toolchain).refused(results[0].stderr.decode(errors="replace"))
+            store.put(cfg, "warnings", digest((key, "warnings")), json.dumps(found).encode())
+        return obj, tuple(results)
+
+
+def recorded(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> tuple[str, ...] | None:
+    """The refused warnings a compile of this unit kept; None when none was kept; never compiles."""
     cfg = snapshot.config
-    if "preprocess" not in _phases(unit):
-        raise Refusal(Finding("config.resource", f"unit kind {unit.kind} is cacheable but has no preprocess phase"))
-    text, steps, tools, key, own = _compile_inputs(snapshot, unit, version, recipe, include, stem)
-    source, obj = work / f"{stem}.i", work / f"{stem}.o"
-    source.write_text(text, encoding="utf-8")
-
-    def run(phase: str, argv: Sequence[str], cwd: Path) -> NativeResult:
-        return process.run(phase, argv, cwd, tmp=process.scratch(snapshot.config.project.root))
-
-    full = compile.key(
-        text.encode(), source.name, steps, tools
-    )  # a failure is a fact of the whole text, never of the live part
-
-    def headers_compile() -> (
-        bool
-    ):  # the headers compile alone: proved once per header text and compiler, not per consumer
-        header_text = re.sub(r'(?m)^# \d+ "[^"\n]*"[^\n]*\n', "", declarations.headers(text, own))
-        proof = digest((header_text, steps[0].argv, tools, "headers"))
-
-        def prove() -> bytes:
-            with store.work(cfg) as home:
-                (home / f"{stem}.i").write_text(header_text, encoding="utf-8")
-                argv = [w.replace("{in}", f"{stem}.i").replace("{out}", steps[0].out) for w in steps[0].argv]
-                result = process.run("compile", argv, home, tmp=process.scratch(cfg.project.root))
-            with suppress(Refusal):
-                adapters.toolchain(cfg, recipe.toolchain).check(steps[0], result)
-                return b"yes" if result.exit == 0 and result.signal is None else b"no"
-            return b"no"
-
-        return store.cached(cfg, "header-proof", proof, prove) == b"yes"
-
-    def build() -> tuple[
-        bytes, list[NativeResult]
-    ]:  # an earlier text's object with the same live part if the headers compile
-        stored = store.get(cfg, "unit", full) is not None
-        kept = None if _EXACT.get() or stored else store.get(cfg, "live-object", key)
-        if kept is not None and headers_compile():
-            effort.count("live-object", True)
-            return kept, []
-        if not _EXACT.get() and not stored:  # a stored unit never tries the shortcut: it is no miss
-            effort.count("live-object", False)
-        value, results = compile.build(
-            store.content(cfg), run, steps, source, tools, work, after=adapters.toolchain(cfg, recipe.toolchain).check
-        )
-        if store.get(cfg, "unit", full) is not None:  # it was stored
-            store.put(cfg, "live-object", key, value)
-        return value, results
-
-    value, results = _replayed(cfg, full, build)
-    obj.write_bytes(value)
-    if results:  # the compile that ran keeps its refused warnings, so nothing compiles again to count them
-        found = adapters.toolchain(cfg, recipe.toolchain).refused(results[0].stderr.decode(errors="replace"))
-        store.put(cfg, "warnings", digest((key, "warnings")), json.dumps(found).encode())
-    return obj, tuple(results)
+    home = cfg.project.root / "build" / version / Path(unit.path).with_suffix("")
+    for kept in sorted(home.glob("*/compile.err")):
+        return tuple(adapters.toolchain(cfg, recipe.toolchain).refused(kept.read_text(errors="replace")))
+    *_, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
+    kept_json = store.get(cfg, "warnings", digest((key, "warnings")))
+    return None if kept_json is None else tuple(json.loads(kept_json))
 
 
-def _material(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, obj: Path, proofs: Sequence[Proof]
-) -> dict[str, bytes]:
-    """Current exact proof bytes as the make rule's section outputs, or nothing when evidence is incomplete.
-    Proof material is in member placement order, including the whole section's decimal size for each BSS placement."""
-    from unbake import ownership
+def warnings(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path) -> tuple[str, ...]:
+    """The refused-view warnings of the unit's own compile, kept by the text compiled."""
+    with effort.stage("native.warnings"), _tools(unit, snapshot, unit, version, recipe):
+        cfg = snapshot.config
+        work.mkdir(parents=True, exist_ok=True)
+        stem = Path(unit.path).stem
+        text, steps, _, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
 
-    held = _held(snapshot, unit, version)
-    names = {n for n, _ in held}
-    if not proofs or len(proofs) != len(names) or {p.member for p in proofs} != names:
-        return {}
-    ranges = {p.section: p for p in sections(snapshot, unit, version)}
-    blob = obj.read_bytes()
-    if "armips" in _phases(unit) or ownership.borrowed(snapshot, unit, version, blob, tuple(ranges.values())):
-        return {}  # a borrowed pool's proof linked different sections than the generated make rule
-    source_sha, object_sha = sha256(snapshot.read(unit.path)), sha256(blob)
-    chunks: dict[str, list[tuple[int, bytes]]] = {}
-    for proof in proofs:
-        if (
-            not proof.exact
-            or proof.missing
-            or (proof.unit, proof.version, proof.recipe, proof.source_sha256, proof.object_sha256)
-            != (unit.path, version, recipe.digest, source_sha, object_sha)
-            or proof.built_sha256 != proof.target_sha256
-        ):
-            return {}
-        material = store.get(snapshot.config, "bytes", proof.built_sha256)
-        if material is None or sha256(material) != proof.built_sha256:
-            return {}
-        offset = 0
-        for name, p in held:
-            if name != proof.member:
-                continue
-            size = len(str(ranges[p.section].size)) if p.section == ".bss" else p.size
-            part = material[offset : offset + size]
-            if len(part) != size:
-                return {}
-            chunks.setdefault(p.section, []).append((p.rom_start, part))
-            offset += size
-        if offset != len(material):
-            return {}
-    out = {}
-    for section, p in ranges.items():
-        parts = sorted(chunks.get(section, ()))
-        if section == ".bss":
-            data = str(p.size).encode()
-            if not parts or any(part != data for _, part in parts):
-                return {}
-        else:
-            cursor = p.rom_start
-            for start, part in parts:
-                if start != cursor:
-                    return {}
-                cursor += len(part)
-            if cursor != p.rom_end:
-                return {}
-            data = b"".join(part for _, part in parts)
-        out[section[1:] + (".size" if section == ".bss" else ".bin")] = data
-    return out
+        def _produce() -> bytes:
+            (work / f"{stem}.i").write_text(text, encoding="utf-8")
+            argv = [w.replace("{in}", f"{stem}.i").replace("{out}", steps[0].out) for w in steps[0].argv]
+            result = process.run("compile", argv, work, tmp=process.scratch(cfg.project.root))
+            found = adapters.toolchain(cfg, recipe.toolchain).refused(result.stderr.decode(errors="replace"))
+            return json.dumps(found).encode()
 
-
-def compiles(
-    item: tuple[Snapshot, UnitSpec, str], home: Path | None = None
-) -> tuple[Finding, ...]:  # why the unit does not build (compile, link, owned sizes); empty when it does
-    snapshot, unit, version = item
-    if home is not None and (home / "proved").exists():
-        shutil.rmtree(home / "proved")  # a caller reusing a work directory cannot inherit an earlier verdict
-    try:
-        with (
-            nullcontext(home) if home else store.work(snapshot.config)
-        ) as work:  # make links (and asserts owned sizes) only where the unit is not withheld
-            obj = objects(snapshot, unit, version, r := recipes.resolve(snapshot.config, unit, {}), work)[0]
-            proofs = () if version in unit.withheld else measure(snapshot, unit, version, r, obj, work)
-            if home is not None and (material := _material(snapshot, unit, version, r, obj, proofs)):
-                (home / "proved").mkdir()
-                for name, data in material.items():
-                    (home / "proved" / name).write_bytes(data)
-        return tuple(
-            Finding("link.error", f"{unit.path}: {m}", unit=unit.path, versions=(version,))
-            for m in sorted({m for p in proofs for m in p.missing if "bytes differ" not in m})
-        )
-    except Refusal as refusal:
-        return tuple(replace(f, unit=f.unit or unit.path, versions=f.versions or (version,)) for f in refusal.findings)
+        return tuple(json.loads(store.cached(cfg, "warnings", digest((key, "warnings")), _produce)))
 
 
 def dumps(
@@ -389,7 +190,7 @@ def dumps(
     """The allocation and scheduler dumps and debug assembly of one compile made outside the cache (a cached object
     has none); the scheduler dumps are empty when the toolchain writes none."""
     stem = Path(unit.path).stem
-    text, steps, *_ = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, unit, version), stem)
+    text, steps, *_ = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
     work.mkdir(parents=True, exist_ok=True)
     (work / f"{stem}.i").write_text(text, encoding="utf-8")
     argv = [a.replace("{in}", f"{stem}.i").replace("{out}", f"{stem}.s") for a in steps[0].argv]
@@ -421,283 +222,253 @@ def dumps(
     return greg, lreg, asm, passes
 
 
-def recorded(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> tuple[str, ...] | None:
-    """The refused warnings the build or a proof kept for this unit; None when none was kept; never compiles."""
-    cfg = snapshot.config
-    if not _cacheable(unit):
-        return ()
-    home = cfg.project.root / "build" / version / Path(unit.path).with_suffix("")
-    for kept in sorted(home.glob("*/compile.err")):
-        return tuple(adapters.toolchain(cfg, recipe.toolchain).refused(kept.read_text(errors="replace")))
-    *_, key, _ = _compile_inputs(
-        snapshot, unit, version, recipe, _include(snapshot, unit, version), Path(unit.path).stem
-    )
-    kept_json = store.get(cfg, "warnings", digest((key, "warnings")))
-    return None if kept_json is None else tuple(json.loads(kept_json))
-
-
-def warnings(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path) -> tuple[str, ...]:
-    """The refused-view warnings of the unit's own compile, kept by the text compiled."""
-    with effort.stage("native.warnings"), _tools(unit, snapshot, unit, version, recipe):
-        cfg = snapshot.config
-        if not _cacheable(unit):
-            return ()
-        work.mkdir(parents=True, exist_ok=True)
-        stem = Path(unit.path).stem
-        text, steps, _, key, _ = _compile_inputs(
-            snapshot, unit, version, recipe, _include(snapshot, unit, version), stem
-        )
-
-        def _produce() -> bytes:
-            (work / f"{stem}.i").write_text(text, encoding="utf-8")
-            argv = [w.replace("{in}", f"{stem}.i").replace("{out}", steps[0].out) for w in steps[0].argv]
-            result = process.run("compile", argv, work, tmp=process.scratch(cfg.project.root))
-            found = adapters.toolchain(cfg, recipe.toolchain).refused(result.stderr.decode(errors="replace"))
-            return json.dumps(found).encode()
-
-        return tuple(json.loads(store.cached(cfg, "warnings", digest((key, "warnings")), _produce)))
-
-
-def _include(snapshot: Snapshot, unit: UnitSpec, version: str) -> tuple[Path, ...]:
-    project = snapshot.config.project
-    macros = config.load_resource("repo.toml")["splat"]["options"]["generated_asm_macros_directory"]
-    return (
-        project.root / "include",
-        (project.root / unit.path).parent,
-        project.root / macros.format(version=version, name=project.name),
-    )
-
-
-def objects(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path
-) -> tuple[Path, tuple[NativeResult, ...]]:
-    with effort.stage("native.objects"), _tools(unit, snapshot, unit, version, recipe):
-        work.mkdir(parents=True, exist_ok=True)
-        phases, stem = _phases(unit), Path(unit.path).stem
-        row = config.toolchain(recipe.toolchain)
-        try:
-            source = snapshot.read(unit.path)
-        except FileNotFoundError:
-            if unit.path in snapshot.overlays or not journal.changed(
-                snapshot, ("layout.toml", *(v.split for v in snapshot.versions.values()))
-            ):
-                raise
-            raise Refusal(
-                Finding("journal.changed", config.sentence("journal.changed"), path=unit.path, unit=unit.path)
-            ) from None
-        obj = work / f"{stem}.o"
-        results: list[NativeResult] = []
-        include = _include(snapshot, unit, version)
-        if _cacheable(unit):
-            return _compiled(snapshot, unit, version, recipe, work, include, stem)
-        dependencies, pending = {}, [source]
-        while pending:
-            for name in re.findall(rb'\.include\s+"([^"\n]+)"', pending.pop()):
-                path = next((p / name.decode() for p in include if (p / name.decode()).is_file()), None)
-                if path and str(path) not in dependencies:
-                    data = path.read_bytes()
-                    dependencies[str(path)] = sha256(data)
-                    pending.append(data)
-        key = digest((sha256(source), recipe.digest, recipe.toolchain, row["pins"], sorted(dependencies.items())))
-
-        def _produce() -> bytes:
-            current = None
-            for phase in (p for p in phases if p in ("assemble", "armips")):
-                if current is None:
-                    current = work / f"{stem}.s"
-                    current.write_bytes(source)
-                out = obj if phase == "assemble" else work / f"{stem}.bin"
-                results.append(
-                    adapters.assembler(snapshot.config, "gnu" if phase == "assemble" else phase).assemble(
-                        current, recipe, include, out
-                    )
-                )
-                current = out
-            assert current is not None  # the phases hold an assembler
-            return current.read_bytes()
-
-        obj.write_bytes(_replayed(snapshot.config, key, lambda: store.cached(snapshot.config, "object", key, _produce)))
-        return obj, tuple(results)
-
-
 def _finding(row: dict[str, Any]) -> Finding:
     origin = Origin(**row["origin"]) if row["origin"] else None
     return Finding(**{**row, "origin": origin, "versions": tuple(row["versions"]), "missing": tuple(row["missing"])})
 
 
+# ---------------------------------------------------------------- the proof of one function
+def _gap(unit: UnitSpec, name: str, version: str, recipe: Recipe, source: str, obj: str, why: str) -> Proof:
+    missing = (f"version {version}: {why}",)
+    return Proof(
+        unit.path,
+        name,
+        version,
+        recipe.digest,
+        source,
+        obj,
+        "",
+        "",
+        False,
+        missing,
+        0.0,
+        symptoms.from_missing(missing),
+    )
+
+
+def _output(table: Any, section: str) -> str | None:
+    """The linker section (text, rodata, data, bss) an object section belongs to."""
+    return next((f".{k}" for k, row in table.items() if any(fnmatch.fnmatch(section, i) for i in row["inputs"])), None)
+
+
+def _anchors(
+    facts: Any, defined: dict[str, tuple[str, int, int]], table: Any, mask: int
+) -> tuple[dict[str, int], dict[str, int]]:
+    """(vram of the start of each linker section, its size) from the object's defined symbols the version places: the
+    section starts where a symbol's address less its offset in the object says."""
+    base: dict[str, int] = {}
+    for name, (section, value, _) in sorted(defined.items(), key=lambda kv: kv[1][1]):
+        fact, out = facts.get(name), _output(table, section)
+        if fact is None or out is None or out == ".bss":
+            continue
+        base.setdefault(out, (fact[0] & mask if out == ".text" else fact[0]) - value)
+    return base, {}
+
+
+def symbol_facts(cfg: Config, version: str) -> dict[str, symbols.Symbol]:
+    """The symbol facts of one version, parsed once per content of the file."""
+    data = (cfg.project.root / versions.symbol_file(version)).read_bytes()
+    return effort.memo(("native.facts", version, sha256(data)), lambda: symbols.parse(data.decode(errors="replace")))
+
+
+def version_records(cfg: Config) -> dict[str, Version]:
+    """The version records (ROM, segments, symbols), read once per config."""
+    root = cfg.project.root
+    return effort.memo(("native.versions", cfg.digest), lambda: versions.read(cfg, lambda p: (root / p).read_bytes()))
+
+
+def candidate(
+    config_: Config,
+    version: str,
+    path: str,
+    text: str,
+    overrides: Json | None = None,
+    overlays: Mapping[str, bytes] | None = None,
+) -> tuple[Snapshot, UnitSpec, Recipe, list[str]]:
+    """(the snapshot holding `text` as the module `path`, its compile identity, its recipe with NON_MATCHING defined,
+    the names it owns in the version), from a parse of the one module: nothing else of the tree is read."""
+    data = text.encode()
+    written = {**(overlays or {}), path: data}
+    snapshot = Snapshot(
+        config_,
+        "",
+        None,
+        version_records(config_),
+        written,
+        digest((config_.digest, sorted((p, sha256(b)) for p, b in written.items()))),
+    )
+    defs, stand, _ = tree.parse(
+        config_, path, data, version, lambda p: written[p] if p in written else _disk(config_, p)
+    )
+    table = symbol_facts(config_, version)
+    owned = [n for n in dict.fromkeys([*defs, *stand]) if n in table]
+    row = file_facts(config_.project, path)
+    options = {k: list(v) for k, v in (("add", row.cflags), ("omit", row.omit)) if v}
+    unit = UnitSpec(path, "c", tuple(sorted(owned)), row.toolchain or config_.project.toolchain, options)
+    recipe = recipes.resolve(config_, unit, overrides or {})
+    recipe = replace(recipe, cppflags=(*recipe.cppflags, _FUZZY), digest=digest((recipe.digest, _FUZZY)))
+    return snapshot, unit, recipe, owned
+
+
+def _disk(cfg: Config, path: str) -> bytes | None:
+    try:
+        return (cfg.project.root / path).read_bytes()
+    except OSError:
+        return None
+
+
 def measure(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, obj: Path, work: Path, keep: bool = False
-) -> tuple[Proof, ...]:
-    """The proofs of one unit in one version; `keep` links again so the linker's outputs are left in `work`."""
-    with effort.stage("native.measure"), _tools(unit, snapshot, unit, version, recipe):
-        ranges = sections(snapshot, unit, version)
-        if not ranges:
-            return ()
-        from unbake import ownership
+    config_: Config,
+    version: str,
+    name: str,
+    path: str,
+    text: str,
+    overrides: Json | None = None,
+    overlays: Mapping[str, bytes] | None = None,
+) -> Proof:
+    """The proof of `name` in one version: the module `path` as `text` compiled, its object linked alone with each
+    section at the address the symbol facts give, and the function's bytes compared with the ROM's."""
+    with effort.stage("native.measure"):
+        source = sha256(text.encode())
+        snapshot, unit, recipe, owned = candidate(config_, version, path, text, overrides, overlays)
+        if name not in owned:
+            return _gap(unit, name, version, recipe, source, "", f"{name} is not owned by {path}")
+        with store.work(config_) as work:
+            try:
+                obj, _ = objects(snapshot, unit, version, recipe, work)
+            except Refusal as refusal:
+                lines = tuple(
+                    f"version {version}: compile.error: " + view.diagnostic(snapshot, unit, version, recipe, f.reason)
+                    for f in refusal.findings
+                )
+                return replace(
+                    _gap(unit, name, version, recipe, source, "", "compile.error"),
+                    missing=lines,
+                    symptoms=symptoms.from_missing(lines),
+                )
+            return _link(snapshot, unit, version, name, recipe, source, obj, work, symbol_facts(config_, version))
 
-        blob = obj.read_bytes()
-        linked_ranges = ranges
-        if "armips" not in _phases(unit):
-            linked_ranges = (*ranges, *ownership.borrowed(snapshot, unit, version, blob, ranges))
-        object_sha = sha256(blob)
-        source_sha = sha256(snapshot.read(unit.path))
-        record = snapshot.versions[version]
-        names = versions.undefined(obj) if "armips" not in _phases(unit) else ()
-        selected = replace(record, symbols={n: record.symbols[n] for n in names if n in record.symbols})
-        symbols_data = build.symbols_ld(replace(snapshot, versions={**snapshot.versions, version: selected}), version)
-        row = config.toolchain(recipe.toolchain)
-        trim = not row["preserves_padding"] or snapshot.layout.members[unit.members[0]].state == "hasm"
-        held = [(n, asdict(p)) for n, p in _held(snapshot, unit, version)]  # member names are part of the proof
-        key = digest(
-            (
-                object_sha,
-                [asdict(p) for p in linked_ranges],
-                held,
-                sha256(symbols_data),
-                trim,
-                abucache.__version__,
-                digest(
-                    sorted(
-                        (k, v)
-                        for k, v in adapters.host_tools(snapshot.config).items()
-                        if k in ("mips_ld", "mips_objcopy")
-                    )
-                ),
-                unit.path,
-                recipe.digest,
-                source_sha,
-            )
+
+def _link(
+    snapshot: Snapshot,
+    unit: UnitSpec,
+    version: str,
+    name: str,
+    recipe: Recipe,
+    source: str,
+    obj: Path,
+    work: Path,
+    facts: dict[str, symbols.Symbol],
+) -> Proof:
+    cfg = snapshot.config
+    blob = obj.read_bytes()
+    object_sha = sha256(blob)
+    fact = facts.get(name)
+    defined, sizes = versions.defined(obj)
+    if fact is None or fact[1] is None or name not in defined:
+        return _gap(unit, name, version, recipe, source, object_sha, f"unproved {name}: the object does not define it")
+    table = config.sections()
+    mask = config.load_resource("rom.toml").get("text_mask", _WORD)
+    starts, _ = _anchors(facts, defined, table, mask)
+    totals: dict[str, int] = {}
+    for title, size in sizes.items():
+        if (out := _output(table, title)) is not None:
+            totals[out] = totals.get(out, 0) + size
+    if ".text" not in starts:
+        return _gap(unit, name, version, recipe, source, object_sha, "unproved .text: no anchor")
+    end = starts[".text"] + totals.get(".text", 0)
+    for out in totals:  # a section no named symbol places follows the code (the per-object shape)
+        starts.setdefault(out, (end + 15) & ~15)
+    placed = tuple(
+        Placement(version, out, 0, size, starts[out], size if out == ".bss" else 0)
+        for out, size in sorted(totals.items())
+        if size
+    )
+    size = fact[2] if fact[2] is not None else defined[name][2]
+    rom_view = versions.rom_bytes
+    record = snapshot.versions[version]
+    target = rom_view(record, fact[1], fact[1] + size)
+    section = _output(table, defined[name][0]) or ".text"
+    symbols_data = versions.symbols_ld(cfg, version)
+    row = config.toolchain(recipe.toolchain)
+    key = digest(
+        (
+            object_sha,
+            [asdict(p) for p in placed],
+            name,
+            size,
+            sha256(symbols_data),
+            sha256(target),
+            abucache.__version__,
+            adapters.tool_identity(cfg, recipe.toolchain),
+            code_identity(_link),
         )
+    )
 
-        def _produce() -> bytes:
-            built, proofs = {}, []
-            if "armips" in _phases(unit):
-                if len(ranges) != 1 or ranges[0].section == ".bss":
-                    gaps = _gaps(
-                        snapshot, unit, version, recipe, object_sha, (f"version {version}: unproved resource sections",)
-                    )
-                    return json.dumps([asdict(p) for p in gaps], sort_keys=True).encode()
-                built[ranges[0].section] = obj.read_bytes()
-            else:
-                work.mkdir(parents=True, exist_ok=True)
-                symbols = work / "symbols.ld"
-                symbols.write_bytes(symbols_data)
-                result = adapters.linker(snapshot.config).link(obj, linked_ranges, symbols, work, trim)
-                built = {s: p.read_bytes() for s, p in result.outputs.items() if s.startswith(".")}
-            lent = [  # a borrowed pool is no member's bytes, yet the code reads it: it has to be the ROM's own
-                f"version {version}: emitted {p.section} differs from the ROM bytes at 0x{p.rom_start:X} it is "
-                "placed on"
-                for p in linked_ranges[len(ranges) :]
-                if built.get(p.section) != versions.rom_bytes(snapshot.versions[version], p.rom_start, p.rom_end)
-            ]
-            by_section = {p.section: p for p in ranges}
-            for name in dict.fromkeys(n for n, _ in _held(snapshot, unit, version)):
-                material, target, missing, measured = [], [], [], []
-                for member, p in _held(snapshot, unit, version):
-                    if member != name:
-                        continue
-                    base, data = by_section[p.section], built.get(p.section)
-                    if data is None:
-                        missing.append(f"version {version}: unproved {p.section}")
-                        continue
-                    if p.section == ".bss":
-                        if data != str(base.size).encode():
-                            missing.append(f"version {version}: unproved .bss size")
-                        material.append(data)
-                        target.append(str(base.size).encode())
-                        continue
-                    b = data[p.rom_start - base.rom_start : p.rom_end - base.rom_start]
-                    t = versions.rom_bytes(snapshot.versions[version], p.rom_start, p.rom_end)
-                    measured.append((b, t, p.section))
-                    if len(data) != base.size:
-                        missing.append(f"version {version}: {p.section} size {len(data)} != {base.size}")
-                    differences = [i for i, (x, y) in enumerate(zip(b, t, strict=False)) if x != y]
-                    if differences:
-                        missing.append(
-                            f"version {version}: {len(differences)} bytes differ at +0x{differences[0]:X} {p.section}"
-                        )
-                    material.append(b)
-                    target.append(t)
-                missing += lent
-                exact = not missing
-                reads = _literal_reads(snapshot, version, by_section.get(".rodata"), built.get(".rodata", b""))
-                score_pairs = [(symptoms.literals(b, t, *reads) if s == ".text" else b, t) for b, t, s in measured]
-                score = (
-                    1.0
-                    if exact
-                    else min(
-                        symptoms.score(b"".join(b for b, _ in score_pairs), b"".join(t for _, t in score_pairs)),
-                        1.0 - 2**-53,
-                    )
-                )
-                facts = (
-                    {}
-                    if exact
-                    else dict(
-                        symptoms.merge(
-                            [symptoms.measure(b, t, s) for b, t, s in measured] + [symptoms.from_missing(missing)]
-                        )
-                    )
-                )
-                if not exact:
-                    facts["score"] = score
-                proof = Proof(
-                    unit.path,
-                    name,
-                    version,
-                    recipe.digest,
-                    source_sha,
-                    object_sha,
-                    sha256(b"".join(material)),
-                    sha256(b"".join(target)),
-                    exact,
-                    tuple(missing),
-                    score,
-                    facts,
-                )
-                proofs.append(proof)
-                store.put(snapshot.config, "bytes", proof.built_sha256, b"".join(material))
-            return json.dumps([asdict(p) for p in proofs], sort_keys=True).encode()
+    def produce() -> bytes:
+        work.mkdir(parents=True, exist_ok=True)
+        ld_symbols = work / "symbols.ld"
+        ld_symbols.write_bytes(symbols_data)
+        result = adapters.linker(cfg).link(obj, placed, ld_symbols, work, not row["preserves_padding"])
+        built = {s: p.read_bytes() for s, p in result.outputs.items() if s.startswith(".")}
+        data = built.get(section, b"")
+        offset = (fact[0] & mask if section == ".text" else fact[0]) - starts[section]
+        have = data[offset : offset + size]
+        missing: list[str] = []
+        if len(have) != size:
+            missing.append(f"version {version}: {section} size {len(have)} != {size}")
+        differences = [i for i, (x, y) in enumerate(zip(have, target, strict=False)) if x != y]
+        if differences:
+            missing.append(f"version {version}: {len(differences)} bytes differ at +0x{differences[0]:X} {section}")
+        exact = not missing
+        store.put(cfg, "bytes", sha256(have), have)
+        reads = _literal_reads(snapshot, version, starts.get(".rodata"), built.get(".rodata", b""), facts)
+        shown = symptoms.literals(have, target, *reads) if section == ".text" and not exact else have
+        score = 1.0 if exact else min(symptoms.score(shown, target), 1.0 - 2**-53)
+        extra = (
+            {}
+            if exact
+            else dict(symptoms.merge([symptoms.measure(have, target, section), symptoms.from_missing(missing)]))
+        )
+        if not exact:
+            extra["score"] = score
+        proof = Proof(
+            unit.path,
+            name,
+            version,
+            recipe.digest,
+            source,
+            object_sha,
+            sha256(have),
+            sha256(target),
+            exact,
+            tuple(missing),
+            score,
+            extra,
+        )
+        return json.dumps(asdict(proof), sort_keys=True).encode()
 
-        if keep:
-            blob = _produce()
-            store.put(snapshot.config, "proof", key, blob)
-        else:
-            blob = store.cached(snapshot.config, "proof", key, _produce)
-        return tuple(proof_from(p) for p in json.loads(blob))
+    return proof_from(json.loads(store.cached(cfg, "proof", key, produce)))
 
 
-def prove_args(item: tuple[Any, ...]) -> tuple[Proof, ...]:
-    return prove(*item)
+def _literal_reads(
+    snapshot: Snapshot, version: str, start: int | None, built: bytes, facts: Any
+) -> tuple[Callable[[int, int], bytes], Callable[[int, int], bytes]]:
+    """Readers of `size` bytes at a vram in the built rodata and in the target's, empty outside them. The target's
+    rodata is read at the ROM offset of the nearest named rodata symbol at or below the address."""
+    rows = sorted((f[0], f[1]) for f in facts.values() if f[1] is not None)
 
+    def ours(address: int, size: int) -> bytes:
+        return built[address - start : address - start + size] if start is not None and address >= start else b""
 
-def prove_job(item: tuple[Snapshot, UnitSpec, str]) -> tuple[Proof, ...]:
-    """A pool job: the proof of the unit in one version, in a private work directory."""
-    snapshot, unit, version = item
-    with store.work(snapshot.config) as work:
-        return prove(snapshot, unit, version, recipes.resolve(snapshot.config, unit, {}), work)
+    def theirs(address: int, size: int) -> bytes:
+        if start is None or not start <= address < start + len(built):
+            return b""
+        below = [r for r in rows if r[0] <= address]
+        if not below:
+            return b""
+        vram, rom = below[-1]
+        at = rom + address - vram
+        return versions.rom_bytes(snapshot.versions[version], at, at + size)
 
-
-def prove(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path, keep: bool = False
-) -> tuple[Proof, ...]:
-    with effort.stage("native.prove"):
-        object_sha = ""
-        try:
-            obj, _ = objects(snapshot, unit, version, recipe, work)
-            object_sha = sha256(obj.read_bytes())
-            names = versions.undefined(obj) if "armips" not in _phases(unit) else ()
-            record = snapshot.versions[version]
-            findings = versions.resolve(record, names, unit.path)
-            if findings:
-                missing = tuple(f"version {version}: unresolved {name}" for name in names if name not in record.symbols)
-                return _gaps(snapshot, unit, version, recipe, object_sha, missing)
-            return measure(snapshot, unit, version, recipe, obj, work, keep)
-        except Refusal as refusal:
-            if any(f.key == "native.missing_tool" for f in refusal.findings):
-                raise
-            missing = tuple(
-                f"version {version}: {finding.key}: " + view.diagnostic(snapshot, unit, version, recipe, finding.reason)
-                for finding in refusal.findings
-            )
-            return _gaps(snapshot, unit, version, recipe, object_sha, missing)
+    return ours, theirs

@@ -1,0 +1,22 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.symbols",
+ "type": "object",
+ "properties": {
+  "symbols": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "array",
+     "minItems": 4,
+     "maxItems": 4
+    }
+   }
+  }
+ },
+ "required": [
+  "symbols"
+ ],
+ "additionalProperties": false
+}

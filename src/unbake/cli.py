@@ -40,9 +40,9 @@ def _refused(result: Json | None) -> list[Finding]:
     ]
 
 
-def _failed(result: Json | None, findings: Sequence[Finding]) -> int:
-    """1 when work was refused; a converged move kept what failed as it was, so its leftovers are a work list."""
-    return int(bool(findings) and not (result or {}).get("converged"))
+def _failed(findings: Sequence[Finding]) -> int:
+    """1 when work was refused."""
+    return int(bool(findings))
 
 
 _SHORT = (
@@ -105,7 +105,7 @@ def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
                 effort.bind(cfg)
                 result = handler(cfg, params)
                 findings = _refused(result)
-                code = _failed(result, findings)
+                code = _failed(findings)
     except Refusal as refusal:
         code, findings = 1, list(refusal.findings)
     except Exception as exc:
