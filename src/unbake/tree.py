@@ -39,6 +39,7 @@ class Module:
     stand_ins: Mapping[str, tuple[str, ...]]  # version -> names still behind INCLUDE_*
     sections: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)  # version -> name -> section
     placed: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)  # version -> name -> segment
+    stale: Mapping[str, tuple[str, ...]] = field(default_factory=dict, compare=False)  # version -> superseded stand-ins
 
 
 @dataclass(frozen=True)
@@ -66,8 +67,12 @@ class Tree:
         return tuple(path for _, path in sorted(rows))
 
     def unowned(self, version: str) -> tuple[str, ...]:
-        """The symbols of the version no file owns, by address."""
-        rows = [(s[1], n) for n, s in self.symbols.get(version, {}).items() if s[1] is not None]
+        """The symbols of the version no file owns, by address (a label inside data needs no owner)."""
+        rows = [
+            (s[1], n)
+            for n, s in self.symbols.get(version, {}).items()
+            if s[1] is not None and not symbols.inside_data(s[3], s[0])
+        ]
         return tuple(n for _, n in sorted(rows) if (version, n) not in self._owners)
 
 
@@ -162,7 +167,7 @@ def _ident(token: str) -> bool:
 _ASM = {"__asm__", "asm", "__asm"}
 
 
-_SECTION = re.compile(r"\.section\s+(\.\w+)")
+_SECTION = re.compile(r"\.section\s+(\.[\w.]+)")  # a stand-in may give each name a section of its own
 
 
 def _statement(stmt: Sequence[str], defined: list[str], stand_ins: list[str], kinds: dict[str, str]) -> None:
@@ -368,18 +373,24 @@ def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, byt
     stand: dict[str, dict[str, list[str]]] = defaultdict(dict)
     fuzzy: dict[str, set[str]] = defaultdict(set)
     sections: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
+    defined = {(version, n) for (path, version), (defs, *_) in zip(jobs, parsed, strict=True) for n in defs}
+    stale: dict[str, dict[str, list[str]]] = defaultdict(dict)
     for (path, version), (defs, ins, nm, kinds) in zip(jobs, parsed, strict=True):
         table = tables[version]
-        names = [n for n in dict.fromkeys([*defs, *ins]) if n in table]
+        mine = set(defs)
+        old = [n for n in ins if n in table and n not in mine and (version, n) in defined]  # a C body supersedes it
+        if old or set(ins) & mine:
+            stale[path][version] = [n for n in dict.fromkeys(ins) if n in table and (n in mine or n in old)]
+        names = [n for n in dict.fromkeys([*defs, *ins]) if n in table and n not in old]
         if names:
             owned[path][version] = sorted(names, key=lambda n, t=table: (_rom(t, n), n))  # type: ignore[misc]
-            stand[path][version] = [n for n in ins if n in table]
+            stand[path][version] = [n for n in ins if n in table and n not in mine and n not in old]
             sections[path][version] = {n: _section(table[n], kinds.get(n)) for n in names}
             fuzzy[path] |= {n for n in nm if n in table}
     findings = _duplicates(owned, versions)
     modules = tuple(
-        _module(config, path, owned[path], stand[path], fuzzy[path], sections[path], tables, findings)
-        for path in sorted(owned)
+        _module(config, path, owned[path], stand[path], fuzzy[path], sections[path], tables, findings, stale[path])
+        for path in sorted({*owned, *stale})
     )
     if findings:
         raise Refusal(*findings)
@@ -441,6 +452,7 @@ def _module(
     sections: Mapping[str, Mapping[str, str]],
     tables: Mapping[str, Mapping[str, symbols.Symbol]],
     findings: list[Finding],
+    stale: Mapping[str, list[str]],
 ) -> Module:
     """The module record. Its segment is the one its first function lies in: a file may also own data that lies in
     segments of their own (the rodata of its code), and each name's own segment is found from its address."""
@@ -471,4 +483,5 @@ def _module(
         {v: tuple(n) for v, n in stand.items() if n},
         {v: dict(n) for v, n in sections.items()},
         placed,
+        {v: tuple(n) for v, n in stale.items() if n},
     )

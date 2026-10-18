@@ -24,6 +24,11 @@ symbol_name_format = "auto_$VRAM"
 symbol_name_format_no_rom = "auto_$VRAM"
 # splat must never write C files: it would overwrite the tracked sources
 create_c_files = false
+# no C file lists the INCLUDE_ASM names splat would read, so every function is written, all into nonmatchings/
+disassemble_all = true
+matchings_path = "nonmatchings"
+# a function file is assembled on its own, as a data file is: it brings its own macros
+asm_inc_header = ".include \"macro.inc\"\n\n"
 migrate_rodata_to_functions = true
 platform = "n64"
 

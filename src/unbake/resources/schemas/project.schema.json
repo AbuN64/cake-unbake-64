@@ -142,6 +142,13 @@
        "type": "string",
        "minLength": 1
       }
+     },
+     "rodata": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "integer",
+       "minimum": 0
+      }
      }
     },
     "additionalProperties": false

@@ -125,7 +125,6 @@ def test_scanner_reads_depth_zero_only() -> None:
     assert defined == ["hook", "placed", "label", "arr", "one", "two", "run"] and stand_ins == ["later"]
 
 
-
 def test_scanner_reads_functions_returning_aggregates() -> None:
     text = """
     struct Point *at(unsigned id) { return 0; }
@@ -134,6 +133,7 @@ def test_scanner_reads_functions_returning_aggregates() -> None:
     void after(void) { }
     """
     assert tree._scan(text) == (["at", "make", "pick", "after"], [])
+
 
 def test_second_capture_parses_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = fixture.config(tmp_path)
@@ -217,3 +217,18 @@ def test_every_owned_name_has_the_linker_section_its_bytes_are_in(tmp_path: Path
         "stand_in": ".text",
     }
     assert module.placed["a"]["table"] == "main"
+
+
+def test_a_c_body_supersedes_a_stand_in_in_its_own_file_or_another(tmp_path: Path) -> None:
+    sources = {
+        "src/main/c_func.c": '#include "include_asm.h"\ns32 c_func(void) { return 1; }\nINCLUDE_ASM(main, c_func);\n',
+        "src/main/stand_in.c": '#include "include_asm.h"\ns32 stand_in(void) { return 2; }\n',
+        "src/main/old.c": '#include "include_asm.h"\nINCLUDE_ASM(main, stand_in);\n',
+    }
+    held = tree.capture(fixture.config(tmp_path, sources=sources))
+    by_path = {m.path: m for m in held.modules}
+    assert held.owner("a", "stand_in") == "src/main/stand_in.c" and held.owner("a", "c_func") == "src/main/c_func.c"
+    assert by_path["src/main/c_func.c"].stale == {"a": ("c_func",), "b": ("c_func",)}
+    assert by_path["src/main/c_func.c"].stand_ins == {}
+    assert by_path["src/main/old.c"].stale == {"a": ("stand_in",), "b": ("stand_in",)}
+    assert by_path["src/main/old.c"].owns == {} and by_path["src/main/stand_in.c"].stale == {}

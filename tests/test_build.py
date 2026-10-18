@@ -83,19 +83,19 @@ def test_linker_golden(tmp_path):
             "SECTIONS",
             "{",
             "#if defined(VERSION_EU_1)",
-            "    .main 0x80200500 : AT(0x1000)",
+            "    .main 0x80200500 : AT(0x1000) SUBALIGN(1)",
             "#elif defined(VERSION_US)",
-            "    .main 0x80200400 : AT(0x1000)",
+            "    .main 0x80200400 : AT(0x1000) SUBALIGN(1)",
             "#endif",
             "    {",
             "        src/a.c.o(.text);",
-            "        src/a.c.o(.rodata);",
+            "        src/a.c.o(.rodata .rdata);",
             "#if defined(VERSION_US)",
             "        src/b.c.o(.text);",
-            "        src/b.c.o(.rodata);",
+            "        src/b.c.o(.rodata .rdata);",
             "#endif",
             "        src/c.c.o(.text);",
-            "        src/c.c.o(.rodata);",
+            "        src/c.c.o(.rodata .rdata);",
             "    }",
             "    .main.bss (NOLOAD) :",
             "    {",
@@ -106,11 +106,13 @@ def test_linker_golden(tmp_path):
             "        src/c.c.o(.bss .sbss COMMON);",
             "    }",
             "#if defined(VERSION_US)",
-            "    .assets 0x00002000 : AT(0x2000)",
+            "    .assets 0x00002000 : AT(0x2000) SUBALIGN(1)",
             "    {",
             "        assets/assets.bin.o(.data);",
             "    }",
             "#endif",
+            "    /DISCARD/ : { *(.MIPS.abiflags .reginfo .pdr .mdebug* .options .debug* .comment .note* "
+            ".gnu.attributes) }",
             "}",
             "INCLUDE undefined_syms.ld",
             "",
@@ -129,7 +131,7 @@ def test_file_absent_in_one_version_is_grouped_under_if(tmp_path):
     text = build.linker(make_config(tmp_path), tree).decode()
     text_pass = text.split("    {\n", 1)[1].split("    }\n", 1)[0]
     assert text_pass.count("#if defined(VERSION_US)") == 1  # b and c share one block
-    assert "#if defined(VERSION_EU_1)\n        src/d.c.o(.text);\n        src/d.c.o(.rodata);\n#endif" in text
+    assert "#if defined(VERSION_EU_1)\n        src/d.c.o(.text);\n        src/d.c.o(.rodata .rdata);\n#endif" in text
 
 
 @pytest.mark.usefixtures("per_object")
@@ -141,12 +143,12 @@ def test_conflicting_orders_fall_back_to_one_run_per_version(tmp_path):
     )
     text = build.linker(make_config(tmp_path), tree).decode()
     assert (
-        "#if defined(VERSION_EU_1)\n        src/c.c.o(.text);\n        src/c.c.o(.rodata);\n        src/b.c.o(.text);"
-        in text
+        "#if defined(VERSION_EU_1)\n        src/c.c.o(.text);\n        src/c.c.o(.rodata .rdata);\n"
+        "        src/b.c.o(.text);" in text
     )
     assert (
-        "#if defined(VERSION_US)\n        src/a.c.o(.text);\n        src/a.c.o(.rodata);\n        src/b.c.o(.text);"
-        in text
+        "#if defined(VERSION_US)\n        src/a.c.o(.text);\n        src/a.c.o(.rodata .rdata);\n"
+        "        src/b.c.o(.text);" in text
     )
 
 
@@ -157,7 +159,12 @@ def _body(text: str) -> list[str]:
 def test_a_per_object_toolchain_keeps_literals_after_the_code_and_a_per_section_one_does_not(tmp_path, monkeypatch):
     tree = make_tree(both("src/a.c", "f_1"), both("src/b.c", "f_2"))
     rows = {
-        "per-object": ["src/a.c.o(.text);", "src/a.c.o(.rodata);", "src/b.c.o(.text);", "src/b.c.o(.rodata);"],
+        "per-object": [
+            "src/a.c.o(.text);",
+            "src/a.c.o(.rodata .rdata);",
+            "src/b.c.o(.text);",
+            "src/b.c.o(.rodata .rdata);",
+        ],
         "per-section": ["src/a.c.o(.text);", "src/b.c.o(.text);"],
     }
     for mode, want in rows.items():
@@ -175,9 +182,9 @@ def test_input_sections_follow_the_rom_per_object_like_bt(tmp_path):
     assert _body(build.linker(make_config(tmp_path), tree).decode()) == [
         "src/a.c.o(.text);",
         "src/a.c.o(.data);",
-        "src/a.c.o(.rodata);",
+        "src/a.c.o(.rodata .rdata);",
         "src/b.c.o(.text);",
-        "src/b.c.o(.rodata);",  # no rodata of its own: a per-object toolchain keeps its literals after the code
+        "src/b.c.o(.rodata .rdata);",  # no rodata of its own: a per-object toolchain keeps its literals after the code
         "src/b.c.o(.data);",
     ]
 
@@ -188,8 +195,8 @@ def test_each_object_section_is_listed_where_its_first_byte_is_even_when_the_obj
     assert _body(build.linker(make_config(tmp_path), tree).decode()) == [
         "src/a.c.o(.text);",
         "src/b.c.o(.text);",
-        "src/b.c.o(.rodata);",
-        "src/a.c.o(.rodata);",
+        "src/b.c.o(.rodata .rdata);",
+        "src/a.c.o(.rodata .rdata);",
     ]
 
 
@@ -213,8 +220,8 @@ def test_rodata_of_code_may_live_in_a_data_segment_like_rw(tmp_path, monkeypatch
         "src/b.c.o(.text);",
     ]
     assert [line.strip() for line in data.splitlines() if "o(" in line and ".bss" not in line] == [
-        "src/a.c.o(.rodata);",
-        "src/b.c.o(.rodata);",
+        "src/a.c.o(.rodata .rdata);",
+        "src/b.c.o(.rodata .rdata);",
     ]
 
 
@@ -250,20 +257,31 @@ def test_splat_yaml_golden(tmp_path):
     assert '  symbol_addrs_path: "versions/us/symbol_addrs.txt"' in text
     assert "  migrate_rodata_to_functions: true" in text
     assert "  create_c_files: false" in text
+    assert '  disassemble_all: true\n  matchings_path: "nonmatchings"' in text  # every function, one folder
 
 
 def test_splat_yaml_data_subsegment_per_symbol(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     (tmp_path / "versions/us/symbol_addrs.txt").write_text(
         "f = 0x80200400; // type:func rom:0x1000\n"
-        "d_two = 0x80200600; // type:data rom:0x1200 size:0x10\n"
-        "d_one = 0x80200500; // type:data rom:0x1100\n"
+        "d_2 = 0x80200600; // rom:0x1200 size:0x10\n"
+        "d_1 = 0x80200500; // type:data rom:0x1100\n"
+        "f_3 = 0x80200700; // type:func rom:0x1300 size:0x20\n"
+        "f_4 = 0x80200740; // type:func rom:0x1340\n"
+        "here = 0x80200744; // type:label rom:0x1344\n"
+        "d_far = 0x80300000; // rom:0x2100\n"
     )
-    text = build.splat_yaml(config, "us", make_tree()).decode()
-    assert "      - [0x1000, c, main]\n      - [0x1100, data, d_one]\n      - [0x1200, data, d_two]\n" in text
+    held = make_tree(both("src/d.c", "d_2", sections={"d_2": ".rodata"}))
+    text = build.splat_yaml(config, "us", held).decode()
+    assert (
+        "      - [0x1000, c, main]\n      - [0x1100, data, main/d_1]\n      - [0x1200, rodata, main/d_2]\n"
+        "      - [0x1300, c, main]\n      - [0x1320, c, main]\n  - name: assets\n" in text
+    )  # untyped rows are data, the tree gives the section, the code after data or a sized function restarts c
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("d_at_start = 0x80200400; // rom:0x1000\n")
+    assert "      - [0x1000, data, main/d_at_start]\n  - name" in build.splat_yaml(config, "us", held).decode()
     row = dict(build.configuration.toolchain("gcc-2.8.1-sn64"), data_split="symbol")
     monkeypatch.setattr(build.configuration, "toolchain", lambda id: row)
-    assert "d_one" not in build.splat_yaml(config, "us", make_tree()).decode()  # a symbol-mode toolchain: one c row
+    assert "d_at_start" not in build.splat_yaml(config, "us", held).decode()  # a symbol-mode toolchain: one c row
 
 
 def test_makefile_variable_blocks(tmp_path):
@@ -277,8 +295,16 @@ def test_makefile_variable_blocks(tmp_path):
     assert [line.split(": ")[1].split(" ")[0] for line in lines] == ["TC", "CPPFLAGS", "CFLAGS"]
     assert lines[2].endswith("-mno-fix4300 -O1") and " -O2 " not in lines[2]
     assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
-    assert "sed -nE" in text and text.count("sed ") == 1  # the only text transform
+    assert "sed -nE" in text and text.count("sed ") == 4  # PROVIDE lines (facts, .L labels); data files; code files
+    assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
+
+
+def test_a_file_rows_preprocessor_flags_reach_cpp_not_the_compiler(tmp_path):
+    config = make_config(tmp_path, {"src/a.c": FileFacts(cflags=("-UF3DEX_GBI_2", "-D", "X=1", "-G8"))})
+    lines = [line for line in build.makefile(config).decode().splitlines() if "build/$(v)/src/a.c.o)" in line]
+    assert lines[1].endswith("-DF3DEX_GBI_2 -UF3DEX_GBI_2 -D X=1")
+    assert lines[2].endswith(" -G8") and "-U" not in lines[2] and "X=1" not in lines[2]
 
 
 def line_count(tmp_path: Path, n: int) -> int:
@@ -423,3 +449,73 @@ def test_a_failed_make_check_records_nothing_and_names_every_failed_target(tmp_p
         build.make_check(config, make_tree())
     assert refused.value.findings[0].key == "setup.make" and "build/us/Game.z64" in refused.value.findings[0].reason
     assert not (tmp_path / ".unbake/check.json").exists()
+
+
+def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_path):
+    """make_tree spaces names 0x10 apart: a's code runs to its data, b's to c's code; an object split over the ROM
+    and the segment's last object (its end needs the next segment) get no row."""
+    tree = make_tree(
+        both("src/a.c", "f_1", "f_2", "d_3"),
+        both("src/b.c", "f_4"),
+        both("src/c.c", "f_5", "f_7"),
+        both("src/d.c", "f_6"),
+        both("src/e.s", "f_8"),
+    )
+    assert build.text_sizes(make_config(tmp_path), tree, "us").decode().splitlines()[1:] == [
+        "build/us/src/a.c.o: TEXTSIZE := 0x20",
+        "build/us/src/b.c.o: TEXTSIZE := 0x10",
+        "build/us/src/d.c.o: TEXTSIZE := 0x10",
+        "build/us/src/e.s.o: TEXTSIZE := 0xF80",  # the code segment ends where the next one starts
+    ]
+    assert "src/e.s" not in build.text_sizes(make_config(tmp_path), tree, "eu-1").decode()  # the last segment
+
+
+def test_the_makefile_cuts_a_zero_tail_of_text_and_spells_what_the_assembler_would_change(tmp_path):
+    text = build.makefile(make_config(tmp_path)).decode()
+    assert "-include $(VERSIONS:%=versions/%/text_sizes.mk)" in text
+    assert text.count("$(Q)$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE))") == 2  # compiled and assembled objects
+    assert "(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)" in text and "1000[0-9A-F]{4}" in text
+
+
+def test_trim_text_cuts_only_a_zero_tail(tmp_path):
+    """TRIM_TEXT rewrites the .text size of a big-endian ELF32 when the bytes past the size are zero."""
+    import re
+    import struct
+    import subprocess
+
+    script = re.search(r"^TRIM_TEXT = python3 -I -c '(.*)'$", build.makefile(make_config(tmp_path)).decode(), re.M)[1]
+
+    def elf(text: bytes) -> bytes:
+        names = b"\0.text\0.shstrtab\0"
+        body = text + names
+        shoff = 52 + len(body)
+        head = (
+            b"\x7fELF\x01\x02\x01"
+            + bytes(9)
+            + struct.pack(">HHIIIIIHHHHHH", 1, 8, 1, 0, 0, shoff, 0, 52, 0, 0, 40, 3, 2)
+        )
+        null = bytes(40)
+        text_h = struct.pack(">IIIIIIIIII", 1, 1, 6, 0, 52, len(text), 0, 0, 16, 0)
+        str_h = struct.pack(">IIIIIIIIII", 7, 3, 0, 0, 52 + len(text), len(names), 0, 0, 1, 0)
+        return head + body + null + text_h + str_h
+
+    def size_after(text: bytes, want: int) -> int:
+        path = tmp_path / "x.o"
+        path.write_bytes(elf(text))
+        subprocess.run(["python3", "-I", "-c", script, str(path), hex(want)], check=True)
+        data = path.read_bytes()
+        shoff = struct.unpack_from(">I", data, 32)[0]
+        return struct.unpack_from(">I", data, shoff + 40 + 20)[0]
+
+    assert size_after(b"\x03\xe0\x00\x08" + bytes(12), 8) == 8
+    assert size_after(b"\x03\xe0\x00\x08" + bytes(4) + b"\x01" + bytes(3), 8) == 12  # not padding: left as it is
+    assert size_after(b"\x03\xe0\x00\x08" + bytes(4), 16) == 8  # never grown
+
+
+def test_splat_yaml_starts_no_data_piece_off_a_word_boundary(tmp_path):
+    config = make_config(tmp_path)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(
+        "d_1 = 0x80200500; // rom:0x1100\nd_2 = 0x80200502; // rom:0x1102\nd_3 = 0x80200504; // rom:0x1104\n"
+    )
+    text = build.splat_yaml(config, "us", make_tree()).decode()
+    assert "main/d_1]" in text and "main/d_3]" in text and "d_2" not in text

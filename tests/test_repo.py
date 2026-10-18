@@ -156,8 +156,14 @@ def _config(root, host=None):
     return SimpleNamespace(project=project, host=host, digest="config-digest")
 
 
-def _tree(owns, unowned=None, fuzzy=()):
-    modules = [SimpleNamespace(path=path, owns=names, fuzzy=fuzzy, stand_ins={}) for path, names in owns.items()]
+def _tree(owns, unowned=None, fuzzy=(), stale=None, sections=None):
+    modules = [
+        SimpleNamespace(
+            path=path, owns=names, fuzzy=fuzzy, stand_ins={}, stale=(stale or {}).get(path, {}),
+            sections={v: {n: (sections or {}).get(n, ".text") for n in ns} for v, ns in names.items()},
+        )
+        for path, names in owns.items()
+    ]  # fmt: skip
     unowned = unowned or {}
     return SimpleNamespace(
         modules=tuple(modules),
@@ -215,6 +221,7 @@ class World:
             (repo.build, "makefile"): generated,
             (repo.build, "linker"): generated,
             (repo.build, "splat_yaml"): generated,
+            (repo.build, "text_sizes"): generated,
             (repo.build, "extract"): extract,
             (repo.build, "install_toolchains"): Mock(),
             (repo.build, "local_mk"): lambda config: b"local\n",
@@ -352,6 +359,43 @@ def test_sync_guards_a_name_another_version_defines(world):
     world.tree = _tree({"src/main/a.c": {"a": ("f_mid",)}}, {"a": (), "b": ["f_mid"]})
     repo.sync(world.cfg, {"check": False})
     assert (world.root / "src/main/a.c").read_text().endswith('#if VERSION_B\nINCLUDE_ASM("main", f_mid);\n#endif\n')
+
+
+def test_sync_puts_a_stand_in_right_after_the_previous_name_and_gives_data_the_section_before_it(world):
+    world.tree = _tree(
+        {"src/main/a.c": {"a": ("f_main", "f_late"), "b": ("f_main", "f_late")}}, {"a": ["f_mid"], "b": ()}
+    )
+    _write(
+        world.root,
+        "src/main/a.c",
+        '#include "include_asm.h"\nINCLUDE_ASM("main", f_main);\nINCLUDE_ASM("main", f_late);\n',
+    )
+    repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/a.c").read_text().splitlines()[1:] == [
+        'INCLUDE_ASM("main", f_main);', 'INCLUDE_ASM("main", f_mid);', 'INCLUDE_ASM("main", f_late);'
+    ]  # fmt: skip
+    facts = {"d_one": (0x80100000, 0x2000, 0x10, "data"), "d_two": (0x80100008, 0x2008, 0, "data")}
+    world.tree = _tree({"src/data/d.c": {"a": ("d_one",)}}, {"a": ["d_two"], "b": ()}, sections={"d_one": ".rodata"})
+    repo.api.symbols = lambda config, v: facts
+    _write(
+        world.root, "src/data/d.c", '#include "include_asm.h"\n#if VERSION_A\nINCLUDE_RODATA("data", d_one);\n#endif\n'
+    )
+    repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/data/d.c").read_text().endswith('#endif\nINCLUDE_RODATA("data", d_two);\n')
+
+
+def test_sync_removes_a_stand_in_a_c_body_supersedes(world):
+    text = '#include "include_asm.h"\nint f_main(void) { return 1; }\n#if VERSION_A\nINCLUDE_ASM("main", f_main);\n'
+    _write(world.root, "src/main/a.c", text + '#endif\nINCLUDE_ASM("main", f_mid);\nINCLUDE_ASM("main", f_late);\n')
+    world.tree = _tree(
+        {"src/main/a.c": {"a": ("f_main", "f_late"), "b": ("f_main", "f_late")}},
+        stale={"src/main/a.c": {"a": ("f_main", "f_mid"), "b": ("f_mid",)}},
+    )
+    result = repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/a.c").read_text() == (
+        '#include "include_asm.h"\nint f_main(void) { return 1; }\nINCLUDE_ASM("main", f_late);\n'
+    )
+    assert "src/main/a.c" in result["written"]
 
 
 def test_a_name_in_no_segment_is_refused(world):

@@ -1,7 +1,7 @@
 # ${title}: matching build.
 # make check             builds every version ROM from the committed sources and verifies its SHA-1.
 # make check CHECK=tree  verifies only that the committed generated files are present and current (no ROMs needed).
-# make extract           splits every baserom into asm/<version>/ with splat.
+# make extract           splits every baserom into asm/<version>/ with splat; a data file's section is its stand-in's.
 # Tool commands default to conventional names; put local paths in local.mk.
 SHELL := /bin/sh
 .SUFFIXES:
@@ -38,6 +38,10 @@ ASFLAGS := ${asflags}
 ${compile_recipes}
 # Per-file facts ([file] rows of config.toml): a toolchain and flags for a path or a directory.
 ${file_blocks}
+# The size each object's .text has in the ROM: a compiler may pad the section past its last function, and a zero tail
+# past that size is cut from the section header before the object links.
+-include $$(VERSIONS:%=versions/%/text_sizes.mk)
+TRIM_TEXT = python3 -I -c 'import struct,sys;p,n=sys.argv[1],int(sys.argv[2],0);d=bytearray(open(p,"rb").read());o=struct.unpack_from(">I",d,32)[0];e,c,x=struct.unpack_from(">HHH",d,46);s=struct.unpack_from(">I",d,o+x*e+16)[0];t=[o+k*e for k in range(c) if d[s+struct.unpack_from(">I",d,o+k*e)[0]:].split(b"\0")[0]==b".text"];f,z=struct.unpack_from(">II",d,t[0]+16) if t else (0,0);t and z>n and not d[f+n:f+z].strip(b"\0") and (struct.pack_into(">I",d,t[0]+20,n),open(p,"wb").write(d))'
 
 .PHONY: all check extract
 all: check
@@ -51,21 +55,44 @@ else
 $$(error CHECK must be rom or tree)
 endif
 
+# A data file holds the ROM bytes from its symbol to the next one, in the section its stand-in names: its own
+# section line goes, no .align asks more than its first address has (alignment counts from the section start),
+# and a .double, which the assembler would align, is written as its two words.
+DATA_SED := -e '/^\.section /d' -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8})([0-9A-F]{8}) \*/\s*)\.double .*@\1.word 0x\2, 0x\3@'
+# An instruction splat marks handwritten (a 64-bit load in 32-bit code, a coprocessor move) is written as the word it
+# is: the assembler would expand or re-encode it. So is a 64-bit load, store or divide with no symbol operand: under
+# the 32-bit ABI the assembler expands it into several instructions. A `b` is spelled as the branch its word is: an
+# assembler may encode `b` as either beq or bgez.
+CODE_SED := -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*).*/\* handwritten instruction \*/$$$$@\1.word 0x\2@' \
+	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)\s[^%]*$$$$@\1.word 0x\2@' \
+	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 1000[0-9A-F]{4} \*/\s*)b(\s+)@\1beq\2$$$$zero, $$$$zero, @' \
+	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 0401[0-9A-F]{4} \*/\s*)b(\s+)@\1bgez\2$$$$zero, @'
 extract: $$(VERSIONS:%=extract-%)
 extract-%:
 	$$(Q)$$(SPLAT) split versions/$$*/splat.yaml
-	$$(Q)find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do mv "$$$$f" "$$$${f%.*.s}.s"; done
+	$$(Q)find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
+		case $$$$(grep -m1 -oE '^ */\* [0-9A-F]+ [0-9A-F]{8}' "$$$$f" | tail -c 2) in \
+		0*) c='';; 8*) c='s/^\.align [4-9]/.align 3/';; [4C]*) c='s/^\.align [3-9]/.align 2/';; \
+		[26AE]*) c='s/^\.align [2-9]/.align 1/';; *) c='s/^\.align [1-9]/.align 0/';; esac; \
+		sed -E $$(DATA_SED) -e "$$$$c" "$$$$f" > "$$$${f%.*.s}.s" && rm "$$$$f"; done
+	$$(Q)find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
+	$$(Q)touch asm/$$*/.extracted
+# An object assembles extracted files its source only names through a macro: every object follows the extraction.
+asm/%/.extracted:
+	$$(error asm/$$*/ is not extracted: run make extract)
 
 # The link script names every object, so no rule here lists a file.
 $$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
 -include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
 
-build/%.o: $$$$(call src,$$$$*) | $$(STAMPS)
+build/%.o: $$$$(call src,$$$$*) asm/$$$$(call ver,$$$$*)/.extracted | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(COMPILE_$$(TC))
+	$$(Q)$$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE))
 build/%.s.o: $$$$(call src,$$$$*).s | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASINC) -Iinclude $$< -o $$@
+	$$(Q)$$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE))
 build/%.bin.o: asm/%.bin
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(OBJCOPY) -I binary -O elf32-tradbigmips -B mips $$< $$@
@@ -74,8 +101,12 @@ build/%.bin.o: asm/%.bin
 build/%/link.ld: $$(NAME).ld
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(CPP) -P -undef -D$$(VMACRO_$$*) $$< > $$@
-build/%/undefined_syms.ld: build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt
+# Every fact of symbol_addrs.txt and every name splat left undefined, PROVIDEd: what no object defines (data outside
+# the ROM). So is every name splat made up that the extracted assembly spells, at the address the name carries: a .L
+# label the assembler keeps out of the object, or a label inside bytes a C file compiles.
+build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted
 	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$^ > $$@
+	$$(Q)grep -rhoE --include='*.s' '${label}[0-9A-F]{8}\b' asm/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
 build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt:
 	$$(error $$@ is missing: run make extract)
 build/%/$$(NAME).elf: $$$$(OBJS_$$$$*) build/%/link.ld build/%/undefined_syms.ld

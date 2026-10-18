@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -235,36 +236,83 @@ def _extension(modules: Iterable[Any]) -> str:
     return found.most_common(1)[0][0] if found else ".c"
 
 
-def _stand_in(kind: str, segment: str, name: str) -> str:
-    return f'{"INCLUDE_ASM" if kind == "func" else "INCLUDE_DATA"}("{segment}", {name});'
+_MACRO = {"func": "INCLUDE_ASM", ".rodata": "INCLUDE_RODATA"}  # by kind, then by section; INCLUDE_DATA otherwise
+_DATA_SECTIONS = frozenset({".data", ".rodata", ".bss"})
+_CONDITIONAL = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|endif)\b")
+
+
+def _stand_in(macro: str, segment: str, name: str) -> str:
+    return f'{macro}("{segment}", {name});'
+
+
+def _line_of(name: str) -> re.Pattern[str]:
+    return re.compile(rf'^[ \t]*INCLUDE_(?:ASM|DATA|RODATA)\(\s*"[^"]*"\s*,\s*{re.escape(name)}\s*\)\s*;[ \t]*$')
+
+
+def _depths(lines: Sequence[str]) -> list[int]:
+    """The `#if` nesting depth before each line."""
+    out, depth = [], 0
+    for line in lines:
+        out.append(depth)
+        found = _CONDITIONAL.match(line)
+        if found:
+            depth = max(0, depth + (-1 if found[1] == "endif" else 1))
+    return out
+
+
+def _after(lines: Sequence[str], at: int) -> int:
+    """The first index after line `at` at top level: past the `#if` block that holds the line, if any."""
+    depths = [*_depths(lines), 0]
+    return next(j for j in range(at + 1, len(lines) + 1) if depths[j] == 0)
+
+
+def _drop(lines: list[str], names: Iterable[str]) -> None:
+    """Remove the stand-in line of each name, and an `#if` around it that holds nothing else."""
+    for name in names:
+        pattern = _line_of(name)
+        at = next((i for i, line in enumerate(lines) if pattern.match(line)), None)
+        if at is None:
+            continue
+        opened = _CONDITIONAL.match(lines[at - 1]) if at > 0 else None
+        closed = _CONDITIONAL.match(lines[at + 1]) if at + 1 < len(lines) else None
+        guarded = bool(opened and opened[1] != "endif" and closed and closed[1] == "endif")
+        del lines[at - 1 if guarded else at : at + 2 if guarded else at + 1]
 
 
 def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
-    """The files to write so that every name of tree.unowned(v) has a stand-in line: appended to the file owning the
-    previous address of its segment, or a new src/<segment>/<ADDR>.<ext> when nothing precedes it."""
+    """The files to write so that a name has a stand-in exactly when no file defines it in C: a stand-in a C body
+    supersedes is removed, and every name of tree.unowned(v) gets a line in the file owning the previous address of its
+    segment, right after that name's own stand-in (else at the end), or a new src/<segment>/<ADDR>.<ext> when nothing
+    precedes it. A data name takes the section of the data before it: its bytes were part of that name's until now."""
     root, ext = config.project.root, _extension(current.modules)
-    texts: dict[str, str] = {}
-    appended: dict[str, list[str]] = {}
+    texts: dict[str, list[str]] = {}
+    touched: set[str] = set()
     placed: set[str] = set()
 
-    def text(path: str) -> str:
+    def lines(path: str) -> list[str]:
         if path not in texts:
             file = root / path
-            texts[path] = file.read_text() if file.is_file() else ""
+            texts[path] = file.read_text().splitlines() if file.is_file() else []
         return texts[path]
 
+    for module in current.modules:
+        every = {n for names in module.stale.values() for n in names}
+        if every:
+            _drop(lines(module.path), sorted(every))
+            touched.add(module.path)
+    sections = {(v, n): s for m in current.modules for v, names in m.sections.items() for n, s in names.items()}
     for v in config.project.versions:
         unowned = current.unowned(v)
         if not unowned:
             continue
         facts = api.symbols(config, v)
-        owners: dict[str, list[tuple[int, str]]] = {}
+        owners: dict[str, list[tuple[int, str, str]]] = {}
         for module in current.modules:
             for owned in module.owns.get(v, ()):
                 if owned in facts and facts[owned][1] is not None:
                     segment = _segment_of(config, v, facts[owned][1] or 0)
                     if segment is not None:
-                        owners.setdefault(segment, []).append((facts[owned][1] or 0, module.path))
+                        owners.setdefault(segment, []).append((facts[owned][1] or 0, module.path, owned))
         for rows in owners.values():
             rows.sort()
         for name in sorted(
@@ -279,22 +327,30 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
                 raise Refusal(Finding("sync.segment", f"{v}: {name} at rom 0x{rom:X} is in no segment", versions=(v,)))
             rows = owners.setdefault(segment, [])
             elsewhere = next((current.owner(o, name) for o in config.project.versions if current.owner(o, name)), None)
-            before = [path for at, path in rows if at < rom]
-            path = elsewhere or (before[-1] if before else f"src/{segment}/{vram:08X}{ext}")
-            line = _stand_in(kind, segment, name)
-            if elsewhere:
-                line = f"#if {_macro(v)}\n{line}\n#endif"
-            else:
+            before = [(path, anchor) for at, path, anchor in rows if at < rom]
+            new = (f"src/{segment}/{vram:08X}{ext}", None)
+            path, anchor = (elsewhere, None) if elsewhere else before[-1] if before else new
+            before_it = sections.get((v, anchor or ""), ".data")
+            section = ".text" if kind == "func" else before_it if before_it in _DATA_SECTIONS else ".data"
+            line = _stand_in(_MACRO.get(kind, _MACRO.get(section, "INCLUDE_DATA")), segment, name)
+            block = [f"#if {_macro(v)}", line, "#endif"] if elsewhere else [line]
+            if not elsewhere:
                 placed.add(name)
-            appended.setdefault(path, []).append(line)
-            rows.append((rom, path))
+            body = lines(path)
+            pattern = _line_of(anchor) if anchor else None
+            at = next((i for i, text in enumerate(body) if pattern and pattern.match(text)), None)
+            where = _after(body, at) if at is not None else len(body)
+            body[where:where] = block
+            touched.add(path)
+            rows.append((rom, path, name))
             rows.sort()
+            sections[v, name] = section
     writes: dict[str, bytes] = {}
-    for path, lines in appended.items():
-        body = text(path)
-        if "include_asm.h" not in body:
-            body = '#include "include_asm.h"\n\n' + body
-        writes[path] = (body.rstrip("\n") + "\n" + "\n".join(lines) + "\n").encode()
+    for path in sorted(touched):
+        joined = "\n".join(texts[path])
+        if "include_asm.h" not in joined and "INCLUDE_" in joined:
+            joined = '#include "include_asm.h"\n\n' + joined
+        writes[path] = (joined.rstrip("\n") + "\n").encode()
     return writes
 
 
@@ -304,6 +360,7 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
         "Makefile": build.makefile(config),
         f"{project.name}.ld": build.linker(config, current),
         **{f"versions/{v}/splat.yaml": build.splat_yaml(config, v, current) for v in project.versions},
+        **{f"versions/{v}/text_sizes.mk": build.text_sizes(config, current, v) for v in project.versions},
         **ci.files(),
     }
     if not (project.root / HEADER).is_file():

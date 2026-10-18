@@ -45,6 +45,13 @@ _IMMEDIATE = frozenset(
 )
 
 
+def inside_data(kind: str, vram: int) -> bool:
+    """A data symbol off a word boundary names a place inside the data before it: splat writes no piece that starts
+    there (a piece holds whole words, the bytes up to the next word are lost), so the name is a label of that piece,
+    never a piece or a stand-in of its own."""
+    return kind != "func" and vram % 4 != 0
+
+
 # ---------------------------------------------------------------- the facts
 def path(version: str) -> str:
     return f"versions/{version}/symbol_addrs.txt"

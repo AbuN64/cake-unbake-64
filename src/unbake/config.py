@@ -367,12 +367,20 @@ def load_project(
         meta.update({k: row[k] for k in ("cartridge_id", "region", "description") if k in row})
         version[vid] = VersionFacts(row["sha1"], segments, meta)
     files = {
-        path: FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())))
+        path: FileFacts(
+            row.get("toolchain"),
+            tuple(row.get("cflags", ())),
+            tuple(row.get("omit", ())),
+            tuple(sorted(row.get("rodata", {}).items())),
+        )
         for path, row in document.get("file", {}).items()
     }
     for path, row in files.items():
         if row.toolchain is not None and row.toolchain not in load_resource("toolchains.toml")["toolchain"]:
             problems.append(bad(f"file.{path}.toolchain", f"{row.toolchain} is not in toolchains.toml"))
+        for vid, _ in row.rodata:
+            if vid not in version:
+                problems.append(bad(f"file.{path}.rodata", f"{vid} is not a version of this project"))
     if files:
         have = set((tracked or (lambda: _tracked(root)))())
         for path in files:

@@ -3,5 +3,6 @@ OUTPUT_ARCH(mips)
 SECTIONS
 {
 ${segments}
+    /DISCARD/ : { *(.MIPS.abiflags .reginfo .pdr .mdebug* .options .debug* .comment .note* .gnu.attributes) }
 }
 INCLUDE undefined_syms.ld
