@@ -330,6 +330,14 @@ sentence = "the submission cannot be safely rebased onto the current project"
 owner = "repo"
 sentence = "the generated files or stand-in lines differ from what unbake sync writes"
 
+[key."sync.unchecked"]
+owner = "repo"
+sentence = "no check verdict for this tree, so sync left the README progress block, overview and progress.json alone"
+
+[key."audit.credit_drop"]
+owner = "policy"
+sentence = "progress.json lost matched functions that no removed C explains"
+
 [key."sync.segment"]
 owner = "repo"
 sentence = "a symbol address lies in no segment of the project config"

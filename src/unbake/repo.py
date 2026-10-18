@@ -7,6 +7,7 @@ import re
 import shutil
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict
 from functools import cache
 from pathlib import Path
 from string import Template
@@ -415,13 +416,41 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
 
 def sync(config: Config, params: Json) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
-    files that would change."""
+    files that would change. The README block, its image and progress.json follow the check verdict: with none for
+    this tree they are left as they are and a note says to check first."""
     result, current = _sync(config, params)
-    if not params.get("check") and (config.project.root / "README.md").is_file():
-        for path, content in report.files(config, current).items():
-            if store.write(config.project.root / path, content):
-                result["written"].append(path)
+    if not (config.project.root / "README.md").is_file():
+        return result
+    if not report.has_verdict(config, current):
+        note = Finding(
+            "sync.unchecked",
+            "no check verdict for this tree, so the README progress block, overview and progress.json were not touched",
+            path="README.md",
+            blocking=False,
+            action="run make check, then unbake sync",
+        )
+        return {**result, "notes": [asdict(note)]}
+    wanted = report.files(config, current)
+    if params.get("check"):
+        differ = sorted(p for p, v in wanted.items() if _read(config.project.root / p) != v)
+        if differ:
+            raise Refusal(
+                Finding(
+                    "sync.changed",
+                    f"{len(differ)} generated or stand-in files differ from `unbake sync`",
+                    missing=tuple(differ),
+                    action="run unbake sync and commit the result",
+                )
+            )
+        return result
+    for path, content in wanted.items():
+        if store.write(config.project.root / path, content):
+            result["written"].append(path)
     return result
+
+
+def _read(path: Path) -> bytes | None:
+    return path.read_bytes() if path.is_file() else None
 
 
 def _sync(config: Config, params: Json) -> tuple[Json, Any]:

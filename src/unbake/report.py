@@ -519,12 +519,34 @@ def _archive(download: Mapping[str, Any]) -> str:
     return f"[{name}]({download['url']}) sha256 `{str(download['sha256'])[:12]}`"
 
 
+def has_verdict(config: Any, tree: Any) -> bool:
+    """Whether a check recorded a verdict for this tree: without one every version reads as unmatched, so the numbers
+    derived from it would be zeros, not progress."""
+    return _check(config, tree) is not None
+
+
+def progress_bytes(config: Any, tree: Any) -> bytes:
+    """The progress.json text for this tree."""
+    from unbake import progress as published
+
+    document = published.document(config, tree, current(config, tree))
+    configuration.validate("progress", document, "progress.json")
+    return (json.dumps(document, sort_keys=True) + "\n").encode()
+
+
 def files(config: Any, tree: Any) -> dict[str, bytes]:
-    """README.md with its progress block and the one image it embeds; nothing else is written."""
+    """README.md with its progress block, the one image it embeds and an existing progress.json; empty when no check
+    verdict exists for the tree, so the numbers on disk stay as they are."""
     with effort.stage("report.files"):
+        if not has_verdict(config, tree):
+            return {}
         document = progress(config, tree)
-        source = (Path(config.project.root) / "README.md").read_text()
-        return {"README.md": readme(source, config, document).encode(), **present.files(config, tree)}
+        root = Path(config.project.root)
+        out = {"README.md": readme((root / "README.md").read_text(), config, document).encode()}
+        out.update(present.files(config, tree))
+        if (root / "progress.json").is_file():
+            out["progress.json"] = progress_bytes(config, tree)
+        return out
 
 
 def run(config: Any, params: Json) -> Json:
@@ -534,9 +556,7 @@ def run(config: Any, params: Json) -> Json:
 
         tree = _capture(config)
         result = {**current(config, tree), "inbox": pending}
-        document = progress.document(config, tree, result)
-        configuration.validate("progress", document, "progress.json")
-        store.write(config.project.root / "progress.json", (json.dumps(document, sort_keys=True) + "\n").encode())
+        store.write(config.project.root / "progress.json", progress_bytes(config, tree))
         if params.get("next"):
             result["next"] = progress.unmatched(config, tree)
         return result

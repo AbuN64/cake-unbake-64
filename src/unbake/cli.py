@@ -40,9 +40,17 @@ def _refused(result: Json | None) -> list[Finding]:
     ]
 
 
+def _noted(result: Json | None) -> list[Finding]:
+    """The non-blocking findings a command's result carries under `notes`."""
+    return [
+        Finding(**{**f, "versions": tuple(f.get("versions", ())), "missing": tuple(f.get("missing", ()))})
+        for f in (result or {}).get("notes", ())
+    ]
+
+
 def _failed(findings: Sequence[Finding]) -> int:
-    """1 when work was refused."""
-    return int(bool(findings))
+    """1 when work was refused; a non-blocking finding is reported, never a failure."""
+    return int(any(f.blocking for f in findings))
 
 
 _SHORT = (
@@ -104,7 +112,7 @@ def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
                 cfg = config.load(root, host)
                 effort.bind(cfg)
                 result = handler(cfg, params)
-                findings = _refused(result)
+                findings = [*_refused(result), *_noted(result)]
                 code = _failed(findings)
     except Refusal as refusal:
         code, findings = 1, list(refusal.findings)

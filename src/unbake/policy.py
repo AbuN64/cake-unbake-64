@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import tomllib
@@ -1208,6 +1209,39 @@ def counts(findings: Sequence[Finding]) -> dict[str, int]:
     return dict(sorted(Counter(f.key for f in findings).items()))
 
 
+def _removed_functions(paths: Sequence[str], root: Path, against: str, git: str, tmp: Path) -> int:
+    """How many function definitions the changed sources hold in `against` that the working tree no longer defines
+    (a moved definition is not removed)."""
+    from unbake import publish
+
+    def defined(text: str) -> set[str]:
+        return {i.name for i in publish.items(text) if i.kind == "function"}
+
+    old: set[str] = set()
+    new: set[str] = set()
+    for path in paths:
+        shown = process.run("git show", [git, "show", f"{against}:{path}"], root, tmp=tmp)
+        if shown.exit == 0:
+            old |= defined(shown.stdout.decode(errors="replace"))
+        if (root / path).is_file():
+            new |= defined((root / path).read_text(errors="replace"))
+    return len(old - new)
+
+
+def _credit_drops(root: Path, against: str, git: str, tmp: Path) -> dict[str, int]:
+    """Per version, how many matched functions progress.json holds fewer of than in `against`; empty when either side
+    has no progress.json."""
+    shown = process.run("git show", [git, "show", f"{against}:progress.json"], root, tmp=tmp)
+    if shown.exit != 0 or not (root / "progress.json").is_file():
+        return {}
+
+    def matched(text: str | bytes) -> dict[str, int]:
+        return {c["version"]: c["functions"]["matched"] for c in json.loads(text).get("carts", ())}
+
+    before, after = matched(shown.stdout), matched((root / "progress.json").read_bytes())
+    return {v: n - after[v] for v, n in before.items() if v in after and after[v] < n}
+
+
 def audit_command(params: Json) -> Json:
     """Refuse the source rule rows the working tree adds over a revision. Reads text and git only: no ROM, host or
     snapshot, so CI runs it with nothing but the checkout."""
@@ -1254,4 +1288,18 @@ def audit_command(params: Json) -> Json:
     blocking, _ = scope(before, after, paths)
     if blocking:
         raise Refusal(*blocking)
+    removed = _removed_functions(paths, root, against, git, tmp)
+    dropped = _credit_drops(root, against, git, tmp)
+    unexplained = {v: n for v, n in dropped.items() if n > removed}
+    if unexplained:
+        lost = ", ".join(f"{v}: -{n}" for v, n in sorted(unexplained.items()))
+        raise Refusal(
+            Finding(
+                "audit.credit_drop",
+                f"progress.json lost matched functions ({lost}) while the changed sources removed {removed}",
+                path="progress.json",
+                versions=tuple(sorted(unexplained)),
+                action="restore the C that earned the credit, or run make check and unbake sync",
+            )
+        )
     return {"against": against, "paths": paths, "counts_before": counts(before), "counts_after": counts(after)}

@@ -739,3 +739,39 @@ def test_a_snapshot_is_captured_once_however_many_rules_ask(monkeypatch):
         assert policy._tree(candidate) is first and policy._tree(candidate) is first
         assert policy._tree(other) is not first
     assert calls == [{"src/x.c": b"1"}, {"src/x.c": b"2"}]
+
+
+def _cart(version, matched):
+    return {"version": version, "functions": {"matched": matched, "fuzzy": 0, "total": 9}}
+
+
+def _audit_repo(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.c").write_text("int f(void) { return 1; }\nint g(void) { return 2; }\n")
+    (tmp_path / "progress.json").write_text(json.dumps({"carts": [_cart("us", 2)]}))
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "base"]):
+        subprocess.run([*git, *args], check=True)
+    return json
+
+
+def test_audit_refuses_a_matched_function_drop_that_removes_no_c(tmp_path, monkeypatch):
+    json = _audit_repo(tmp_path, monkeypatch)
+    (tmp_path / "src/a.c").write_text("/* touched */\nint f(void) { return 1; }\nint g(void) { return 2; }\n")
+    (tmp_path / "progress.json").write_text(json.dumps({"carts": [_cart("us", 0)]}))
+    with pytest.raises(policy.Refusal) as refused:
+        policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
+    (finding,) = refused.value.findings
+    assert (finding.key, finding.versions) == ("audit.credit_drop", ("us",))
+
+
+def test_audit_allows_a_drop_the_removed_c_explains(tmp_path, monkeypatch):
+    json = _audit_repo(tmp_path, monkeypatch)
+    (tmp_path / "src/a.c").write_text("int f(void) { return 1; }\n")
+    (tmp_path / "progress.json").write_text(json.dumps({"carts": [_cart("us", 1)]}))
+    result = policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
+    assert result["paths"] == ["src/a.c"]

@@ -270,6 +270,7 @@ def test_files_lists_only_the_readme_and_the_one_image(tmp_path, monkeypatch):
     rows = report.build_credits(["us", "eu"], tree, facts, frozenset({"us"}), {}, frozenset())
     monkeypatch.setattr(report, "credits", lambda config, tree: rows)
     monkeypatch.setattr(report, "exact_versions", lambda config, tree: frozenset({"us"}))
+    monkeypatch.setattr(report, "has_verdict", lambda config, tree: True)
     made = report.files(config, tree)
     assert sorted(made) == ["README.md", "docs/overview-us.svg"]
     assert made["docs/overview-us.svg"].startswith(b"<svg ")
@@ -282,6 +283,7 @@ def test_files_writes_no_image_when_no_readme_map(tmp_path, monkeypatch):
     tree = _tree([], "files-none")
     monkeypatch.setattr(report, "credits", lambda config, tree: ())
     monkeypatch.setattr(report, "exact_versions", lambda config, tree: frozenset())
+    monkeypatch.setattr(report, "has_verdict", lambda config, tree: True)
     assert sorted(report.files(config, tree)) == ["README.md"]
 
 
@@ -545,3 +547,11 @@ def test_next_fuzzy_state_matches_measured_summary_and_preserves_zero_score_c_li
     body = next(row for row in document["map"]["fns"] if row[0] == "fuzzy")
     assert body[4:] == ["src/a.c", 3]
     assert {row["name"] for row in result["next"]} == {"asm", "fuzzy"}  # no exact C or zero-byte aliases
+
+
+def test_files_writes_nothing_without_a_check_verdict_for_the_tree(tmp_path):
+    config, _ = _readme_case(tmp_path)
+    (tmp_path / "README.md").write_text("<!-- progress -->\nold\n<!-- /progress -->\n")
+    tree = _tree([_module("src/a.c", ["f"], versions=("us",))], "unchecked")
+    assert not report.has_verdict(config, tree)
+    assert report.files(config, tree) == {}
