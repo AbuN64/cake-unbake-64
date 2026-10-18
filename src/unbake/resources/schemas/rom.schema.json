@@ -128,21 +128,138 @@
    },
    "minProperties": 1
   },
-  "boot": {
+  "platform": {
    "type": "object",
    "properties": {
-    "start": {
-     "type": "integer",
-     "minimum": 0
+    "boot": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+       "type": "integer",
+       "minimum": 0
+      }
+     }
     },
-    "end": {
-     "type": "integer",
-     "minimum": 1
+    "rsp": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "minLength": 1
+       },
+       "aliases": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "label": {
+           "type": "string",
+           "minLength": 1
+          },
+          "semantic": {
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "label",
+          "semantic"
+         ],
+         "additionalProperties": false
+        }
+       },
+       "format": {
+        "type": "string",
+        "minLength": 1
+       },
+       "codec": {
+        "type": "string",
+        "minLength": 1
+       },
+       "state": {
+        "enum": [
+         "identified",
+         "decoded"
+        ]
+       },
+       "stored_size": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "decoded_size": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "rom": {
+        "type": "object",
+        "additionalProperties": {
+         "type": "array",
+         "items": {
+          "type": "array",
+          "items": {
+           "type": "integer",
+           "minimum": 0
+          },
+          "minItems": 2,
+          "maxItems": 2
+         }
+        },
+        "minProperties": 1
+       },
+       "evidence": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "artifact": {
+           "type": "string",
+           "minLength": 1
+          },
+          "sha256": {
+           "type": "string",
+           "pattern": "^[0-9a-f]{64}$"
+          },
+          "pointer": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "artifact",
+          "sha256"
+         ],
+         "additionalProperties": false
+        }
+       },
+       "sha256": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": {
+         "type": "array",
+         "minItems": 1,
+         "items": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+         }
+        }
+       }
+      },
+      "required": [
+       "format",
+       "state",
+       "rom",
+       "sha256"
+      ],
+      "additionalProperties": false
+     }
     }
    },
    "required": [
-    "start",
-    "end"
+    "boot"
    ],
    "additionalProperties": false
   }
@@ -155,7 +272,7 @@
   "asflags",
   "text_mask",
   "country",
-  "boot"
+  "platform"
  ],
  "additionalProperties": false
 }

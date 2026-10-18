@@ -113,6 +113,15 @@
           "type": "integer",
           "minimum": 0
          }
+        },
+        "propertyNames": {
+         "enum": [
+          "graphics",
+          "model",
+          "audio",
+          "world",
+          "text"
+         ]
         }
        }
       },
@@ -124,7 +133,7 @@
       ],
       "additionalProperties": false
      },
-     "boot": {
+     "platform": {
       "type": "integer",
       "minimum": 0
      },
@@ -141,7 +150,7 @@
      "data",
      "functions",
      "blobs",
-     "boot",
+     "platform",
      "unknown"
     ],
     "additionalProperties": false
@@ -221,7 +230,13 @@
         ]
        },
        {
-        "type": "string"
+        "enum": [
+         "graphics",
+         "model",
+         "audio",
+         "world",
+         "text"
+        ]
        }
       ],
       "items": false,
@@ -251,7 +266,7 @@
         "maxItems": 2
        }
       },
-      "boot": {
+      "platform": {
        "type": "array",
        "items": {
         "type": "array",
@@ -273,7 +288,7 @@
      },
      "required": [
       "data",
-      "boot"
+      "platform"
      ],
      "additionalProperties": false
     }

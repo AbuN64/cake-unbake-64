@@ -389,3 +389,19 @@ sentence = "make failed and its previous matched credit is revoked"
 [key."build.rom"]
 owner = "build"
 sentence = "a built ROM is missing or differs in size or SHA-1 from the configured ROM"
+
+[key."platform.schema"]
+owner = "platform"
+sentence = "platform declarations do not match the current contract"
+
+[key."platform.range"]
+owner = "platform"
+sentence = "an RSP range is outside a known version or lacks its hash"
+
+[key."platform.hash"]
+owner = "platform"
+sentence = "an RSP span does not match its exact SHA-256"
+
+[key."blobs.migrate"]
+owner = "blob_migration"
+sentence = "the reviewed blob migration cannot preserve byte coverage or needs classification"

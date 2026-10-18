@@ -310,8 +310,8 @@ def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(t
     config, current = _readme_case(tmp_path)
     plain = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
     held = {
-        "us": {"rom_size": 8_388_608, "boot_total": 4096, "blobs_total": 1000, "blobs_decoded": 400},
-        "eu": {"rom_size": 8_388_608, "boot_total": 4096, "blobs_total": 0, "blobs_decoded": 0},
+        "us": {"rom_size": 8_388_608, "platform_total": 4096, "blobs_total": 1000, "blobs_decoded": 400},
+        "eu": {"rom_size": 8_388_608, "platform_total": 4096, "blobs_total": 0, "blobs_decoded": 0},
     }
     for v, row in held.items():
         row["blobs_identified"] = row["blobs_total"] - row["blobs_decoded"]
@@ -321,7 +321,7 @@ def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(t
     for row in ("code      [", "data      [", "functions ["):  # values of the old rows are the same
         assert row.strip() in plain and row.strip() in out
     assert "blobs     [░░░░░░░░░░░░░░░░░░░░]   0.00% (~0.01%)  400 of 7,295,964</code>" in out
-    assert "boot      [▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒]   0.00% (~100.00%)  0 of 4,096</code>" in out
+    assert "platform  [▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒]   0.00% (~100.00%)  0 of 4,096</code>" in out
     assert "unknown   [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 7,294,964</code>" in out
     assert "rom       1,088,548 + 0 + 1,000 + 4,096 + 7,294,964 = 8,388,608 bytes</code>" in out
     assert "blobs  [" in out and "= 16,777,216 bytes" in out  # the all block sums both ROMs
@@ -438,25 +438,25 @@ def published_case(tmp_path, monkeypatch):
         lambda config, tree: {
             "a": {
                 "rom_size": 8192,
-                "boot_total": 4096,
+                "platform_total": 4096,
                 "blobs_total": 64,
                 "blobs_decoded": 32,
                 "blobs_identified": 32,
                 "unknown_total": 4000,
-                "blobs": {"texture": {"decoded": 1, "identified": 1, "observed": 1}},
+                "blobs": {"graphics": {"decoded": 1, "identified": 1, "observed": 1}},
             }
         },
     )
-    monkeypatch.setattr(report, "layers", lambda config, tree, version: {"boot": [(0, 4096)], "data": []})
+    monkeypatch.setattr(report, "layers", lambda config, tree, version: {"platform": [(0, 4096)], "data": []})
     monkeypatch.setattr(
         progress.blobs,
         "load",
         lambda config: {
             "schema": 1,
             "blob": {
-                "tex": {"state": "decoded", "type": "texture", "rom": {"a": [[5000, 5032]]}},
-                "other": {"state": "identified", "type": "texture", "rom": {"a": [[5032, 5064]]}},
-                "observed": {"state": "observed", "type": "texture", "rom": {"a": [[6000, 6032]]}},
+                "tex": {"state": "decoded", "type": "graphics", "rom": {"a": [[5000, 5032]]}},
+                "other": {"state": "identified", "type": "graphics", "rom": {"a": [[5032, 5064]]}},
+                "observed": {"state": "observed", "type": "graphics", "rom": {"a": [[6000, 6032]]}},
             },
         },
     )
@@ -474,7 +474,7 @@ def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_c
     assert cart["functions"] == {"matched": 1, "fuzzy": 1, "total": 3}
     assert cart["code"] == {"matched": 16, "fuzzy": 8, "total": 32}
     assert (
-        sum((cart["code"]["total"], cart["data"]["total"], cart["blobs"]["total"], cart["boot"], cart["unknown"]))
+        sum((cart["code"]["total"], cart["data"]["total"], cart["blobs"]["total"], cart["platform"], cart["unknown"]))
         == cart["rom_size"]
     )
     assert document["map"]["fns"] == [
@@ -482,7 +482,7 @@ def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_c
         ["fuzzy", 4112, 8, 100.0, "src/a.c", 3],
         ["asm", 4120, 8, 0.0, None, None],
     ]
-    assert document["map"]["spans"] == {"boot": [[0, 4096]], "data": []}
+    assert document["map"]["spans"] == {"platform": [[0, 4096]], "data": []}
     assert [row[0] for row in document["map"]["blobs"]] == ["tex", "other", "observed"]
     assert [(r["name"], r["size"]) for r in result["next"]] == [("asm", 8), ("fuzzy", 8)]
     before = (config.project.root / "progress.json").read_bytes()
@@ -500,12 +500,12 @@ def test_missing_rom_partition_refuses_without_replacing_published_progress(publ
     assert path.read_bytes() == b"previous"
 
 
-def test_blobs_bar_reserves_unknown_space_and_excludes_code_data_boot():
+def test_blobs_bar_reserves_unknown_space_and_excludes_code_data_platform():
     held = {
         "rom_size": 2000,
         "code_total": 600,
         "data_total": 200,
-        "boot_total": 200,
+        "platform_total": 200,
         "blobs_decoded": 200,
         "blobs_total": 500,
         "unknown_total": 500,

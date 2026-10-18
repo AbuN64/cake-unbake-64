@@ -61,7 +61,7 @@
       "type": "integer",
       "minimum": 0
      },
-     "boot_total": {
+     "platform_total": {
       "type": "integer",
       "minimum": 0
      },

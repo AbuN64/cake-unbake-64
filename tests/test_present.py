@@ -56,3 +56,9 @@ def test_files_lists_only_the_overview_of_the_readme_map(monkeypatch):
 def test_nothing_else_is_written():
     for gone in ("memory_map", "symbols", "progress", "recomp", "map_path", "symbols_path", "paths", "PROGRESS"):
         assert not hasattr(present, gone)
+
+
+def test_overview_draws_platform_spans_and_labels_their_layer():
+    svg = present.overview([], "us", {"platform": [(0, 4096), (0x20000, 0x20100)]}).decode()
+    assert '<path class="p1"' in svg and ">platform</text>" in svg
+    assert "0x000000" in svg and "0x020000" in svg

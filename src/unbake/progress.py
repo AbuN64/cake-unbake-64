@@ -42,7 +42,7 @@ def document(config: Any, tree: Any, current: Json) -> Json:
                     "total": row["blobs_total"],
                     "by_type": row["blobs"],
                 },
-                "boot": row["boot_total"],
+                "platform": row["platform_total"],
                 "unknown": row["unknown_total"],
             }
         )
@@ -69,7 +69,7 @@ def document(config: Any, tree: Any, current: Json) -> Json:
             "rom_size": current["versions"][version]["rom_size"],
             "fns": sorted(fns, key=lambda row: (row[1], row[0])),
             "blobs": sorted(content, key=lambda row: (row[1], row[0])),
-            "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "boot")},
+            "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform")},
         },
     }
 

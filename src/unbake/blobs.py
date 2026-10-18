@@ -1,6 +1,6 @@
 """Blobs: the hand-kept facts about ROM content that is not code or data (`blobs.toml`), and the ROM byte partition.
 
-A blob is a texture, model, sound, level or other content with a physical ROM range. The file holds facts only (ranges,
+A blob is graphics, model, audio, world or text content with a physical ROM range. The file holds facts only (ranges,
 formats, states, evidence by sha256), never bytes. `sweep` classifies every ROM byte exactly once."""
 
 from __future__ import annotations
@@ -162,8 +162,8 @@ def length(spans: Iterable[tuple[int, int]]) -> int:
     return sum(end - start for start, end in spans)
 
 
-def sweep(rom_size: int, code: Spans, data: Spans, boot: Spans, decoded: Spans, identified: Spans) -> Json:
-    """Classify every byte of `[0, rom_size)` once, in this precedence: code, data, boot, decoded blobs, identified
+def sweep(rom_size: int, code: Spans, data: Spans, platform: Spans, decoded: Spans, identified: Spans) -> Json:
+    """Classify every byte of `[0, rom_size)` once, in this precedence: code, data, platform, decoded blobs, identified
     blobs, unknown. `overlap` is credited bytes counted twice, `outside` ranges beyond the ROM; both must be 0. `spans`
     holds
     the disjoint ranges of each class for drawing."""
@@ -176,8 +176,8 @@ def sweep(rom_size: int, code: Spans, data: Spans, boot: Spans, decoded: Spans, 
     code_m = merge(clamp(code))
     data_m = subtract(merge(clamp(data)), code_m)
     credit = merge(code_m + data_m)
-    boot_m = subtract(merge(clamp(boot)), credit)
-    held = merge(credit + boot_m)
+    platform_m = subtract(merge(clamp(platform)), credit)
+    held = merge(credit + platform_m)
     dec = subtract(merge(clamp(decoded)), held)
     ide = subtract(subtract(merge(clamp(identified)), held), dec)
     every = merge(clamp(decoded) + clamp(identified))
@@ -185,18 +185,18 @@ def sweep(rom_size: int, code: Spans, data: Spans, boot: Spans, decoded: Spans, 
         "rom_size": rom_size,
         "code": length(code_m),
         "data": length(data_m),
-        "boot": length(boot_m),
+        "platform": length(platform_m),
         "blobs_decoded": length(dec),
         "blobs_identified": length(ide),
     }
     parts["blobs"] = parts["blobs_decoded"] + parts["blobs_identified"]
-    parts["unknown"] = rom_size - parts["code"] - parts["data"] - parts["boot"] - parts["blobs"]
+    parts["unknown"] = rom_size - parts["code"] - parts["data"] - parts["platform"] - parts["blobs"]
     return {
         **parts,
         "overlap": length(kept) - length(credit),
         "outside": length(raw) - length(kept),
         "shadowed": length(every) - length(subtract(every, credit)),
-        "spans": {"code": code_m, "data": data_m, "boot": boot_m, "decoded": dec, "identified": ide},
+        "spans": {"code": code_m, "data": data_m, "platform": platform_m, "decoded": dec, "identified": ide},
     }
 
 
@@ -295,6 +295,10 @@ def run(config: Config, params: Json) -> Json:
     """`unbake blobs`: list the blobs and the partition of every version; `import PACKET` merges an evidence packet."""
     with effort.stage("blobs.run"):
         action = list(params.get("action") or ())
+        if action == ["migrate"]:
+            from unbake import blob_migration
+
+            return _result(config, {"migrated": blob_migration.run(config)}, bool(params.get("json")))
         if action[:1] == ["import"]:
             if len(action) != 2:
                 raise Refusal(Finding("blobs.packet", "import takes exactly one packet file"))
@@ -313,7 +317,7 @@ def run(config: Config, params: Json) -> Json:
             done = apply_import(config, plan)
             return _result(config, {"imported": {**counts, **done}}, bool(params.get("json")))
         if action:
-            raise Refusal(Finding("blobs.packet", f"unknown action {action[0]}; the only one is import"))
+            raise Refusal(Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET or migrate"))
         return _result(config, {}, bool(params.get("json")))
 
 
@@ -321,7 +325,7 @@ def _result(config: Config, extra: Json, with_rows: bool) -> Json:
     document = load(config)
     tree = import_module("unbake.tree").capture(config)
     report = import_module("unbake.report")
-    keep = ("rom_size", "code", "data", "boot", "blobs", "blobs_decoded", "blobs_identified", "unknown", "shadowed")
+    keep = ("rom_size", "code", "data", "platform", "blobs", "blobs_decoded", "blobs_identified", "unknown", "shadowed")
     parts = report.partitions(config, tree)
     result: dict[str, Any] = {
         "count": len(document["blob"]),

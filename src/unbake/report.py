@@ -11,7 +11,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from unbake import blobs, effort, present, rescore, store
+from unbake import blobs, effort, platform, present, rescore, store
 from unbake import config as configuration
 from unbake.contracts import Finding, Json, Refusal, sha256_file
 
@@ -292,15 +292,14 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
 
 
 def partition(config: Any, v: str, table: Mapping[str, Any], rom_size: int) -> Json:
-    """Every byte of one version's ROM once: the credit rows of `table` (code, then data), the platform boot range, then
+    """Every byte of one version's ROM once: the credit rows of `table` (code, then data), platform spans, then
     the decoded and identified blobs, then unknown. `overlap` and `outside` (credited bytes counted twice or beyond the
     ROM) must be 0; `spans` holds the disjoint ranges of each class."""
-    boot = configuration.load_resource("rom.toml")["boot"]
     held = [(rom, rom + size, kind) for _vram, rom, size, kind in table.values() if rom is not None and size]
     code = [(a, b) for a, b, kind in held if kind == "func"]
     data = [(a, b) for a, b, kind in held if kind != "func"]
     decoded, identified = blobs.ranges(blobs.load(config), v)
-    return blobs.sweep(rom_size, code, data, [(boot["start"], boot["end"])], decoded, identified)
+    return blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified)
 
 
 def _rom_size(config: Any, v: str) -> int | None:
@@ -322,7 +321,7 @@ def partitions(config: Any, tree: Any) -> dict[str, Json]:
             if (size := _rom_size(config, v)) is None:
                 continue
             parts = partition(config, v, tables[v], size)
-            total = sum(parts[k] for k in ("code", "data", "boot", "blobs", "unknown"))
+            total = sum(parts[k] for k in ("code", "data", "platform", "blobs", "unknown"))
             if parts["overlap"] or parts["outside"] or parts["unknown"] < 0 or total != size:
                 why = (
                     f"{parts['overlap']} bytes counted twice, {parts['outside']} beyond the ROM, sum {total} of {size}"
@@ -332,16 +331,16 @@ def partitions(config: Any, tree: Any) -> dict[str, Json]:
         return out
 
     sizes = tuple(_rom_size(config, v) for v in config.project.version)
-    return effort.memo(("partition", tree.digest, blobs.sha(config), sizes), build)
+    return effort.memo(("partition", tree.digest, blobs.sha(config), platform.sha(config), sizes), build)
 
 
 def accounts(config: Any, tree: Any) -> dict[str, Json]:
-    """Per version the blob fields of the report: ROM size, boot, blobs (decoded, identified), unknown, census."""
+    """Per version the blob fields of the report: ROM size, platform, blobs (decoded, identified), unknown, census."""
     document = blobs.load(config)
     return {
         v: {
             "rom_size": p["rom_size"],
-            "boot_total": p["boot"],
+            "platform_total": p["platform"],
             "blobs_total": p["blobs"],
             "blobs_decoded": p["blobs_decoded"],
             "blobs_identified": p["blobs_identified"],
@@ -353,7 +352,7 @@ def accounts(config: Any, tree: Any) -> dict[str, Json]:
 
 
 def layers(config: Any, tree: Any, v: str) -> Json:
-    """The disjoint ranges of one version, by class (code, data, boot, decoded, identified), for drawing."""
+    """The disjoint ranges of one version, by class (code, data, platform, decoded, identified), for drawing."""
     spans: Json = partitions(config, tree).get(v, {}).get("spans", {})
     return spans
 
@@ -403,29 +402,30 @@ def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
     return f"{label} [{bar}]  {percent:5.2f}%{suffix}  {matched:,} of {total:,}"
 
 
-_BLOB_KEYS = ("rom_size", "boot_total", "blobs_total", "blobs_decoded", "blobs_identified", "unknown_total")
+_BLOB_KEYS = ("rom_size", "platform_total", "blobs_total", "blobs_decoded", "blobs_identified", "unknown_total")
 
 
 def _blobs_line(label: str, held: Json, cells: int) -> str:
-    """Blobs: █ decoded, ▒ identified, ░ unknown, over ROM bytes outside code, data and boot."""
+    """Blobs: █ decoded, ▒ identified, ░ unknown, over ROM bytes outside code, data and platform."""
     return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
 
 
 def _rom_line(label: str, credit: int, held: Json, name: str) -> str:
     parts = (
-        f"{credit:,} {name} + {held['blobs_total']:,} blobs + {held['boot_total']:,} boot + {held['unknown_total']:,}"
+        f"{credit:,} {name} + {held['blobs_total']:,} blobs + {held['platform_total']:,} platform + "
+        f"{held['unknown_total']:,}"
     )
     return f"{label} {parts} unknown = {held['rom_size']:,} bytes"
 
 
 def _blob_rows(held: Json, cells: int, code: int, data: int) -> list[str]:
-    """The rows after code, data and functions: blobs, boot (identified by the platform), unknown, and the ROM sum."""
+    """The rows after code, data and functions: blobs, identified platform bytes, unknown, and the ROM sum."""
     label = "{:<9}".format
     return [
         _blobs_line(label("blobs"), held, cells),
-        _bar(label("boot"), 0, held["boot_total"], held["boot_total"], cells),
+        _bar(label("platform"), 0, held["platform_total"], held["platform_total"], cells),
         _bar(label("unknown"), 0, 0, held["unknown_total"], cells),
-        f"{label('rom')} {code:,} + {data:,} + {held['blobs_total']:,} + {held['boot_total']:,} + "
+        f"{label('rom')} {code:,} + {data:,} + {held['blobs_total']:,} + {held['platform_total']:,} + "
         f"{held['unknown_total']:,} = {held['rom_size']:,} bytes",
     ]
 

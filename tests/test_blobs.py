@@ -7,9 +7,9 @@ from types import SimpleNamespace as N
 import pytest
 
 from unbake import blobs, report
-from unbake.contracts import Refusal, sha256
+from unbake.contracts import Refusal, sha1, sha256
 
-BOOT = [(0, 0x1000)]
+PLATFORM = [(0, 0x1000)]
 ROM = 0x10000
 
 
@@ -21,7 +21,12 @@ def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
         ("span_8100", 0x8100, "code"),
     ]
     version = {
-        v: N(size=rom, segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k) for n, r, k in rows), meta={})
+        v: N(
+            sha1=sha1(bytes(rom)),
+            size=rom,
+            segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k) for n, r, k in rows),
+            meta={},
+        )
         for v in versions
     }
     (root / "roms").mkdir(exist_ok=True)
@@ -31,11 +36,11 @@ def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
 
 
 # ---------------------------------------------------------------- the sweep
-def sweep(code=(), data=(), boot=BOOT, decoded=(), identified=(), size=ROM):
-    return blobs.sweep(size, list(code), list(data), list(boot), list(decoded), list(identified))
+def sweep(code=(), data=(), platform=PLATFORM, decoded=(), identified=(), size=ROM):
+    return blobs.sweep(size, list(code), list(data), list(platform), list(decoded), list(identified))
 
 
-def test_every_byte_is_counted_once_in_the_order_code_data_boot_blobs_unknown():
+def test_every_byte_is_counted_once_in_the_order_code_data_platform_blobs_unknown():
     out = sweep(
         code=[(0x1000, 0x2000)],
         data=[(0x1800, 0x2800)],  # overlaps code: code wins, and the overlap is reported
@@ -45,9 +50,9 @@ def test_every_byte_is_counted_once_in_the_order_code_data_boot_blobs_unknown():
             (0x1000, 0x1400),
         ],  # identified under code is shadowed, over decoded is not doubled
     )
-    assert (out["code"], out["data"], out["boot"]) == (0x1000, 0x800, 0x1000)
+    assert (out["code"], out["data"], out["platform"]) == (0x1000, 0x800, 0x1000)
     assert (out["blobs_decoded"], out["blobs_identified"]) == (0x1000, 0x800)
-    parts = ("code", "data", "boot", "blobs", "unknown")
+    parts = ("code", "data", "platform", "blobs", "unknown")
     assert sum(out[k] for k in parts) == ROM == out["rom_size"]
     assert out["overlap"] == 0x800 and out["outside"] == 0 and out["shadowed"] == 0xC00
 
@@ -57,14 +62,14 @@ def test_a_blob_over_a_credited_symbol_is_shadowed_and_stays_data():
     assert (out["data"], out["blobs_decoded"], out["shadowed"]) == (0x1000, 0x800, 0x800)
 
 
-def test_boot_is_identified_unless_credit_covers_it():
-    assert sweep()["boot"] == 0x1000 and sweep(code=[(0xC00, 0x1400)])["boot"] == 0xC00
+def test_platform_is_identified_unless_credit_covers_it():
+    assert sweep()["platform"] == 0x1000 and sweep(code=[(0xC00, 0x1400)])["platform"] == 0xC00
 
 
 def test_ranges_beyond_the_rom_are_reported_and_clamped():
     out = sweep(code=[(ROM - 0x10, ROM + 0x30)])
     assert out["code"] == 0x10 and out["outside"] == 0x30
-    assert sum(out[k] for k in ("code", "data", "boot", "blobs", "unknown")) == ROM
+    assert sum(out[k] for k in ("code", "data", "platform", "blobs", "unknown")) == ROM
 
 
 def test_partition_sums_to_the_rom_on_arbitrary_input():
@@ -74,7 +79,7 @@ def test_partition_sums_to_the_rom_on_arbitrary_input():
         decoded=[(0x2000, 0x2300)],
         identified=[(0x9000, 0xA000)],
     )
-    assert sum(out[k] for k in ("code", "data", "boot", "blobs", "unknown")) == ROM and out["overlap"] == 0
+    assert sum(out[k] for k in ("code", "data", "platform", "blobs", "unknown")) == ROM and out["overlap"] == 0
 
 
 # ---------------------------------------------------------------- the file
@@ -83,7 +88,7 @@ DOC = {
     "blob": {
         "level.0": {
             "name": "PROVING GROUNDS",
-            "type": "level",
+            "type": "world",
             "format": "arena bundle",
             "codec": "none",
             "state": "decoded",
@@ -91,15 +96,15 @@ DOC = {
             "rom": {"v": [[0x2000, 0x3000]]},
             "evidence": [{"artifact": "arenas.json", "sha256": "ab" * 32, "pointer": "/0"}],
         },
-        "sprite.1": {"type": "sprite", "state": "identified", "codec": "rnc1", "rom": {"v": [[0x4000, 0x4400]]}},
+        "sprite.1": {"type": "graphics", "state": "identified", "codec": "rnc1", "rom": {"v": [[0x4000, 0x4400]]}},
         "sprite.1.0": {
-            "type": "texture",
+            "type": "graphics",
             "state": "decoded",
             "parent": "sprite.1",
             "decoded": [520, 600],
             "aliases": [{"label": "model_11", "semantic": False}],
         },
-        "seen.0": {"type": "sound", "state": "observed", "rom": {"v": [[0x5000, 0x5100]]}},
+        "seen.0": {"type": "audio", "state": "observed", "rom": {"v": [[0x5000, 0x5100]]}},
     },
 }
 
@@ -115,13 +120,15 @@ def test_children_and_observed_blobs_add_no_bytes_but_are_counted(tmp_path):
     decoded, identified = blobs.ranges(DOC, "v")
     assert decoded == [(0x2000, 0x3000)] and identified == [(0x4000, 0x4400)]
     assert blobs.census(DOC) == {
-        "level": {"decoded": 1},
-        "sound": {"observed": 1},
-        "sprite": {"identified": 1},
-        "texture": {"decoded": 1},
+        "world": {"decoded": 1},
+        "audio": {"observed": 1},
+        "graphics": {"identified": 1, "decoded": 1},
     }
     assert blobs.census(DOC, "other") == {}
-    assert blobs.census(DOC, "v")["texture"] == {"decoded": 1}  # a child belongs to its parent's version
+    assert blobs.census(DOC, "v")["graphics"] == {
+        "decoded": 1,
+        "identified": 1,
+    }  # a child belongs to its parent's version
 
 
 @pytest.mark.parametrize(
@@ -177,11 +184,13 @@ def test_credit_never_exceeds_the_non_bin_bytes(tmp_path):
 def test_partition_of_a_version_sums_to_the_rom(tmp_path):
     config = _config(tmp_path)
     (tmp_path / "blobs.toml").write_bytes(
-        blobs.emit({"schema": 1, "blob": {"b": {"type": "blob", "state": "decoded", "rom": {"v": [[0x9000, 0xA000]]}}}})
+        blobs.emit(
+            {"schema": 1, "blob": {"b": {"type": "world", "state": "decoded", "rom": {"v": [[0x9000, 0xA000]]}}}}
+        )
     )
     table = _table(f=(0x1000, 0x100, "func"), d=(0x1100, 0x200, "data"))
     out = report.partition(config, "v", report._sized(config, "v", table), ROM)
-    assert (out["code"], out["data"], out["boot"], out["blobs"], out["blobs_decoded"]) == (
+    assert (out["code"], out["data"], out["platform"], out["blobs"], out["blobs_decoded"]) == (
         0x100,
         0x200,
         0x1000,
@@ -210,7 +219,7 @@ def test_report_carries_the_blob_fields_per_version(tmp_path, monkeypatch):
     held = report.accounts(config, _tree("acc"))["v"]
     assert held == {
         "rom_size": ROM,
-        "boot_total": 0x1000,
+        "platform_total": 0x1000,
         "blobs_total": 0,
         "blobs_decoded": 0,
         "blobs_identified": 0,
@@ -241,7 +250,7 @@ def _packet(config, **row):
     rom = sha256(bytes(ROM))
     artifact = "ab" * 32
     blob = {
-        "type": "level",
+        "type": "world",
         "state": "decoded",
         "rom": {"v": [[0x2000, 0x3000]]},
         "evidence": [{"artifact": "a.json", "sha256": artifact}],

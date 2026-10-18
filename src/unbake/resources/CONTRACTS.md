@@ -43,7 +43,8 @@ and a name has the same declaration everywhere (cached in the `header.names` kin
 | alloc | `HARD: constant`; `priority(refs: int, length: int, size: int=1) -> float`; `flip(refs: int, length: int, beat: float) -> Json`; `report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Counter[str]]) -> list[Json]` |
 | api | `load(root: Path, host: Path) -> Config`; `capture(config: Config, overlay: Mapping[str, bytes \| None]={}) -> Tree` (tree's); `Tree(...)`; `Module(...)`; `symbols(config: Config, v: str) -> dict[str, tuple[int, int \| None, int \| None, str]]`; `asm_path(config: Config, v: str, name: str) -> str`; `score(config: Config, name: str) -> Mapping[str, float]`; `preprocess(config: Config, path: str, version: str, text: bytes \| None=None, markers: bool=False) -> str`; `build_context(config: Config, name: str, version: str, text: bytes \| None=None) -> dict[str, Any]`; `snapshot(config: Config) -> Snapshot`; `cached(config: Config, kind: str, key: str, produce: Callable[[], bytes]) -> bytes`; `memo(key: object, produce: Callable[[], T]) -> T`; `pool_map(config: Config, name: str, fn: Callable[[Any], Any], items: Sequence[Any], key: Callable[[Any], str \| None] \| None=None) -> list[Any]`; `command(name: str, argv: Sequence[str]) -> AbstractContextManager[None]`; `bind(config: Config) -> None`; `stage(name: str) -> AbstractContextManager[Span]`; `closed() -> tuple[StageRecord, ...]`; `summary(records: Sequence[StageRecord]) -> list[str]` |
 | batch_data | `run(config: Config, params: Json) -> Json` |
-| blobs | `FILE: constant`; `sha(config: Config) -> str`; `parse(config: Config, data: bytes, file: str=FILE) -> Json`; `load(config: Config) -> Json`; `check(config: Config, document: Json, file: str=FILE) -> tuple[Finding, ...]`; `ranges(document: Json, version: str) -> tuple[Spans, Spans]`; `census(document: Json, version: str \| None=None) -> Json`; `rows(config: Config) -> list[Json]`; `merge(spans: Iterable[tuple[int, int]]) -> Spans`; `subtract(whole: Spans, cut: Spans) -> Spans`; `length(spans: Iterable[tuple[int, int]]) -> int`; `sweep(rom_size: int, code: Spans, data: Spans, boot: Spans, decoded: Spans, identified: Spans) -> Json`; `emit(document: Json) -> bytes`; `import_plan(config: Config, packet: Json) -> Plan`; `apply_import(config: Config, plan: Plan) -> Json`; `run(config: Config, params: Json) -> Json`; `shadows(config: Config, version: str, credit: Spans) -> tuple[Finding, ...]`; `Spans: alias` |
+| blob_migration | `run(config: Config) -> Json` |
+| blobs | `FILE: constant`; `sha(config: Config) -> str`; `parse(config: Config, data: bytes, file: str=FILE) -> Json`; `load(config: Config) -> Json`; `check(config: Config, document: Json, file: str=FILE) -> tuple[Finding, ...]`; `ranges(document: Json, version: str) -> tuple[Spans, Spans]`; `census(document: Json, version: str \| None=None) -> Json`; `rows(config: Config) -> list[Json]`; `merge(spans: Iterable[tuple[int, int]]) -> Spans`; `subtract(whole: Spans, cut: Spans) -> Spans`; `length(spans: Iterable[tuple[int, int]]) -> int`; `sweep(rom_size: int, code: Spans, data: Spans, platform: Spans, decoded: Spans, identified: Spans) -> Json`; `emit(document: Json) -> bytes`; `import_plan(config: Config, packet: Json) -> Plan`; `apply_import(config: Config, plan: Plan) -> Json`; `run(config: Config, params: Json) -> Json`; `shadows(config: Config, version: str, credit: Spans) -> tuple[Finding, ...]`; `Spans: alias` |
 | build | `install_toolchains(config: Config, ids: Sequence[str]) -> list[Path]`; `install_toolchain(config: Config, id: str) -> Path`; `makefile(config: Config) -> bytes`; `linker(config: Config, held: Tree) -> bytes`; `splat_yaml(config: Config, v: str, held: Tree) -> bytes`; `make(config: Config, targets: Sequence[str]) -> NativeResult`; `text_sizes(config: Config, held: Tree, v: str) -> bytes`; `local_mk(config: Config) -> bytes`; `extract(config: Config, version: str \| None=None) -> NativeResult`; `inputs(config: Config) -> str`; `make_check(config: Config, held: Tree \| None=None) -> Json`; `project_inputs(project: Project) -> str`; `verify(params: Json) -> Json` |
 | ci | `RUN: constant`; `wheel(version: str \| None=None) -> str`; `files() -> dict[str, bytes]`; `host(params: Json) -> Json` |
 | cli | `main(argv: Sequence[str] \| None=None) -> int` |
@@ -56,6 +57,7 @@ and a name has the same declaration everywhere (cached in the `header.names` kin
 | land | `submit(config: Config, request: Json, proofs: Sequence[Proof], source: bytes, origin: str, extras: Mapping[str, bytes] \| None=None) -> Submission \| None`; `submit_many(config: Config, calls: Sequence[Mapping[str, Any]]) -> list[Submission \| Refusal \| None]`; `inbox(config: Config, only: str \| None=None) -> list[Submission]`; `drain(config: Config, only: str \| None=None) -> Json`; `land_command(config: Config, params: Json) -> Json`; `check_command(config: Config, params: Json) -> Json` |
 | native | `stamp(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe \| None=None, *, code: bool=True) -> str`; `objects(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path) -> tuple[Path, tuple[NativeResult, ...]]`; `recorded(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> tuple[str, ...] \| None`; `warnings(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path) -> tuple[str, ...]`; `dumps(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path) -> tuple[str, str, str, dict[str, str]]`; `symbol_facts(cfg: Config, version: str) -> dict[str, symbols.Symbol]`; `version_records(cfg: Config) -> dict[str, Version]`; `candidate(config_: Config, version: str, path: str, text: str, overrides: Json \| None=None, overlays: Mapping[str, bytes] \| None=None) -> tuple[Snapshot, UnitSpec, Recipe, list[str]]`; `measure(config_: Config, version: str, name: str, path: str, text: str, overrides: Json \| None=None, overlays: Mapping[str, bytes] \| None=None) -> Proof` |
 | policy | `scopes(text: str) -> dict[str, str]`; `header_lint(snapshot: Snapshot, only: Collection[str] \| None=None) -> tuple[Finding, ...]`; `text_findings(path: str, text: str, sdk_group: bool) -> tuple[Finding, ...]`; `evaluate(snapshot: Snapshot, path: str, text: str, view: SourceView \| None, sdk_group: bool, only: Collection[str] \| None=None) -> tuple[Finding, ...]`; `scope(before: Sequence[Finding], after: Sequence[Finding], writes: Collection[str]) -> tuple[tuple[Finding, ...], tuple[Finding, ...]]`; `fresh(snapshot: Snapshot, path: str, findings: Sequence[Finding], sdk_group: bool) -> tuple[Finding, ...]`; `census(snapshot: Snapshot, also: Sequence[tuple[Any, ...]]=(), changes: Mapping[str, tuple[str, str]] \| None=None, baseline: Snapshot \| None=None, only: Collection[str] \| None=None) -> tuple[tuple[Finding, ...], list[list[Any]]]`; `unclean(snapshot: Snapshot) -> frozenset[str]`; `unclean_rules(snapshot: Snapshot, only: Collection[str] \| None=None) -> dict[str, tuple[str, ...]]`; `credited(snapshot: Snapshot, path: str, text: str \| None=None) -> list[str]`; `pieces(snapshot: Snapshot, member: str, version: str) -> list[tuple[str, int]]`; `withheld_bytes(snapshot: Snapshot, rules: Collection[str], member: str, version: str) -> int`; `withheld(text: str, findings: Sequence[Finding], functions: Collection[str]) -> dict[str, tuple[str, ...]]`; `counts(findings: Sequence[Finding]) -> dict[str, int]`; `audit_command(params: Json) -> Json` |
+| platform | `FILE: constant`; `load(config: Config) -> Json`; `validate(config: Config, document: Json) -> None`; `ranges(config: Config, version: str, document: Json \| None=None) -> list[tuple[int, int]]`; `sha(config: Config) -> str` |
 | pool | `KEEP: constant`; `WARM: constant`; `cores(host: Host, work: int=0) -> Iterator[int]`; `carry(name: str, table: dict[Any, Any]) -> None`; `map(config: Config, name: str, function: Callable[[Any], Any], items: Sequence[Any], key: Callable[[Any], str \| None] \| None=None) -> list[Any]`; `gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]`; `jobserver(host: Host, work: int=0) -> Iterator[tuple[int, dict[str, str], tuple[int, ...]]]`; `main(argv: Sequence[str]) -> int` |
 | progress | `locations(config: Any, tree: Any) -> dict[tuple[str, str], int]`; `document(config: Any, tree: Any, current: Json) -> Json`; `unmatched(config: Any, tree: Any) -> list[Json]` |
 | present | `overview_path(version: str) -> str`; `OVERVIEW_WIDTH: constant`; `OVERVIEW_ROW: constant`; `OVERVIEW_LEFT: constant`; `OVERVIEW_BAR: constant`; `OVERVIEW_HEIGHT: constant`; `OVERVIEW_PITCH: constant`; `OVERVIEW_JOIN: constant`; `FUZZY_HIGH: constant`; `overview(credit_rows: Iterable[Any], version: str) -> bytes`; `files(config: Any, tree: Any) -> dict[str, bytes]` |
@@ -99,7 +101,7 @@ Removed public functions: `store.claim`, `store.ledger_append`, `store.ledger`, 
 
 Symbols: `versions/<v>/symbol_addrs.txt` (splat format, one line per symbol with `type:func|data rom:0x… size:0x…`) is the hand-kept fact file of a version; `unbake sync` appends a stand-in line for every symbol no file owns.
 
-Blobs: `blobs.toml` at the project root (schema 1) is the hand-kept fact file of the ROM content that is neither code nor data: one `[blob."<id>"]` per texture, model, sound, level or other content with its type, state (`decoded`, `identified`, `observed`), per-version physical `rom` ranges, a `parent` plus `decoded` offsets when it lives inside a compressed stream, and evidence cited by sha256. It stores no bytes. Only `blobs.apply_import` writes it. Every ROM byte is classified once, in this precedence: code, data, boot (`rom.toml [boot]`, a platform fact), decoded blobs, identified blobs, unknown; `observed` blobs count in the census but their bytes stay unknown. `code + data + boot + blobs + unknown = rom_size` per version is the blocking check `report.partition`, and `unbake report` carries `rom_size`, `boot_total`, `blobs_total`, `blobs_decoded`, `blobs_identified`, `unknown_total` and a `blobs` census per version. `data` keeps its conventional name (with `INCLUDE_DATA`/`INCLUDE_RODATA`).
+Blobs: `blobs.toml` at the project root (schema 1) is the hand-kept fact file of the ROM content that is neither code nor data: one `[blob."<id>"]` per graphics, model, audio, world or text item with its type, state (`decoded`, `identified`, `observed`), per-version physical `rom` ranges, a `parent` plus `decoded` offsets when it lives inside a compressed stream, and evidence cited by sha256. It stores no bytes. Only `blobs.apply_import` and the explicit `blobs migrate` cutover write it. Every ROM byte is classified once, in this precedence: code, data, platform (`rom.toml [platform]`, a platform fact), decoded blobs, identified blobs, unknown; `observed` blobs count in the census but their bytes stay unknown. `code + data + platform + blobs + unknown = rom_size` per version is the blocking check `report.partition`, and `unbake report` carries `rom_size`, `platform_total`, `blobs_total`, `blobs_decoded`, `blobs_identified`, `unknown_total` and a `blobs` census per version. `data` keeps its conventional name (with `INCLUDE_DATA`/`INCLUDE_RODATA`).
 
 Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/splat.yaml`, `include/include_asm.h` (absent only), the CI files; the README progress block between `repo.toml readme.begin/end` is written by `unbake report`.
 
@@ -127,6 +129,7 @@ Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/
 - alloc: 110
 - api: 165
 - batch_data: 90
+- blob_migration: 150
 - blobs: 330
 - build: 492
 - ci: 30
@@ -140,6 +143,7 @@ Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/
 - land: 330
 - native: 474
 - policy: 1235
+- platform: 100
 - pool: 1276
 - progress: 110
 - present: 117
@@ -161,10 +165,10 @@ Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/
 
 `unbake report` atomically writes `progress.json`, schema 2, from its credit rows and checked ROM partition.
 `carts` contains every version: cartridge `id`, `version`, `rom_size`, `code`, `data`, `functions`
-(each has `matched`, `fuzzy`, `total`), `blobs` (`decoded`, `identified`, `total`, `by_type`), `boot`, `unknown`.
-Code + data + blobs + boot + unknown equals ROM size. Fuzzy bytes are additional partial credit, not matched bytes.
+(each has `matched`, `fuzzy`, `total`), `blobs` (`decoded`, `identified`, `total`, `by_type`), `platform`, `unknown`.
+Code + data + blobs + platform + unknown equals ROM size. Fuzzy bytes are additional partial credit, not matched bytes.
 The `map` is for `names_from`: `version`, `rom_size`, `fns` rows `[name, rom, size, percent, path, line]`,
-`blobs` rows `[id, rom, size, state, type]`, and `spans` with `data` and `boot` half-open ranges.
+`blobs` rows `[id, rom, size, state, type]`, and `spans` with `data` and `platform` half-open ranges.
 A function without a C definition has null path/line. Zero-byte aliases are excluded. Observed blobs remain unknown.
 `report --next` adds `next` rows (`name`, `version`, `size`, `percent`, `path`, `state`), sorted by size, name, version.
 A NON_MATCHING body remains unmatched even at 100 percent until landed. No schema-1 reader or alternate metric is kept.
@@ -175,4 +179,42 @@ The report grants that verdict only while all build inputs and outputs retain th
 own tree digest in that same document. A failed build clears exact credit; a missing or corrupt ROM cannot pass.
 
 The README blobs bar uses `blobs_total + unknown_total` as its denominator: the ROM bytes outside code, data and
-boot. Decoded bytes fill the solid part, identified bytes fill the shaded part, and unknown bytes stay empty.
+platform. Decoded bytes fill the solid part, identified bytes fill the shaded part, and unknown bytes stay empty.
+
+
+## Blob types and platform cutover
+
+The only live blob types are `graphics`, `model`, `audio`, `world`, `text`; schemas for both blobs.toml and import
+packets reject retired types. There is no catch-all type. Unclassified ranges stay unknown. Microcode is platform
+content, never a blob. The report exposes `platform_total`; progress.json schema 2 exposes cart `platform` and
+map `spans.platform`. The former boot report fields are rejected, with no alias. Consumers must change together.
+
+The packaged `rom.toml [platform]` defines `boot = [[0, 4096]]`. A project may add its own `rom.toml`:
+
+```toml
+schema = 1
+[platform]
+boot = [[0, 4096]]
+[platform.rsp.sdk_code]
+format = "microcode: reviewed SDK binary"
+state = "identified"
+rom.us = [[32768, 33024]]
+sha256.us = ["<SHA-256 of exactly those 256 bytes>"]
+```
+
+Boot remains the packaged range; each RSP span needs one exact SHA-256 in the same version/order. A wrong hash,
+unknown version or invalid range refuses before credit. This is a declaration of an identified SDK binary, not a
+heuristic that treats arbitrary bytes as microcode. Its format/name/evidence retain the identity evidence.
+
+`unbake blobs migrate` is the explicit one-time, journaled migration. It maps texture/sprite/font/layout to graphics,
+sound/sequence to audio, level to world, strings/messages to text, and keeps model. The old type is prefixed to
+format unless format already names it. Reviewed physical microcode rows move into project rom.toml beside boot,
+with exact hashes of their ranges; their metadata/evidence survive. Observed or compressed-only microcode and
+unclassifiable/catch-all rows refuse with names for review, without writes. Classify them or remove their declarations
+to leave the ranges unknown, then rerun. Normal readers never accept those legacy types.
+
+Before writing, the migration validates both proposed files and compares the exact union of known ROM ranges
+(platform plus decoded/identified blobs) per version. The journal pins both input files and writes atomically. It
+then rereads both files, rechecks hashes and requires identical ranges and per-version byte totals. Moving microcode
+changes its layer from blobs to platform, while known coverage, unknown bytes and total ROM accounting stay fixed.
+Comments of retained TOML tables and every metadata field are preserved; the command is idempotent.

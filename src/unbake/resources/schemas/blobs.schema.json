@@ -37,16 +37,11 @@
      },
      "type": {
       "enum": [
-       "texture",
+       "graphics",
        "model",
-       "sound",
-       "sequence",
-       "font",
-       "layout",
-       "level",
-       "sprite",
-       "microcode",
-       "blob"
+       "audio",
+       "world",
+       "text"
       ]
      },
      "format": {

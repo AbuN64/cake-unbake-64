@@ -39,10 +39,14 @@ _TONES = (
     ("q0", "none"),
     ("b2", "decoded"),
     ("b1", "identified"),
+    ("p1", "platform"),
 )
 _LEGEND = (28, 72, 72, 28)  # block widths of the legend bar: none, fuzzy low, fuzzy high, exact
 _BLOB_STYLE = ".b1{fill:#ecdcaa}.b2{fill:#b98b1d}@media (prefers-color-scheme:dark){.b1{fill:#5a4a1e}.b2{fill:#d1a63a}}"
-_OVERVIEW_STYLE = _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "") + _BLOB_STYLE
+_PLATFORM_STYLE = ".p1{fill:#6f8d96}"
+_OVERVIEW_STYLE = (
+    _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "") + _BLOB_STYLE + _PLATFORM_STYLE
+)
 
 
 def _num1(value: float) -> str:
@@ -59,8 +63,8 @@ def _tone(score: float, exact: bool) -> int:
 
 def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any] | None = None) -> bytes:
     """The ROM of one version as a picture that reads at 720 px: rows of 64 KiB in ROM order (rows without code, data
-    or blobs left out), runs of adjacent functions and data of one status merged into one block, the decoded and
-    identified blobs in their own two tones, and a legend of the statuses."""
+    or platform left out), adjacent functions and data of one status merged into one block, decoded and identified
+    blobs in their own tones, and a legend of the statuses."""
     blobs = [
         (a, b - a, tone) for tone, key in ((4, "decoded"), (5, "identified")) for a, b in (layers or {}).get(key, ())
     ]
@@ -71,6 +75,7 @@ def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any]
             if credit.version == version and credit.code + credit.data > 0
         ]
         + blobs
+        + [(a, b - a, 6) for a, b in (layers or {}).get("platform", ())]
     )
     runs: list[list[int]] = []  # [start, end, tone]
     for start, size, tone in pieces:
@@ -121,6 +126,10 @@ def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any]
             legend.append(f'<text x="{x + 32}" y="{top + 6}">{name}</text>')
             x += 150
     height = label + 4
+    if (layers or {}).get("platform"):
+        legend.append(f'<rect class="p1" x="{OVERVIEW_LEFT}" y="{height + 4}" width="28" height="6"/>')
+        legend.append(f'<text x="{OVERVIEW_LEFT + 32}" y="{height + 10}">platform</text>')
+        height += 18
     head = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OVERVIEW_WIDTH} {height}" '
         f'width="{OVERVIEW_WIDTH}" height="{height}"><style>{_OVERVIEW_STYLE}</style>'
