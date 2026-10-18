@@ -333,3 +333,7 @@ sentence = "a stand-in line sits inside a function body; INCLUDE_ASM, INCLUDE_DA
 [key."source.duplicate-record"]
 owner = "policy"
 sentence = "a record repeats the body of another record; use the one record"
+
+[key."symbol.folded"]
+owner = "build"
+sentence = "an off-boundary data symbol is folded into the preceding chunk"

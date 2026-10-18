@@ -579,3 +579,36 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
     assert make() == []
     sizes(before)
     assert make() == targets[:1]  # restoring an older value must rebuild too
+
+
+@pytest.mark.parametrize("mode", ["symbol", "subsegment"])
+@pytest.mark.parametrize("offset,kind", [(0, "data"), (1, "data"), (2, "data"), (3, "data"), (1, "func"), (1, "label")])
+def test_folded_data_symbols_have_a_finding_and_report_line(tmp_path, monkeypatch, mode, offset, kind):
+    from contextlib import nullcontext
+
+    config = make_config(tmp_path)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(
+        "base = 0x80200400; // type:data rom:0x1000\n"
+        f"tail = 0x{0x80200410 + offset:X}; // type:{kind} rom:0x{0x1010 + offset:X}\n"
+    )
+    row = dict(build.configuration.toolchain("gcc-2.8.1-sn64"), data_split=mode)
+    monkeypatch.setattr(build.configuration, "toolchain", lambda id: row)
+    found, said = [], []
+    span = SimpleNamespace(add=lambda **values: found.extend(values.get("findings", [])))
+    monkeypatch.setattr(build.effort, "stage", lambda name: nullcontext(span))
+    monkeypatch.setattr(build.effort, "say", said.append)
+    text = build.splat_yaml(config, "us", make_tree()).decode()
+    folded = offset != 0 and kind == "data"
+    assert len(found) == int(folded)
+    assert said == [f.reason for f in found]
+    if folded:
+        finding = found[0]
+        assert (finding.key, finding.unit, finding.path, finding.versions, finding.blocking) == (
+            "symbol.folded",
+            "tail",
+            "versions/us/symbol_addrs.txt",
+            ("us",),
+            False,
+        )
+        assert "tail" in finding.reason and f"0x{0x80200410 + offset:08X}" in finding.reason
+        assert "main/tail" not in text

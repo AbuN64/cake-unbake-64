@@ -442,7 +442,7 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
     when the tree puts the name in .rodata, one `rodata` subsegment where a [file] row places compiled read-only data
     (its bytes end there), and the code that follows data or a function of declared size starts a `c` subsegment again
     (splat reads no function past a size it was given)."""
-    with effort.stage("build.splat_yaml"):
+    with effort.stage("build.splat_yaml") as span:
         project = config.project
         row = configuration.toolchain(project.toolchain)
         cuts = versions.segments(config, v)
@@ -464,8 +464,23 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
                 continue
             out += [f"    vram: 0x{segment.vram:08X}"] if segment.vram is not None else []
             cells: list[tuple[int, str, str]] = [(start, _C, segment.name)]
-            for r in rows if split else ():
-                if not start <= (r.rom or 0) < end or r.kind in _NOT_DATA or symbols.inside_data(r.kind, r.vram):
+            for r in rows:
+                if not start <= (r.rom or 0) < end or r.kind in _NOT_DATA:
+                    continue
+                if symbols.inside_data(r.kind, r.vram):
+                    finding = Finding(
+                        "symbol.folded",
+                        f"{v}: {r.name} at 0x{r.vram:08X} is folded into the preceding data chunk "
+                        "because it is not 4-byte aligned",
+                        path=symbols.path(v),
+                        unit=r.name,
+                        versions=(v,),
+                        blocking=False,
+                    )
+                    span.add(findings=[finding])
+                    effort.say(finding.reason)
+                    continue
+                if not split:
                     continue
                 if r.kind in _CODE:
                     if cells[-1][1] != _C:
