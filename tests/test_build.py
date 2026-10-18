@@ -284,6 +284,18 @@ def test_splat_yaml_data_subsegment_per_symbol(tmp_path, monkeypatch):
     assert "d_at_start" not in build.splat_yaml(config, "us", held).decode()  # a symbol-mode toolchain: one c row
 
 
+def test_splat_yaml_writes_labels_into_the_piece_before_them(tmp_path):
+    """A data name the tree calls a label (no owner, inside the data before it) starts no subsegment."""
+    config = make_config(tmp_path)
+    text = "d_1 = 0x80200500; // rom:0x1100\nd_2 = 0x80200504; // rom:0x1104\nd_3 = 0x80200600; // rom:0x1200\n"
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(text)
+    held = make_tree(both("src/d.c", "d_1", "d_3"))
+    table = {"d_1": (0x80200500, 0x1100, None, "data"), "d_2": (0x80200504, 0x1104, None, "data")}
+    held = Tree(held.digest, held.modules, {"us": {**table, "d_3": (0x80200600, 0x1200, None, "data")}})
+    out = build.splat_yaml(config, "us", held).decode()
+    assert "main/d_1]" in out and "main/d_3]" in out and "d_2" not in out
+
+
 def test_makefile_variable_blocks(tmp_path):
     config = make_config(tmp_path, {"src/lib/": FileFacts(cflags=("-O1",), omit=("-O2",)), "src/a.c": FileFacts()})
     text = build.makefile(config).decode()

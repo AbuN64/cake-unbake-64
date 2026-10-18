@@ -438,7 +438,8 @@ def _scalar(value: object) -> str:
 def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
     """versions/<v>/splat.yaml: the segments of config.toml and the fixed splat options. One `c` subsegment per code
     segment; with `data_split = "subsegment"` also one subsegment `<segment>/<name>` per data symbol of
-    symbol_addrs.txt (a row whose type is not code, an untyped row included: splat accepts no `type:data`), `rodata`
+    symbol_addrs.txt a file owns (a row whose type is not code, an untyped row included: splat accepts no `type:data`;
+    a data name no file owns is a label inside the piece before it), `rodata`
     when the tree puts the name in .rodata, one `rodata` subsegment where a [file] row places compiled read-only data
     (its bytes end there), and the code that follows data or a function of declared size starts a `c` subsegment again
     (splat reads no function past a size it was given)."""
@@ -454,6 +455,8 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
         split = row.get("data_split", "symbol") == "subsegment"
         rows = sorted((r for r in versions.symbol_addrs(config, v) if r.rom is not None), key=lambda r: r.rom or 0)
         sections = {n: s for m in held.modules for n, s in m.sections.get(v, {}).items()}
+        free = set(held.unowned(v))
+        labels = {n for n in held.symbols.get(v, {}) if n not in free and held.owner(v, n) is None}
         for segment, (_, start, end, _) in zip(project.version[v].segments, cuts, strict=True):
             out += [
                 f"  - name: {segment.name}",
@@ -488,6 +491,8 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
                     if r.size and (r.rom or 0) + r.size < end:  # a sized function ends where it says
                         cells.append(((r.rom or 0) + r.size, _C, segment.name))
                     continue
+                if r.name in labels:
+                    continue  # a label inside the data before it: splat writes it into that piece
                 kind = "rodata" if sections.get(r.name, "").startswith(".rodata") else "data"
                 cells.append((r.rom or 0, kind, f"{segment.name}/{r.name}"))
             cells += [
