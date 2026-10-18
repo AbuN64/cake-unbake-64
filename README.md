@@ -61,7 +61,6 @@ and `make check` prove the result.
 unbake sync                                          # write the extraction yaml, linker script, Makefile and CI files
 unbake sync --check                                  # fail if a committed generated file would change (no ROM needed)
 unbake report                                        # progress per version, kind and segment
-unbake report --next --count 20                      # the ordered work list
 unbake compare src/code_80200610.c --function NAME   # measure a source against every version
 unbake score src/code_80200610.c --function NAME     # one version and the instruction diff, nothing written
 unbake submit src/code_80200610.c                    # put an exact source in the landing inbox
