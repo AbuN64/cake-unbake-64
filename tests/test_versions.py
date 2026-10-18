@@ -95,3 +95,18 @@ def test_symbols_ld_is_cached_by_the_fact_file_sha(tmp_path, monkeypatch):
     assert versions.symbols_ld(config, "us") != first
     assert produced == ["generated", "generated"]
     assert not list(tmp_path.rglob("symbols.ld"))  # the script lives in the cache only
+
+
+def test_an_untyped_name_in_a_data_span_keeps_its_address_and_a_label_in_code_is_masked(tmp_path, monkeypatch):
+    text = TEXT + b"gGlobal = 0x80300010; // rom:0x3010\n"
+    config = make_config(tmp_path, text)
+    config.project.version["us"].segments = (
+        Segment("main", 0x1000, 0x80200400, "code"),
+        Segment("ovl", 0x2000, 0x80210000, "data"),
+        Segment("dat", 0x3000, 0x80300000, "data"),
+    )
+    monkeypatch.setattr(store, "cached", lambda _c, _k, _key, produce: produce())
+    out = versions.symbols_ld(config, "us").decode()
+    assert "PROVIDE(gGlobal = 0x80300010);" in out  # a global read through lui/addiu keeps hi16 0x8030
+    assert "PROVIDE(gLabel = 0x00200410);" in out and "PROVIDE(bare = 0x00200420);" in out  # code labels link masked
+    assert "PROVIDE(func_one = 0x00200400);" in out and "PROVIDE(gTable = 0x80210000);" in out

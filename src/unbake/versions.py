@@ -13,7 +13,7 @@ from typing import Any
 
 from unbake import config as configuration
 from unbake import effort, store, symbols
-from unbake.contracts import Config, Finding, Refusal, Version, digest, sha256
+from unbake.contracts import Config, Finding, Refusal, Version, code_identity, digest, sha256
 
 _WORD = 0xFFFFFFFF
 _DATA = "data"  # the symbol_addrs type of a data symbol
@@ -158,20 +158,27 @@ def asm_path(config: Config, version: str, name: str) -> Path:
         return config.project.root / "asm" / version / "nonmatchings" / segment_of(config, version, row) / f"{name}.s"
 
 
+def _linked(rows: Sequence[Row], spans: Sequence[tuple[int, int]], mask: int) -> dict[str, int]:
+    """The address each symbol links at: code (a function, or an untyped label in a span that holds functions) at its
+    masked address beside the masked text; everything else, a global read through `lui`, at its own."""
+    code = [(lo, hi) for lo, hi in spans if any(r.kind == "func" and lo <= r.vram < hi for r in rows)]
+    out: dict[str, int] = {}
+    for row in rows:
+        inside = any(lo <= row.vram < hi for lo, hi in code)
+        out[row.name] = row.vram & mask if row.kind == "func" or (inside and row.kind != _DATA) else row.vram
+    return out
+
+
 def symbols_ld(config: Config, version: str) -> bytes:
     """The scoring symbol script of one version (PROVIDE per symbol), kept in the cache only, keyed by the fact file."""
     with effort.stage("versions.symbols_ld"):
         data = (config.project.root / symbol_file(version)).read_bytes()
         mask = configuration.load_resource("rom.toml").get("text_mask", _WORD)
-        key = digest((version, sha256(data), mask))
+        key = digest((version, sha256(data), mask, code_identity(_linked)))
 
         def produce() -> bytes:
-            cuts = segments(config, version)
-            spans = [(v, v + e - s) for _, s, e, v in cuts if v]
-            out: dict[str, int] = {}
-            for row in parse_symbol_addrs(data):
-                inside = any(lo <= row.vram < hi for lo, hi in spans)
-                out[row.name] = row.vram & mask if row.kind == "func" or (inside and row.kind != _DATA) else row.vram
+            spans = [(v, v + e - s) for _, s, e, v in segments(config, version) if v]
+            out = _linked(parse_symbol_addrs(data), spans, mask)
             return "".join(f"PROVIDE({n} = 0x{a:08X});\n" for n, a in sorted(out.items())).encode()
 
         return store.cached(config, "generated", key, produce)
