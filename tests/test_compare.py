@@ -44,6 +44,13 @@ class World:
         self.refuse: Refusal | None = None
         (tmp_path / "stand_in.c").write_text(CANDIDATE)
         monkeypatch.setattr(compare.native, "measure", self.measure)
+        monkeypatch.setattr(
+            compare.native,
+            "measure_names",
+            lambda config, version, names, path, text, *a: {
+                n: self.measure(config, version, n, path, text) for n in names
+            },
+        )
         monkeypatch.setattr(compare.pool, "map", lambda config, name, fn, items, key=None: [fn(i) for i in items])
         monkeypatch.setattr(compare.land, "submit", self.submit)
         monkeypatch.setattr(compare.land, "submit_many", self.submit_many)
@@ -248,9 +255,9 @@ def test_bulk_attaches_following_change_set_files_to_their_source(world):
 
 
 # ---------------------------------------------------------------- score
-def test_score_function_is_the_score_of_the_working_tree_text(world):
+def test_score_functions_is_the_score_of_the_working_tree_text(world):
     path = "src/ovl/fuzzy.c"
-    assert compare.score_function(world.cfg, path, "fuzzy", "a") == 1.0
+    assert compare.score_functions(world.cfg, path, ["fuzzy"], "a") == {"fuzzy": 1.0}
     version, name, measured_path, text = world.measured[0]
     assert (version, name, measured_path) == ("a", "fuzzy", path)
     assert text == (world.cfg.project.root / path).read_text()

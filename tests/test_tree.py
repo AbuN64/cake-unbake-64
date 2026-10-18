@@ -379,3 +379,23 @@ def test_the_tool_does_not_lower_its_own_priority() -> None:
     from unbake import process
 
     assert "nice" not in inspect.getsource(pool).replace("niceness", "") and "nice(" not in inspect.getsource(process)
+
+
+def test_a_header_is_read_and_walked_once_for_all_the_files_that_reach_it(tmp_path: Path) -> None:
+    config = fixture.config(tmp_path)
+    files = {"src/x/a.h": b'#include "b.h"\n', "src/x/b.h": b'#include "a.h"\n'}  # a cycle is walked once too
+    reads: dict[str, int] = {}
+
+    def read(path: str) -> bytes | None:
+        reads[path] = reads.get(path, 0) + 1
+        return files.get(path)
+
+    texts = [b'#include "a.h"\nint f(void);\n'] * 50
+    headers = tree._Headers(read)
+    shared = [tree._key(config, f"src/x/f{i}.c", t, "a", headers) for i, t in enumerate(texts)]
+    after_fifty = dict(reads)
+    tree._key(config, "src/x/f50.c", texts[0], "a", headers)
+    assert reads == after_fifty  # a fifty-first file asks the disk for nothing it had already
+    assert max(after_fifty.values()) <= 3 and len(set(shared)) == 1
+    alone = [tree._key(config, f"src/x/f{i}.c", t, "a", read) for i, t in enumerate(texts[:3])]
+    assert alone == shared[:3]  # the shared walk makes the very key an unshared one makes

@@ -297,7 +297,9 @@ def test_scores_from_cache(tmp_path, monkeypatch):
     stored, measured = {}, []
     monkeypatch.setattr(rescore, "_lookup", lambda config, key: stored.get(key))
     monkeypatch.setattr(rescore, "_record", lambda config, key, value: stored.__setitem__(key, value))
-    monkeypatch.setattr(rescore, "_measure", lambda config, path, name, version: measured.append(name) or 0.5)
+    monkeypatch.setattr(
+        rescore, "_measure", lambda config, path, names, version: {n: measured.append(n) or 0.5 for n in names}
+    )
     monkeypatch.setattr(rescore.pool, "map", lambda config, name, fn, items, key=None: [fn(i) for i in items])
     assert rescore.rows(config, tree, facts) == {"f": {"a": 0.5}} and len(measured) == 1  # cold: one measure
     assert rescore.rows(config, tree, facts) == {"f": {"a": 0.5}} and len(measured) == 1  # warm: none

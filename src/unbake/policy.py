@@ -221,7 +221,12 @@ def _sdk(config_: Any, path: str) -> bool:
 
 
 def _tree(snapshot: Snapshot) -> tree.Tree:
-    return tree.capture(snapshot.config, snapshot.overlays)
+    """The tree this snapshot is: the one it holds, else its overlays over the working tree, captured once per
+    snapshot digest (which names the overlays), however many rules ask."""
+    if snapshot.files is not None and not snapshot.overlays:
+        held: tree.Tree = snapshot.files
+        return held
+    return effort.memo(("policy.tree", snapshot.digest), lambda: tree.capture(snapshot.config, snapshot.overlays))
 
 
 def _module(snapshot: Snapshot, path: str) -> tree.Module | None:

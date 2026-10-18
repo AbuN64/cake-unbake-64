@@ -365,3 +365,10 @@ def test_nonmatching_body_is_measured_instead_of_its_assembly(world):
     proof = native.measure(world.cfg, "a", "stand_in", path, source)
     assert proof.exact and proof.score == 1
     assert "-DNON_MATCHING" in world.recipes[0].cppflags
+
+
+def test_several_functions_of_one_module_compile_once(world):
+    path = "src/main/c_func.c"
+    proofs = native.measure_names(world.cfg, "a", ["c_func", "fuzzy", "c_func"], path, _text(world.cfg))
+    assert sorted(proofs) == ["c_func", "fuzzy"] and proofs["c_func"].exact and not proofs["fuzzy"].exact
+    assert len(world.recipes) == 1 and world.linker.link.call_count == 1  # one compile, one link per owned name

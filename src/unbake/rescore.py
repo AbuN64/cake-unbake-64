@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from importlib import import_module
 from typing import Any, Protocol
@@ -24,10 +24,10 @@ class _Tree(Protocol):
     def modules(self) -> tuple[Any, ...]: ...
 
 
-def _measure(config: Any, path: str, name: str, version: str) -> float:
-    """The score of the NON_MATCHING body of `name` in the module `path`, linked alone at the function's address in
-    `version` (compare.py owns the measuring)."""
-    scored: float = import_module("unbake.compare").score_function(config, path, name, version)
+def _measure(config: Any, path: str, names: Sequence[str], version: str) -> dict[str, float]:
+    """The score of the NON_MATCHING body of each of `names` in the module `path`, linked alone at the function's
+    address in `version`; the module compiles once for all (compare.py owns the measuring)."""
+    scored: dict[str, float] = import_module("unbake.compare").score_functions(config, path, names, version)
     return scored
 
 
@@ -53,11 +53,13 @@ def _target_sha(config: Any, version: str, rom: int, size: int) -> str:
         return sha256(handle.read(size))
 
 
-def _job(item: tuple[Any, str, str, str, str]) -> float:
-    config, path, name, version, key = item
-    value = _measure(config, path, name, version)
-    _record(config, key, value)
-    return value
+def _job(item: tuple[Any, str, str, tuple[tuple[str, str], ...]]) -> dict[str, float]:
+    """One module in one version: every missing function of it measured together, each recorded under its key."""
+    config, path, version, wanted = item
+    values = _measure(config, path, [name for name, _ in wanted], version)
+    for name, key in wanted:
+        _record(config, key, values[name])
+    return values
 
 
 def scores(config: Any, tree: _Tree, facts: Facts) -> dict[str, dict[str, float]]:
@@ -65,7 +67,7 @@ def scores(config: Any, tree: _Tree, facts: Facts) -> dict[str, dict[str, float]
     target bytes and the scorer, so an unchanged body measures nothing and a changed one measures exactly once."""
     with effort.stage("rescore.scores"):
         found: dict[str, dict[str, float]] = {}
-        misses: list[tuple[Any, str, str, str, str]] = []
+        misses: dict[tuple[str, str], list[tuple[str, str]]] = {}
         texts: dict[str, str] = {}
         for module in tree.modules:
             for name in module.fuzzy:
@@ -80,11 +82,13 @@ def scores(config: Any, tree: _Tree, facts: Facts) -> dict[str, dict[str, float]
                     )
                     value = _lookup(config, key)
                     if value is None:
-                        misses.append((config, module.path, name, version, key))
+                        misses.setdefault((module.path, version), []).append((name, key))
                     else:
                         found.setdefault(name, {})[version] = value
-        for item, value in zip(misses, pool.map(config, "rescore.measure", _job, misses), strict=True):
-            found.setdefault(item[2], {})[item[3]] = float(value)
+        items = [(config, path, version, tuple(wanted)) for (path, version), wanted in misses.items()]
+        for item, values in zip(items, pool.map(config, "rescore.measure", _job, items), strict=True):
+            for name, value in values.items():
+                found.setdefault(name, {})[item[2]] = float(value)
         return found
 
 

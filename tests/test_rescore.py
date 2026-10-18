@@ -22,7 +22,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(rescore, "_lookup", lambda config, key: stored.get(key))
     monkeypatch.setattr(rescore, "_record", lambda config, key, value: stored.__setitem__(key, value))
     monkeypatch.setattr(
-        rescore, "_measure", lambda config, path, name, version: measured.append((name, version)) or 0.25
+        rescore,
+        "_measure",
+        lambda config, path, names, version: {n: measured.append((n, version)) or 0.25 for n in names},
     )
     monkeypatch.setattr(rescore.pool, "map", lambda config, name, fn, items, key=None: [fn(i) for i in items])
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
@@ -74,3 +76,26 @@ def test_a_score_is_stored_as_json_in_the_score_kind(monkeypatch):
     monkeypatch.setattr(rescore.store, "get", lambda config, kind, key: json.dumps(0.5).encode())
     rescore._record(None, "k", 0.5)
     assert puts == [("score", "k", b"0.5")] and rescore._lookup(None, "k") == 0.5
+
+
+def test_the_missing_functions_of_a_module_are_measured_together_once_per_version(world):
+    config, tree, facts, _stored, _measured, root = world
+    (root / "src/a.c").write_text("#ifdef NON_MATCHING\nint f(void) { return 1; }\nint h(void) { return 2; }\n#endif\n")
+    tree.modules[0].owns["a"] = ("f", "h")
+    tree.modules[0].owns["b"] = ("f", "h")
+    tree.modules[0].fuzzy = ("f", "h")
+    facts["a"]["h"] = (0x80000010, 0x20, 8, "func")
+    facts["b"]["h"] = (0x80000010, 0x30, 8, "func")
+    calls = []
+    original = rescore._measure
+    rescore._measure = lambda config, path, names, version: (
+        calls.append((path, tuple(names), version)) or original(config, path, names, version)
+    )
+    try:
+        assert rescore.rows(config, tree, facts) == {"f": {"a": 0.25, "b": 0.25}, "h": {"a": 0.25, "b": 0.25}}
+        assert calls == [("src/a.c", ("f", "h"), "a"), ("src/a.c", ("f", "h"), "b")]
+        calls.clear()
+        rescore.rows(config, tree, facts)
+        assert calls == []  # a warm rerun measures nothing
+    finally:
+        rescore._measure = original

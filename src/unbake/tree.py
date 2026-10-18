@@ -267,20 +267,35 @@ def _data_name(piece: Sequence[str], first: bool) -> str:
     return idents[-1] if len(idents) >= needed else ""
 
 
-def _closure(
-    read: Callable[[str], bytes | None], directory: str, version: str, text: bytes, flags: Sequence[str] = ()
-) -> list[tuple[str, str]]:
-    """The headers `text` includes, through nested includes: (spelled name, blob sha or "") with no path in them. A
-    header resolves the way cpp finds it: the including file's folder, then each `-I` of `flags`, then the defaults."""
-    extra = [f[2:].rstrip("/") for f in flags if f.startswith("-I") and len(f) > 2]
-    found: dict[tuple[str, str], None] = {}
-    seen: set[str] = set()
-    queue = [(directory, text)]
-    while queue:
-        here, data = queue.pop()
-        for raw in _INCLUDE.findall(data):
-            name = raw.decode(errors="replace")
-            resolved = next(
+class _Headers:
+    """What the include walk learns about a header, kept per reader: its sha, where each name resolves from a folder
+    and its whole closure. A tree of thousands of files reaches the same few hundred headers, so each is hashed and
+    walked once, not once per file."""
+
+    def __init__(self, read: Callable[[str], bytes | None]) -> None:
+        self._read = read
+        self._blobs: dict[str, bytes | None] = {}
+        self._sha: dict[str, str] = {}
+        self._includes: dict[bytes, list[str]] = {}
+        self._resolved: dict[tuple[str, str, str, str, tuple[str, ...]], str] = {}
+        self._reach: dict[tuple[str, str, str, tuple[str, ...]], frozenset[tuple[str, str]]] = {}
+
+    def read(self, path: str) -> bytes | None:
+        if path not in self._blobs:
+            self._blobs[path] = self._read(path)
+        return self._blobs[path]
+
+    def sha(self, path: str, blob: bytes | None) -> str:
+        if blob is None:
+            return ""
+        if path not in self._sha:
+            self._sha[path] = sha256(blob)
+        return self._sha[path]
+
+    def resolve(self, here: str, name: str, directory: str, version: str, extra: tuple[str, ...]) -> str:
+        key = (here, name, directory, version, extra)
+        if key not in self._resolved:
+            self._resolved[key] = next(
                 (
                     p
                     for p in (
@@ -290,15 +305,57 @@ def _closure(
                         f"{directory}/{name}",
                         f"asm/{version}/include/{name}",
                     )
-                    if read(p) is not None
+                    if self.read(p) is not None
                 ),
                 "",
             )
-            blob = read(resolved) if resolved else None
-            found[name, sha256(blob) if blob is not None else ""] = None
-            if blob is not None and resolved not in seen:
-                seen.add(resolved)
-                queue.append((resolved.rpartition("/")[0], blob))
+        return self._resolved[key]
+
+    def direct(
+        self, here: str, data: bytes, directory: str, version: str, extra: tuple[str, ...]
+    ) -> list[tuple[tuple[str, str], str]]:
+        """((spelled name, blob sha or ""), resolved path or "") of each include of `data` found from `here`."""
+        if data not in self._includes:  # the same text is scanned once, whatever version or folder reads it
+            self._includes[data] = [raw.decode(errors="replace") for raw in _INCLUDE.findall(data)]
+        out = []
+        for name in self._includes[data]:
+            resolved = self.resolve(here, name, directory, version, extra)
+            blob = self.read(resolved) if resolved else None
+            out.append(((name, self.sha(resolved, blob)), resolved if blob is not None else ""))
+        return out
+
+    def reach(self, path: str, directory: str, version: str, extra: tuple[str, ...]) -> frozenset[tuple[str, str]]:
+        """Every include entry reachable from the header `path`, its own and its descendants'."""
+        key = (path, directory, version, extra)
+        if key not in self._reach:
+            found: set[tuple[str, str]] = set()
+            seen = {path}
+            queue = [path]
+            while queue:
+                here = queue.pop()
+                for entry, resolved in self.direct(
+                    here.rpartition("/")[0], self.read(here) or b"", directory, version, extra
+                ):
+                    found.add(entry)
+                    if resolved and resolved not in seen:
+                        seen.add(resolved)
+                        queue.append(resolved)
+            self._reach[key] = frozenset(found)
+        return self._reach[key]
+
+
+def _closure(
+    read: Callable[[str], bytes | None] | _Headers, directory: str, version: str, text: bytes, flags: Sequence[str] = ()
+) -> list[tuple[str, str]]:
+    """The headers `text` includes, through nested includes: (spelled name, blob sha or "") with no path in them. A
+    header resolves the way cpp finds it: the including file's folder, then each `-I` of `flags`, then the defaults."""
+    headers = read if isinstance(read, _Headers) else _Headers(read)
+    extra = tuple(f[2:].rstrip("/") for f in flags if f.startswith("-I") and len(f) > 2)
+    found: set[tuple[str, str]] = set()
+    for entry, resolved in headers.direct(directory, text, directory, version, extra):
+        found.add(entry)
+        if resolved:
+            found |= headers.reach(resolved, directory, version, extra)
     return sorted(found)
 
 
@@ -308,7 +365,7 @@ def _code() -> str:
     return sha256(Path(__file__).read_bytes())
 
 
-def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None]) -> str:
+def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None] | _Headers) -> str:
     """A file's parse key names every input of the parse: the text, the version, the preprocessor and its flags, the
     headers it reaches, and this module's code (never the rest of the tool, so another tool edit keeps it)."""
     directory = path.rpartition("/")[0]
@@ -546,7 +603,7 @@ def _keys(
     config: Config, blobs: Mapping[str, bytes], jobs: Sequence[tuple[str, str]], overlay: Mapping[str, bytes | None]
 ) -> list[str]:
     """The parse key of each (file, version): the one key function, whichever process parses or looks it up."""
-    read = _reader(config, blobs, overlay)
+    read = _Headers(_reader(config, blobs, overlay))
     return [_key(config, p, blobs[p], v, read) for p, v in jobs]
 
 

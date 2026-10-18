@@ -35,11 +35,12 @@ def measure_versions(
     return tuple(pool.map(config, "compare.measure", _measure_job, jobs))
 
 
-def score_function(config: Config, path: str, name: str, version: str) -> float:
-    """The score of `name` as the module `path` of the working tree holds it (its NON_MATCHING body linked alone at
-    the function's address in `version`); what the fuzzy scores of the tree are made of."""
+def score_functions(config: Config, path: str, names: Sequence[str], version: str) -> dict[str, float]:
+    """The score of each of `names` as the module `path` of the working tree holds it (its NON_MATCHING body linked
+    alone at the function's address in `version`); what the fuzzy scores of the tree are made of. The module is
+    compiled once for all of them."""
     text = (config.project.root / path).read_text(encoding="utf-8")
-    return native.measure(config, version, name, path, text).score
+    return {n: p.score for n, p in native.measure_names(config, version, names, path, text).items()}
 
 
 def gaps(name: str, held: Sequence[str], proofs: Sequence[Proof]) -> tuple[Finding, ...]:

@@ -328,11 +328,30 @@ def measure(
 ) -> Proof:
     """The proof of `name` in one version: the module `path` as `text` compiled, its object linked alone with each
     section at the address the symbol facts give, and the function's bytes compared with the ROM's."""
+    return measure_names(config_, version, [name], path, text, overrides, overlays)[name]
+
+
+def measure_names(
+    config_: Config,
+    version: str,
+    names: Sequence[str],
+    path: str,
+    text: str,
+    overrides: Json | None = None,
+    overlays: Mapping[str, bytes] | None = None,
+) -> dict[str, Proof]:
+    """`measure` of each name: the module is parsed, preprocessed and compiled once, whatever number of its functions
+    are asked for, and only the link and compare are made per function."""
     with effort.stage("native.measure"):
         source = sha256(text.encode())
         snapshot, unit, recipe, owned = candidate(config_, version, path, text, overrides, overlays)
-        if name not in owned:
-            return _gap(unit, name, version, recipe, source, "", f"{name} is not owned by {path}")
+        proofs: dict[str, Proof] = {}
+        wanted = [n for n in dict.fromkeys(names) if n in owned]
+        for name in names:
+            if name not in owned:
+                proofs[name] = _gap(unit, name, version, recipe, source, "", f"{name} is not owned by {path}")
+        if not wanted:
+            return proofs
         with store.work(config_) as work:
             try:
                 obj, _ = objects(snapshot, unit, version, recipe, work)
@@ -341,12 +360,17 @@ def measure(
                     f"version {version}: compile.error: " + view.diagnostic(snapshot, unit, version, recipe, f.reason)
                     for f in refusal.findings
                 )
-                return replace(
-                    _gap(unit, name, version, recipe, source, "", "compile.error"),
-                    missing=lines,
-                    symptoms=symptoms.from_missing(lines),
-                )
-            return _link(snapshot, unit, version, name, recipe, source, obj, work, symbol_facts(config_, version))
+                for name in wanted:
+                    proofs[name] = replace(
+                        _gap(unit, name, version, recipe, source, "", "compile.error"),
+                        missing=lines,
+                        symptoms=symptoms.from_missing(lines),
+                    )
+                return proofs
+            facts = symbol_facts(config_, version)
+            for name in wanted:
+                proofs[name] = _link(snapshot, unit, version, name, recipe, source, obj, work, facts)
+        return proofs
 
 
 def _link(

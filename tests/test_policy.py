@@ -722,3 +722,20 @@ def test_a_record_with_its_own_body_or_too_few_fields_is_not_a_duplicate(monkeyp
 def test_the_duplicate_record_rule_keeps_a_unit_out_of_the_exact_credit() -> None:
     rules = policy.config.load_resource("rules.toml")
     assert "duplicate-record" in rules["unclean"]
+
+
+def test_a_snapshot_is_captured_once_however_many_rules_ask(monkeypatch):
+    calls = []
+    held = tree.Tree("held", ())
+    monkeypatch.setattr(
+        policy.tree, "capture", lambda config, overlays: calls.append(dict(overlays)) or tree.Tree("o", ())
+    )
+    base = SimpleNamespace(config="c", overlays={}, files=held, digest="d0")
+    candidate = SimpleNamespace(config="c", overlays={"src/x.c": b"1"}, files=None, digest="d1")
+    other = SimpleNamespace(config="c", overlays={"src/x.c": b"2"}, files=None, digest="d2")
+    with policy.effort.command("test-policy", ()):
+        assert policy._tree(base) is held
+        first = policy._tree(candidate)
+        assert policy._tree(candidate) is first and policy._tree(candidate) is first
+        assert policy._tree(other) is not first
+    assert calls == [{"src/x.c": b"1"}, {"src/x.c": b"2"}]
