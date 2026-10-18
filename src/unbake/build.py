@@ -9,6 +9,7 @@ import shlex
 import tarfile
 import urllib.request
 from collections.abc import Mapping, Sequence
+from hashlib import sha1
 from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ from unbake.contracts import (
     Finding,
     Json,
     NativeResult,
+    Project,
     Refusal,
     Segment,
     file_facts,
@@ -608,9 +610,14 @@ def extract(config: Config, version: str | None = None) -> NativeResult:
 
 def inputs(config: Config) -> str:
     """What `make check` reads or builds, by name, size and mtime: while it is unchanged the last check still holds."""
-    root, project = str(config.project.root), config.project
+    return project_inputs(config.project)
+
+
+def project_inputs(project: Project) -> str:
+    """Build input/output identity without a host config, shared by make's verdict and the report reader."""
+    root = str(project.root)
     roms = (f"build/{v}/{project.name}.z64" for v in project.versions)
-    paths = [f"{root}/{p}" for p in ("Makefile", "local.mk", f"{project.name}.ld", *roms)]
+    paths = [f"{root}/{p}" for p in ("config.toml", "Makefile", "local.mk", f"{project.name}.ld", *roms)]
     for place in ("src", "include", "asm", "versions", "tools"):
         paths += [f"{top}/{name}" for top, _, names in os.walk(f"{root}/{place}") for name in names]
     rows = []
@@ -630,14 +637,56 @@ def make_check(config: Config, held: Tree | None = None) -> Json:
         done = {"exit": 0, "versions": list(config.project.versions)}
         if stamp.exists() and json.loads(stamp.read_bytes()).get("inputs") == known:
             effort.count("make-check", True)
+            report.record(
+                config,
+                held or tree.capture(config),
+                exact=sorted(config.project.versions),
+                failing=[],
+                build_inputs=known,
+            )
             return done
         effort.count("make-check", False)
         result = _make(config, "check")
         if result.exit == 0:
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.write_text(json.dumps({"inputs": inputs(config)}))
-            report.record(config, held or tree.capture(config), exact=sorted(config.project.versions), failing=[])
+            report.record(
+                config,
+                held or tree.capture(config),
+                exact=sorted(config.project.versions),
+                failing=[],
+                build_inputs=inputs(config),
+            )
             return done
+        report.record(config, held or tree.capture(config), exact=[], build_inputs=inputs(config))
         lines = result.stderr.decode(errors="replace").splitlines()
         failed = [line for line in lines if "***" in line]  # make -k ran everything it could: every failed target
         raise Refusal(Finding("setup.make", "\n".join(failed or lines[-20:]), missing=(f"make exit {result.exit}",)))
+
+
+def verify(params: Json) -> Json:
+    """Record make's exit and independently hash every built ROM; no host configuration is needed."""
+    project = configuration.load_project(Path(params["project"]))
+    exact, findings = [], []
+    status = params.get("status") or 0
+    if status:
+        findings.append(Finding("build.failed", f"make exited {status}; no version receives matched credit"))
+    else:
+        for version in project.versions:
+            path = project.root / "build" / version / f"{project.name}.z64"
+            try:
+                data = path.read_bytes()
+            except OSError as error:
+                findings.append(Finding("build.rom", str(error), path=str(path), versions=(version,)))
+                continue
+            expected = project.version[version]
+            if len(data) != expected.size or sha1(data).hexdigest() != expected.sha1:
+                findings.append(
+                    Finding("build.rom", "built ROM size or SHA-1 differs", path=str(path), versions=(version,))
+                )
+            else:
+                exact.append(version)
+    report.record_build(project.root, project_inputs(project), exact)
+    if findings:
+        raise Refusal(*findings)
+    return {"exact": exact}

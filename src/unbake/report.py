@@ -71,27 +71,35 @@ def _check(config: Any, tree: Any) -> Json | None:
 
     path = Path(config.project.root) / ".unbake/check.json"
 
-    def read() -> Json | None:
-        with suppress(FileNotFoundError, ValueError, TypeError):
-            loaded: Json = json.loads(path.read_bytes())
-            if loaded.get("digest") == tree.digest:
-                return loaded
-        return None
-
-    stamp = path.stat().st_mtime_ns if path.exists() else 0  # a check made since the last read is read again
-    return effort.memo(("check", tree.digest, stamp), read)
+    with suppress(FileNotFoundError, ValueError, TypeError):
+        loaded: Json = json.loads(path.read_bytes())
+        same_tree = loaded.get("digest") == tree.digest
+        if "build_inputs" in loaded:
+            valid = loaded["build_inputs"] == import_module("unbake.build").project_inputs(config.project)
+            if valid:
+                return loaded if same_tree else {k: loaded[k] for k in ("exact", "failing", "build_inputs")}
+            return {**loaded, "exact": []} if same_tree else None
+        if same_tree:
+            return loaded
+    return None
 
 
 def record(config: Any, tree: Any, **fields: Any) -> None:
     """Keep what a check learned of this tree in `.unbake/check.json` (`digest`, `exact`, `failing`, and what a source
     check adds): what the file holds of another tree is dropped, so a verdict never outlives the text it judged."""
     path = Path(config.project.root) / ".unbake/check.json"
+    kept = _check(config, tree) or {}
+    document = {"exact": [], "failing": [], **kept, **fields, "digest": tree.digest}
+    store.write(path, json.dumps(document, sort_keys=True).encode())
+
+
+def record_build(root: Path, inputs: str, exact: list[str]) -> None:
+    """The build verdict in the same check document as source debt; each has its own input identity."""
+    path = root / ".unbake/check.json"
     kept: Json = {}
     with suppress(FileNotFoundError, ValueError, TypeError):
-        loaded: Json = json.loads(path.read_bytes())
-        if loaded.get("digest") == tree.digest:
-            kept = loaded
-    document = {"exact": [], "failing": [], **kept, **fields, "digest": tree.digest}
+        kept = json.loads(path.read_bytes())
+    document = {**kept, "exact": sorted(exact), "failing": [], "build_inputs": inputs}
     store.write(path, json.dumps(document, sort_keys=True).encode())
 
 

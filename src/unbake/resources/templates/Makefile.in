@@ -56,7 +56,8 @@ check:
 	$$(Q)for f in Makefile $$(NAME).ld include/include_asm.h $$(VERSIONS:%=versions/%/splat.yaml); do test -s $$$$f || { echo "$$$$f is missing" >&2; exit 1; }; done
 	$$(Q)$$(UNBAKE) sync --check
 else ifeq ($$(CHECK),rom)
-check: $$(VERSIONS:%=build/%/$$(NAME).z64)
+check:
+	+$$(Q)$$(MAKE) $$(VERSIONS:%=build/%/$$(NAME).z64); status=$$$$?; $$(UNBAKE) verify $$$$status
 else
 $$(error CHECK must be rom or tree)
 endif

@@ -381,3 +381,11 @@ sentence = "the ROM bytes are not counted exactly once: a byte is credited twice
 [key."report.rom"]
 owner = "progress"
 sentence = "published progress needs the ROM partition for every version"
+
+[key."build.failed"]
+owner = "build"
+sentence = "make failed and its previous matched credit is revoked"
+
+[key."build.rom"]
+owner = "build"
+sentence = "a built ROM is missing or differs in size or SHA-1 from the configured ROM"

@@ -454,7 +454,7 @@ def test_a_clean_make_check_records_the_exact_versions_of_the_tree(tmp_path, mon
     assert build.make_check(config, held)["exit"] == 0
 
 
-def test_a_failed_make_check_records_nothing_and_names_every_failed_target(tmp_path, monkeypatch):
+def test_a_failed_make_check_revokes_credit_and_names_every_failed_target(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     failure = SimpleNamespace(
         exit=2, stderr=b"make: *** [build/us/Game.z64] Error 1\nmake: *** [build/eu-1/Game.z64] Error 1\n"
@@ -463,7 +463,7 @@ def test_a_failed_make_check_records_nothing_and_names_every_failed_target(tmp_p
     with pytest.raises(Refusal) as refused:
         build.make_check(config, make_tree())
     assert refused.value.findings[0].key == "setup.make" and "build/us/Game.z64" in refused.value.findings[0].reason
-    assert not (tmp_path / ".unbake/check.json").exists()
+    assert json.loads((tmp_path / ".unbake/check.json").read_bytes())["exact"] == []
 
 
 def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_path):
@@ -801,3 +801,45 @@ def test_a_function_a_file_owns_starts_a_c_piece(tmp_path):
     module = Module("src/a.c", "main", {"us": ("f_1", "f_2")}, (), {"us": ()}, {"us": {"f_2": ".text"}})
     out = build.splat_yaml(config, "us", Tree("digest", (module,), {"us": facts})).decode()
     assert "      - [0x1000, c, main]\n      - [0x1010, c, main]\n" in out
+
+
+def test_make_check_always_delivers_build_exit_to_the_verdict_writer(tmp_path):
+    text = build.makefile(make_config(tmp_path)).decode()
+    assert "$(MAKE) $(VERSIONS:%=build/%/$(NAME).z64); status=$$?; $(UNBAKE) verify $$status" in text
+
+
+def test_verify_records_real_rom_hashes_without_host_and_rejects_corruption(tmp_path, monkeypatch):
+    from hashlib import sha1
+
+    from unbake import report
+
+    config = make_config(tmp_path)
+    for version, expected in config.project.version.items():
+        data = bytes(expected.size)
+        expected.sha1 = sha1(data).hexdigest()
+        path = tmp_path / "build" / version / "Game.z64"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(data)
+    monkeypatch.setattr(build.configuration, "load_project", lambda root: config.project)
+    assert build.verify({"project": tmp_path}) == {"exact": ["eu-1", "us"]}
+    held = make_tree()
+    assert report.exact_versions(config, held) == {"eu-1", "us"}
+    (tmp_path / "build/us/Game.z64").write_bytes(b"bad")
+    assert report.exact_versions(config, held) == frozenset()
+    with pytest.raises(Refusal, match=r"build\.rom"):
+        build.verify({"project": tmp_path})
+    assert report.exact_versions(config, held) == {"eu-1"}
+    with pytest.raises(Refusal, match=r"build\.failed"):
+        build.verify({"project": tmp_path, "status": 2})
+    assert report.exact_versions(config, held) == frozenset()
+
+
+def test_make_cache_hit_repairs_missing_report_verdict(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    held = make_tree()
+    monkeypatch.setattr(build, "_make", lambda cfg, target: SimpleNamespace(exit=0, stderr=b""))
+    build.make_check(config, held)
+    (tmp_path / ".unbake/check.json").unlink()
+    monkeypatch.setattr(build, "_make", Mock(side_effect=AssertionError("cached build must not rerun")))
+    build.make_check(config, held)
+    assert json.loads((tmp_path / ".unbake/check.json").read_bytes())["exact"] == ["eu-1", "us"]

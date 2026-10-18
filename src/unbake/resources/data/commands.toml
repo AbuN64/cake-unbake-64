@@ -127,3 +127,11 @@ params = [
   { name = "action", kind = "argument", type = "str", required = false, multiple = true, help = "import PACKET, or nothing to list" },
   { name = "json", kind = "flag", type = "str", required = false, multiple = false, help = "also return every blob as a row" },
 ]
+
+[command.verify]
+configured = false
+help = "Verify the built ROMs and record make's verdict for report; called by make check."
+handler = "build.verify"
+params = [
+  { name = "status", kind = "argument", type = "int", required = false, multiple = false, help = "make exit status (default 0); a failure revokes matched credit" },
+]
