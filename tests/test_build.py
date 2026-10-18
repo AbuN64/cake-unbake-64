@@ -676,3 +676,24 @@ def test_extract_rewrites_each_data_piece_as_its_rom_slice_keeping_labels(tmp_pa
         "dlabel d_2",
         "    .byte 0x14, 0x15",
     ]
+
+
+def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_dropped(tmp_path):
+    """text_sizes.mk marks the object (tree facts); STRIP_ALIGN of the generated Makefile drops data alignment."""
+    import subprocess
+    import sys
+
+    held = make_tree(both("src/a.c", "f_1", "d_2"), both("src/b.c", "d_3"))
+    table = {v: dict(rows) for v, rows in held.symbols.items()}
+    table["us"]["d_3"] = (0x80200032, 0x1032, 0x10, "data")
+    held = Tree(held.digest, held.modules, table)
+    config = make_config(tmp_path)
+    rows = build.text_sizes(config, held, "us").decode().splitlines()
+    assert "build/us/src/b.c.o: NOALIGN := 1" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
+    text = build.makefile(config).decode()
+    assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s))' in text
+    code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
+    source = tmp_path / "x.s"
+    source.write_text(".text\n.align 2\nf:\n.section .rodata\n.align 3\n.word 1\n.half 2\n.text\n.align 2\n")
+    subprocess.run([sys.executable, "-I", "-c", code, str(source)], check=True)
+    assert source.read_text() == ".text\n.align 2\nf:\n.section .rodata\n.4byte 1\n.2byte 2\n.text\n.align 2\n"

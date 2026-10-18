@@ -160,6 +160,7 @@ def _recipe(id: str) -> str:
         _shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]})),
     ]
     if row["emits_asm"]:
+        lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s))')  # data packed at the byte
         template, _ = adapters.assemble_template(row)
         lines.append(_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]})))
     body = "\n".join(f"$(Q){line}" for line in lines)
@@ -347,7 +348,24 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
                 after = runs[k + 1][0] if k + 1 < len(runs) else end
                 sizes[path] = None if path in sizes or after is None else after - rom
         rows = [f"build/{v}/{path}.o: TEXTSIZE := 0x{size:X}" for path, size in sorted(sizes.items()) if size]
+        rows += [f"build/{v}/{path}.o: NOALIGN := 1" for path in _unaligned(config, held, v)]
         return "\n".join([f"# {_GENERATED}", *rows, ""]).encode()
+
+
+def _unaligned(config: Config, held: Tree, v: str) -> list[str]:
+    """The files whose data starts a run of their own off a word boundary in the ROM: the ROM packs it at the byte, so
+    the build drops the alignment the compiler asks for in that object's data sections (NOALIGN)."""
+    found: set[str] = set()
+    for segment in config.project.version[v].segments:
+        if segment.kind == "bin":
+            continue
+        last = None
+        for rom, path, section in _rows(config, held, v, segment.name):
+            if (path, section) != last and section != ".text":
+                vram = rom - segment.rom + (segment.vram or segment.rom)
+                found |= {path} if vram % 4 else set()
+            last = (path, section)
+    return sorted(found)
 
 
 def _items(config: Config, held: Tree, v: str, segment: str, per_object: bool) -> list[str]:
