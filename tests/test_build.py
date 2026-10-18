@@ -646,3 +646,33 @@ def test_code_sed_keeps_the_relocation_of_a_64_bit_load_and_words_the_rest(tmp_p
         "/* 1238 80001238 DC820008 */  .word 0xDC820008",
         "/* 123C 8000123C 24020001 */  addiu       $v0, $zero, 0x1",
     ]
+
+
+def test_extract_rewrites_each_data_piece_as_its_rom_slice_keeping_labels(tmp_path):
+    """FILL_DATA of the generated Makefile: splat's short data file becomes the ROM bytes up to the next row."""
+    import subprocess
+    import sys
+
+    text = build.makefile(make_config(tmp_path)).decode()
+    code = text.split("define FILL_DATA\n", 1)[1].split("\nendef", 1)[0]
+    work = tmp_path / "work"
+    (work / "roms").mkdir(parents=True)
+    (work / "roms/baserom.us.z64").write_bytes(bytes(range(0x40)) * 0x100)
+    (work / "versions/us").mkdir(parents=True)
+    (work / "versions/us/splat.yaml").write_text(
+        "segments:\n  - name: main\n    start: 0x1000\n    subsegments:\n      - [0x1000, c, main]\n"
+        "      - [0x1010, data, main/d_1]\n      - [0x1016, c, main]\n  - [0x2000]\n"
+    )
+    (work / "asm/us/data/main").mkdir(parents=True)
+    (work / "asm/us/data/main/d_1.s").write_text(
+        '.include "macro.inc"\n\ndlabel d_1\n/* 1010 80200410 10111213 */ .word 0x10111213\ndlabel d_2\n'
+        "/* 1014 80200414 1415 */ .short 0x1415\n"
+    )
+    subprocess.run([sys.executable, "-I", "-c", code, "us"], cwd=work, check=True)
+    assert (work / "asm/us/data/main/d_1.s").read_text().splitlines() == [
+        '.include "macro.inc"',
+        "dlabel d_1",
+        "    .byte 0x10, 0x11, 0x12, 0x13",
+        "dlabel d_2",
+        "    .byte 0x14, 0x15",
+    ]
