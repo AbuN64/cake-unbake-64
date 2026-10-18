@@ -232,3 +232,10 @@ def test_a_c_body_supersedes_a_stand_in_in_its_own_file_or_another(tmp_path: Pat
     assert by_path["src/main/c_func.c"].stand_ins == {}
     assert by_path["src/main/old.c"].stale == {"a": ("stand_in",), "b": ("stand_in",)}
     assert by_path["src/main/old.c"].owns == {} and by_path["src/main/stand_in.c"].stale == {}
+
+
+def test_a_header_found_through_a_project_include_flag_keys_the_file() -> None:
+    files = {"src/lib/inc.c": b"int x;\n", "src/a/f.c": b'#include "inc.c"\n'}
+    plain = tree._closure(files.get, "src/a", "us", files["src/a/f.c"])
+    flagged = tree._closure(files.get, "src/a", "us", files["src/a/f.c"], ["-DX", "-Isrc/lib/"])
+    assert plain == [("inc.c", "")] and flagged == [("inc.c", tree.sha256(b"int x;\n"))]

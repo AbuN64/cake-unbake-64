@@ -224,8 +224,12 @@ def _data_name(piece: Sequence[str], first: bool) -> str:
     return idents[-1] if len(idents) >= needed else ""
 
 
-def _closure(read: Callable[[str], bytes | None], directory: str, version: str, text: bytes) -> list[tuple[str, str]]:
-    """The headers `text` includes, through nested includes: (spelled name, blob sha or "") with no path in them."""
+def _closure(
+    read: Callable[[str], bytes | None], directory: str, version: str, text: bytes, flags: Sequence[str] = ()
+) -> list[tuple[str, str]]:
+    """The headers `text` includes, through nested includes: (spelled name, blob sha or "") with no path in them. A
+    header resolves the way cpp finds it: the including file's folder, then each `-I` of `flags`, then the defaults."""
+    extra = [f[2:].rstrip("/") for f in flags if f.startswith("-I") and len(f) > 2]
     found: dict[tuple[str, str], None] = {}
     seen: set[str] = set()
     queue = [(directory, text)]
@@ -238,6 +242,7 @@ def _closure(read: Callable[[str], bytes | None], directory: str, version: str, 
                     p
                     for p in (
                         f"{here}/{name}",
+                        *(f"{d}/{name}" for d in extra),
                         f"include/{name}",
                         f"{directory}/{name}",
                         f"asm/{version}/include/{name}",
@@ -256,7 +261,8 @@ def _closure(read: Callable[[str], bytes | None], directory: str, version: str, 
 
 def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None]) -> str:
     directory = path.rpartition("/")[0]
-    basis = ["sections", sha256(text), macro(version), _cppflags(config), _closure(read, directory, version, text)]
+    flags = _cppflags(config)
+    basis = ["sections", sha256(text), macro(version), flags, _closure(read, directory, version, text, flags)]
     return sha256(json.dumps(basis, sort_keys=True).encode())
 
 
