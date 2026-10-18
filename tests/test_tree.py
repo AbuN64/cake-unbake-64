@@ -7,7 +7,7 @@ from pathlib import Path
 import fixture
 import pytest
 
-from unbake import api, pool, tree
+from unbake import api, effort, pool, store, tree
 from unbake.contracts import Config, Refusal
 
 
@@ -239,3 +239,19 @@ def test_a_header_found_through_a_project_include_flag_keys_the_file() -> None:
     plain = tree._closure(files.get, "src/a", "us", files["src/a/f.c"])
     flagged = tree._closure(files.get, "src/a", "us", files["src/a/f.c"], ["-DX", "-Isrc/lib/"])
     assert plain == [("inc.c", "")] and flagged == [("inc.c", tree.sha256(b"int x;\n"))]
+
+
+def test_another_tool_edit_keeps_the_parse_cache_and_a_tree_edit_drops_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = fixture.config(tmp_path)
+    tree.capture(config)
+    runs = fixture.cpp_runs(tmp_path)
+    monkeypatch.setattr(store, "code", lambda: "another tool build")
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) == runs  # every file parse is a hit
+    monkeypatch.setattr(tree, "_code", lambda: "another tree.py")
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) > runs

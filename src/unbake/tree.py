@@ -7,6 +7,7 @@ alone, so an edit reparses the edited file and a rename reparses nothing."""
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from collections import defaultdict
@@ -259,10 +260,27 @@ def _closure(
     return sorted(found)
 
 
+@functools.cache
+def _code() -> str:
+    """The bytes of this module, the one place a file's parse is made (preprocessing, scanning)."""
+    return sha256(Path(__file__).read_bytes())
+
+
 def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None]) -> str:
+    """A file's parse key names every input of the parse: the text, the version, the preprocessor and its flags, the
+    headers it reaches, and this module's code (never the rest of the tool, so another tool edit keeps it)."""
     directory = path.rpartition("/")[0]
     flags = _cppflags(config)
-    basis = ["sections", sha256(text), macro(version), flags, _closure(read, directory, version, text, flags)]
+    cpp = str(process.tool(config, "cpp"))
+    basis = [
+        "sections",
+        _code(),
+        cpp,
+        sha256(text),
+        macro(version),
+        flags,
+        _closure(read, directory, version, text, flags),
+    ]
     return sha256(json.dumps(basis, sort_keys=True).encode())
 
 
