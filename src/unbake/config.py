@@ -277,13 +277,15 @@ def load_host(path: Path) -> Host:
             counts[name] = len(os.sched_getaffinity(0))
             note = f"auto: os.sched_getaffinity -> {counts[name]}"
             if name == "workers":
-                load = round(os.getloadavg()[0])
-                counts[name] = max(1, counts["cores"] - load)  # the cores load leaves free
-                note = f"auto: max(1, {counts['cores']} cores - load {load}) -> {counts[name]}"
+                # The shared pool divides capacity between commands. Subtracting system load here counts
+                # those commands twice and freezes a busy host at one worker for the entire invocation.
+                affinity = counts[name]
+                counts[name] = min(affinity, counts["cores"])
+                note = f"auto: min(affinity {affinity}, cores {counts['cores']}) -> {counts[name]}"
                 if "cap" in res:  # a cap applies only when the host file sets one
-                    counts[name] = max(1, min(counts[name], math.floor(counts["cores"] * res["cap"])))
-                    cap = res["cap"]
-                    note = f"auto: max(1, min({counts['cores']} cores - load {load}, cap {cap})) -> {counts[name]}"
+                    capacity, cap = counts[name], res["cap"]
+                    counts[name] = max(1, min(capacity, math.floor(counts["cores"] * cap)))
+                    note = f"auto: min({capacity} by capacity, cap {cap}) -> {counts[name]}"
                 by_memory = max(1, (_usable_memory() - res["memory_parent_bytes"]) // res["memory_worker_bytes"])
                 if by_memory < counts[name]:
                     note = f"auto: min({counts[name]} by capacity, {by_memory} by memory) -> {by_memory}"

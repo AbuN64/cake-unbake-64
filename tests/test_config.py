@@ -68,7 +68,7 @@ def test_host_auto_resolves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     loaded = configuration.load_host(fixture.host(tmp_path, **{"resources.cores": "auto", "resources.workers": "auto"}))
     assert (loaded.cores, loaded.workers) == (12, 12)
     assert loaded.origins["resources.cores"].note == "auto: os.sched_getaffinity -> 12"
-    assert loaded.origins["resources.workers"].note == "auto: max(1, 12 cores - load 0) -> 12"
+    assert loaded.origins["resources.workers"].note == "auto: min(affinity 12, cores 12) -> 12"
 
 
 def _auto_host(
@@ -97,7 +97,7 @@ def test_host_auto_workers_memory_bound(tmp_path: Path, monkeypatch: pytest.Monk
 def test_host_auto_workers_cpu_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     loaded = _auto_host(tmp_path, monkeypatch, 64, "max", 128 << 30)
     assert (loaded.cores, loaded.workers) == (64, 64)
-    assert loaded.origins["resources.workers"].note == "auto: max(1, 64 cores - load 0) -> 64"
+    assert loaded.origins["resources.workers"].note == "auto: min(affinity 64, cores 64) -> 64"
 
 
 def test_host_numeric_workers_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -198,14 +198,14 @@ def test_optional_host_tool_absent_and_bad_path(tmp_path: Path, tool: str) -> No
     "cpus,cap,load,workers",
     [
         (12, None, 0.0, 12),
-        (12, None, 22.5, 1),
-        (12, None, 3.9, 8),
+        (12, None, 22.5, 12),
+        (12, None, 3.9, 12),
         (12, 0.5, 2.0, 6),
         (12, 0.75, 0.4, 9),
         (4, 0.1, 0.0, 1),
     ],
 )
-def test_host_auto_workers_size_from_capacity_and_load(
+def test_host_auto_workers_keep_capacity_under_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpus: int, cap: float | None, load: float, workers: int
 ) -> None:
     monkeypatch.setattr(os, "getloadavg", lambda: (load, load, load))
@@ -429,3 +429,11 @@ def test_load_resource_carries_platform_and_family_rows() -> None:
     assert {(r["stand_in_as"], r["data_split"]) for r in rows.values()} == {
         ("{as}", "subsegment")
     }  # splat writes per-symbol data only from subsegments
+
+
+@pytest.mark.parametrize("affinity,cores,workers", [(12, 4, 4), (4, 12, 4)])
+def test_host_auto_workers_respect_both_affinity_and_configured_cores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, affinity: int, cores: int, workers: int
+) -> None:
+    loaded = _auto_host(tmp_path, monkeypatch, affinity, "max", 128 << 30, **{"resources.cores": cores})
+    assert loaded.workers == workers
