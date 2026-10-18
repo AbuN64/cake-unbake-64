@@ -103,12 +103,25 @@ def test_candidate_refuses_a_conditional_around_the_function():
         publish.candidate("#if VERSION_US\nint f(void) { return 1; }\n", "f")
 
 
-def test_splice_replaces_the_line_and_adds_declarations_above_the_first_function():
+def test_splice_replaces_the_line_and_adds_declarations_right_above_the_candidate():
     text = publish.splice(OWNER, "main", "func_80000010", CANDIDATE, fuzzy=False)
     assert 'INCLUDE_ASM("main", func_80000010)' not in text
     assert 'INCLUDE_ASM("main", other);' in text
     assert text.count('#include "game.h"') == 1  # already there: not added twice
-    assert text.index("static int table[2];") < text.index("int keep(void)") < text.index("int func_80000010")
+    assert text.index("int keep(void)") < text.index("static int table[2];") < text.index("int func_80000010")
+
+
+def test_declarations_land_after_an_include_the_file_makes_between_its_stand_ins():
+    owner = 'INCLUDE_ASM("main", first);\n#include "types.h"\nINCLUDE_ASM("main", func_80000010);\n'
+    text = publish.splice(
+        owner,
+        "main",
+        "func_80000010",
+        '#include "types.h"\ns32 g(void);\nint func_80000010(int a) {\n    return g();\n}\n',
+        fuzzy=False,
+    )
+    assert text.index('#include "types.h"') < text.index("s32 g(void);") < text.index("int func_80000010")
+    assert text.count('#include "types.h"') == 1
 
 
 def test_splice_fuzzy_wraps_the_body_over_the_stand_in():

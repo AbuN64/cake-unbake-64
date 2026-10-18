@@ -141,38 +141,22 @@ def candidate(source: str, name: str | None) -> tuple[str, str]:
 
 def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: str = "function") -> str:
     """`text` with the stand-in line (or earlier fuzzy block) of `name` replaced by the candidate, and the
-    candidate's other top-level items added above the first function of the file."""
+    candidate's other top-level items the file lacks added right above it, after every include that precedes it."""
     declared, body = candidate(source, name if kind == "function" else None)
     new = wrap(segment, name, body) if fuzzy else body
-    block = _block(segment, name)
-    if block.search(text):
-        replaced = block.sub(lambda _: new, text, count=1)
-    else:
-        line = re.compile(_stand_in(segment, name), re.M)
-        if not line.search(text):
-            raise Refusal(
-                Finding(
-                    "land.duplicate" if re.search(rf"\b{re.escape(name)}\b", text) else "land.request",
-                    f"{name} has no stand-in line in its file; it is already landed or the file does not own it.",
-                    unit=name,
-                )
+    found = _block(segment, name).search(text) or re.compile(_stand_in(segment, name), re.M).search(text)
+    if found is None:
+        raise Refusal(
+            Finding(
+                "land.duplicate" if re.search(rf"\b{re.escape(name)}\b", text) else "land.request",
+                f"{name} has no stand-in line in its file; it is already landed or the file does not own it.",
+                unit=name,
             )
-        replaced = line.sub(lambda _: new, text, count=1)
-    have = _norm(replaced)
+        )
+    before, after = text[: found.start()], text[found.end() :]
+    have = _norm(before + new + after)
     wanted = [d for d in re.split(r"\n(?=\S)", declared) if d.strip() and _norm(d) not in have]
-    if not wanted:
-        return replaced
-    anchor = next(
-        (
-            p.start
-            for p in items(replaced)
-            if p.kind == "function"
-            or replaced.startswith("INCLUDE_", p.start)
-            or replaced.startswith("#ifdef NON_MATCHING", p.start)
-        ),
-        0,
-    )
-    return replaced[:anchor] + "\n".join(wanted) + "\n\n" + replaced[anchor:]
+    return before + "".join(d + "\n" for d in wanted) + "\n" * bool(wanted) + new + after
 
 
 # ---------------------------------------------------------------- planning
