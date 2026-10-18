@@ -184,7 +184,12 @@ def build_credits(
                 end = rom + size
             if name in sizes and module and not stand_in:
                 container = (rom + sizes[name], path, module, stand_in)
-            built = module is not None and not stand_in and v in exact
+            built = (
+                module is not None
+                and not stand_in
+                and v in exact
+                and (not configuration.is_assembly(module.path) or getattr(module, "library", False))
+            )
             function = kind == "func"
             state = "unowned" if module is None else "stand-in" if stand_in else "c"
             state = "fuzzy" if module is not None and stand_in and name in module.fuzzy else state

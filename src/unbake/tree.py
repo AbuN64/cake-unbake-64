@@ -16,13 +16,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from unbake import adapters, effort, pool, process, recipes, store, symbols
+from unbake import adapters, effort, libasm, pool, process, recipes, store, symbols
+from unbake import config as configuration
 from unbake.contracts import Config, Finding, Refusal, sha256
 
 KIND = "tree.file"
 TREE = "tree.captured"  # a whole captured tree, keyed by its inputs
 LITERALS = "literals_"  # a fact `literals_<function>` places that function's file's compiler-emitted rodata
-SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
+SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".s")
 _INCLUDE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
 _TOKEN = re.compile(
     r"""/\*.*?\*/|//[^\n]*|(?P<str>"(?:\\.|[^"\\\n])*")|'(?:\\.|[^'\\\n])*'|(?P<id>[A-Za-z_][A-Za-z0-9_]*)|\d[\w.]*|(?P<p>[^\s])""",
@@ -42,6 +43,7 @@ class Module:
     sections: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)  # version -> name -> section
     placed: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)  # version -> name -> segment
     stale: Mapping[str, tuple[str, ...]] = field(default_factory=dict, compare=False)  # version -> superseded stand-ins
+    library: bool = False
 
 
 @dataclass(frozen=True)
@@ -427,6 +429,9 @@ def _parsed(
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
     """`parse` and the linker section of each defined or stand-in name, kept together in one cache entry. A caller that
     already made the key (`_key` over the reader the entry is looked up with) passes it, so both name one entry."""
+    if configuration.is_assembly(path):
+        kinds = libasm.scan(text.decode())
+        return list(kinds), [], [], kinds
     key = key or _key(config, path, text, version, read or _read_from(config))
 
     def produce() -> bytes:
@@ -557,6 +562,7 @@ def _build(
             stand[path][version] = [n for n in ins if n in table and n not in mine and n not in old]
             sections[path][version] = {n: _section(table[n], kinds.get(n)) for n in names}
             fuzzy[path] |= {n for n in nm if n in table}
+    _yield_to_source(tables, owned, sections)
     findings = _duplicates(owned, versions)
     findings += _literals(tables, owned, sections)
     modules = tuple(
@@ -623,6 +629,35 @@ def _parse_all(
             first, second, third, kinds = json.loads(hits[k] or b"[[],[],[],{}]")
             out.append((first, second, third, kinds))
     return out
+
+
+def _yield_to_source(
+    tables: Mapping[str, Mapping[str, symbols.Symbol]],
+    owned: dict[str, dict[str, list[str]]],
+    sections: dict[str, dict[str, dict[str, str]]],
+) -> None:
+    """An assembly unit does not own, in a version, a name whose ROM address another source already owns there: the
+    name is shared across versions, but this version's bytes at that address belong to the other source (a data
+    chunk, a differently named routine)."""
+    for version, table in tables.items():
+        taken = {
+            table[n][1]
+            for path, by_version in owned.items()
+            if not configuration.is_assembly(path)
+            for n in by_version.get(version, ())
+            if table[n][1] is not None
+        }
+        for path in [p for p in owned if configuration.is_assembly(p)]:
+            names = owned[path].get(version, [])
+            kept = [n for n in names if table[n][1] not in taken]
+            if len(kept) == len(names):
+                continue
+            if kept:
+                owned[path][version] = kept
+                sections[path][version] = {n: sections[path][version][n] for n in kept}
+            else:
+                owned[path].pop(version, None)
+                sections[path].pop(version, None)
 
 
 def _duplicates(owned: Mapping[str, Mapping[str, Iterable[str]]], versions: Sequence[str]) -> list[Finding]:
@@ -692,4 +727,5 @@ def _module(
         {v: dict(n) for v, n in sections.items()},
         placed,
         {v: tuple(n) for v, n in stale.items() if n},
+        library=configuration.is_assembly(path) and configuration.library(config.project, path),
     )

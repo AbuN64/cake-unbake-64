@@ -125,6 +125,11 @@ def objects(
     with effort.stage("native.objects"), _tools(unit, snapshot, unit, version, recipe):
         cfg = snapshot.config
         work.mkdir(parents=True, exist_ok=True)
+        if config.is_assembly(unit.path):
+            source, obj = work / "unit.s", work / "unit.o"
+            source.write_bytes(snapshot.read(unit.path))
+            result = adapters.GnuAssembler(cfg).assemble(source, recipe, _include(snapshot, version), obj)
+            return obj, (result,)
         text, steps, tools, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
         source, obj = (
             work / f"{_INPUT}.i",
@@ -158,6 +163,8 @@ def objects(
 def recorded(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> tuple[str, ...] | None:
     """The refused warnings a compile of this unit kept; None when none was kept; never compiles."""
     cfg = snapshot.config
+    if config.is_assembly(unit.path):
+        return ()
     home = cfg.project.root / "build" / version / Path(unit.path).with_suffix("")
     for kept in sorted(home.glob("*/compile.err")):
         return tuple(adapters.toolchain(cfg, recipe.toolchain).refused(kept.read_text(errors="replace")))
@@ -168,6 +175,8 @@ def recorded(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -
 
 def warnings(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path) -> tuple[str, ...]:
     """The refused-view warnings of the unit's own compile, kept by the text compiled."""
+    if config.is_assembly(unit.path):
+        return ()
     with effort.stage("native.warnings"), _tools(unit, snapshot, unit, version, recipe):
         cfg = snapshot.config
         work.mkdir(parents=True, exist_ok=True)

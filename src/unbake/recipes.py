@@ -54,7 +54,13 @@ def of(config: Config, path: str) -> Recipe:
 def _spec(config: Config, path: str, names: tuple[str, ...]) -> UnitSpec:
     facts = file_facts(config.project, path)
     options = {k: list(v) for k, v in (("add", facts.cflags), ("omit", facts.omit)) if v}
-    return UnitSpec(path, "c", names, facts.toolchain or config.project.toolchain, options)
+    return UnitSpec(
+        path,
+        "asm" if configuration.is_assembly(path) else "c",
+        names,
+        facts.toolchain or config.project.toolchain,
+        options,
+    )
 
 
 def resolve(config: Config, unit: UnitSpec, overrides: Json) -> Recipe:

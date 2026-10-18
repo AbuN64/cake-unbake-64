@@ -222,6 +222,7 @@ def test_host_auto_workers_keep_capacity_under_load(
         ("src/X.C", True, False, "src/X"),
         ("include/AI/ENEMIES.H", False, True, "include/AI/ENEMIES.H"),
         ("asm/a.s", False, False, "asm/a.s"),
+        ("src/sdk/a.s", True, False, "src/sdk/a"),
     ],
 )
 def test_sources_and_headers_are_known_by_suffix_in_any_case(path: str, source: bool, header: bool, stem: str) -> None:

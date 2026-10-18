@@ -421,3 +421,11 @@ sentence = "an RSP span does not match its exact SHA-256"
 [key."blobs.migrate"]
 owner = "blob_migration"
 sentence = "the reviewed blob migration cannot preserve byte coverage or needs classification"
+
+[key."library-asm.source"]
+owner = "libasm"
+sentence = "library extraction would overwrite existing source"
+
+[key."source.library-asm"]
+owner = "policy"
+sentence = "assembly source is outside a configured library directory"

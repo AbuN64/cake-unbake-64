@@ -180,7 +180,6 @@ DELETED = (
     "declarations",
     "retype",
     "recovery",
-    "libasm",
     "families",
 )
 PROJECT_NAMES = ("RageWars", "BattleTanx", "Turok")

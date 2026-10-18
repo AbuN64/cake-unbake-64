@@ -136,9 +136,14 @@ def _suffixes(role: str) -> tuple[str, ...]:
     return tuple(load_resource("units.toml")["files"][role])
 
 
+def is_assembly(path: str) -> bool:
+    """Whether a source path uses the assembly suffix of the unit contract."""
+    return path.lower().endswith(kind("asm")["suffix"])
+
+
 def is_source(path: str) -> bool:
-    """Whether a path is a C source (units.toml [files] source, any case: src/AI/ENEMIES/TURRETAI.CPP is one)."""
-    return path.lower().endswith(_suffixes("source"))
+    """Whether a path is C source or source-tree assembly, with case-insensitive suffixes."""
+    return path.lower().endswith(_suffixes("source")) or (path.startswith("src/") and is_assembly(path))
 
 
 def is_header(path: str) -> bool:
@@ -153,7 +158,7 @@ def is_text(path: str) -> bool:
 
 def source_stem(path: str) -> str:
     """A source path without its source suffix: src/AI/ENEMIES/TURRETAI.CPP -> src/AI/ENEMIES/TURRETAI."""
-    return path[: -len(next(s for s in _suffixes("source") if path.lower().endswith(s)))] if is_source(path) else path
+    return str(Path(path).with_suffix("")) if is_source(path) else path
 
 
 def kind(name: str) -> Json:

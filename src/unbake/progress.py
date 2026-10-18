@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from unbake import blobs, publish, report
+from unbake import blobs, libasm, publish, report
+from unbake import config as configuration
 from unbake.contracts import Finding, Json, Refusal
 
 _C_STATES = frozenset({"c", "fuzzy"})
@@ -15,6 +16,12 @@ def locations(config: Any, tree: Any) -> dict[tuple[str, str], int]:
     found: dict[tuple[str, str], int] = {}
     for module in tree.modules:
         text = (config.project.root / module.path).read_text(encoding="utf-8", errors="replace")
+        if configuration.is_assembly(module.path):
+            for name in libasm.scan(text):
+                for number, line in enumerate(text.splitlines(), 1):
+                    if line.strip().startswith(name + ":"):
+                        found.setdefault((module.path, name), number)
+            continue
         for item in publish.items(text):
             if item.kind == "function":
                 found.setdefault((module.path, item.name), text.count("\n", 0, item.start) + 1)

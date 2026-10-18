@@ -15,7 +15,7 @@ from typing import Any
 import rabbitizer
 import yaml
 
-from unbake import adapters, api, build, ci, effort, journal, pool, process, report, store, tree
+from unbake import adapters, api, build, ci, effort, journal, libasm, pool, process, report, store, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, NativeResult, Refusal, digest, sha1
 
@@ -234,7 +234,7 @@ def _segment_of(config: Config, version: str, rom: int) -> str | None:
 
 def _extension(modules: Iterable[Any]) -> str:
     """The extension most source files of the tree use: where a new stand-in file is written."""
-    found = Counter(Path(m.path).suffix for m in modules)
+    found = Counter(Path(m.path).suffix for m in modules if not configuration.is_assembly(m.path))
     return found.most_common(1)[0][0] if found else ".c"
 
 
@@ -338,6 +338,8 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
         facts = api.symbols(config, v)
         owners: dict[str, list[tuple[int, str, str]]] = {}
         for module in current.modules:
+            if configuration.is_assembly(module.path):
+                continue
             for owned in module.owns.get(v, ()):
                 if owned in facts and facts[owned][1] is not None and not owned.startswith(tree.LITERALS):
                     segment = _segment_of(config, v, facts[owned][1] or 0)
@@ -427,8 +429,11 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
     with effort.stage("repo.sync"):
         root = config.project.root
         current = tree.capture(config)
+        assembly = libasm.plan(config, current)
+        if assembly:
+            current = tree.capture(config, assembly)
         with effort.stage("repo.stand_ins"):
-            appended = stand_ins(config, current)
+            appended = {**assembly, **stand_ins(config, current)}
             if appended:
                 # This capture sees the proposed stand-ins, a different input from the on-disk tree above.
                 current = tree.capture(config, appended)

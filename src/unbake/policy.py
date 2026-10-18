@@ -776,6 +776,10 @@ def _findings(
 
 def text_findings(path: str, text: str, sdk_group: bool) -> tuple[Finding, ...]:
     """The findings of every rule that reads the text alone, with no snapshot, ROM or host."""
+    if config.is_assembly(path) and not sdk_group:
+        return (
+            Finding("source.library-asm", "assembly source must be inside a configured library directory", path=path),
+        )
     return _findings(None, path, text, None, sdk_group, None)
 
 
@@ -790,6 +794,8 @@ def evaluate(
     with effort.stage("policy.evaluate"):
         if _sdk(snapshot.config, path):
             return ()  # vendored source idioms; compile and ROM proof are still mandatory
+        if config.is_assembly(path):
+            return text_findings(path, text, False)
         return _findings(snapshot, path, text, view, sdk_group, only)
 
 
@@ -1220,7 +1226,18 @@ def audit_command(params: Json) -> Json:
     document = tomllib.loads((root / "config.toml").read_text()) if (root / "config.toml").is_file() else {}
     library = tuple(document.get("libraries", ()))
     names = (
-        run("diff", "--name-only", "-z", "--no-renames", against, "--", ":(icase)*.c", ":(icase)*.cpp", ":(icase)*.h")
+        run(
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            against,
+            "--",
+            ":(icase)*.c",
+            ":(icase)*.cpp",
+            ":(icase)*.h",
+            ":(icase)*.s",
+        )
         .decode()
         .split("\0")
     )

@@ -284,6 +284,17 @@ def get(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, *, lin
     """The preprocessed view; lines=False skips the per-line marker table that only active_lines needs."""
     with effort.stage("view.get"):
         config = snapshot.config
+        if configuration.is_assembly(unit.path):
+            text = snapshot.read(unit.path).decode()
+            key = _sha(text.encode())
+            return SourceView(
+                unit.path,
+                version,
+                key,
+                text,
+                ((unit.path, key),),
+                tuple((n, unit.path, n) for n in range(1, len(text.splitlines()) + 1)) if lines else (),
+            )
         root = config.project.root.resolve()
         key, reads, overlaid = _key(snapshot, unit, version, recipe)
         overlay = root / "build" / "views" / key[:16] if overlaid else None
