@@ -68,13 +68,28 @@ class Tree:
         return tuple(path for _, path in sorted(rows))
 
     def unowned(self, version: str) -> tuple[str, ...]:
-        """The symbols of the version no file owns, by address (a label inside data needs no owner)."""
-        rows = [
-            (s[1], n)
-            for n, s in self.symbols.get(version, {}).items()
-            if s[1] is not None and not symbols.inside_data(s[3], s[0])
-        ]
-        return tuple(n for _, n in sorted(rows) if (version, n) not in self._owners)
+        """The symbols of the version no file owns, by address. A label inside data needs no owner: a data name off a
+        word boundary, and a data name whose nearest name before it in the same mapping (ROM and RAM both contiguous)
+        is data (owned, unowned or such a label): its bytes are that piece's. Nor does any name at the address of an owned
+        name (a second name of the same bytes)."""
+        table = self.symbols.get(version, {})
+        rows = sorted(
+            (s[1], (version, n) not in self._owners, n) for n, s in table.items() if s[1] is not None
+        )  # owned first at one address
+        out: list[str] = []
+        inside, mapping, held = False, None, -1
+        for rom, free, name in rows:
+            vram, kind = table[name][0], table[name][3]
+            if rom - vram != mapping:
+                inside, mapping = False, rom - vram
+            if not free:
+                held = rom
+            if free and (rom == held or kind != "func" and (inside or symbols.inside_data(kind, vram))):
+                continue
+            if free:
+                out.append(name)  # its stand-in is a piece of its own: the data names after it are its labels
+            inside = kind != "func"
+        return tuple(out)
 
 
 def _rom(table: Mapping[str, symbols.Symbol], name: str) -> int:
@@ -363,7 +378,7 @@ def _files(config: Config, overlay: Mapping[str, bytes | None]) -> dict[str, byt
     """The bytes of every file the parse reads (src, include, symbol files), overlay applied."""
     root = _project(config).root
     paths = {p for folder in ("src", "include") for p in _listing(config, folder)}
-    paths |= {symbols.path(v) for v in _project(config).versions}
+    paths |= {f(v) for v in _project(config).versions for f in (symbols.path, symbols.aliases_path)}
     paths |= {p for p in overlay if p.startswith(("src/", "include/"))}
     blobs: dict[str, bytes] = {}
     for path in sorted(paths):
@@ -399,7 +414,13 @@ def capture(config: Config, overlay: Mapping[str, bytes | None] = {}) -> Tree:
 def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, bytes | None]) -> Tree:
     project = _project(config)
     versions: tuple[str, ...] = tuple(project.versions)
-    tables = {v: symbols.parse(blobs.get(symbols.path(v), b"").decode(errors="replace")) for v in versions}
+    tables = {
+        v: symbols.merged(
+            *(blobs.get(f(v), b"").decode(errors="replace") for f in (symbols.path, symbols.aliases_path)),
+            symbols.spans(config, v),
+        )
+        for v in versions
+    }
     sources = [p for p in blobs if p.startswith("src/") and _is_source(p)]
     jobs = [(p, v) for p in sources for v in versions]
     parsed = _parse_all(config, blobs, jobs, overlay)

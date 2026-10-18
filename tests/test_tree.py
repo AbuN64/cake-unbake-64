@@ -54,6 +54,36 @@ def test_unowned_and_duplicate(tmp_path: Path) -> None:
     assert finding.key == "tree.duplicate" and finding.unit == "c_func" and finding.versions == ("a",)
 
 
+def test_labels_inside_data_need_no_owner(tmp_path: Path) -> None:
+    """A data name after data in one mapping is a label of that piece; a name at an owned address is a second name of
+    those bytes; a function after data, and data after a function or in another mapping, still need an owner."""
+    rows = {
+        "c_func": ("main", 0x0, "func"),
+        "table": ("main", 0x20, "data"),
+        "inside": ("main", 0x24, "data"),
+        "deeper": ("main", 0x28, "data"),
+        "after": ("main", 0x30, "func"),
+        "tail": ("main", 0x40, "data"),
+        "fuzzy": ("ovl", 0x0, "func"),
+        "first": ("ovl", 0x20, "data"),
+    }
+    text = fixture.symbol_file("a", rows) + "same_c_func = 0x80000400; // type:func rom:0x1000\n"
+    sources = {"src/main/c.c": "s32 c_func(void) { return 1; }\ns32 table[1] = {1};\n"}
+    held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
+    assert held.unowned("a") == ("after", "tail", "fuzzy", "first")
+
+
+def test_aliases_are_facts_with_a_rom_from_their_segment(tmp_path: Path) -> None:
+    """versions/<v>/aliases.txt rows join the facts; a row without a rom takes its segment's."""
+    extra = {"versions/a/aliases.txt": "other = 0x80000400;\nnowhere = 0x90000000;\n"}
+    sources = {"src/main/c.c": "s32 other(void) { return 1; }\n"}
+    config = fixture.config(tmp_path, versions=("a",), sources=sources, extra=extra)
+    held = tree.capture(config)
+    assert held.symbols["a"]["other"][1] == 0x1000 and held.symbols["a"]["nowhere"][1] is None
+    assert held.owner("a", "other") == "src/main/c.c" and "c_func" not in held.unowned("a")
+    assert api.symbols(config, "a")["other"] == held.symbols["a"]["other"]
+
+
 def test_statics_and_unlisted_names_are_not_owned(tmp_path: Path) -> None:
     text = "static s32 helper(void) { return 0; }\nextern s32 c_func(void);\ns32 local[2] = {1, 2};\n"
     text += "s32 c_func(void) { return 1; }\n"

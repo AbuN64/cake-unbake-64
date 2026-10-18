@@ -57,6 +57,34 @@ def path(version: str) -> str:
     return f"versions/{version}/symbol_addrs.txt"
 
 
+def aliases_path(version: str) -> str:
+    """The facts splat never reads: a second name at an address symbol_addrs.txt already names, or a name a C file
+    defines inside bytes splat sees as one piece. The tree, the report and the link read them like symbol_addrs."""
+    return f"versions/{version}/aliases.txt"
+
+
+def spans(config: Config, version: str) -> tuple[tuple[int, int, int], ...]:
+    """(vram start, vram end, rom start) of each loaded segment of a version: a segment ends where the next begins."""
+    rows = sorted(config.project.version[version].segments, key=lambda s: s.rom)
+    return tuple(
+        (s.vram, s.vram + after.rom - s.rom, s.rom)
+        for s, after in zip(rows, rows[1:], strict=False)
+        if s.vram is not None and s.kind != "bin"
+    )
+
+
+def merged(text: str, aliases: str, held: Sequence[tuple[int, int, int]] = ()) -> dict[str, Symbol]:
+    """symbol_addrs.txt facts, then the aliases.txt facts of names it does not list. An alias written without a rom
+    takes the one the segment holding its vram gives (none when no segment or several do)."""
+    out = parse(text)
+    for name, (vram, rom, size, kind) in parse(aliases).items():
+        if rom is None:
+            found = [start + vram - low for low, high, start in held if low <= vram < high]
+            rom = found[0] if len(found) == 1 else None
+        out.setdefault(name, (vram, rom, size, kind))
+    return out
+
+
 def parse(text: str) -> dict[str, Symbol]:
     """name -> (vram, rom, size, type). A line without `type:` is data."""
     out: dict[str, Symbol] = {}
@@ -70,10 +98,14 @@ def parse(text: str) -> dict[str, Symbol]:
 
 
 def load(config: Config, version: str) -> dict[str, Symbol]:
-    try:
-        return parse((config.project.root / path(version)).read_text(errors="replace"))
-    except FileNotFoundError:
-        return {}
+    """symbol_addrs.txt and aliases.txt of one version (either may be absent)."""
+    texts = []
+    for name in (path(version), aliases_path(version)):
+        try:
+            texts.append((config.project.root / name).read_text(errors="replace"))
+        except FileNotFoundError:
+            texts.append("")
+    return merged(*texts, spans(config, version))
 
 
 def segment_at(config: Config, version: str, rom: int) -> str | None:
