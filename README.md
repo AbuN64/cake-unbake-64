@@ -132,6 +132,6 @@ While recompilations can be a fine short-term way to play a favourite game, I be
 
 Run `bin/dev-setup` once, then `bin/test`, `bin/lint` and `bin/hygiene`.
 Unit tests mock external tools; use `bin/test -p 'test_config.py'` to select an affected module.
-Process and real build proofs belong in `bin/integration`, outside the unit runner.
+Real build proofs run against a project checkout (`unbake setup`, `make check`), outside the unit runner.
 
 Licensed under [GNU GPL version 3 or later](LICENSE).
