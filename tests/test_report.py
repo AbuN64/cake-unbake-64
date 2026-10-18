@@ -306,7 +306,7 @@ def test_scores_from_cache(tmp_path, monkeypatch):
     assert rescore.rows(config, tree, facts) == {"f": {"a": 0.5}} and len(measured) == 2
 
 
-def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(tmp_path):
+def test_readme_with_blob_accounting_measures_against_the_rom_and_drops_the_partition_rows(tmp_path):
     config, current = _readme_case(tmp_path)
     plain = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
     held = {
@@ -321,11 +321,12 @@ def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(t
     for row in ("code      [", "data      [", "functions ["):  # values of the old rows are the same
         assert row.strip() in plain and row.strip() in out
     assert "blobs     [░░░░░░░░░░░░░░░░░░░░]   0.00% (~0.01%)  400 of 7,295,964</code>" in out
-    assert "platform  [▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒]   0.00% (~100.00%)  0 of 4,096</code>" in out
-    assert "unknown   [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 7,294,964</code>" in out
-    assert "rom       1,088,548 + 0 + 1,000 + 4,096 + 7,294,964 = 8,388,608 bytes</code>" in out
-    assert "blobs  [" in out and "= 16,777,216 bytes" in out  # the all block sums both ROMs
-    assert configuration.load_resource("repo.toml")["readme"]["legend"] in out
+    for gone in ("platform  [", "unknown   [", "rom       ", "data = C globals"):
+        assert gone not in out
+    # the top bars are measured against the exact ROM size: matched code+data+blobs plus platform, reaching fuzzy
+    assert "us   [" in out and " of 8,388,608 bytes</code>" in out and " of 16,777,216 bytes</code>" in out
+    sure = sum(current["versions"]["us"][k] for k in ("code_matched", "data_matched")) + 400 + 4096
+    assert f"{sure:,} of 8,388,608 bytes" in out
     assert report.readme(out, config, current) == out
 
 
@@ -500,7 +501,7 @@ def test_missing_rom_partition_refuses_without_replacing_published_progress(publ
     assert path.read_bytes() == b"previous"
 
 
-def test_blobs_bar_reserves_unknown_space_and_excludes_code_data_platform():
+def test_blobs_bar_leaves_the_rest_empty_and_excludes_code_data_platform():
     held = {
         "rom_size": 2000,
         "code_total": 600,

@@ -62,3 +62,34 @@ def test_overview_draws_platform_spans_and_labels_their_layer():
     svg = present.overview([], "us", {"platform": [(0, 4096), (0x20000, 0x20100)]}).decode()
     assert '<path class="p1"' in svg and ">platform</text>" in svg
     assert "0x000000" in svg and "0x020000" in svg
+
+
+def test_overview_legend_is_one_strip_in_the_site_palette():
+    layers = {"decoded": [(0, 256)], "identified": [(256, 512)], "platform": [(0x10000, 0x10100)]}
+    svg = present.overview([], "us", layers).decode()
+    assert "#ecdcaa" not in svg and "#b98b1d" not in svg and "#e3c27a" in svg and "prefers-color-scheme:dark" in svg
+    swatches = [m for m in svg.split("<rect")[1:]]
+    assert len({m.split('y="')[1].split('"')[0] for m in swatches}) == 1  # every swatch on the one row
+    for name in ("identified", "decoded", "platform", "0 %", "100 %"):
+        assert f">{name}</text>" in svg
+    plain = present.overview([], "us", {}).decode()
+    assert "identified" not in plain and "platform" not in plain
+
+
+def test_overview_collapses_runs_of_uniform_rows_into_one_labeled_band():
+    row = present.OVERVIEW_ROW
+    layers = {"decoded": [(5 * row, 9 * row)], "identified": [(10 * row, 11 * row)]}
+    mixed = SimpleNamespace(version="us", member=SimpleNamespace(rom=0), code=64, data=0, score=1.0, exact=True)
+    svg = present.overview([mixed], "us", layers).decode()
+    assert ">0x050000\u20130x080000</text>" in svg  # four uniform rows, one band
+    assert "0x060000</text>" not in svg and "0x000000</text>" in svg and "0x0A0000</text>" in svg  # one row stays a row
+    assert 'viewBox="0 0 720 ' + str(3 * present.OVERVIEW_PITCH + 6 + 11) + '"' in svg
+
+
+def test_overview_bands_rows_whose_only_breaks_are_seams_between_blobs_of_one_class():
+    row = present.OVERVIEW_ROW
+    seam = present.OVERVIEW_SEAM
+    layers = {"decoded": [(0, row // 2), (row // 2 + seam, 3 * row), (3 * row + 4096, 4 * row)]}
+    svg = present.overview([], "us", layers).decode()
+    assert ">0x000000\u20130x020000</text>" in svg  # the seam does not split the band
+    assert "0x030000</text>" in svg  # a 4 KiB hole is a real gap: that row stays mixed

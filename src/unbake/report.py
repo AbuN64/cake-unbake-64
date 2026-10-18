@@ -396,6 +396,14 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells)
 
 
+def _rom_line(label: str, bucket: Json, cells: int) -> str:
+    """The whole ROM: matched code, data and blobs plus the platform bytes, reaching over fuzzy code and identified
+    blobs, against the exact ROM size."""
+    sure = bucket["code_matched"] + bucket["data_matched"] + bucket["blobs_decoded"] + bucket["platform_total"]
+    reach = sure + bucket["code_fuzzy"] + bucket["data_fuzzy"] + bucket["blobs_identified"]
+    return _bar(label, sure, reach, bucket["rom_size"], cells)
+
+
 def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
     """One art bar: █ for `matched` bytes, ▒ for those up to `reach`, ░ for the rest of `total`."""
     percent = _pct(matched, total)
@@ -411,28 +419,8 @@ _BLOB_KEYS = ("rom_size", "platform_total", "blobs_total", "blobs_decoded", "blo
 
 
 def _blobs_line(label: str, held: Json, cells: int) -> str:
-    """Blobs: █ decoded, ▒ identified, ░ unknown, over ROM bytes outside code, data and platform."""
+    """Blobs: █ decoded, ▒ identified, ░ the rest, over the ROM bytes outside code, data and platform."""
     return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
-
-
-def _rom_line(label: str, credit: int, held: Json, name: str) -> str:
-    parts = (
-        f"{credit:,} {name} + {held['blobs_total']:,} blobs + {held['platform_total']:,} platform + "
-        f"{held['unknown_total']:,}"
-    )
-    return f"{label} {parts} unknown = {held['rom_size']:,} bytes"
-
-
-def _blob_rows(held: Json, cells: int, code: int, data: int) -> list[str]:
-    """The rows after code, data and functions: blobs, identified platform bytes, unknown, and the ROM sum."""
-    label = "{:<9}".format
-    return [
-        _blobs_line(label("blobs"), held, cells),
-        _bar(label("platform"), 0, held["platform_total"], held["platform_total"], cells),
-        _bar(label("unknown"), 0, 0, held["unknown_total"], cells),
-        f"{label('rom')} {code:,} + {data:,} + {held['blobs_total']:,} + {held['platform_total']:,} + "
-        f"{held['unknown_total']:,} = {held['rom_size']:,} bytes",
-    ]
 
 
 def _rom_sha256(config: Any, version: str) -> str:
@@ -466,15 +454,14 @@ def readme(text: str, config: Any, report: Json) -> str:
             )
         }
         counted = all("rom_size" in versions[v] for v in project.version)  # every ROM was present for the partition
-        width = max(map(len, ("all", *project.version, *(("blobs",) if counted else ())))) + 1
+        width = max(map(len, ("all", *project.version))) + 1
+        if counted:
+            total.update({k: sum(versions[v][k] for v in project.version) for k in _BLOB_KEYS})
+        line = _rom_line if counted else _line
         lines = [
-            _line(label.ljust(width), bucket, cells) + " bytes"
+            line(label.ljust(width), bucket, cells) + " bytes"
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.version)]
         ]
-        if counted:
-            sums = {k: sum(versions[v][k] for v in project.version) for k in _BLOB_KEYS}
-            lines.append(_blobs_line("blobs".ljust(width), sums, cells) + " bytes")
-            lines.append(_rom_line("rom".ljust(width), total["code_total"] + total["data_total"], sums, "code+data"))
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
             image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
@@ -492,10 +479,8 @@ def readme(text: str, config: Any, report: Json) -> str:
             header += f" SHA256 `{_rom_sha256(config, v)}` |"
             rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
             if "rom_size" in versions[v]:
-                rows += _blob_rows(versions[v], cells, versions[v]["code_total"], versions[v]["data_total"])
+                rows.append(_blobs_line("blobs".ljust(9), versions[v], cells))
             blocks.append(header + "\n|---|\n| <pre><code>" + "</code><br><code>".join(rows) + "</code></pre> |")
-        if counted and settings.get("legend"):
-            blocks.append(settings["legend"])
         text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
         first, last = settings["dependencies_begin"], settings["dependencies_end"]
         if text.count(first) == 1 and text.count(last) == 1 and text.index(first) < text.index(last):

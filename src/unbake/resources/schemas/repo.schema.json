@@ -107,10 +107,6 @@
     "dependencies_end": {
      "type": "string",
      "minLength": 1
-    },
-    "legend": {
-     "type": "string",
-     "minLength": 1
     }
    },
    "required": [

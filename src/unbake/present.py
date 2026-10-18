@@ -31,6 +31,7 @@ OVERVIEW_BAR = OVERVIEW_WIDTH - OVERVIEW_LEFT - 8
 OVERVIEW_HEIGHT = 13
 OVERVIEW_PITCH = 17
 OVERVIEW_JOIN = 32  # functions this close count as touching: alignment padding does not split a run
+OVERVIEW_SEAM = 1024  # a gap this small between two blobs of one class is a seam: the row still counts as uniform
 FUZZY_HIGH = 0.5
 _TONES = (
     ("q10", "exact"),
@@ -42,10 +43,13 @@ _TONES = (
     ("p1", "platform"),
 )
 _LEGEND = (28, 72, 72, 28)  # block widths of the legend bar: none, fuzzy low, fuzzy high, exact
-_BLOB_STYLE = ".b1{fill:#ecdcaa}.b2{fill:#b98b1d}@media (prefers-color-scheme:dark){.b1{fill:#5a4a1e}.b2{fill:#d1a63a}}"
-_PLATFORM_STYLE = ".p1{fill:#6f8d96}"
+# blobs and platform in the site's tones: its amber identified and decoded blobs, its strong edge colour for boot
 _OVERVIEW_STYLE = (
-    _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "") + _BLOB_STYLE + _PLATFORM_STYLE
+    _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "")
+    + ".b1{fill:#e3c27a}.b2{fill:#b87a14}.p1{fill:#b9b2a3}"
+    + ".bt{fill:#1b1a17}.bt.q10{fill:#fbf9f3}"
+    + "@media (prefers-color-scheme:dark){.b1{fill:#7a6232}.b2{fill:#d9a441}.p1{fill:#6a6658}"
+    + ".bt.b1,.bt.p1{fill:#f0ead8}.bt.q0{fill:#f0ead8}.bt.q10{fill:#1b1a17}}"
 )
 
 
@@ -59,6 +63,13 @@ def _tone(score: float, exact: bool) -> int:
     if exact:
         return 0
     return 3 if score <= 0 else 1 if score >= FUZZY_HIGH else 2
+
+
+def _uniform(parts: list[tuple[int, int, int]]) -> bool:
+    """A row of one class from edge to edge, the seams between its blobs (gaps up to OVERVIEW_SEAM) not counted."""
+    ends = [0, *(e for _, _, e in parts)]
+    starts = [s for _, s, _ in parts] + [OVERVIEW_ROW]
+    return len({t for t, _, _ in parts}) == 1 and all(b - a <= OVERVIEW_SEAM for a, b in zip(ends, starts, strict=True))
 
 
 def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any] | None = None) -> bytes:
@@ -83,7 +94,7 @@ def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any]
             runs[-1][1] = max(runs[-1][1], start + size)
         else:
             runs.append([start, start + size, tone])
-    rows: set[int] = set()
+    cover: dict[int, list[tuple[int, int, int]]] = {}  # per row its runs as (tone, start, end) inside the row
     drawn: list[list[tuple[float, int, float]]] = [
         [] for _ in _TONES
     ]  # per tone the outlines of its blocks: one path each keeps the file small
@@ -93,43 +104,53 @@ def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any]
         while at < end:
             row = at // OVERVIEW_ROW
             until = min(end, (row + 1) * OVERVIEW_ROW)
-            rows.add(row)
+            cover.setdefault(row, []).append((tone, at - row * OVERVIEW_ROW, until - row * OVERVIEW_ROW))
             drawn[tone].append((OVERVIEW_LEFT + (at - row * OVERVIEW_ROW) * scale, row, max((until - at) * scale, 1)))
             at = until
-    order = {row: n for n, row in enumerate(sorted(rows))}
-    lines = [
-        f'<text x="0" y="{n * OVERVIEW_PITCH + OVERVIEW_HEIGHT - 3}">0x{row * OVERVIEW_ROW:06X}</text>'
-        for row, n in order.items()
-    ]
+    uniform = {row: parts[0][0] for row, parts in cover.items() if _uniform(parts)}
+    slots: list[list[int]] = []  # [first row, last row, tone or -1]: runs of rows of one uniform class are one band
+    for row in sorted(cover):
+        tone = uniform.get(row, -1)
+        if slots and tone >= 0 and slots[-1][2] == tone and slots[-1][1] == row - 1:
+            slots[-1][1] = row
+        else:
+            slots.append([row, row, tone])
+    order = {row: n for n, (first, last, _) in enumerate(slots) for row in range(first, last + 1) if row in cover}
+    banded = {row for first, last, _ in slots if last > first for row in range(first, last + 1)}
+    lines, bands, whole = [], [], []
+    for n, (first, last, tone) in enumerate(slots):
+        y = n * OVERVIEW_PITCH
+        if last > first:
+            whole.append((tone, first))
+            name = f"0x{first * OVERVIEW_ROW:06X}\u20130x{last * OVERVIEW_ROW:06X}"
+            pos = f'x="{OVERVIEW_LEFT + 6}" y="{y + OVERVIEW_HEIGHT - 3}"'
+            bands.append(f'<text class="bt {_TONES[tone][0]}" {pos}>{name}</text>')
+        else:
+            lines.append(f'<text x="0" y="{y + OVERVIEW_HEIGHT - 3}">0x{first * OVERVIEW_ROW:06X}</text>')
     for (cls, _), blocks in zip(_TONES, drawn, strict=True):
+        blocks = [b for b in blocks if b[1] not in banded]
+        blocks += [(OVERVIEW_LEFT, row, OVERVIEW_BAR) for t, row in whole if _TONES[t][0] == cls]
         if blocks:
             shapes = "".join(
                 f"M{_num1(x)} {order[row] * OVERVIEW_PITCH}h{_num1(w)}v{OVERVIEW_HEIGHT}h-{_num1(w)}z"
                 for x, row, w in blocks
             )
             lines.append(f'<path class="{cls}" d="{shapes}"/>')
-    top = len(order) * OVERVIEW_PITCH + 6
-    legend, x = [], OVERVIEW_LEFT
+    lines += bands
+    top = len(slots) * OVERVIEW_PITCH + 6  # one legend strip: the 0 % to 100 % scale, then a swatch per layer drawn
+    legend = [f'<text x="{OVERVIEW_LEFT}" y="{top + 7}">0 %</text>']
+    x = OVERVIEW_LEFT + 34
     for cls, width in zip(("q0", "q3", "q7", "q10"), _LEGEND, strict=True):  # none, fuzzy low, fuzzy high, exact
-        legend.append(f'<rect class="{cls}" x="{x}" y="{top}" width="{width}" height="6"/>')
+        legend.append(f'<rect class="{cls}" x="{x}" y="{top + 1}" width="{width}" height="6"/>')
         x += width + 2
-    end = x - 2
-    label = top + 17
-    legend += [
-        f'<text x="{OVERVIEW_LEFT}" y="{label}">0 %</text>',
-        f'<text x="{end}" y="{label}" text-anchor="end">100 %</text>',
-    ]
-    if blobs:  # blob swatches, right of the status bar
-        x = end + 40
-        for cls, name in (("b1", "blob identified"), ("b2", "blob decoded")):
-            legend.append(f'<rect class="{cls}" x="{x}" y="{top}" width="28" height="6"/>')
-            legend.append(f'<text x="{x + 32}" y="{top + 6}">{name}</text>')
-            x += 150
-    height = label + 4
-    if (layers or {}).get("platform"):
-        legend.append(f'<rect class="p1" x="{OVERVIEW_LEFT}" y="{height + 4}" width="28" height="6"/>')
-        legend.append(f'<text x="{OVERVIEW_LEFT + 32}" y="{height + 10}">platform</text>')
-        height += 18
+    legend.append(f'<text x="{x + 4}" y="{top + 7}">100 %</text>')
+    x += 52
+    for cls, name in (("b1", "identified"), ("b2", "decoded"), ("p1", "platform")):
+        if (cls == "p1" and (layers or {}).get("platform")) or (cls != "p1" and blobs):
+            legend.append(f'<rect class="{cls}" x="{x}" y="{top + 1}" width="12" height="6"/>')
+            legend.append(f'<text x="{x + 16}" y="{top + 7}">{name}</text>')
+            x += 16 + 7 * len(name) + 12
+    height = top + 11
     head = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OVERVIEW_WIDTH} {height}" '
         f'width="{OVERVIEW_WIDTH}" height="{height}"><style>{_OVERVIEW_STYLE}</style>'
