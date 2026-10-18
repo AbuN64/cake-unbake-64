@@ -141,7 +141,7 @@ def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], li
 
 
 def _is_function(stmt: Sequence[str]) -> bool:
-    if not stmt or stmt[-1] != ")" or "=" in stmt or stmt[0] in {"struct", "union", "enum", "typedef"}:
+    if not stmt or stmt[-1] != ")" or "=" in stmt or stmt[0] == "typedef":
         return False
     return "(" in stmt and not (stmt[0].startswith('"'))
 

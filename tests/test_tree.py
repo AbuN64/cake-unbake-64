@@ -125,6 +125,16 @@ def test_scanner_reads_depth_zero_only() -> None:
     assert defined == ["hook", "placed", "label", "arr", "one", "two", "run"] and stand_ins == ["later"]
 
 
+
+def test_scanner_reads_functions_returning_aggregates() -> None:
+    text = """
+    struct Point *at(unsigned id) { return 0; }
+    union U make(void) { union U u; return u; }
+    enum E pick(void) { return 0; }
+    void after(void) { }
+    """
+    assert tree._scan(text) == (["at", "make", "pick", "after"], [])
+
 def test_second_capture_parses_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = fixture.config(tmp_path)
     calls = []
