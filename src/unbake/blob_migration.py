@@ -23,8 +23,6 @@ _TYPES = {
     "sound": "audio",
     "sequence": "audio",
     "level": "world",
-    "strings": "text",
-    "messages": "text",
 }
 _CURRENT = frozenset({"graphics", "model", "audio", "world", "text"})
 
@@ -46,12 +44,11 @@ def _format(old: str, value: str) -> str:
 
 
 def _known(config: Config, document: Json, system: Json) -> dict[str, list[tuple[int, int]]]:
-    return {
-        v: blobs.merge(
-            [*platform.ranges(config, v, system), *blobs.ranges(document, v)[0], *blobs.ranges(document, v)[1]]
-        )
-        for v in config.project.version
-    }
+    known = {}
+    for v in config.project.version:
+        decoded, identified = blobs.ranges(document, v)
+        known[v] = blobs.merge([*platform.ranges(config, v, system), *decoded, *identified])
+    return known
 
 
 def run(config: Config) -> Json:
@@ -80,8 +77,9 @@ def run(config: Config) -> Json:
             )
         )
     checked = deepcopy(old)
-    for row in checked.get("blob", {}).values():
-        row["type"] = "model" if row["type"] == "microcode" else _TYPES.get(row["type"], row["type"])
+    checked["blob"] = {n: row for n, row in checked.get("blob", {}).items() if row["type"] != "microcode"}
+    for row in checked["blob"].values():
+        row["type"] = _TYPES.get(row["type"], row["type"])
     configuration.validate("blobs", checked, blobs.FILE)
     if findings := blobs.check(config, checked):
         raise Refusal(*findings)
@@ -107,9 +105,7 @@ def run(config: Config) -> Json:
                 for start, end in spans:
                     if not 0 <= start < end <= config.project.version[version].size:
                         raise Refusal(Finding("blobs.migrate", f"{name}: invalid platform range", path=blobs.FILE))
-                    with configuration.rom(config.project, version).open("rb") as handle:
-                        handle.seek(start)
-                        hashes.append(sha256(handle.read(end - start)))
+                    hashes.append(sha256(platform.read(config, version, start, end)))
                 target["sha256"][version] = hashes
             if "rsp" not in proposed["platform"]:
                 proposed["platform"]["rsp"] = {}

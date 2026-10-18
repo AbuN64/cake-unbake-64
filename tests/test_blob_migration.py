@@ -20,8 +20,6 @@ MAPPING = {
     "sound": "audio",
     "sequence": "audio",
     "level": "world",
-    "strings": "text",
-    "messages": "text",
 }
 
 
@@ -34,6 +32,12 @@ def legacy():
             "rom": {v: [[0x1000 + i * 32, 0x1010 + i * 32]] for v in ("v", "w")},
         }
         for i, kind in enumerate(MAPPING)
+    }
+    rows["words"] = {
+        "type": "text",
+        "format": "current text",
+        "state": "identified",
+        "rom": {v: [[0x2000, 0x2010]] for v in ("v", "w")},
     }
     rows["sdk"] = {
         "type": "microcode",
@@ -54,8 +58,8 @@ def test_migration_preserves_metadata_and_coverage_with_verified_readback(tmp_pa
     path = tmp_path / "blobs.toml"
     path.write_bytes(b"# keep this review comment\n" + blobs.emit(old))
     result = blob_migration.run(config)
-    assert result["before"] == result["after"] == {"v": 4512, "w": 4512}
-    assert result["readback"] and result["types"] == 9 and result["platform"] == 1
+    assert result["before"] == result["after"] == {"v": 4496, "w": 4496}
+    assert result["readback"] and result["types"] == 7 and result["platform"] == 1
     now = blobs.load(config)
     assert {row["type"] for row in now["blob"].values()} == {"graphics", "model", "audio", "world", "text"}
     assert now["blob"]["texture"]["format"] == "texture: rgba16"
@@ -145,9 +149,9 @@ def test_public_migration_command_reads_back_two_versions(tmp_path, capsys, tool
     output = json.loads(capsys.readouterr().out)
     assert output["ok"]
     result = output["result"]
-    assert result["migrated"]["before"] == result["migrated"]["after"] == {"a": 4512, "b": 4512}
+    assert result["migrated"]["before"] == result["migrated"]["after"] == {"a": 4496, "b": 4496}
     assert result["migrated"]["readback"]
-    assert result["count"] == 10
+    assert result["count"] == 9
     assert {row["type"] for row in result["rows"]} == {"graphics", "model", "audio", "world", "text"}
     for partition in result["partition"].values():
         assert partition["platform"] == 4352
@@ -155,3 +159,24 @@ def test_public_migration_command_reads_back_two_versions(tmp_path, capsys, tool
         assert "boot" not in partition
     assert cli.main(args) == 0
     assert json.loads(capsys.readouterr().out)["result"]["migrated"]["files"] == []
+
+
+def test_migration_validates_without_pretending_microcode_is_a_model(tmp_path, monkeypatch):
+    config = _config(tmp_path, versions=("v", "w"))
+    (tmp_path / "blobs.toml").write_bytes(blobs.emit(legacy()))
+    seen = []
+    real = blobs.check
+    monkeypatch.setattr(blobs, "check", lambda *args: seen.append(set(args[1]["blob"])) or real(*args))
+    blob_migration.run(config)
+    assert "sdk" not in seen[0] and "texture" in seen[0]
+    assert not {"strings", "messages"} & blob_migration._TYPES.keys()
+
+
+def test_migration_reads_each_blob_range_list_once(tmp_path, monkeypatch):
+    config = _config(tmp_path, versions=("v", "w"))
+    (tmp_path / "blobs.toml").write_bytes(blobs.emit(legacy()))
+    calls = []
+    real = blobs.ranges
+    monkeypatch.setattr(blobs, "ranges", lambda document, v: calls.append(v) or real(document, v))
+    blob_migration._known(config, legacy(), platform.load(config))
+    assert sorted(calls) == ["v", "w"]

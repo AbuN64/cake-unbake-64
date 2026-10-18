@@ -1,10 +1,13 @@
 """Platform claims require exact ROM hashes and share one configuration with the fixed boot range."""
 
+import os
+
 import pytest
 import tomlkit
 from test_blobs import _config, _credits, _tree
 
-from unbake import platform, report
+from unbake import config as configuration
+from unbake import effort, platform, report
 from unbake.contracts import Refusal, sha1, sha256
 
 
@@ -66,3 +69,42 @@ def test_changed_rom_invalidates_partition_before_claiming_platform(tmp_path, mo
     config.project.version["v"].sha1 = sha1(data)
     with pytest.raises(Refusal, match=r"platform\.hash"):
         report.partitions(config, tree)
+
+
+def test_sha_ignores_rom_mtime_and_follows_content_at_same_size_and_mtime(tmp_path):
+    config = _config(tmp_path)
+    path = tmp_path / "roms/baserom.v.z64"
+    first = platform.sha(config)
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    assert platform.sha(config) == first
+    data = bytearray(path.read_bytes())
+    data[0x10] ^= 1
+    path.write_bytes(data)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    config.project.version["v"].sha1 = sha1(data)
+    configuration._VERIFIED.clear()
+    assert path.stat().st_size == stat.st_size and path.stat().st_mtime_ns == stat.st_mtime_ns
+    assert platform.sha(config) != first
+
+
+def test_valid_document_is_read_from_the_rom_once_and_ranges_is_pure(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    (tmp_path / "rom.toml").write_text(tomlkit.dumps(document()))
+    reads = []
+    real = platform.read
+    monkeypatch.setattr(platform, "read", lambda *args: reads.append(args) or real(*args))
+    effort._memo.clear()
+    loaded = platform.load(config)
+    platform.load(config)
+    assert len(reads) == 1
+    platform.ranges(config, "v", loaded)
+    platform.ranges(config, "v")
+    assert len(reads) == 1
+
+
+def test_rom_read_is_exact_or_refuses(tmp_path):
+    config = _config(tmp_path)
+    assert len(platform.read(config, "v", 0x8000, 0x8100)) == 256
+    with pytest.raises(Refusal, match=r"platform\.hash"):
+        platform.read(config, "v", 0xFFFF0, 0x200000)
