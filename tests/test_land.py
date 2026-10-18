@@ -57,3 +57,14 @@ def test_submit_many_keeps_each_verdict(world, monkeypatch):
     bad = {**good, "function": "other_missing"}
     verdicts = publish.accept_each(world.config, [(good, {}, False), (bad, {}, False)])
     assert verdicts[0] == () and verdicts[1] and verdicts[1][0].key == "land.request"
+
+
+def test_the_request_compare_builds_passes_the_submission_schema(world, monkeypatch):
+    from unbake import compare
+
+    monkeypatch.setattr(land, "process", SimpleNamespace(git=lambda *a: SimpleNamespace(stdout=b"abc\n")))
+    monkeypatch.setattr(land.effort, "invocation", lambda: "unbake submit")
+    request = compare._request("func_80000010", world.root / "cand.c", None)
+    intake = land._intake(world.config, request, [_proof(True), _proof(True)], None)
+    entry = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)  # validates "submission"
+    assert entry.overrides == {"add": [], "omit": []}

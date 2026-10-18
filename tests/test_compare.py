@@ -148,7 +148,7 @@ def test_an_exact_candidate_is_submitted_and_the_inbox_drained(world):
     assert call["request"] == {
         "file": str(world.tmp / "stand_in.c"),
         "function": "stand_in",
-        "overrides": {},
+        "overrides": {"add": [], "omit": []},
         "note": "why",
     }
     assert call["source"] == CANDIDATE.encode() and call["origin"] == "compare" and call["extras"] == {}

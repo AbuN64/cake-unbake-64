@@ -171,7 +171,7 @@ def _resolve(config: Config, file: Path, function: str | None) -> tuple[str, str
 
 
 def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
-    return {"file": str(file), "function": name, "overrides": {}, "note": note or ""}
+    return {"file": str(file), "function": name, "overrides": {"add": [], "omit": []}, "note": note or ""}
 
 
 # ---------------------------------------------------------------- compare and submit
