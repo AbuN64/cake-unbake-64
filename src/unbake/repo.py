@@ -312,8 +312,9 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
     bytes, or not at all: it has no extracted file of that name), in the file owning the previous address of its
     segment, right after that name's own stand-in (else at the end); when nothing precedes it, in the file owning the
     next address, right before that name's stand-in (else after the leading includes); a new src/<segment>/<ADDR>.<ext>
-    only when the segment has no owner at all. A data name takes the section of the data next to it: its bytes were part
-    of that name's until now."""
+    only when the segment has no owner at all. A library routine (foreign code, see libasm.homes) goes at the end
+    of its library file instead, never into a game file. A data name takes the section of the data next to it: its
+    bytes were part of that name's until now."""
     root, ext = config.project.root, _extension(current.modules)
     texts: dict[str, list[str]] = {}
     touched: set[str] = set()
@@ -330,6 +331,7 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
         if every:
             _drop(lines(module.path), sorted(every))
             touched.add(module.path)
+    library = libasm.homes(config, current)  # library routines kept out of game files
     sections = {(v, n): s for m in current.modules for v, names in m.sections.items() for n, s in names.items()}
     missing = {v: set(current.unowned(v)) for v in config.project.versions}
     for v in config.project.versions:
@@ -365,6 +367,8 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
             new = (f"src/{segment}/{vram:08X}{ext}", None)
             ahead = not elsewhere and not before and bool(after)
             path, anchor = (elsewhere, None) if elsewhere else before[-1] if before else after[0] if after else new
+            if not elsewhere and name in library:
+                path, anchor, ahead = library[name].path, None, False
             before_it = sections.get((v, anchor or ""), ".data")
             section = ".text" if kind == "func" else before_it if before_it in _DATA_SECTIONS else ".data"
             line = _stand_in(_MACRO.get(kind, _MACRO.get(section, "INCLUDE_DATA")), segment, name)

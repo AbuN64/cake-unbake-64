@@ -134,3 +134,46 @@ def test_versions_whose_stand_in_lives_in_another_file_must_render_the_same_asse
     (sdk / "g.c").write_text('#if defined(VERSION_B)\nINCLUDE_ASM("main", f);\n#endif\n')
     library.project.digest = "split-owners"
     assert libasm.plan(library, tree.capture(library)) == {}
+
+
+@pytest.fixture
+def lost(tmp_path, monkeypatch):
+    """The library's stand-in line for `f` is gone and a game file owns the address before it: nothing owns `f`."""
+    facts = (
+        "keep = 0x80000420; // type:func rom:0x1020 size:0x10\n"
+        "f = 0x80000410; // type:func rom:0x1010 size:0x10\n"
+        "g = 0x80000400; // type:func rom:0x1000 size:0x10\n"
+    )
+    cfg = fixture.config(
+        tmp_path,
+        sources={"src/sdk/keep.c": 'INCLUDE_ASM("main", keep);\n', "src/game.c": 'INCLUDE_ASM("main", g);\n'},
+        symbols={v: facts for v in ("a", "b")},
+    )
+    cfg.project.libraries = ("src/sdk",)
+    for version in cfg.project.versions:
+        path = cfg.project.root / f"roms/baserom.{version}.z64"
+        data = bytearray(path.read_bytes())
+        data[0x1010:0x1020] = b"".join(w.to_bytes(4, "big") for w in WORDS)
+        path.write_bytes(data)
+        cfg.project.version[version].sha1 = sha1(data)
+    monkeypatch.setattr(repo, "_generated", lambda config, held: {})
+    return cfg
+
+
+def test_lost_library_routine_is_rendered_again_and_never_placed_in_a_game_file(lost):
+    result = repo.sync(lost, {})
+    root = lost.project.root
+    assert "src/sdk/f.s" in result["written"]
+    assert '("main", f)' not in (root / "src/game.c").read_text()
+
+
+def test_lost_library_routine_that_renders_differently_keeps_its_stand_in_in_the_library(lost):
+    path = lost.project.root / "roms/baserom.b.z64"
+    data = bytearray(path.read_bytes())
+    data[0x1010:0x1014] = (0x40026800).to_bytes(4, "big")
+    path.write_bytes(data)
+    lost.project.version["b"].sha1 = sha1(data)
+    repo.sync(lost, {})
+    root = lost.project.root
+    assert '("main", f)' not in (root / "src/game.c").read_text()
+    assert 'INCLUDE_ASM("main", f);' in (root / "src/sdk/keep.c").read_text()

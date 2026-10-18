@@ -131,60 +131,118 @@ def scan(text: str) -> dict[str, str]:
     return found
 
 
+def _rom_words(cfg: Config, held: Any, roms: dict[str, bytes], version: str, name: str) -> tuple[list[int], int] | None:
+    """The words and address of a function name in a version, or None when its extent is unknown."""
+    table = held.symbols[version]
+    vram, rom, size, kind = table[name]
+    if kind != "func" or rom is None:
+        return None
+    next_rom = min(
+        (r[1] for r in table.values() if r[1] is not None and r[1] > rom), default=cfg.project.version[version].size
+    )
+    size = min(size or next_rom - rom, next_rom - rom)
+    if size <= 0 or size % 4:
+        return None
+    if version not in roms:
+        roms[version] = config.rom(cfg.project, version).read_bytes()
+    raw = roms[version][rom : rom + size]
+    if len(raw) != size:
+        return None
+    return [int.from_bytes(raw[i : i + 4], "big") for i in range(0, len(raw), 4)], vram
+
+
+def _home(cfg: Config, held: Any, version: str, name: str) -> Any:
+    """The library source file that keeps a library routine nobody owns: the C file of a library directory owning the
+    nearest address of the same mapping (ROM and RAM offset), the one before the name first."""
+    table = held.symbols[version]
+    vram, rom = table[name][0], table[name][1]
+    best: tuple[bool, int, Any] | None = None
+    for module in held.modules:
+        if config.is_assembly(module.path) or not config.library(cfg.project, module.path):
+            continue
+        for owned in module.owns.get(version, ()):
+            row = table.get(owned)
+            if row is None or row[1] is None or row[0] - row[1] != vram - rom:
+                continue
+            key = (row[1] > rom, abs(row[1] - rom), module)
+            if best is None or key[:2] < best[:2]:
+                best = key
+    return best[2] if best else None
+
+
+def homes(cfg: Config, held: Any) -> dict[str, Any]:
+    """Library routines no file owns, by name, with the library source file that must keep them: the code is not
+    compiler output in any version that has it, so it is library assembly and never belongs in a game file."""
+    if not getattr(cfg.project, "libraries", ()):
+        return {}
+    out: dict[str, Any] = {}
+    roms: dict[str, bytes] = {}
+    seen: set[str] = set()
+    for version in cfg.project.versions:
+        for name in held.unowned(version):
+            if name in seen:
+                continue
+            seen.add(name)
+            module = _home(cfg, held, version, name)
+            if module is None:
+                continue
+            toolchain = adapters.row(recipes.of(cfg, module.path).toolchain)
+            for holder in (v for v in cfg.project.versions if name in held.symbols[v]):
+                found = _rom_words(cfg, held, roms, holder, name)
+                if found is None or not foreign(found[0], found[1], toolchain):
+                    break
+            else:
+                out[name] = module
+    return out
+
+
 def plan(cfg: Config, held: Any) -> dict[str, bytes]:
-    """Extract foreign library stand-ins as source, one function per file; existing source is never overwritten."""
+    """Extract foreign library routines as source, one function per file; existing source is never overwritten. A
+    routine is a library stand-in or has lost it (no file owns it); it is rendered only when every version holding it
+    renders the same assembly, otherwise it keeps (or gets back) its stand-in in a library file."""
     if not getattr(cfg.project, "libraries", ()):
         return {}
     writes: dict[str, bytes] = {}
     roms: dict[str, bytes] = {}
     by_path = {m.path: m for m in held.modules}
+    lost = homes(cfg, held)
 
-    def stand_in(version: str, name: str) -> bool:
-        """The version's owner of the name is a library stand-in: a `.s` defines the name in every version whose facts
-        hold it, so every one of them must give up a stand-in to it."""
+    def free(version: str, name: str) -> bool:
+        """The version's owner of the name is a library stand-in, or nothing owns it: a `.s` defines the name in every
+        version whose facts hold it, so every one of them must give up a stand-in to it."""
         owner = by_path.get(held.owner(version, name) or "")
-        return (
-            owner is not None and config.library(cfg.project, owner.path) and name in owner.stand_ins.get(version, ())
-        )
+        if owner is None:
+            return name in lost
+        return config.library(cfg.project, owner.path) and name in owner.stand_ins.get(version, ())
 
-    for module in held.modules:
-        if not config.library(cfg.project, module.path):
+    candidates = [(m, n) for m in held.modules if config.library(cfg.project, m.path) for n in _stand_ins(m)]
+    candidates += [(m, n) for n, m in lost.items()]
+    done: set[str] = set()
+    for module, name in candidates:
+        if name in done:
             continue
+        done.add(name)
         toolchain = adapters.row(recipes.of(cfg, module.path).toolchain)
-        for name in sorted({n for names in module.stand_ins.values() for n in names}):
-            texts: set[str] = set()
-            holders = [v for v in cfg.project.versions if name in held.symbols[v]]
-            for version in holders:
-                vram, rom, size, kind = held.symbols[version][name]
-                if kind != "func" or rom is None or not stand_in(version, name):
-                    break
-                table = held.symbols[version]
-                next_rom = min(
-                    (r[1] for r in table.values() if r[1] is not None and r[1] > rom),
-                    default=cfg.project.version[version].size,
-                )
-                size = min(size or next_rom - rom, next_rom - rom)
-                if size <= 0 or size % 4:
-                    break
-                if version not in roms:
-                    roms[version] = config.rom(cfg.project, version).read_bytes()
-                raw = roms[version][rom : rom + size]
-                words = [int.from_bytes(raw[i : i + 4], "big") for i in range(0, len(raw), 4)]
-                if len(raw) != size or not foreign(words, vram, toolchain):
-                    break
-                names = {r[0]: n for n, r in sorted(table.items(), reverse=True)}
-                text = render(name, words, vram, names)
-                if text is None:
-                    break
-                texts.add(text)
-            else:
-                if len(texts) == 1:
-                    path = str(Path(module.path).with_name(name + ".s"))
-                    raw = texts.pop().encode()
-                    existing = cfg.project.root / path
-                    if existing.exists() and existing.read_bytes() != raw:
-                        raise Refusal(
-                            Finding("library-asm.source", "would overwrite existing assembly source", path=path)
-                        )
-                    writes[path] = raw
+        texts: set[str] = set()
+        for version in (v for v in cfg.project.versions if name in held.symbols[v]):
+            found = _rom_words(cfg, held, roms, version, name) if free(version, name) else None
+            if found is None or not foreign(found[0], found[1], toolchain):
+                break
+            names = {r[0]: n for n, r in sorted(held.symbols[version].items(), reverse=True)}
+            text = render(name, found[0], found[1], names)
+            if text is None:
+                break
+            texts.add(text)
+        else:
+            if len(texts) == 1:
+                path = str(Path(module.path).with_name(name + ".s"))
+                raw = texts.pop().encode()
+                existing = cfg.project.root / path
+                if existing.exists() and existing.read_bytes() != raw:
+                    raise Refusal(Finding("library-asm.source", "would overwrite existing assembly source", path=path))
+                writes[path] = raw
     return writes
+
+
+def _stand_ins(module: Any) -> list[str]:
+    return sorted({n for names in module.stand_ins.values() for n in names})
