@@ -14,6 +14,8 @@ from unbake import adapters, repo
 from unbake import config as configuration
 from unbake.contracts import NativeResult, Refusal, sha1
 
+pytestmark = pytest.mark.usefixtures("plain_roms")
+
 
 @pytest.fixture(autouse=True)
 def _compiler_row(monkeypatch):

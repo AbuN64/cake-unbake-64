@@ -35,7 +35,7 @@ def make_config(tmp_path: Path, files: dict[str, FileFacts] | None = None) -> Si
         cflags=(),
         asflags=(),
         versions=("eu-1", "us"),
-        version={v: SimpleNamespace(sha1=SHA[v], segments=segments(v)) for v in SHA},
+        version={v: SimpleNamespace(sha1=SHA[v], size=0x3000, segments=segments(v)) for v in SHA},
         files=files or {},
     )
     return SimpleNamespace(project=project, host=SimpleNamespace(workers=2))

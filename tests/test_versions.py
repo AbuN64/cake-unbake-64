@@ -8,6 +8,8 @@ import pytest
 from unbake import store, versions
 from unbake.contracts import Refusal, Segment
 
+pytestmark = pytest.mark.usefixtures("plain_roms")
+
 TEXT = (
     b"// a comment\n"
     b"func_one = 0x80200400; // type:func rom:0x1000 size:0x40\n"
@@ -23,7 +25,9 @@ def make_config(tmp_path: Path, text: bytes = TEXT) -> SimpleNamespace:
     (tmp_path / "roms").mkdir(exist_ok=True)
     (tmp_path / "roms/baserom.us.z64").write_bytes(bytes(0x4000))
     cuts = (Segment("main", 0x1000, 0x80200400, "code"), Segment("ovl", 0x2000, 0x80210000, "code"))
-    project = SimpleNamespace(root=tmp_path, versions=("us",), version={"us": SimpleNamespace(segments=cuts)})
+    project = SimpleNamespace(
+        root=tmp_path, versions=("us",), version={"us": SimpleNamespace(size=0x4000, segments=cuts)}
+    )
     return SimpleNamespace(project=project)
 
 

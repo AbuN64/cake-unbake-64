@@ -5,6 +5,22 @@ ignore = ["/.env", "/asm/", "/build/", "/roms/", "/tools/", "/.unbake/", "/local
 # The pinned wheel the audit stage installs ({version} is the tool release).
 wheel = "https://github.com/AbuN64/cake-unbake-64/releases/download/v{version}/unbake-{version}-py3-none-any.whl"
 
+# What the check stage installs beside the wheel: splat is the host's required `splat` tool (README's pins).
+splat_pip = ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"]
+
+# The host config `unbake host --write` writes for CI: a throwaway runner has no host file, so ci/run writes this one
+# (cores and workers "auto"; the cache and toolchains live beside the file; tools are found on PATH or beside python).
+[ci_host]
+memory_parent_bytes = 2000000000
+memory_worker_bytes = 3000000000
+cache_max_bytes = 20000000000
+serial_seconds = 2
+serial_cores = 2
+pool_fill = 0.8
+pool_fanout = 2
+author_name = "unbake"
+author_email = "unbake@localhost"
+
 # splat options init writes into each versions/<version>/<name>.yaml (placeholders {version} {name} {rom}).
 [splat.options]
 base_path = "../.."

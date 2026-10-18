@@ -7,6 +7,8 @@ import pytest
 
 from unbake import rescore
 
+pytestmark = pytest.mark.usefixtures("plain_roms")
+
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):

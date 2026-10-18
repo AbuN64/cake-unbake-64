@@ -21,7 +21,7 @@ def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
         ("span_8100", 0x8100, "code"),
     ]
     version = {
-        v: N(segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k) for n, r, k in rows), meta={})
+        v: N(size=rom, segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k) for n, r, k in rows), meta={})
         for v in versions
     }
     (root / "roms").mkdir(exist_ok=True)

@@ -340,6 +340,7 @@ class Segment:
 @dataclass(frozen=True)
 class VersionFacts:
     sha1: str  # sha1 of roms/baserom.<v>.z64
+    size: int  # byte size of roms/baserom.<v>.z64: where the last segment ends
     segments: tuple[Segment, ...]
     meta: Json  # cartridge_id, region and description (README rows); the first two default from the ROM header
 

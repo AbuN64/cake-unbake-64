@@ -112,10 +112,15 @@
        ],
        "additionalProperties": false
       }
+     },
+     "size": {
+      "type": "integer",
+      "minimum": 1
      }
     },
     "required": [
-     "sha1"
+     "sha1",
+     "size"
     ],
     "additionalProperties": false
    }

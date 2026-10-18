@@ -76,7 +76,7 @@ def validate_roms(roms: Mapping[str, Path], names_from: str) -> Json:
                 fields[row["name"]] = (
                     raw.decode("ascii", "replace").rstrip("\x00 ") if row["encoding"] == "ascii" else raw.hex()
                 )
-            result[v] = {"sha1": rom_sha, "fields": fields, "similarity": 1.0}
+            result[v] = {"sha1": rom_sha, "size": len(data[v]), "fields": fields, "similarity": 1.0}
         for findings in (orders, duplicates):
             if findings:
                 raise Refusal(*findings)
@@ -196,7 +196,9 @@ def init(params: Json) -> Json:
             rows = _segment_rows(yaml.safe_load(detected.read_bytes()))
             detected.unlink()  # splat's scratch output: the generated versions/<v>/splat.yaml replaces it
             write(f"versions/{v}/symbol_addrs.txt", b"")
-            blocks.append(f'\n[version.{v}]\nsha1 = "{versions[v]["sha1"]}"\n{_toml_rows(rows)}')
+            blocks.append(
+                f'\n[version.{v}]\nsha1 = "{versions[v]["sha1"]}"\nsize = {versions[v]["size"]}\n{_toml_rows(rows)}'
+            )
         values = {key: json.dumps(params[key]) for key in ("name", "title", "names_from", "toolchain")}
         write("config.toml", _render("config.toml", **values, version_blocks="".join(blocks)))
         write(
@@ -486,7 +488,7 @@ def _extract_key(config: Config, v: str) -> str:
             _splat_version(config.host.tools["splat"], root),
             sha1((root / f"versions/{v}/splat.yaml").read_bytes()),
             sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes()),
-            sha1((root / f"roms/baserom.{v}.z64").read_bytes()),
+            sha1(configuration.rom(config.project, v).read_bytes()),
         )
     )
 

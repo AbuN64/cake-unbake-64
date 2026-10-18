@@ -9,6 +9,8 @@ from unbake import config as configuration
 from unbake import report, rescore
 from unbake.contracts import Refusal, sha256
 
+pytestmark = pytest.mark.usefixtures("plain_roms")
+
 SEG = "main"
 
 

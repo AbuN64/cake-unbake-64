@@ -3,11 +3,13 @@
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 import unbake
 from unbake import ci
 from unbake import config as configuration
+from unbake.contracts import Refusal
 
 
 def _files():
@@ -82,9 +84,39 @@ def test_the_check_stage_installs_unbake_before_it_runs_make_in_every_forge():
     """`make check CHECK=tree` calls `unbake sync --check`: each check job needs Python and the wheel."""
     files = _files()
     check = re.search(r"^check\)\n(.*?)\n    ;;", files[ci.RUN], re.M | re.S).group(1)
-    assert check.splitlines() == ['    pip install "$WHEEL"', "    make check CHECK=tree"]
+    assert check.splitlines() == [
+        '    pip install "$WHEEL" "splat64[mips]==0.50.0" "spimdisasm==1.42.4"',
+        "    host=$(mktemp -d)",
+        '    unbake host --write "$host/host.toml"',
+        '    export UNBAKE_HOST="$host/host.toml"',
+        "    make check CHECK=tree",
+    ]
     steps = yaml.safe_load(files[".github/workflows/ci.yml"])["jobs"]["check"]["steps"]
     assert steps[0]["uses"].startswith("actions/checkout") and steps[1]["uses"].startswith("actions/setup-python")
     assert steps[1]["with"]["python-version"] == "3.13" and steps[-1]["run"] == "sh ci/run check"
     gitlab = yaml.safe_load(files[".gitlab-ci.yml"])
     assert gitlab["check"]["image"].startswith("python:3.13")
+
+
+def test_host_writes_a_loadable_host_config_with_auto_cores_beside_the_file(tmp_path, monkeypatch):
+    tools = {name: tmp_path / "bin" / name for name in ("git", "make", "splat")}
+    for tool in tools.values():
+        tool.parent.mkdir(exist_ok=True)
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    result = ci.host({"write": tmp_path / "out" / "host.toml"})
+    assert result["tools"] == ["git", "make", "splat"]
+    host = configuration.load_host(tmp_path / "out" / "host.toml")
+    assert 1 <= host.workers <= host.cores
+    assert "auto" in host.origins["resources.cores"].note
+    assert host.cache_dir == tmp_path / "out" / "cache" and set(host.tools) == {"git", "make", "splat"}
+
+
+def test_host_refuses_a_runner_without_a_required_tool_by_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(ci.sys, "executable", str(tmp_path / "python"))
+    with pytest.raises(Refusal) as caught:
+        ci.host({"write": tmp_path / "host.toml"})
+    assert [f.path for f in caught.value.findings] == ["git", "make", "splat"]
+    assert not (tmp_path / "host.toml").exists()

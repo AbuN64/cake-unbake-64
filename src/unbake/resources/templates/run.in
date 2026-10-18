@@ -15,7 +15,10 @@ base() {
 
 case "$${1:-}" in
 check)
-    pip install "$$WHEEL"
+    pip install "$$WHEEL" ${splat}
+    host=$$(mktemp -d)
+    unbake host --write "$$host/host.toml"
+    export UNBAKE_HOST="$$host/host.toml"
     make check CHECK=tree
     ;;
 audit)

@@ -327,6 +327,43 @@ def _header(raw: bytes) -> tuple[str, str]:
     return f"NUS-{code}-{revision}", _table("rom.toml", "country").get(country, f"country {country}")
 
 
+_VERIFIED: dict[tuple[str, int, int], str] = {}
+
+
+def rom(project: Project, vid: str) -> Path:
+    """The baserom of a version, once its bytes are known to be the configured ones: a command that uses ROM bytes
+    asks here and a missing or different ROM refuses by name; a command that never does runs without ROMs."""
+    path = project.root / "roms" / f"baserom.{vid}.z64"
+    key = f"version.{vid}.sha1"
+    try:
+        stat = path.stat()
+        size = project.version[vid].size
+        if stat.st_size != size:
+            raise Refusal(
+                Finding(
+                    "config.file", f"configured {size} bytes, rom is {stat.st_size}", path=f"project:version.{vid}.size"
+                )
+            )
+        got = _VERIFIED.get((str(path), stat.st_mtime_ns, stat.st_size)) or sha1(path.read_bytes())
+    except FileNotFoundError:
+        raise Refusal(Finding("config.file", f"roms/baserom.{vid}.z64 does not exist", path=f"project:{key}")) from None
+    _VERIFIED[(str(path), stat.st_mtime_ns, stat.st_size)] = got
+    if got != project.version[vid].sha1:
+        raise Refusal(
+            Finding("config.file", f"configured {project.version[vid].sha1}, rom is {got}", path=f"project:{key}")
+        )
+    return path
+
+
+def rom_meta(project: Project, vid: str) -> Json:
+    """cartridge_id and region from the ROM header unless the version row spells them, then the row's description."""
+    meta = dict(project.version[vid].meta)
+    if "cartridge_id" not in meta or "region" not in meta:
+        header = rom(project, vid).read_bytes()[:0x40]
+        meta = dict(zip(("cartridge_id", "region"), _header(header), strict=True)) | meta
+    return meta
+
+
 def _tracked(root: Path) -> set[str]:
     return process.tracked(root)
 
@@ -354,20 +391,11 @@ def load_project(
             problems.append(bad("libraries", f"{folder} must be a source subdirectory"))
     version: dict[str, VersionFacts] = {}
     for vid, row in table.items():
-        try:
-            raw = read(f"roms/baserom.{vid}.z64")
-        except FileNotFoundError:
-            problems.append(bad(f"version.{vid}.sha1", f"roms/baserom.{vid}.z64 does not exist"))
-            continue
-        if (got := sha1(raw)) != row["sha1"]:
-            problems.append(bad(f"version.{vid}.sha1", f"configured {row['sha1']}, rom is {got}"))
-        cartridge_id, region = _header(raw)
         segments = tuple(
             Segment(s["name"], s["rom"], s.get("vram"), s.get("kind", "code")) for s in row.get("segments", ())
         ) or (Segment("main", 0x1000, None, "code"),)
-        meta = {"cartridge_id": cartridge_id, "region": region}
-        meta.update({k: row[k] for k in ("cartridge_id", "region", "description") if k in row})
-        version[vid] = VersionFacts(row["sha1"], segments, meta)
+        meta = {k: row[k] for k in ("cartridge_id", "region", "description") if k in row}
+        version[vid] = VersionFacts(row["sha1"], row["size"], segments, meta)
     files = {
         path: FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())))
         for path, row in document.get("file", {}).items()

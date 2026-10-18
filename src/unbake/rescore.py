@@ -6,9 +6,9 @@ import json
 from collections.abc import Mapping
 from functools import lru_cache
 from importlib import import_module
-from pathlib import Path
 from typing import Any, Protocol
 
+from unbake import config as configuration
 from unbake import effort, pool, store, symptoms
 from unbake.contracts import code_identity, digest, sha256
 
@@ -47,8 +47,7 @@ def _scorer() -> str:
 
 
 def _target_sha(config: Any, version: str, rom: int, size: int) -> str:
-    path: Path = config.project.root / "roms" / f"baserom.{version}.z64"
-    with path.open("rb") as handle:
+    with configuration.rom(config.project, version).open("rb") as handle:
         handle.seek(rom)
         return sha256(handle.read(size))
 

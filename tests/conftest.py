@@ -154,3 +154,10 @@ def warm(monkeypatch: pytest.MonkeyPatch) -> WarmWorkers:
     monkeypatch.setattr(pool, "ProcessPoolExecutor", workers)
     monkeypatch.setattr(pool, "_INLINE_AT", 0)
     return workers
+
+
+@pytest.fixture
+def plain_roms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For a stub project: a ROM is its plain path, unverified, and its meta is the row's (test_config is real)."""
+    monkeypatch.setattr(configuration, "rom", lambda project, vid: project.root / "roms" / f"baserom.{vid}.z64")
+    monkeypatch.setattr(configuration, "rom_meta", lambda project, vid: project.version[vid].meta)

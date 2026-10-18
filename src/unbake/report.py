@@ -439,7 +439,7 @@ def _perfect_line(label: str, perfect_bytes: int, total: int, cells: int) -> str
 
 
 def _rom_sha256(config: Any, version: str) -> str:
-    path = Path(config.project.root) / "roms" / f"baserom.{version}.z64"
+    path = configuration.rom(config.project, version)
     return effort.memo(("rom-sha256", str(path)), lambda: sha256_file(path))
 
 
@@ -489,11 +489,14 @@ def readme(text: str, config: Any, report: Json) -> str:
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
             image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
-            link, cartridge = (project.readme_map_link, project.version[project.readme_map].meta.get("cartridge_id"))
+            link, cartridge = (
+                project.readme_map_link,
+                configuration.rom_meta(project, project.readme_map).get("cartridge_id"),
+            )
             anchor = f"#{cartridge.lower()}" if cartridge else ""  # the site names each ROM by its cartridge id
             blocks.append(f'<a href="{link}{anchor}">{image}</a>' if link else image)
         for v in project.version:
-            meta = project.version[v].meta
+            meta = configuration.rom_meta(project, v)
             details = ", ".join(meta[k] for k in ("cartridge_id", "region") if meta.get(k))
             header = f"| {v}" + (f" ({details})" if details else "") + "."
             header += f" {meta['description']}" if meta.get("description") else ""

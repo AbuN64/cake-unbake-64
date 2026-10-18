@@ -149,7 +149,7 @@ def project(
     segments = [{"name": n, "rom": r, "vram": v} for n, (r, v) in SEGMENTS.items()]
     document = (
         'schema = 4\nname = "Fixture"\ntoolchain = "gcc-test"\nnames_from = "a"\ncppflags = ["-DGAME"]\n\n'
-        + "".join(_table(f"version.{v}", {"sha1": sha1(rom), "segments": segments}) for v in versions)
+        + "".join(_table(f"version.{v}", {"sha1": sha1(rom), "size": len(rom), "segments": segments}) for v in versions)
     )
     _write(root / "config.toml", document)
     for v in versions:
@@ -216,6 +216,7 @@ def config(tmp: Path, **kw: Any) -> Config:
     version = {
         v: SimpleNamespace(
             sha1=sha1(bytes(0x4000)),
+            size=0x4000,
             segments=tuple(SimpleNamespace(name=n, rom=r, vram=m, kind="code") for n, (r, m) in SEGMENTS.items()),
         )
         for v in names

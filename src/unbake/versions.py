@@ -86,8 +86,7 @@ def symbol_addrs(config: Config, version: str, reader: Callable[[str], bytes] | 
 def segments(config: Config, version: str) -> tuple[tuple[str, int, int, int], ...]:
     """(name, rom start, rom end, vram or 0) per segment; each ends where the next begins, the last at the ROM end."""
     rows = config.project.version[version].segments
-    rom = config.project.root / "roms" / f"baserom.{version}.z64"
-    last = rom.stat().st_size if rom.is_file() else rows[-1].rom
+    last = config.project.version[version].size
     return tuple(
         (s.name, s.rom, rows[i + 1].rom if i + 1 < len(rows) else max(s.rom, last), s.vram or 0)
         for i, s in enumerate(rows)
@@ -185,11 +184,11 @@ def read(
     reuse: Mapping[str, Version] | None = None,
 ) -> dict[str, Version]:
     with effort.stage("versions.read"):
-        root, wanted = config.project.root, [v for v in config.project.versions if only is None or v in only]
+        wanted = [v for v in config.project.versions if only is None or v in only]
         out: dict[str, Version] = {}
         for vid in wanted:
             rows = symbol_addrs(config, vid, reader)
-            rom = root / "roms" / f"baserom.{vid}.z64"
+            rom = configuration.rom(config.project, vid)
             table = {r.name: r.vram for r in rows}
             code = frozenset(r.name for r in rows if r.kind == "func")
             out[vid] = Version(

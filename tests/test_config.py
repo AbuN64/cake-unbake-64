@@ -237,6 +237,7 @@ def _rom(code: bytes = b"NRWE", revision: int = 0) -> bytes:
     return bytes(0x3B) + code + bytes([revision]) + bytes(0x40)
 
 
+SIZE = len(_rom())
 RW = f"""schema = 4
 name = "RageWars"
 title = "Turok: Rage Wars"
@@ -249,6 +250,7 @@ readme_map_link = "https://example.test/map/"
 
 [version.us]
 sha1 = "{HASH_A}"
+size = {SIZE}
 cartridge_id = "NUS-NRWE-0"
 region = "North America"
 description = "First release."
@@ -259,6 +261,7 @@ segments = [
 
 [version.us-rev1]
 sha1 = "{HASH_B}"
+size = {SIZE}
 
 [file."src/IO/80200500.CPP"]
 toolchain = "gcc-2.7.2-kmc"
@@ -273,13 +276,17 @@ toolchain = "gcc-2.7.2-kmc"
 
 [version.us]
 sha1 = "{HASH_A}"
+size = {SIZE}
 """
 TRACKED = ["src/IO/80200500.CPP", "src/IO/80200600.CPP", "src/main.c"]
 
 
 def _project(tmp_path: Path, text: str, tracked: list[str] = TRACKED, roms: dict[str, bytes] | None = None) -> Any:
     (tmp_path / "config.toml").write_text(text)
-    store = roms or {"us": _rom(), "us-rev1": _rom(b"NRWE", 1)}
+    store = roms if roms is not None else {"us": _rom(), "us-rev1": _rom(b"NRWE", 1)}
+    for name, raw in store.items():
+        (tmp_path / "roms").mkdir(exist_ok=True)
+        (tmp_path / "roms" / f"baserom.{name}.z64").write_bytes(raw)
 
     def reader(path: str) -> bytes:
         if path == "config.toml":
@@ -359,7 +366,10 @@ def test_defaults_are_derived(tmp_path: Path) -> None:
     assert project.readme_map is None and project.readme_map_link is None
     facts = project.version["us"]
     assert facts.segments == (contracts.Segment("main", 0x1000, None, "code"),)
-    assert facts.meta == {"cartridge_id": "NUS-NRWE-0", "region": "North America"}
+    assert facts.meta == {} and configuration.rom_meta(project, "us") == {
+        "cartridge_id": "NUS-NRWE-0",
+        "region": "North America",
+    }
     assert contracts.macro("us-rev1") == "VERSION_US_REV1"
 
 
@@ -370,13 +380,14 @@ def test_names_from_defaults_to_the_first_sorted_version(tmp_path: Path) -> None
 
 def test_header_gives_cartridge_and_region(tmp_path: Path) -> None:
     project = _load(tmp_path, RW)
-    assert project.version["us-rev1"].meta == {"cartridge_id": "NUS-NRWE-1", "region": "North America"}
-    assert project.version["us"].meta["description"] == "First release."
+    assert configuration.rom_meta(project, "us-rev1") == {"cartridge_id": "NUS-NRWE-1", "region": "North America"}
+    assert configuration.rom_meta(project, "us")["description"] == "First release."
     roms = {"us": _rom(b"NPDP", 2)}
     other = tmp_path / "pal"
     other.mkdir()
     text, roms = _with_hashes(BT, roms)
-    assert _project(other, text, [], roms).version["us"].meta == {"cartridge_id": "NUS-NPDP-2", "region": "Europe"}
+    pal = _project(other, text, [], roms)
+    assert configuration.rom_meta(pal, "us") == {"cartridge_id": "NUS-NPDP-2", "region": "Europe"}
 
 
 def test_file_precedence(tmp_path: Path) -> None:
@@ -401,9 +412,28 @@ def test_an_unknown_file_key_is_refused(tmp_path: Path) -> None:
     assert {f.path for f in refusal.findings} == {"project:file.src/IO/80200500.CPP", "project:file.src/IO/"}
 
 
-def test_sha1_mismatch(tmp_path: Path) -> None:
-    refusal = _refusal(_project, tmp_path, BT, [], {"us": _rom()})
+def test_sha1_mismatch_refuses_where_the_rom_bytes_are_used(tmp_path: Path) -> None:
+    project = _project(tmp_path, BT, [], {"us": _rom()})  # loading reads no ROM
+    refusal = _refusal(configuration.rom, project, "us")
     assert _keys(refusal) == {"config.file"} and refusal.findings[0].path == "project:version.us.sha1"
+
+
+def test_a_rom_of_another_size_refuses_before_it_is_hashed(tmp_path: Path) -> None:
+    project = _project(tmp_path, BT, [], {"us": _rom()})
+    (tmp_path / "roms/baserom.us.z64").write_bytes(_rom() + b"\0")
+    refusal = _refusal(configuration.rom, project, "us")
+    assert refusal.findings[0].path == "project:version.us.size"
+
+
+def test_a_version_without_a_size_is_refused(tmp_path: Path) -> None:
+    refusal = _refusal(_project, tmp_path, BT.replace(f"size = {SIZE}\n", ""), [])
+    assert _keys(refusal) == {"config.schema"}
+
+
+def test_a_missing_rom_loads_and_refuses_by_name_where_its_bytes_are_used(tmp_path: Path) -> None:
+    project = _project(tmp_path, BT, [], {})
+    refusal = _refusal(configuration.rom, project, "us")
+    assert "roms/baserom.us.z64 does not exist" in refusal.findings[0].reason
 
 
 def test_load_resource_carries_platform_and_family_rows() -> None:
