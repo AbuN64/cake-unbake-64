@@ -7,7 +7,7 @@ import pytest
 
 from unbake import config as configuration
 from unbake import report, rescore
-from unbake.contracts import Refusal, sha256
+from unbake.contracts import Finding, Refusal, sha256
 
 pytestmark = pytest.mark.usefixtures("plain_roms")
 
@@ -270,7 +270,7 @@ def test_files_lists_only_the_readme_and_the_one_image(tmp_path, monkeypatch):
     rows = report.build_credits(["us", "eu"], tree, facts, frozenset({"us"}), {}, frozenset())
     monkeypatch.setattr(report, "credits", lambda config, tree: rows)
     monkeypatch.setattr(report, "exact_versions", lambda config, tree: frozenset({"us"}))
-    monkeypatch.setattr(report, "has_verdict", lambda config, tree: True)
+    monkeypatch.setattr(report, "publish_hold", lambda config, tree: None)
     made = report.files(config, tree)
     assert sorted(made) == ["README.md", "docs/overview-us.svg"]
     assert made["docs/overview-us.svg"].startswith(b"<svg ")
@@ -283,7 +283,7 @@ def test_files_writes_no_image_when_no_readme_map(tmp_path, monkeypatch):
     tree = _tree([], "files-none")
     monkeypatch.setattr(report, "credits", lambda config, tree: ())
     monkeypatch.setattr(report, "exact_versions", lambda config, tree: frozenset())
-    monkeypatch.setattr(report, "has_verdict", lambda config, tree: True)
+    monkeypatch.setattr(report, "publish_hold", lambda config, tree: None)
     assert sorted(report.files(config, tree)) == ["README.md"]
 
 
@@ -436,6 +436,7 @@ def published_case(tmp_path, monkeypatch):
     facts = _facts(exact=(4096, 16, "func"), alias=(4100, 0, "func"), fuzzy=(4112, 8, "func"), asm=(4120, 8, "func"))
     rows = _credits(tree, facts, scored={"fuzzy": {"a": 1.0}})
     monkeypatch.setattr(report, "_capture", lambda config: tree)
+    monkeypatch.setattr(report, "publish_hold", lambda config, tree: None)
     monkeypatch.setattr(report, "credits", lambda config, tree: rows)
     monkeypatch.setattr(
         report,
@@ -553,5 +554,49 @@ def test_files_writes_nothing_without_a_check_verdict_for_the_tree(tmp_path):
     config, _ = _readme_case(tmp_path)
     (tmp_path / "README.md").write_text("<!-- progress -->\nold\n<!-- /progress -->\n")
     tree = _tree([_module("src/a.c", ["f"], versions=("us",))], "unchecked")
-    assert not report.has_verdict(config, tree)
+    assert report.publish_hold(config, tree).key == "sync.unchecked"
     assert report.files(config, tree) == {}
+
+
+def _hold_case(tmp_path, document):
+    config, _ = _readme_case(tmp_path)
+    (tmp_path / "README.md").write_text("<!-- progress -->\nold\n<!-- /progress -->\n")
+    (tmp_path / "progress.json").write_text("old json")
+    tree = _tree([_module("src/a.c", ["f"], versions=("us",))], "held")
+    (tmp_path / ".unbake").mkdir()
+    if document is not None:
+        (tmp_path / ".unbake/check.json").write_text(
+            json.dumps({"digest": "held", "exact": [], "failing": [], **document})
+        )
+    return config, tree
+
+
+def test_a_failed_build_verdict_holds_published_progress(tmp_path):
+    config, tree = _hold_case(tmp_path, {"build_failed": "make exit 2"})
+    hold = report.publish_hold(config, tree)
+    assert (hold.key, hold.blocking) == ("sync.build_failed", False)
+    assert "make exit 2" in hold.reason
+    assert report.files(config, tree) == {}
+
+
+def test_a_completed_build_verdict_lets_progress_move(tmp_path):
+    config, tree = _hold_case(tmp_path, {"build_failed": None})
+    assert report.publish_hold(config, tree) is None
+
+
+def test_record_build_marks_and_clears_the_failure(tmp_path):
+    report.record_build(tmp_path, "in", [], "make exit 2")
+    assert json.loads((tmp_path / ".unbake/check.json").read_bytes())["build_failed"] == "make exit 2"
+    report.record_build(tmp_path, "in", ["us"])
+    assert json.loads((tmp_path / ".unbake/check.json").read_bytes())["build_failed"] is None
+
+
+def test_plain_report_keeps_progress_json_under_the_same_hold(published_case, monkeypatch):
+    config, _ = published_case
+    path = config.project.root / "progress.json"
+    path.write_text("old json")
+    finding = Finding("sync.build_failed", "failed", blocking=False)
+    monkeypatch.setattr(report, "publish_hold", lambda config, tree: finding)
+    result = report.run(config, {})
+    assert path.read_text() == "old json"
+    assert result["notes"][0]["key"] == "sync.build_failed"

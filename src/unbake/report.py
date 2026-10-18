@@ -7,6 +7,7 @@ from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import asdict
 from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -77,7 +78,11 @@ def _check(config: Any, tree: Any) -> Json | None:
         if "build_inputs" in loaded:
             valid = loaded["build_inputs"] == import_module("unbake.build").project_inputs(config.project)
             if valid:
-                return loaded if same_tree else {k: loaded[k] for k in ("exact", "failing", "build_inputs")}
+                return (
+                    loaded
+                    if same_tree
+                    else {k: loaded[k] for k in ("exact", "failing", "build_inputs", "build_failed") if k in loaded}
+                )
             return {**loaded, "exact": []} if same_tree else None
         if same_tree:
             return loaded
@@ -93,13 +98,14 @@ def record(config: Any, tree: Any, **fields: Any) -> None:
     store.write(path, json.dumps(document, sort_keys=True).encode())
 
 
-def record_build(root: Path, inputs: str, exact: list[str]) -> None:
-    """The build verdict in the same check document as source debt; each has its own input identity."""
+def record_build(root: Path, inputs: str, exact: list[str], failed: str | None = None) -> None:
+    """The build verdict in the same check document as source debt; each has its own input identity. `failed` names a
+    build that did not complete (make exited nonzero): it says nothing about how much code matches."""
     path = root / ".unbake/check.json"
     kept: Json = {}
     with suppress(FileNotFoundError, ValueError, TypeError):
         kept = json.loads(path.read_bytes())
-    document = {**kept, "exact": sorted(exact), "failing": [], "build_inputs": inputs}
+    document = {**kept, "exact": sorted(exact), "failing": [], "build_inputs": inputs, "build_failed": failed}
     store.write(path, json.dumps(document, sort_keys=True).encode())
 
 
@@ -519,10 +525,29 @@ def _archive(download: Mapping[str, Any]) -> str:
     return f"[{name}]({download['url']}) sha256 `{str(download['sha256'])[:12]}`"
 
 
-def has_verdict(config: Any, tree: Any) -> bool:
-    """Whether a check recorded a verdict for this tree: without one every version reads as unmatched, so the numbers
-    derived from it would be zeros, not progress."""
-    return _check(config, tree) is not None
+def publish_hold(config: Any, tree: Any) -> Finding | None:
+    """The one rule for moving published progress (README block, overview, progress.json): a non-blocking finding
+    when it must stay as it is, else None. Progress moves only on the verdict of a completed build: with no verdict
+    every version reads as unmatched and a failed build matched nothing, so the numbers would be zeros, not progress."""
+    check = _check(config, tree)
+    if check is None:
+        return Finding(
+            "sync.unchecked",
+            "no check verdict for this tree, so the README progress block, overview and progress.json were not touched",
+            path="README.md",
+            blocking=False,
+            action="run make check, then unbake sync",
+        )
+    if failure := check.get("build_failed"):
+        return Finding(
+            "sync.build_failed",
+            f"the last build failed ({failure}), which says nothing about matching, so the README progress block, "
+            "overview and progress.json were not touched",
+            path="README.md",
+            blocking=False,
+            action="fix the build, run make check, then unbake sync",
+        )
+    return None
 
 
 def progress_bytes(config: Any, tree: Any) -> bytes:
@@ -535,10 +560,10 @@ def progress_bytes(config: Any, tree: Any) -> bytes:
 
 
 def files(config: Any, tree: Any) -> dict[str, bytes]:
-    """README.md with its progress block, the one image it embeds and an existing progress.json; empty when no check
-    verdict exists for the tree, so the numbers on disk stay as they are."""
+    """README.md with its progress block, the one image it embeds and an existing progress.json; empty when
+    `publish_hold` holds the tree, so the numbers on disk stay as they are."""
     with effort.stage("report.files"):
-        if not has_verdict(config, tree):
+        if publish_hold(config, tree):
             return {}
         document = progress(config, tree)
         root = Path(config.project.root)
@@ -556,7 +581,10 @@ def run(config: Any, params: Json) -> Json:
 
         tree = _capture(config)
         result = {**current(config, tree), "inbox": pending}
-        store.write(config.project.root / "progress.json", progress_bytes(config, tree))
+        if hold := publish_hold(config, tree):
+            result["notes"] = [asdict(hold)]
+        else:
+            store.write(config.project.root / "progress.json", progress_bytes(config, tree))
         if params.get("next"):
             result["next"] = progress.unmatched(config, tree)
         return result

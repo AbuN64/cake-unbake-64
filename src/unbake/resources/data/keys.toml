@@ -334,6 +334,10 @@ sentence = "the generated files or stand-in lines differ from what unbake sync w
 owner = "repo"
 sentence = "no check verdict for this tree, so sync left the README progress block, overview and progress.json alone"
 
+[key."sync.build_failed"]
+owner = "repo"
+sentence = "the last build failed, which says nothing about matching, so sync and report left the published progress alone"
+
 [key."audit.credit_drop"]
 owner = "policy"
 sentence = "progress.json lost matched functions that no removed C explains"

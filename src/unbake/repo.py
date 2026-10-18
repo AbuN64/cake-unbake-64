@@ -421,15 +421,8 @@ def sync(config: Config, params: Json) -> Json:
     result, current = _sync(config, params)
     if not (config.project.root / "README.md").is_file():
         return result
-    if not report.has_verdict(config, current):
-        note = Finding(
-            "sync.unchecked",
-            "no check verdict for this tree, so the README progress block, overview and progress.json were not touched",
-            path="README.md",
-            blocking=False,
-            action="run make check, then unbake sync",
-        )
-        return {**result, "notes": [asdict(note)]}
+    if hold := report.publish_hold(config, current):
+        return {**result, "notes": [asdict(hold)]}
     wanted = report.files(config, current)
     if params.get("check"):
         differ = sorted(p for p, v in wanted.items() if _read(config.project.root / p) != v)

@@ -12,7 +12,7 @@ import pytest
 
 from unbake import adapters, repo
 from unbake import config as configuration
-from unbake.contracts import NativeResult, Refusal, sha1
+from unbake.contracts import Finding, NativeResult, Refusal, sha1
 
 pytestmark = pytest.mark.usefixtures("plain_roms")
 
@@ -545,7 +545,7 @@ def test_init_refuses_a_directory_that_is_not_empty(init_case):
 def test_sync_refreshes_readme_from_the_current_report_renderer(world, monkeypatch):
     (world.root / "README.md").write_text("old progress")
     calls = []
-    monkeypatch.setattr(repo.report, "has_verdict", lambda config, tree: True)
+    monkeypatch.setattr(repo.report, "publish_hold", lambda config, tree: None)
     monkeypatch.setattr(
         repo.report, "files", lambda config, tree: calls.append(tree) or {"README.md": b"current progress"}
     )
@@ -556,10 +556,16 @@ def test_sync_refreshes_readme_from_the_current_report_renderer(world, monkeypat
     assert len(calls) == 2  # check renders what sync would write, to compare
 
 
+def held(key, action):
+    return Finding(key, "held", blocking=False, action=action)
+
+
 def test_sync_without_a_verdict_keeps_the_progress_files_and_says_to_check(world, monkeypatch):
     (world.root / "README.md").write_text("old progress")
     (world.root / "progress.json").write_text("old json")
-    monkeypatch.setattr(repo.report, "has_verdict", lambda config, tree: False)
+    monkeypatch.setattr(
+        repo.report, "publish_hold", lambda config, tree: held("sync.unchecked", "run make check, then unbake sync")
+    )
     monkeypatch.setattr(repo.report, "files", lambda config, tree: pytest.fail("numbers derived without a verdict"))
     result = repo.sync(world.cfg, {"check": False})
     assert (world.root / "README.md").read_text() == "old progress"
@@ -574,7 +580,7 @@ def test_sync_without_a_verdict_keeps_the_progress_files_and_says_to_check(world
 
 def test_sync_check_refuses_a_progress_file_that_differs_from_what_sync_writes(world, monkeypatch):
     (world.root / "README.md").write_text("zero percent")
-    monkeypatch.setattr(repo.report, "has_verdict", lambda config, tree: True)
+    monkeypatch.setattr(repo.report, "publish_hold", lambda config, tree: None)
     monkeypatch.setattr(repo.report, "files", lambda config, tree: {"README.md": b"real", "progress.json": b"{}\n"})
     (world.root / "progress.json").write_text("{}\n")
     repo.sync(world.cfg, {"check": False})

@@ -643,6 +643,7 @@ def make_check(config: Config, held: Tree | None = None) -> Json:
                 exact=sorted(config.project.versions),
                 failing=[],
                 build_inputs=known,
+                build_failed=None,
             )
             return done
         effort.count("make-check", False)
@@ -656,9 +657,16 @@ def make_check(config: Config, held: Tree | None = None) -> Json:
                 exact=sorted(config.project.versions),
                 failing=[],
                 build_inputs=inputs(config),
+                build_failed=None,
             )
             return done
-        report.record(config, held or tree.capture(config), exact=[], build_inputs=inputs(config))
+        report.record(
+            config,
+            held or tree.capture(config),
+            exact=[],
+            build_inputs=inputs(config),
+            build_failed=f"make exit {result.exit}",
+        )
         lines = result.stderr.decode(errors="replace").splitlines()
         failed = [line for line in lines if "***" in line]  # make -k ran everything it could: every failed target
         raise Refusal(Finding("setup.make", "\n".join(failed or lines[-20:]), missing=(f"make exit {result.exit}",)))
@@ -686,7 +694,7 @@ def verify(params: Json) -> Json:
                 )
             else:
                 exact.append(version)
-    report.record_build(project.root, project_inputs(project), exact)
+    report.record_build(project.root, project_inputs(project), exact, f"make exit {status}" if status else None)
     if findings:
         raise Refusal(*findings)
     return {"exact": exact}
