@@ -43,10 +43,18 @@ def _make(toolchain: str, config: Config, cppflags: Sequence[str], cflags: Seque
 
 def unit(config: Config, module: Any) -> UnitSpec:
     """The compile identity of a tree module: its path, the names it owns and its [file] facts."""
-    facts = file_facts(config.project, module.path)
+    return _spec(config, module.path, tuple(sorted({n for names in module.owns.values() for n in names})))
+
+
+def of(config: Config, path: str) -> Recipe:
+    """The recipe the build compiles the source `path` with: its [file] row's toolchain and options, no override."""
+    return resolve(config, _spec(config, path, ()), {})
+
+
+def _spec(config: Config, path: str, names: tuple[str, ...]) -> UnitSpec:
+    facts = file_facts(config.project, path)
     options = {k: list(v) for k, v in (("add", facts.cflags), ("omit", facts.omit)) if v}
-    names = tuple(sorted({n for names in module.owns.values() for n in names}))
-    return UnitSpec(module.path, "c", names, facts.toolchain or config.project.toolchain, options)
+    return UnitSpec(path, "c", names, facts.toolchain or config.project.toolchain, options)
 
 
 def resolve(config: Config, unit: UnitSpec, overrides: Json) -> Recipe:

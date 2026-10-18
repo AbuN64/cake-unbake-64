@@ -16,8 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from unbake import config as configuration
-from unbake import effort, pool, process, store, symbols
+from unbake import adapters, effort, pool, process, recipes, store, symbols
 from unbake.contracts import Config, Finding, Refusal, sha256
 
 KIND = "tree.file"
@@ -110,10 +109,21 @@ def macro(version: str) -> str:
     return "VERSION_" + version.upper().replace("-", "_")
 
 
-def _cppflags(config: Config) -> list[str]:
-    project = _project(config)
-    row = configuration.load_resource("toolchains.toml")["toolchain"].get(project.toolchain, {})
-    return [*row.get("cppflags", ()), *project.cppflags]
+def _argv(
+    config: Config, path: str, version: str, source: str, extra: Sequence[str] = (), markers: bool = False
+) -> list[str]:
+    """The build's preprocess command of `path` for `version`, as the Makefile spells it: the toolchain row's template
+    with the row's, the project's and the [file] row's preprocessor flags, the version macro, `include` and the file's
+    folder; `extra` flags follow the flags. With `markers`, a row's -P is dropped so line markers stay."""
+    recipe = recipes.of(config, path)
+    directory = path.rpartition("/")[0] or "."
+    return adapters.toolchain(config, recipe.toolchain).argv(
+        "preprocess",
+        cppflags=[*(f for f in recipe.cppflags if not (markers and f == "-P")), *extra],
+        defines=[f"-D{macro(version)}"],
+        includes=["-Iinclude", f"-I{directory}/"],
+        source=[source],
+    )
 
 
 # ---------------------------------------------------------------- one file
@@ -301,28 +311,25 @@ def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[s
     """A file's parse key names every input of the parse: the text, the version, the preprocessor and its flags, the
     headers it reaches, and this module's code (never the rest of the tool, so another tool edit keeps it)."""
     directory = path.rpartition("/")[0]
-    flags = _cppflags(config)
-    cpp = str(process.tool(config, "cpp"))
-    basis = [
-        "sections",
-        _code(),
-        cpp,
-        sha256(text),
-        macro(version),
-        flags,
-        _closure(read, directory, version, text, flags),
-    ]
+    argv = _argv(config, path, version, "-")
+    basis = ["sections", _code(), sha256(text), argv, _closure(read, directory, version, text, argv)]
     return sha256(json.dumps(basis, sort_keys=True).encode())
 
 
-def _preprocess(config: Config, path: str, text: bytes, version: str, extra: Sequence[str]) -> str:
-    root = _project(config).root
-    directory = path.rpartition("/")[0]
-    argv: list[str | Path] = [
-        process.tool(config, "cpp"), "-P", "-undef", "-nostdinc", *_cppflags(config), f"-D{macro(version)}", *extra,
-        "-Iinclude", f"-I{directory}", f"-Iasm/{version}/include", "-",
-    ]  # fmt: skip
-    result = process.run("tree.cpp", argv, root, tmp=process.scratch(root), stdin=text)
+def preprocess(config: Config, path: str, version: str, text: bytes | None = None, markers: bool = False) -> str:
+    """The text the build's compiler reads for the source `path` in `version`, byte for byte the Makefile's preprocess
+    step: of the file on disk, or of `text` as that file; `markers` keeps line markers a row's -P would drop."""
+    return _preprocess(config, path, text, version, (), markers)
+
+
+def _preprocess(
+    config: Config, path: str, text: bytes | None, version: str, extra: Sequence[str], markers: bool = False
+) -> str:
+    """What the build's preprocessor makes of `path` for `version`, with `extra` flags: of `text` as that file (read
+    on stdin), or of the file on disk when `text` is None (its own name in any line markers, as the build has it)."""
+    root = config.project.root
+    argv = _argv(config, path, version, path if text is None else "-", extra, markers)
+    result = process.run("tree.cpp", argv, root, tmp=process.scratch(root), stdin=text or b"")
     if result.exit != 0:
         lines = result.stderr.decode(errors="replace").strip().splitlines()
         raise Refusal(
@@ -360,8 +367,8 @@ def _parsed(
 
     def produce() -> bytes:
         kinds: dict[str, str] = {}
-        plain = _scan(_preprocess(config, path, text, version, ()), kinds)
-        fuzzy = _scan(_preprocess(config, path, text, version, ("-DNON_MATCHING",)))
+        plain = _scan(_preprocess(config, path, text, version, ("-P",)), kinds)
+        fuzzy = _scan(_preprocess(config, path, text, version, ("-P", "-DNON_MATCHING")))
         mine = set(plain[0])
         row = [plain[0], plain[1], [n for n in dict.fromkeys(fuzzy[0]) if n not in mine], kinds]
         return json.dumps(row).encode()

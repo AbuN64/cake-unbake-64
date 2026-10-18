@@ -10,6 +10,8 @@ import pytest
 from unbake import api, effort, pool, store, tree
 from unbake.contracts import Config, Refusal
 
+pytestmark = pytest.mark.usefixtures("toolchains")  # the parse runs the toolchain row's preprocess template
+
 
 @pytest.fixture(autouse=True)
 def _inline(monkeypatch: pytest.MonkeyPatch) -> None:

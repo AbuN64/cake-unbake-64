@@ -8,8 +8,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
+from unbake import adapters, effort, human, pool, process, recipes, store, tree
 from unbake import config as _config
-from unbake import effort, human, pool, store
 from unbake import symbols as _symbols
 from unbake import versions as _versions
 from unbake.contracts import Config, Finding, Json, Refusal, Snapshot, Span, StageRecord
@@ -24,6 +24,7 @@ __all__ = [
     "Tree",
     "asm_path",
     "bind",
+    "build_context",
     "cached",
     "capture",
     "closed",
@@ -31,6 +32,7 @@ __all__ = [
     "load",
     "memo",
     "pool_map",
+    "preprocess",
     "score",
     "snapshot",
     "stage",
@@ -70,9 +72,51 @@ def snapshot(config: Config) -> Snapshot:
 
 
 def _head(config: Config) -> str:
-    from unbake import process
-
     return process.git(config, "rev-parse", "HEAD").stdout.decode().strip()
+
+
+def preprocess(config: Config, path: str, version: str, text: bytes | None = None, markers: bool = False) -> str:
+    """The source `path` as the build's compiler reads it in `version` (the Makefile's preprocess step, byte for byte);
+    `text` stands for the file's contents, `markers` keeps the line markers a toolchain's -P drops."""
+    return tree.preprocess(config, path, version, text, markers)
+
+
+def build_context(config: Config, name: str, version: str, text: bytes | None = None) -> dict[str, Any]:
+    """What decomp-permuter needs for the function `name` in `version`, from the toolchain rows the Makefile uses:
+    `path` (the owning module), `source` (that module, or `text` standing for it, as the compiler reads it),
+    `script` (compile.sh: the build's preprocess, compile and assemble of "$1" into the object "$3"), `cc` (the
+    compile argv over {in} and {out}), `toolchain`, `cppflags`, `cflags`, `asm_path` and `asm` (the target assembly)
+    and `assemble` (the argv that assembles it into {out}, as unbake assembles a target)."""
+    path = capture(config).owner(version, name)
+    if path is None:
+        raise Refusal(Finding("symbols.unknown", f"no module owns {name} in {version}", unit=name, versions=(version,)))
+    recipe = recipes.of(config, path)
+    root, target = config.project.root, _symbols.asm_path(config, version, name)
+    cc = adapters.toolchain(config, recipe.toolchain).argv(
+        "compile", codegen=recipe.cflags, name=["function"], source=["{in}"], out=["{out}"]
+    )
+    assemble = adapters.render(
+        adapters.assemble_template(None)[0],
+        {
+            "as": [str(process.tool(config, "mips_as"))],
+            "asflags": recipe.asflags,
+            "includes": [f"-I{root / 'asm' / version / 'include'}", f"-I{root / 'include'}"],
+            "source": [str(root / target)],
+            "out": ["{out}"],
+        },
+    )
+    return {
+        "path": path,
+        "source": tree.preprocess(config, path, version, text),
+        "script": adapters.script(config, recipe, version),
+        "cc": cc,
+        "toolchain": recipe.toolchain,
+        "cppflags": list(recipe.cppflags),
+        "cflags": list(recipe.cflags),
+        "asm_path": target,
+        "asm": (root / target).read_text(encoding="utf-8", errors="replace"),
+        "assemble": assemble,
+    }
 
 
 def cached(config: Config, kind: str, key: str, produce: Callable[[], bytes]) -> bytes:
