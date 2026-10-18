@@ -377,3 +377,7 @@ sentence = "the blobs command was given something it cannot read or run"
 [key."report.partition"]
 owner = "report"
 sentence = "the ROM bytes are not counted exactly once: a byte is credited twice, a range lies beyond the ROM or the parts do not sum to the ROM size"
+
+[key."report.rom"]
+owner = "progress"
+sentence = "published progress needs the ROM partition for every version"

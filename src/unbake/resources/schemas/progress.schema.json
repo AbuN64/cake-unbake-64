@@ -1,0 +1,297 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:progress",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 2
+  },
+  "carts": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string"
+     },
+     "rom_size": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "code": {
+      "type": "object",
+      "properties": {
+       "matched": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "fuzzy": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "total": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [
+       "matched",
+       "fuzzy",
+       "total"
+      ],
+      "additionalProperties": false
+     },
+     "data": {
+      "type": "object",
+      "properties": {
+       "matched": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "fuzzy": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "total": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [
+       "matched",
+       "fuzzy",
+       "total"
+      ],
+      "additionalProperties": false
+     },
+     "functions": {
+      "type": "object",
+      "properties": {
+       "matched": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "fuzzy": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "total": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [
+       "matched",
+       "fuzzy",
+       "total"
+      ],
+      "additionalProperties": false
+     },
+     "blobs": {
+      "type": "object",
+      "properties": {
+       "decoded": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "identified": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "total": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "by_type": {
+        "type": "object",
+        "additionalProperties": {
+         "type": "object",
+         "additionalProperties": {
+          "type": "integer",
+          "minimum": 0
+         }
+        }
+       }
+      },
+      "required": [
+       "decoded",
+       "identified",
+       "total",
+       "by_type"
+      ],
+      "additionalProperties": false
+     },
+     "boot": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "unknown": {
+      "type": "integer",
+      "minimum": 0
+     }
+    },
+    "required": [
+     "id",
+     "version",
+     "rom_size",
+     "code",
+     "data",
+     "functions",
+     "blobs",
+     "boot",
+     "unknown"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "map": {
+   "type": "object",
+   "properties": {
+    "version": {
+     "type": "string"
+    },
+    "rom_size": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "fns": {
+     "type": "array",
+     "items": {
+      "type": "array",
+      "prefixItems": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "integer",
+        "minimum": 0
+       },
+       {
+        "type": "integer",
+        "minimum": 0
+       },
+       {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+       },
+       {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       {
+        "type": [
+         "integer",
+         "null"
+        ],
+        "minimum": 1
+       }
+      ],
+      "items": false,
+      "minItems": 6,
+      "maxItems": 6
+     }
+    },
+    "blobs": {
+     "type": "array",
+     "items": {
+      "type": "array",
+      "prefixItems": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "integer",
+        "minimum": 0
+       },
+       {
+        "type": "integer",
+        "minimum": 0
+       },
+       {
+        "enum": [
+         "decoded",
+         "identified",
+         "observed"
+        ]
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "items": false,
+      "minItems": 5,
+      "maxItems": 5
+     }
+    },
+    "spans": {
+     "type": "object",
+     "properties": {
+      "data": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "prefixItems": [
+         {
+          "type": "integer",
+          "minimum": 0
+         },
+         {
+          "type": "integer",
+          "minimum": 0
+         }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+       }
+      },
+      "boot": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "prefixItems": [
+         {
+          "type": "integer",
+          "minimum": 0
+         },
+         {
+          "type": "integer",
+          "minimum": 0
+         }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+       }
+      }
+     },
+     "required": [
+      "data",
+      "boot"
+     ],
+     "additionalProperties": false
+    }
+   },
+   "required": [
+    "version",
+    "rom_size",
+    "fns",
+    "blobs",
+    "spans"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "schema",
+  "carts",
+  "map"
+ ],
+ "additionalProperties": false
+}

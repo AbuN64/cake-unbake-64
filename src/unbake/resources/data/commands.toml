@@ -114,9 +114,11 @@ params = [
 ]
 
 [command.report]
-help = "Progress per version, kind and segment."
+help = "Progress per version, kind and segment; write progress.json schema 2."
 handler = "report.run"
-params = []
+params = [
+  { name = "next", kind = "flag", type = "str", required = false, multiple = false, help = "list unmatched functions by increasing size" },
+]
 
 [command.blobs]
 help = "The blobs of blobs.toml (non-code ROM content), their census and the byte partition of every version; `import PACKET` merges a reviewed evidence packet into blobs.toml, uncommitted."

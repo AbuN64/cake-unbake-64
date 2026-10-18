@@ -3,10 +3,6 @@
  "$id": "unbake:result.report",
  "type": "object",
  "properties": {
-  "commit": {
-   "type": "string",
-   "minLength": 1
-  },
   "versions": {
    "type": "object",
    "additionalProperties": {
@@ -308,90 +304,6 @@
     }
    ]
   },
-  "boundary": {
-   "type": "object",
-   "properties": {
-    "prelude": {
-     "type": "object",
-     "properties": {
-      "proposed": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "applied": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "withheld": {
-       "type": "integer",
-       "minimum": 0
-      }
-     },
-     "required": [
-      "proposed",
-      "applied",
-      "withheld"
-     ],
-     "additionalProperties": false
-    },
-    "split": {
-     "type": "object",
-     "properties": {
-      "proposed": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "applied": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "withheld": {
-       "type": "integer",
-       "minimum": 0
-      }
-     },
-     "required": [
-      "proposed",
-      "applied",
-      "withheld"
-     ],
-     "additionalProperties": false
-    },
-    "merge": {
-     "type": "object",
-     "properties": {
-      "proposed": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "applied": {
-       "type": "integer",
-       "minimum": 0
-      },
-      "withheld": {
-       "type": "integer",
-       "minimum": 0
-      }
-     },
-     "required": [
-      "proposed",
-      "applied",
-      "withheld"
-     ],
-     "additionalProperties": false
-    }
-   },
-   "required": [
-    "prelude",
-    "split",
-    "merge"
-   ],
-   "additionalProperties": false
-  },
-  "pending_boundary": {
-   "type": "integer",
-   "minimum": 0
-  },
   "inbox": {
    "type": "integer",
    "minimum": 0
@@ -401,16 +313,59 @@
    "items": {
     "type": "string"
    }
+  },
+  "digest": {
+   "type": "string",
+   "minLength": 1
+  },
+  "next": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string"
+     },
+     "size": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+     },
+     "path": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "state": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "version",
+     "size",
+     "percent",
+     "path",
+     "state"
+    ],
+    "additionalProperties": false
+   }
   }
  },
  "required": [
-  "commit",
+  "digest",
   "versions",
   "segments",
   "kinds",
   "debt",
-  "boundary",
-  "pending_boundary",
   "inbox"
  ],
  "additionalProperties": false

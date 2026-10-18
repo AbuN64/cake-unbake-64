@@ -527,7 +527,16 @@ def files(config: Any, tree: Any) -> dict[str, bytes]:
 def run(config: Any, params: Json) -> Json:
     with effort.stage("report.run"):
         pending = sum(p.is_file() for p in (Path(config.project.root) / ".unbake/inbox").glob("*.json"))
-        return {**current(config, _capture(config)), "inbox": pending}
+        from unbake import progress
+
+        tree = _capture(config)
+        result = {**current(config, tree), "inbox": pending}
+        document = progress.document(config, tree, result)
+        configuration.validate("progress", document, "progress.json")
+        store.write(config.project.root / "progress.json", (json.dumps(document, sort_keys=True) + "\n").encode())
+        if params.get("next"):
+            result["next"] = progress.unmatched(config, tree)
+        return result
 
 
 def _moves_stream(tree: Any) -> Json:

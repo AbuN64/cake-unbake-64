@@ -418,3 +418,83 @@ def test_zero_byte_aliases_are_not_functions_and_exact_fuzzy_is_not_matched(proj
     assert tally["functions_matched"] == 1
     assert tally["functions_fuzzy"] == 1
     assert tally["code_matched"] == 16 and tally["code_fuzzy"] == 8
+
+
+@pytest.fixture
+def published_case(tmp_path, monkeypatch):
+    from unbake import progress
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.c").write_text("// source\nvoid exact(void) {}\nvoid fuzzy(void) {}\n")
+    config = _config(tmp_path, meta={"a": {"cartridge_id": "NUS-NXXE-0"}})
+    tree = _tree([_module("src/a.c", ["exact", "alias"], ["fuzzy", "asm"], ["fuzzy"])], "publish")
+    facts = _facts(exact=(4096, 16, "func"), alias=(4100, 0, "func"), fuzzy=(4112, 8, "func"), asm=(4120, 8, "func"))
+    rows = _credits(tree, facts, scored={"fuzzy": {"a": 1.0}})
+    monkeypatch.setattr(report, "_capture", lambda config: tree)
+    monkeypatch.setattr(report, "credits", lambda config, tree: rows)
+    monkeypatch.setattr(
+        report,
+        "accounts",
+        lambda config, tree: {
+            "a": {
+                "rom_size": 8192,
+                "boot_total": 4096,
+                "blobs_total": 64,
+                "blobs_decoded": 32,
+                "blobs_identified": 32,
+                "unknown_total": 4000,
+                "blobs": {"texture": {"decoded": 1, "identified": 1, "observed": 1}},
+            }
+        },
+    )
+    monkeypatch.setattr(report, "layers", lambda config, tree, version: {"boot": [(0, 4096)], "data": []})
+    monkeypatch.setattr(
+        progress.blobs,
+        "load",
+        lambda config: {
+            "schema": 1,
+            "blob": {
+                "tex": {"state": "decoded", "type": "texture", "rom": {"a": [[5000, 5032]]}},
+                "other": {"state": "identified", "type": "texture", "rom": {"a": [[5032, 5064]]}},
+                "observed": {"state": "observed", "type": "texture", "rom": {"a": [[6000, 6032]]}},
+            },
+        },
+    )
+    return config, tree
+
+
+def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_case):
+    config, _ = published_case
+    result = report.run(config, {"next": True})
+    document = json.loads((config.project.root / "progress.json").read_bytes())
+    configuration.validate("progress", document, "progress.json")
+    configuration.validate("result.report", result, "report")
+    assert document["schema"] == 2
+    cart = document["carts"][0]
+    assert cart["functions"] == {"matched": 1, "fuzzy": 1, "total": 3}
+    assert cart["code"] == {"matched": 16, "fuzzy": 8, "total": 32}
+    assert (
+        sum((cart["code"]["total"], cart["data"]["total"], cart["blobs"]["total"], cart["boot"], cart["unknown"]))
+        == cart["rom_size"]
+    )
+    assert document["map"]["fns"] == [
+        ["exact", 4096, 16, 100.0, "src/a.c", 2],
+        ["fuzzy", 4112, 8, 100.0, "src/a.c", 3],
+        ["asm", 4120, 8, 0.0, None, None],
+    ]
+    assert document["map"]["spans"] == {"boot": [[0, 4096]], "data": []}
+    assert [row[0] for row in document["map"]["blobs"]] == ["tex", "other", "observed"]
+    assert [(r["name"], r["size"]) for r in result["next"]] == [("asm", 8), ("fuzzy", 8)]
+    before = (config.project.root / "progress.json").read_bytes()
+    assert "next" not in report.run(config, {})
+    assert (config.project.root / "progress.json").read_bytes() == before
+
+
+def test_missing_rom_partition_refuses_without_replacing_published_progress(published_case, monkeypatch):
+    config, _ = published_case
+    path = config.project.root / "progress.json"
+    path.write_bytes(b"previous")
+    monkeypatch.setattr(report, "accounts", lambda config, tree: {})
+    with pytest.raises(Refusal, match=r"report\.rom"):
+        report.run(config, {})
+    assert path.read_bytes() == b"previous"
