@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import unbake
 from unbake import cli, config, repo, store
 from unbake.contracts import Finding, Refusal
 
@@ -372,3 +373,8 @@ def test_command_project_still_overrides_global_project(monkeypatch, command_val
     args += ["--project", command_value] if command_value else []
     assert cli.main(args) == 0
     assert seen["project"] == Path(command_value or "global-project")
+
+
+def test_version_prints_the_release(capsys):
+    assert cli.main(["--version"]) == 0
+    assert capsys.readouterr().out.strip() == f"unbake {unbake.__version__}"

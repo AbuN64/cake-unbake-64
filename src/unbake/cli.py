@@ -14,7 +14,7 @@ from typing import Any
 import click
 from click.core import ParameterSource
 
-from unbake import config, effort, human, store
+from unbake import __version__, config, effort, human, store
 from unbake.contracts import Finding, Json, Refusal
 
 
@@ -140,6 +140,7 @@ def _group(outcome: dict[str, int], argv: Sequence[str]) -> click.Group:
         "unbake",
         params=[click.Option(["--host"], type=path, envvar="UNBAKE_HOST"), click.Option(["--project"], type=path)],
     )
+    click.version_option(__version__, prog_name="unbake", message="%(prog)s %(version)s")(group)
     for name, spec in config.load_resource("commands.toml")["command"].items():
         params = [_param(p) for p in spec["params"]]
         params.append(click.Option(["--host"], type=path, required=False, envvar="UNBAKE_HOST", help="host config"))
