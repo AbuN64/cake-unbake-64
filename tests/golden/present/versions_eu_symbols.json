@@ -1,4 +1,0 @@
-{"schema":2,"functions":{
-"f_draft":{"line":1,"path":"src/fuzzy/f_draft.c","percent":25.0,"words":[3,12]},
-"f_exact":{"line":3,"path":"src/a.c","percent":100.0,"words":[16,16]}
-}}
