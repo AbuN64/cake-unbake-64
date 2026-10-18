@@ -93,3 +93,4 @@ bar = 20
 dependencies_begin = "<!-- dependencies -->"  # the pinned build tools, rendered from the same pins as the Makefile
 dependencies_end = "<!-- /dependencies -->"
 map_width = 720  # px: the memory map in the README is a thumbnail of the full render
+legend = "data = C globals and constants; blobs = other identified ROM content."

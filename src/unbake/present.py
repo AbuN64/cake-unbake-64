@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from unbake import effort, report
@@ -32,9 +32,17 @@ OVERVIEW_HEIGHT = 13
 OVERVIEW_PITCH = 17
 OVERVIEW_JOIN = 32  # functions this close count as touching: alignment padding does not split a run
 FUZZY_HIGH = 0.5
-_TONES = (("q10", "exact"), ("q7", "fuzzy high"), ("q3", "fuzzy low"), ("q0", "none"))
+_TONES = (
+    ("q10", "exact"),
+    ("q7", "fuzzy high"),
+    ("q3", "fuzzy low"),
+    ("q0", "none"),
+    ("b2", "decoded"),
+    ("b1", "identified"),
+)
 _LEGEND = (28, 72, 72, 28)  # block widths of the legend bar: none, fuzzy low, fuzzy high, exact
-_OVERVIEW_STYLE = _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "")
+_BLOB_STYLE = ".b1{fill:#ecdcaa}.b2{fill:#b98b1d}@media (prefers-color-scheme:dark){.b1{fill:#5a4a1e}.b2{fill:#d1a63a}}"
+_OVERVIEW_STYLE = _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "") + _BLOB_STYLE
 
 
 def _num1(value: float) -> str:
@@ -49,13 +57,20 @@ def _tone(score: float, exact: bool) -> int:
     return 3 if score <= 0 else 1 if score >= FUZZY_HIGH else 2
 
 
-def overview(credit_rows: Iterable[Any], version: str) -> bytes:
-    """The ROM of one version as a picture that reads at 720 px: rows of 64 KiB in ROM order (rows without code left
-    out), runs of adjacent functions of one status merged into one block, and a legend of the four statuses."""
+def overview(credit_rows: Iterable[Any], version: str, layers: Mapping[str, Any] | None = None) -> bytes:
+    """The ROM of one version as a picture that reads at 720 px: rows of 64 KiB in ROM order (rows without code, data
+    or blobs left out), runs of adjacent functions and data of one status merged into one block, the decoded and
+    identified blobs in their own two tones, and a legend of the statuses."""
+    blobs = [
+        (a, b - a, tone) for tone, key in ((4, "decoded"), (5, "identified")) for a, b in (layers or {}).get(key, ())
+    ]
     pieces = sorted(
-        (credit.member.rom, credit.code, _tone(credit.score, credit.exact))
-        for credit in credit_rows
-        if credit.version == version and credit.member.kind == "function" and credit.code > 0
+        [
+            (credit.member.rom, credit.code + credit.data, _tone(credit.score, credit.exact))
+            for credit in credit_rows
+            if credit.version == version and credit.code + credit.data > 0
+        ]
+        + blobs
     )
     runs: list[list[int]] = []  # [start, end, tone]
     for start, size, tone in pieces:
@@ -65,10 +80,7 @@ def overview(credit_rows: Iterable[Any], version: str) -> bytes:
             runs.append([start, start + size, tone])
     rows: set[int] = set()
     drawn: list[list[tuple[float, int, float]]] = [
-        [],
-        [],
-        [],
-        [],
+        [] for _ in _TONES
     ]  # per tone the outlines of its blocks: one path each keeps the file small
     scale = OVERVIEW_BAR / OVERVIEW_ROW
     for start, end, tone in runs:
@@ -102,6 +114,12 @@ def overview(credit_rows: Iterable[Any], version: str) -> bytes:
         f'<text x="{OVERVIEW_LEFT}" y="{label}">0 %</text>',
         f'<text x="{end}" y="{label}" text-anchor="end">100 %</text>',
     ]
+    if blobs:  # blob swatches, right of the status bar
+        x = end + 40
+        for cls, name in (("b1", "blob identified"), ("b2", "blob decoded")):
+            legend.append(f'<rect class="{cls}" x="{x}" y="{top}" width="28" height="6"/>')
+            legend.append(f'<text x="{x + 32}" y="{top + 6}">{name}</text>')
+            x += 150
     height = label + 4
     head = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {OVERVIEW_WIDTH} {height}" '
@@ -114,4 +132,10 @@ def files(config: Any, tree: Any) -> dict[str, bytes]:
     """The README image: docs/overview-<readme_map>.svg, or nothing when the project names no README map."""
     with effort.stage("present.files"):
         version = config.project.readme_map
-        return {overview_path(version): overview(report.credits(config, tree), version)} if version else {}
+        if not version:
+            return {}
+        return {
+            overview_path(version): overview(
+                report.credits(config, tree), version, report.layers(config, tree, version)
+            )
+        }

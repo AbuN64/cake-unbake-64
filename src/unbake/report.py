@@ -11,8 +11,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from unbake import blobs, effort, perfect, present, rescore, store
 from unbake import config as configuration
-from unbake import effort, perfect, present, rescore, store
 from unbake.contracts import Finding, Json, Refusal, sha256_file
 
 
@@ -43,18 +43,22 @@ def _facts(config: Any) -> rescore.Facts:
 
 def _sized(config: Any, v: str, table: Mapping[str, Any]) -> dict[str, Any]:
     """`table` with a missing size taken from the ROM: a name of a code or data segment holds the bytes up to the next
-    name's address, the last one up to its segment's end; a name in a bin segment holds none. Every byte from a
-    segment's first name on is counted once, whatever the names in between."""
+    name's address, the last one up to its segment's end; a name in a bin segment holds none, and a size the file gives
+    is cut at its segment's end. Every byte from a segment's first name on is counted once, whatever the names in
+    between."""
     cuts = import_module("unbake.versions").segments(config, v)
     kinds = [s.kind for s in config.project.version[v].segments]
     starts = sorted({row[1] for row in table.values() if row[1] is not None})
     out = dict(table)
     for name, (vram, rom, size, kind) in table.items():
-        if size is not None or rom is None:
+        if rom is None:
             continue
         at = bisect_right([c[1] for c in cuts], rom) - 1
         if at < 0 or kinds[at] == "bin":
             out[name] = (vram, rom, 0, kind)
+            continue
+        if size is not None:
+            out[name] = (vram, rom, max(0, min(size, cuts[at][2] - rom)), kind)
             continue
         later = bisect_right(starts, rom)
         end = min(cuts[at][2], starts[later]) if later < len(starts) else cuts[at][2]
@@ -142,18 +146,32 @@ def build_credits(
     exact: frozenset[str],
     scored: Mapping[str, Mapping[str, float]],
     broken: frozenset[str],
+    extents: Mapping[str, Mapping[str, int]] | None = None,
 ) -> tuple[Credit, ...]:
     """One row per (name, version) of the symbol_addrs facts. A name is exact in a version when C defines it and the
     version links exact; otherwise it earns its cached fuzzy score, and none when its module does not compile. A name
-    with no ROM address (an absolute symbol) holds no ROM bytes and gets no row."""
+    with no ROM address (an absolute symbol) holds no ROM bytes and gets no row. A data name no file owns (a label)
+    that lies inside the compiled size of a C-built object (`extents`: version -> name -> ELF st_size) is that
+    object's bytes and earns its credit; a label outside every compiled extent stays unowned."""
     modules = {m.path: m for m in tree.modules}
     rows = []
     for v in versions:
         held = [item for item in facts.get(v, {}).items() if item[1][1] is not None]
-        for name, (_vram, rom, size, kind) in sorted(held, key=lambda item: (item[1][1], item[0])):
-            path = tree.owner(v, name)
+        owners = {name: tree.owner(v, name) for name, _ in held}
+        sizes = (extents or {}).get(v, {})
+        end, container = -1, None  # end of the bytes credited so far; the C object whose compiled size covers here
+        for name, (_vram, rom, size, kind) in sorted(held, key=lambda i: (i[1][1], owners[i[0]] is None, i[0])):
+            path = owners[name]
             module = modules.get(path) if path else None
             stand_in = module is None or name in module.stand_ins.get(v, ())
+            if rom < end:
+                size = 0  # it starts inside an earlier row's extent (a label, an alias): those bytes are counted once
+            elif path is None and kind != "func" and container and rom < container[0]:
+                _, path, module, stand_in = container  # a label inside a C object's compiled size: the object's bytes
+            if size:
+                end = rom + size
+            if name in sizes and module and not stand_in:
+                container = (rom + sizes[name], path, module, stand_in)
             built = module is not None and not stand_in and v in exact
             function = kind == "func"
             state = "unowned" if module is None else "stand-in" if stand_in else "c"
@@ -179,6 +197,29 @@ def build_credits(
     return tuple(rows)
 
 
+def _extents(config: Any, tree: Any) -> dict[str, dict[str, int]]:
+    """Per version the compiled extent of every data name a C module defines, measured in build/<v>/<module>.o with
+    `versions.defined`: the symbol's ELF st_size, else (the old compiler writes none) the bytes up to the next symbol
+    of its section or the section's end. A version or module with no built object has none: report never guesses."""
+    defined, root = import_module("unbake.versions").defined, Path(config.project.root)
+    out: dict[str, dict[str, int]] = {}
+    for module in tree.modules:
+        for v, names in module.owns.items():
+            obj = root / "build" / v / f"{module.path}.o"
+            if not obj.is_file() or not names:
+                continue
+            found, sections = defined(obj)
+            for name in set(names) - set(module.stand_ins.get(v, ())):
+                if name not in found:
+                    continue
+                section, value, size = found[name]
+                after = [other for sec, other, _ in found.values() if sec == section and other > value]
+                size = size or min(after, default=sections.get(section, 0)) - value
+                if size > 0:
+                    out.setdefault(v, {})[name] = size
+    return out
+
+
 def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
     """Every (name, version) credit row, computed once per tree digest: the README, the overview and the map all read
     these same rows."""
@@ -192,6 +233,7 @@ def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
             exact_versions(config, tree),
             rescore.rows(config, tree, facts),
             _broken(config, tree),
+            _extents(config, tree),
         )
 
     return effort.memo(("credits", tree.digest), build)
@@ -246,11 +288,83 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
     return totals, segments, kinds
 
 
+def partition(config: Any, v: str, table: Mapping[str, Any], rom_size: int) -> Json:
+    """Every byte of one version's ROM once: the credit rows of `table` (code, then data), the platform boot range, then
+    the decoded and identified blobs, then unknown. `overlap` and `outside` (credited bytes counted twice or beyond the
+    ROM) must be 0; `spans` holds the disjoint ranges of each class."""
+    boot = configuration.load_resource("rom.toml")["boot"]
+    held = [(rom, rom + size, kind) for _vram, rom, size, kind in table.values() if rom is not None and size]
+    code = [(a, b) for a, b, kind in held if kind == "func"]
+    data = [(a, b) for a, b, kind in held if kind != "func"]
+    decoded, identified = blobs.ranges(blobs.load(config), v)
+    return blobs.sweep(rom_size, code, data, [(boot["start"], boot["end"])], decoded, identified)
+
+
+def _rom_size(config: Any, v: str) -> int | None:
+    path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
+    return path.stat().st_size if path.is_file() else None
+
+
+def partitions(config: Any, tree: Any) -> dict[str, Json]:
+    """The partition of every version whose ROM is present, once per tree, blobs file and ROM size.
+    A byte counted twice, a range beyond the ROM or parts not summing to the ROM size: blocking `report.partition`."""
+
+    def build() -> dict[str, Json]:
+        tables: dict[str, dict[str, Any]] = {v: {} for v in config.project.version}
+        for row in credits(config, tree):  # the rows the report counts, so the partition shows what it sums
+            kind = "func" if row.member.kind == "function" else "data"
+            tables[row.version][row.name] = (0, row.member.rom, row.code + row.data, kind)
+        out = {}
+        for v in config.project.version:
+            if (size := _rom_size(config, v)) is None:
+                continue
+            parts = partition(config, v, tables[v], size)
+            total = sum(parts[k] for k in ("code", "data", "boot", "blobs", "unknown"))
+            if parts["overlap"] or parts["outside"] or parts["unknown"] < 0 or total != size:
+                why = (
+                    f"{parts['overlap']} bytes counted twice, {parts['outside']} beyond the ROM, sum {total} of {size}"
+                )
+                raise Refusal(Finding("report.partition", f"{v}: {why}", versions=(v,)))
+            out[v] = parts
+        return out
+
+    sizes = tuple(_rom_size(config, v) for v in config.project.version)
+    return effort.memo(("partition", tree.digest, blobs.sha(config), sizes), build)
+
+
+def accounts(config: Any, tree: Any) -> dict[str, Json]:
+    """Per version the blob fields of the report: ROM size, boot, blobs (decoded, identified), unknown, census."""
+    document = blobs.load(config)
+    return {
+        v: {
+            "rom_size": p["rom_size"],
+            "boot_total": p["boot"],
+            "blobs_total": p["blobs"],
+            "blobs_decoded": p["blobs_decoded"],
+            "blobs_identified": p["blobs_identified"],
+            "unknown_total": p["unknown"],
+            "blobs": blobs.census(document, v),
+        }
+        for v, p in partitions(config, tree).items()
+    }
+
+
+def layers(config: Any, tree: Any, v: str) -> Json:
+    """The disjoint ranges of one version, by class (code, data, boot, decoded, identified), for drawing."""
+    spans: Json = partitions(config, tree).get(v, {}).get("spans", {})
+    return spans
+
+
+def _versions(config: Any, tree: Any, totals: Buckets) -> dict[str, Json]:
+    held = accounts(config, tree)
+    return {v: {**_tally(b), **held.get(v, {})} for v, b in totals.items()}
+
+
 def progress(config: Any, tree: Any) -> Json:
     """The per-version credit the README shows."""
     with effort.stage("report.progress"):
         return {
-            "versions": {v: _tally(b) for v, b in _tallies(config, tree)[0].items()},
+            "versions": _versions(config, tree, _tallies(config, tree)[0]),
             "perfect": perfect.census(tree, credits(config, tree), exact_versions(config, tree))[0],
         }
 
@@ -264,7 +378,7 @@ def current(config: Any, tree: Any) -> Json:
             debt = {"digest": tree.digest, "counts": document["counts"], "type_debt": document.get("type_debt", {})}
         return {
             "digest": tree.digest,
-            "versions": {v: _tally(b) for v, b in totals.items()},
+            "versions": _versions(config, tree, totals),
             "segments": {s: {v: _tally(b) for v, b in rows.items()} for s, rows in segments.items()},
             "kinds": {k: {v: _tally(b) for v, b in rows.items()} for k, rows in kinds.items()},
             "debt": debt,
@@ -276,13 +390,45 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     parts = ("code", "data") if kind == "bytes" else (kind,)
     matched = sum(bucket[p + "_matched"] for p in parts)
     total = sum(bucket[p + "_total"] for p in parts)
+    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells)
+
+
+def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
+    """One art bar: █ for `matched` bytes, ▒ for those up to `reach`, ░ for the rest of `total`."""
     percent = _pct(matched, total)
-    fuzzy = _pct(matched + sum(bucket[p + "_fuzzy"] for p in parts), total)
+    fuzzy = _pct(reach, total)
     solid = int(percent // (100 / cells))
     partial = max(0, min(cells - solid, int(fuzzy // (100 / cells)) - solid))
     bar = "█" * solid + "▒" * partial + "░" * (cells - solid - partial)
     suffix = f" (~{fuzzy:.2f}%)" if fuzzy != percent else ""
     return f"{label} [{bar}]  {percent:5.2f}%{suffix}  {matched:,} of {total:,}"
+
+
+_BLOB_KEYS = ("rom_size", "boot_total", "blobs_total", "blobs_decoded", "blobs_identified", "unknown_total")
+
+
+def _blobs_line(label: str, held: Json, cells: int) -> str:
+    """Blobs: █ decoded, ▒ identified, of all blob bytes."""
+    return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"], cells)
+
+
+def _rom_line(label: str, credit: int, held: Json, name: str) -> str:
+    parts = (
+        f"{credit:,} {name} + {held['blobs_total']:,} blobs + {held['boot_total']:,} boot + {held['unknown_total']:,}"
+    )
+    return f"{label} {parts} unknown = {held['rom_size']:,} bytes"
+
+
+def _blob_rows(held: Json, cells: int, code: int, data: int) -> list[str]:
+    """The rows after code, data and functions: blobs, boot (identified by the platform), unknown, and the ROM sum."""
+    label = "{:<9}".format
+    return [
+        _blobs_line(label("blobs"), held, cells),
+        _bar(label("boot"), 0, held["boot_total"], held["boot_total"], cells),
+        _bar(label("unknown"), 0, 0, held["unknown_total"], cells),
+        f"{label('rom')} {code:,} + {data:,} + {held['blobs_total']:,} + {held['boot_total']:,} + "
+        f"{held['unknown_total']:,} = {held['rom_size']:,} bytes",
+    ]
 
 
 def _perfect_line(label: str, perfect_bytes: int, total: int, cells: int) -> str:
@@ -322,7 +468,8 @@ def readme(text: str, config: Any, report: Json) -> str:
                 "data_fuzzy",
             )
         }
-        width = max(map(len, ("all", *project.version))) + 1
+        counted = all("rom_size" in versions[v] for v in project.version)  # every ROM was present for the partition
+        width = max(map(len, ("all", *project.version, *(("blobs",) if counted else ())))) + 1
         lines = [
             _line(label.ljust(width), bucket, cells) + " bytes"
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.version)]
@@ -335,6 +482,10 @@ def readme(text: str, config: Any, report: Json) -> str:
                 cells,
             )
         )
+        if counted:
+            sums = {k: sum(versions[v][k] for v in project.version) for k in _BLOB_KEYS}
+            lines.append(_blobs_line("blobs".ljust(width), sums, cells) + " bytes")
+            lines.append(_rom_line("rom".ljust(width), total["code_total"] + total["data_total"], sums, "code+data"))
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
             image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
@@ -348,7 +499,11 @@ def readme(text: str, config: Any, report: Json) -> str:
             header += f" {meta['description']}" if meta.get("description") else ""
             header += f" SHA256 `{_rom_sha256(config, v)}` |"
             rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
+            if "rom_size" in versions[v]:
+                rows += _blob_rows(versions[v], cells, versions[v]["code_total"], versions[v]["data_total"])
             blocks.append(header + "\n|---|\n| <pre><code>" + "</code><br><code>".join(rows) + "</code></pre> |")
+        if counted and settings.get("legend"):
+            blocks.append(settings["legend"])
         text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
         first, last = settings["dependencies_begin"], settings["dependencies_end"]
         if text.count(first) == 1 and text.count(last) == 1 and text.index(first) < text.index(last):

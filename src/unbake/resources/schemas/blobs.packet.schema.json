@@ -1,0 +1,162 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:blobs.packet",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "const": 1
+  },
+  "rom_sha256": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "string",
+    "pattern": "^[0-9a-f]{64}$"
+   }
+  },
+  "artifacts": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "string",
+    "pattern": "^[0-9a-f]{64}$"
+   }
+  },
+  "scope": {
+   "type": "string"
+  },
+  "tools": {
+   "type": "object"
+  },
+  "blob": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "aliases": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "minLength": 1
+        },
+        "semantic": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "label",
+        "semantic"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "type": {
+      "enum": [
+       "texture",
+       "model",
+       "sound",
+       "sequence",
+       "font",
+       "layout",
+       "level",
+       "sprite",
+       "microcode",
+       "blob"
+      ]
+     },
+     "format": {
+      "type": "string",
+      "minLength": 1
+     },
+     "codec": {
+      "type": "string",
+      "minLength": 1
+     },
+     "state": {
+      "enum": [
+       "decoded",
+       "identified",
+       "observed"
+      ]
+     },
+     "stored_size": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "decoded_size": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "rom": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "items": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "minItems": 2,
+        "maxItems": 2
+       }
+      }
+     },
+     "parent": {
+      "type": "string",
+      "minLength": 1
+     },
+     "decoded": {
+      "type": "array",
+      "items": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "minItems": 2,
+      "maxItems": 2
+     },
+     "evidence": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "artifact": {
+         "type": "string",
+         "minLength": 1
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        },
+        "pointer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "artifact",
+        "sha256"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "type",
+     "state"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "rom_sha256",
+  "blob"
+ ],
+ "additionalProperties": false
+}

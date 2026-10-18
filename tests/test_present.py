@@ -45,6 +45,7 @@ def test_overview_is_deterministic_and_reads_one_version():
 
 def test_files_lists_only_the_overview_of_the_readme_map(monkeypatch):
     monkeypatch.setattr(report, "credits", lambda config, tree: ROWS)
+    monkeypatch.setattr(report, "layers", lambda config, tree, version: {})
     config = SimpleNamespace(project=SimpleNamespace(readme_map="us"))
     made = present.files(config, object())
     assert list(made) == ["docs/overview-us.svg"] == [present.overview_path("us")]

@@ -127,6 +127,24 @@
     "minLength": 1
    },
    "minProperties": 1
+  },
+  "boot": {
+   "type": "object",
+   "properties": {
+    "start": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "end": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [
@@ -136,7 +154,8 @@
   "similarity",
   "asflags",
   "text_mask",
-  "country"
+  "country",
+  "boot"
  ],
  "additionalProperties": false
 }

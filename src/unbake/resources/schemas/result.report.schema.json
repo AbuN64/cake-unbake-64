@@ -67,6 +67,40 @@
      },
      "perfect_percent": {
       "type": "number"
+     },
+     "rom_size": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "boot_total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "blobs_total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "blobs_decoded": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "blobs_identified": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "unknown_total": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "blobs": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+       }
+      }
      }
     },
     "required": [

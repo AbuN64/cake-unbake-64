@@ -349,3 +349,31 @@ sentence = "a record repeats the body of another record; use the one record"
 [key."symbol.folded"]
 owner = "build"
 sentence = "an off-boundary data symbol is folded into the preceding chunk"
+
+[key."blobs.schema"]
+owner = "blobs"
+sentence = "blobs.toml is not valid against its schema"
+
+[key."blobs.range"]
+owner = "blobs"
+sentence = "a blob range is empty, outside the ROM or names an unknown version"
+
+[key."blobs.parent"]
+owner = "blobs"
+sentence = "a blob's parent is missing or the parents form a cycle"
+
+[key."blobs.shadowed"]
+owner = "blobs"
+sentence = "a blob's bytes lie under a credited symbol and stay counted as code or data"
+
+[key."blobs.evidence"]
+owner = "blobs"
+sentence = "a packet's ROM or evidence sha256 does not match what the project holds"
+
+[key."blobs.packet"]
+owner = "blobs"
+sentence = "the blobs command was given something it cannot read or run"
+
+[key."report.partition"]
+owner = "report"
+sentence = "the ROM bytes are not counted exactly once: a byte is credited twice, a range lies beyond the ROM or the parts do not sum to the ROM size"

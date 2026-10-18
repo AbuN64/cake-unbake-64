@@ -56,6 +56,11 @@ def _bucket(**values):
     return {f"{k}_{s}": values.get(f"{k}_{s}", 0) for k in zero for s in ("total", "matched", "fuzzy")}
 
 
+@pytest.fixture(autouse=True)
+def _no_partition(monkeypatch):  # the partition needs ROMs and segments: test_blobs.py covers it
+    monkeypatch.setattr(report, "partitions", lambda config, tree: {})
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.setattr(report.perfect, "census", lambda tree, rows, exact: ({}, frozenset()))
@@ -308,3 +313,105 @@ def test_scores_from_cache(tmp_path, monkeypatch):
     source.write_text("#ifdef NON_MATCHING\nint f(void) { return 2; }\n#endif\n")
     assert rescore.rows(config, tree, facts) == {"f": {"a": 0.5}} and len(measured) == 2  # changed text: one
     assert rescore.rows(config, tree, facts) == {"f": {"a": 0.5}} and len(measured) == 2
+
+
+def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(tmp_path):
+    config, current = _readme_case(tmp_path)
+    plain = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
+    held = {
+        "us": {"rom_size": 8_388_608, "boot_total": 4096, "blobs_total": 1000, "blobs_decoded": 400},
+        "eu": {"rom_size": 8_388_608, "boot_total": 4096, "blobs_total": 0, "blobs_decoded": 0},
+    }
+    for v, row in held.items():
+        row["blobs_identified"] = row["blobs_total"] - row["blobs_decoded"]
+        row["unknown_total"] = row["rom_size"] - current["versions"][v]["code_total"] - 4096 - row["blobs_total"]
+        current["versions"][v].update(row)
+    out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
+    for row in ("code      [", "data      [", "functions [", "perfect"):  # values of the old rows are the same
+        assert row.strip() in plain and row.strip() in out
+    assert "blobs     [████████▒▒▒▒▒▒▒▒▒▒▒▒]  40.00% (~100.00%)  400 of 1,000</code>" in out
+    assert "boot      [▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒]   0.00% (~100.00%)  0 of 4,096</code>" in out
+    assert "unknown   [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 7,294,964</code>" in out
+    assert "rom       1,088,548 + 0 + 1,000 + 4,096 + 7,294,964 = 8,388,608 bytes</code>" in out
+    assert "blobs  [" in out and "= 16,777,216 bytes" in out  # the all block sums both ROMs
+    assert configuration.load_resource("repo.toml")["readme"]["legend"] in out
+    assert report.readme(out, config, current) == out
+
+
+def _owned_tree(owners, stand_ins=()):
+    module = _module("src/a.c", list(owners), list(stand_ins))
+    return _tree([module], "dedupe"), module
+
+
+def test_c1_a_name_inside_an_earlier_rows_extent_gets_no_bytes():
+    tree, _ = _owned_tree(["obj", "inner", "next"])
+    facts = _facts(
+        obj=(0x2000, 0x100, "data"),
+        alias_at_head=(0x2000, 0x100, "data"),  # a second name of the same bytes
+        inner=(0x2040, 0x20, "data"),  # starts inside obj
+        next=(0x2100, 0x10, "data"),
+    )
+    by = {r.name: r for r in _credits(tree, facts)}
+    assert [by[n].data for n in ("obj", "alias_at_head", "inner", "next")] == [0x100, 0, 0, 0x10]
+    assert sum(r.data for r in by.values()) == 0x110  # each ROM byte is in one row
+
+
+def test_c1_an_owned_name_wins_over_an_unowned_alias_at_one_address():
+    tree, _ = _owned_tree(["zz_owned"])
+    facts = _facts(aa_alias=(0x2000, 0x10, "func"), zz_owned=(0x2000, 0x10, "func"))
+    by = {r.name: r for r in _credits(tree, facts)}
+    assert (by["zz_owned"].code, by["aa_alias"].code) == (0x10, 0)
+
+
+def test_c2_a_label_inside_a_c_objects_compiled_size_is_credited_to_it():
+    tree, _ = _owned_tree(["obj"])
+    facts = _facts(
+        obj=(0x2000, 0x40, "data"), l1=(0x2040, 0x10, "data"), l2=(0x2050, 0x30, "data"), out=(0x2080, 0x10, "data")
+    )
+    sizes = {"a": {"obj": 0x80}}  # the object compiles to 0x80 bytes: l1 and l2 are inside it, `out` is not
+    by = {r.name: r for r in report.build_credits(["a"], tree, facts, frozenset({"a"}), {}, frozenset(), sizes)}
+    assert [(by[n].exact, by[n].member.state, by[n].member.group) for n in ("obj", "l1", "l2")] == [
+        (True, "c", "src/a.c")
+    ] * 3
+    assert (by["out"].exact, by["out"].member.state) == (False, "unowned")
+    assert sum(r.data for r in by.values() if r.exact) == 0x80
+
+
+def test_c2_without_a_measured_extent_or_behind_a_stand_in_a_label_stays_unowned():
+    tree, _ = _owned_tree(["obj", "far"], stand_ins=["obj"])
+    facts = _facts(
+        obj=(0x2000, 0x40, "data"), l1=(0x2040, 0x10, "data"), far=(0x2100, 0x10, "data"), l2=(0x2110, 0x10, "data")
+    )
+    none = {r.name: r for r in _credits(tree, facts)}  # no built object: nothing is measured
+    assert none["l1"].member.state == none["l2"].member.state == "unowned" and not none["l2"].exact
+    sizes = {"a": {"obj": 0x80, "far": 0x10}}  # a stand-in has no compiled definition, so its extent is not used
+    by = {r.name: r for r in report.build_credits(["a"], tree, facts, frozenset({"a"}), {}, frozenset(), sizes)}
+    assert (by["l1"].exact, by["l1"].member.state) == (False, "unowned")
+    assert by["l2"].member.state == "unowned"  # `far` is 0x10 long: l2 starts after its extent
+    code_tree, _ = _owned_tree(["f"])
+    unowned = _credits(code_tree, _facts(f=(0x2000, 8, "func"), lab=(0x2008, 4, "data")))
+    assert {r.name: r.member.state for r in unowned}["lab"] == "unowned"
+
+
+def test_c2_extents_come_from_the_built_objects_symbols(tmp_path, monkeypatch):
+    from unbake import versions
+
+    module = _module("src/a.c", ["sized", "bare", "last", "gone", "outside"], ["gone"])
+    (tmp_path / "build/a/src").mkdir(parents=True)
+    (tmp_path / "build/a/src/a.c.o").write_bytes(b"")
+    symbols = {  # name -> (section, offset, st_size); the old compiler writes st_size 0
+        "sized": (".data", 0, 0x20),
+        "bare": (".data", 0x20, 0),
+        "last": (".data", 0x60, 0),
+        "gone": (".data", 0x40, 0),
+        "outside": (".text", 0, 0),
+    }
+    monkeypatch.setattr(versions, "defined", lambda obj: (symbols, {".data": 0x80, ".text": 0}))
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    found = report._extents(config, _tree([module], "ext"))["a"]
+    assert found == {
+        "sized": 0x20,
+        "bare": 0x20,
+        "last": 0x20,
+    }  # bare runs to the next symbol (`gone`, a stand-in, counts)
+    assert report._extents(config, _tree([_module("src/b.c", ["x"])], "ext2")) == {}  # not built: no extent

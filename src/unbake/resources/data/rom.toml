@@ -5,6 +5,11 @@ schema = 1
 asflags = ["-march=vr4300", "-mabi=32", "-EB", "--no-pad-sections", "-mips3"]
 text_mask = 0x1FFFFFFF
 
+# The cartridge header and IPL3 boot code: a platform fact, counted as identified boot bytes (half-open ROM range).
+[boot]
+start = 0x0
+end = 0x1000
+
 [order]
 z64 = 0x80371240
 refuse = [ { word = 0x37804012, name = "v64 (byte-swapped)" }, { word = 0x40123780, name = "n64 (little-endian words)" } ]

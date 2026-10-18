@@ -1,0 +1,81 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.blobs",
+ "type": "object",
+ "properties": {
+  "count": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "census": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "partition": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "rows": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "imported": {
+   "type": "object",
+   "properties": {
+    "added": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "unchanged": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "files": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "add": {
+     "type": "string"
+    },
+    "commit": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "added",
+    "unchanged",
+    "files"
+   ],
+   "additionalProperties": false
+  },
+  "debt": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  }
+ },
+ "required": [
+  "count",
+  "census",
+  "partition",
+  "debt"
+ ],
+ "additionalProperties": false
+}
