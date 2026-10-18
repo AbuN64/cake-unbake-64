@@ -266,6 +266,20 @@ def _after(lines: Sequence[str], at: int) -> int:
     return next(j for j in range(at + 1, len(lines) + 1) if depths[j] == 0)
 
 
+def _before(lines: Sequence[str], at: int) -> int:
+    """The index of line `at` at top level: the start of the `#if` block that holds the line, if any."""
+    depths = _depths(lines)
+    return next(j for j in range(at, -1, -1) if depths[j] == 0)
+
+
+def _head(lines: Sequence[str]) -> int:
+    """The first index after the file's leading `#include` lines and blank lines."""
+    at = 0
+    while at < len(lines) and (not lines[at].strip() or lines[at].lstrip().startswith("#include")):
+        at += 1
+    return at
+
+
 def _drop(lines: list[str], names: Iterable[str]) -> None:
     """Remove the stand-in line of each name, and an `#if` around it that holds nothing else."""
     for name in names:
@@ -282,8 +296,10 @@ def _drop(lines: list[str], names: Iterable[str]) -> None:
 def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
     """The files to write so that a name has a stand-in exactly when no file defines it in C: a stand-in a C body
     supersedes is removed, and every name of tree.unowned(v) gets a line in the file owning the previous address of its
-    segment, right after that name's own stand-in (else at the end), or a new src/<segment>/<ADDR>.<ext> when nothing
-    precedes it. A data name takes the section of the data before it: its bytes were part of that name's until now."""
+    segment, right after that name's own stand-in (else at the end); when nothing precedes it, in the file owning the
+    next address, right before that name's stand-in (else after the leading includes); a new src/<segment>/<ADDR>.<ext>
+    only when the segment has no owner at all. A data name takes the section of the data next to it: its bytes were part
+    of that name's until now."""
     root, ext = config.project.root, _extension(current.modules)
     texts: dict[str, list[str]] = {}
     touched: set[str] = set()
@@ -328,8 +344,10 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
             rows = owners.setdefault(segment, [])
             elsewhere = next((current.owner(o, name) for o in config.project.versions if current.owner(o, name)), None)
             before = [(path, anchor) for at, path, anchor in rows if at < rom]
+            after = [(path, anchor) for at, path, anchor in rows if at > rom]
             new = (f"src/{segment}/{vram:08X}{ext}", None)
-            path, anchor = (elsewhere, None) if elsewhere else before[-1] if before else new
+            ahead = not elsewhere and not before and bool(after)
+            path, anchor = (elsewhere, None) if elsewhere else before[-1] if before else after[0] if after else new
             before_it = sections.get((v, anchor or ""), ".data")
             section = ".text" if kind == "func" else before_it if before_it in _DATA_SECTIONS else ".data"
             line = _stand_in(_MACRO.get(kind, _MACRO.get(section, "INCLUDE_DATA")), segment, name)
@@ -339,7 +357,10 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
             body = lines(path)
             pattern = _line_of(anchor) if anchor else None
             at = next((i for i, text in enumerate(body) if pattern and pattern.match(text)), None)
-            where = _after(body, at) if at is not None else len(body)
+            if ahead:
+                where = _before(body, at) if at is not None else _head(body)
+            else:
+                where = _after(body, at) if at is not None else len(body)
             body[where:where] = block
             touched.add(path)
             rows.append((rom, path, name))

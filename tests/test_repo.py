@@ -340,9 +340,29 @@ def test_sync_appends_a_stand_in_for_an_unowned_name_to_the_file_owning_the_prev
     assert world.captures[-1]["src/main/a.c"].decode().count("f_mid") == 1  # the link script sees the stand-in
 
 
-def test_sync_makes_a_new_file_when_nothing_precedes_and_puts_the_next_name_in_it(world):
+def test_sync_puts_names_nothing_precedes_before_the_next_owner_and_makes_no_new_file(world):
     world.tree = _tree({"src/main/z.c": {"a": ("f_late",)}}, {"a": ["f_main", "f_mid"], "b": ()})
     _write(world.root, "src/main/z.c", "int f_late(void) { return 3; }\n")
+    repo.sync(world.cfg, {"check": False})
+    assert not (world.root / "src/main/80000400.c").exists()
+    assert (world.root / "src/main/z.c").read_text() == (
+        '#include "include_asm.h"\n\nINCLUDE_ASM("main", f_main);\nINCLUDE_ASM("main", f_mid);\n'
+        "int f_late(void) { return 3; }\n"
+    )
+
+
+def test_sync_puts_a_name_nothing_precedes_before_the_next_owners_guarded_stand_in(world):
+    world.tree = _tree({"src/main/z.c": {"a": ("f_late",)}}, {"a": ["f_main"], "b": ()})
+    _write(
+        world.root, "src/main/z.c", '#include "include_asm.h"\n\n#if VERSION_A\nINCLUDE_ASM("main", f_late);\n#endif\n'
+    )
+    repo.sync(world.cfg, {"check": False})
+    lines = (world.root / "src/main/z.c").read_text().splitlines()
+    assert lines[2:] == ['INCLUDE_ASM("main", f_main);', "#if VERSION_A", 'INCLUDE_ASM("main", f_late);', "#endif"]
+
+
+def test_sync_makes_a_new_file_only_for_a_segment_without_owners(world):
+    world.tree = _tree({}, {"a": ["f_main", "f_mid"], "b": ()})
     repo.sync(world.cfg, {"check": False})
     text = (world.root / "src/main/80000400.c").read_text()
     assert text.startswith('#include "include_asm.h"') and text.count("INCLUDE_ASM") == 2
