@@ -122,7 +122,7 @@ def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], li
         if token == "{":
             if depth == 0 and parens == 0 and _is_function(stmt):
                 name = _function_name(stmt)
-                if name:
+                if name and not _inlined(stmt):
                     defined.append(name)
                 stmt = [*stmt, "{}"]
                 stmt.append("<body>")
@@ -150,6 +150,16 @@ def _is_function(stmt: Sequence[str]) -> bool:
     if not stmt or stmt[-1] != ")" or "=" in stmt or stmt[0] == "typedef":
         return False
     return "(" in stmt and not (stmt[0].startswith('"'))
+
+
+_INLINE = {"inline", "__inline", "__inline__"}
+
+
+def _inlined(stmt: Sequence[str]) -> bool:
+    """A `static inline` body is a copy the compiler folds into its callers: it gives the file no object bytes of that
+    name, so another file's definition stays the one owner."""
+    head = stmt[: stmt.index("(")]
+    return "static" in head and any(t in _INLINE for t in head)
 
 
 def _function_name(stmt: Sequence[str]) -> str:

@@ -255,3 +255,9 @@ def test_another_tool_edit_keeps_the_parse_cache_and_a_tree_edit_drops_it(
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) > runs
+
+
+def test_a_static_inline_copy_does_not_own_the_name_its_real_definition_owns() -> None:
+    text = "static inline s32 f(void) { return 1; }\ns32 g(void) { return f(); }\n"
+    assert tree._scan(text)[0] == ["g"]
+    assert tree._scan("static s32 f(void) { return 1; }\n")[0] == ["f"]
