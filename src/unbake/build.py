@@ -383,8 +383,8 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     """The input sections of one version's segment in the order their bytes lie in the ROM: for each name a file owns
     in the segment, its section of that file's object (`.text` for code, the source's own section for data), the
     first of each in address order. A file's compiled read-only data sits where its `literals_` fact says; else a
-    toolchain that keeps a function's literals with its object (`per-object`) has them follow the code unless the file names
-    rodata of its own in the segment."""
+    toolchain that keeps a function's literals with its object (`per-object`) has them follow the code unless the file
+    names rodata of its own in the segment."""
     rows = _rows(config, held, v, piece)
     named = {(path, section) for _, path, section in rows}
     items: list[tuple[str, str]] = []

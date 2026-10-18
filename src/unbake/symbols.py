@@ -69,7 +69,7 @@ def spans(config: Config, version: str) -> tuple[tuple[int, int, int], ...]:
     rows = sorted(config.project.version[version].segments, key=lambda s: s.rom)
     return tuple(
         (s.vram, s.vram + after.rom - s.rom, s.rom)
-        for s, after in zip(rows, rows[1:], strict=False)
+        for s, after in pairwise(rows)
         if s.vram is not None and s.kind != "bin"
     )
 
