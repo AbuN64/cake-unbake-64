@@ -269,7 +269,7 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
             segments[row.segment].setdefault(row.version, dict(zero)),
             kinds[row.member.state].setdefault(row.version, dict(zero)),
         ):
-            function = row.member.kind == "function"
+            function = row.member.kind == "function" and row.code > 0
             for prefix, size, earned in (
                 ("code_", row.code, row.kept),
                 ("data_", row.data, row.data if row.exact else 0),

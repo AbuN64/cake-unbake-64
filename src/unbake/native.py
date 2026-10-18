@@ -297,11 +297,11 @@ def candidate(
         written,
         digest((config_.digest, sorted((p, sha256(b)) for p, b in written.items()))),
     )
-    defs, stand, _ = tree.parse(
+    defs, _, fuzzy = tree.parse(
         config_, path, data, version, lambda p: written[p] if p in written else _disk(config_, p)
     )
     table = symbol_facts(config_, version)
-    owned = [n for n in dict.fromkeys([*defs, *stand]) if n in table]
+    owned = [n for n in dict.fromkeys([*defs, *fuzzy]) if n in table]
     row = file_facts(config_.project, path)
     options = {k: list(v) for k, v in (("add", row.cflags), ("omit", row.omit)) if v}
     unit = UnitSpec(path, "c", tuple(sorted(owned)), row.toolchain or config_.project.toolchain, options)

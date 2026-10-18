@@ -42,8 +42,9 @@ def _record(config: Any, key: str, value: float) -> None:
 
 @lru_cache(maxsize=1)
 def _scorer() -> str:
-    """The scorer's code identity: the key moves when `symptoms.score` or `symptoms.literals` change."""
-    return code_identity(symptoms.score, symptoms.literals)
+    """The scorer and native candidate identity: old assembly-backed scores must never survive a scoring fix."""
+    native = import_module("unbake.native")
+    return code_identity(symptoms.score, symptoms.literals, native.candidate, native.measure)
 
 
 def _target_sha(config: Any, version: str, rom: int, size: int) -> str:

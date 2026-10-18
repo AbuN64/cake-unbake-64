@@ -406,3 +406,15 @@ def test_c2_extents_come_from_the_built_objects_symbols(tmp_path, monkeypatch):
         "last": 0x20,
     }  # bare runs to the next symbol (`gone`, a stand-in, counts)
     assert report._extents(config, _tree([_module("src/b.c", ["x"])], "ext2")) == {}  # not built: no extent
+
+
+def test_zero_byte_aliases_are_not_functions_and_exact_fuzzy_is_not_matched(project, monkeypatch):
+    tree = _tree([_module("src/a.c", ["real", "alias"], ["pending"], ["pending"])], "aliases")
+    facts = _facts(real=(0x1000, 16, "func"), alias=(0x1004, 0, "func"), pending=(0x1010, 8, "func"))
+    rows = _credits(tree, facts, scored={"pending": {"a": 1.0}})
+    monkeypatch.setattr(report, "credits", lambda config, tree: rows)
+    tally = report.current(_config(project), tree)["versions"]["a"]
+    assert tally["functions_total"] == 2
+    assert tally["functions_matched"] == 1
+    assert tally["functions_fuzzy"] == 1
+    assert tally["code_matched"] == 16 and tally["code_fuzzy"] == 8

@@ -272,7 +272,7 @@ def test_the_measured_module_defines_non_matching(world):
 def test_a_second_function_of_the_object_is_read_at_its_own_offset(world):
     _outputs((None, None, None, None, None, world.linker), {".text": bytes(0x10) + b"\x01" + bytes(0x0F)})
     path = "src/main/stand_in.c"
-    proof = native.measure(world.cfg, "a", "stand_in", path, _text(world.cfg, path))
+    proof = native.measure(world.cfg, "a", "stand_in", path, "void stand_in(void) {}")
     assert not proof.exact and "1 bytes differ at +0x0 .text" in proof.missing[0]
     assert native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg)).exact  # +0x10 is not c_func
 
@@ -349,3 +349,19 @@ def test_digest_of_the_overlay_names_every_file_it_replaces(world):
     snapshot, *_ = native.candidate(world.cfg, "c_func" and "a", "src/main/c_func.c", "int x;\n")
     other, *_ = native.candidate(world.cfg, "a", "src/main/c_func.c", "int y;\n")
     assert snapshot.digest != other.digest and digest(snapshot.digest)
+
+
+def test_assembly_stand_in_cannot_score_as_candidate_c(world):
+    path = "src/main/stand_in.c"
+    proof = native.measure(world.cfg, "a", "stand_in", path, _text(world.cfg, path))
+    assert not proof.exact and proof.score == 0
+    assert "is not owned" in proof.missing[0]
+    assert not world.recipes
+
+
+def test_nonmatching_body_is_measured_instead_of_its_assembly(world):
+    path = "src/main/stand_in.c"
+    source = "#ifdef NON_MATCHING\nvoid stand_in(void) {}\n#else\n" + _text(world.cfg, path) + "\n#endif\n"
+    proof = native.measure(world.cfg, "a", "stand_in", path, source)
+    assert proof.exact and proof.score == 1
+    assert "-DNON_MATCHING" in world.recipes[0].cppflags
