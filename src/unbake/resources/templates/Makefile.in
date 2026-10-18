@@ -68,7 +68,7 @@ build/%.s.o: $$$$(call src,$$$$*).s | $$(STAMPS)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASINC) -Iinclude $$< -o $$@
 build/%.bin.o: asm/%.bin
 	$$(Q)mkdir -p $$(@D)
-	$$(Q)$$(OBJCOPY) -I binary -O elf32-bigmips -B mips $$< $$@
+	$$(Q)$$(OBJCOPY) -I binary -O elf32-tradbigmips -B mips $$< $$@
 
 # The whole ROM links once per version, from build/<version>/, so object paths in the script stay short.
 build/%/link.ld: $$(NAME).ld

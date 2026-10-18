@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-export PYTHONPATH=src
-exec python3 -m unbake "$@"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -x "$root/.venv/bin/python" ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
+PYTHONPATH="$root/src" exec "$root/.venv/bin/python" -m unbake "$@"
