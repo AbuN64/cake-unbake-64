@@ -1,12 +1,13 @@
 """The shared performance mechanisms count work: warm items never dispatch, readers run once, the watchdog speaks."""
 
 from dataclasses import replace
+from itertools import count
 from pathlib import Path
 
 import pytest
 from test_effort import _config
 
-from unbake import effort, pool, process
+from unbake import effort, pool, process, repo
 from unbake.contracts import Origin, Refusal
 
 
@@ -163,3 +164,32 @@ def test_a_pool_is_judged_against_the_slots_it_held_not_the_most_it_was_admitted
         },
     )
     assert ("budget.pool_underused" in {f.key for f in record.findings}) is flagged
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_sync_stand_in_recapture_has_its_own_stage_boundary(cfg, monkeypatch, changed):
+    ticks = count(0, 5_000_000_000)
+    monkeypatch.setattr(effort.time, "perf_counter_ns", lambda: next(ticks))
+    overlays = []
+    writes = {"src/unit.c": b"stand-in\n"} if changed else {}
+
+    def capture(config, overlay=None):
+        overlays.append(overlay)
+        with effort.stage("tree.capture"), effort.stage("pool.map"):
+            effort.record_pool("tree.parse", 1, 1, 1, next(ticks), [], end_ns=next(ticks))
+        return object()
+
+    monkeypatch.setattr(repo.tree, "capture", capture)
+    monkeypatch.setattr(repo, "stand_ins", lambda config, current: writes)
+    monkeypatch.setattr(repo, "_generated", lambda config, current: {})
+    with effort.command("sync", []):
+        effort.bind(cfg)
+        result = repo.sync(cfg, {})
+    assert result["written"] == sorted(writes)
+    assert overlays == ([None, writes] if changed else [None])
+    captures = [r.path for r in effort.closed() if r.path[-1] == "tree.capture"]
+    assert captures == [
+        ("sync", "repo.sync", "tree.capture"),
+        *(([("sync", "repo.sync", "repo.stand_ins", "tree.capture")]) if changed else []),
+    ]
+    assert not [f for r in effort.closed() for f in r.findings if f.key == "budget.repeated"]

@@ -379,9 +379,11 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
     with effort.stage("repo.sync"):
         root = config.project.root
         current = tree.capture(config)
-        appended = stand_ins(config, current)
-        if appended:
-            current = tree.capture(config, appended)
+        with effort.stage("repo.stand_ins"):
+            appended = stand_ins(config, current)
+            if appended:
+                # This capture sees the proposed stand-ins, a different input from the on-disk tree above.
+                current = tree.capture(config, appended)
         changed = {
             path: value
             for path, value in {**appended, **_generated(config, current)}.items()
