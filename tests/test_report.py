@@ -320,7 +320,7 @@ def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(t
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
     for row in ("code      [", "data      [", "functions ["):  # values of the old rows are the same
         assert row.strip() in plain and row.strip() in out
-    assert "blobs     [████████▒▒▒▒▒▒▒▒▒▒▒▒]  40.00% (~100.00%)  400 of 1,000</code>" in out
+    assert "blobs     [░░░░░░░░░░░░░░░░░░░░]   0.00% (~0.01%)  400 of 7,295,964</code>" in out
     assert "boot      [▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒]   0.00% (~100.00%)  0 of 4,096</code>" in out
     assert "unknown   [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 7,294,964</code>" in out
     assert "rom       1,088,548 + 0 + 1,000 + 4,096 + 7,294,964 = 8,388,608 bytes</code>" in out
@@ -498,3 +498,21 @@ def test_missing_rom_partition_refuses_without_replacing_published_progress(publ
     with pytest.raises(Refusal, match=r"report\.rom"):
         report.run(config, {})
     assert path.read_bytes() == b"previous"
+
+
+def test_blobs_bar_reserves_unknown_space_and_excludes_code_data_boot():
+    held = {
+        "rom_size": 2000,
+        "code_total": 600,
+        "data_total": 200,
+        "boot_total": 200,
+        "blobs_decoded": 200,
+        "blobs_total": 500,
+        "unknown_total": 500,
+    }
+    assert report._blobs_line("blobs", held, 20) == (
+        "blobs [" + "█" * 4 + "▒" * 6 + "░" * 10 + "]  20.00% (~50.00%)  200 of 1,000"
+    )
+    assert report._blobs_line("blobs", {"blobs_decoded": 0, "blobs_total": 0, "unknown_total": 1000}, 20) == (
+        "blobs [" + "░" * 20 + "]   0.00%  0 of 1,000"
+    )

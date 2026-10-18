@@ -173,3 +173,6 @@ A NON_MATCHING body remains unmatched even at 100 percent until landed. No schem
 config: it checks size/SHA-1 against config.toml and records `exact`, `failing`, `build_inputs` in `.unbake/check.json`.
 The report grants that verdict only while all build inputs and outputs retain their identity. Source debt keeps its
 own tree digest in that same document. A failed build clears exact credit; a missing or corrupt ROM cannot pass.
+
+The README blobs bar uses `blobs_total + unknown_total` as its denominator: the ROM bytes outside code, data and
+boot. Decoded bytes fill the solid part, identified bytes fill the shaded part, and unknown bytes stay empty.

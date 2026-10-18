@@ -407,8 +407,8 @@ _BLOB_KEYS = ("rom_size", "boot_total", "blobs_total", "blobs_decoded", "blobs_i
 
 
 def _blobs_line(label: str, held: Json, cells: int) -> str:
-    """Blobs: █ decoded, ▒ identified, of all blob bytes."""
-    return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"], cells)
+    """Blobs: █ decoded, ▒ identified, ░ unknown, over ROM bytes outside code, data and boot."""
+    return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
 
 
 def _rom_line(label: str, credit: int, held: Json, name: str) -> str:
