@@ -177,3 +177,26 @@ def test_lost_library_routine_that_renders_differently_keeps_its_stand_in_in_the
     root = lost.project.root
     assert '("main", f)' not in (root / "src/game.c").read_text()
     assert 'INCLUDE_ASM("main", f);' in (root / "src/sdk/keep.c").read_text()
+
+
+def _without_roms(cfg):
+    for version in cfg.project.versions:
+        (cfg.project.root / f"roms/baserom.{version}.z64").unlink()
+
+
+def test_sync_check_of_an_extracted_tree_opens_no_rom(library):
+    repo.sync(library, {})
+    _without_roms(library)
+    assert repo.sync(library, {"check": True})["written"] == []
+
+
+def test_stand_in_nothing_shows_foreign_stays_without_roms(library):
+    _without_roms(library)
+    assert libasm.plan(library, tree.capture(library)) == {}
+
+
+def test_lost_library_routine_without_roms_refuses_naming_it(lost):
+    _without_roms(lost)
+    with pytest.raises(Refusal, match=r"library-asm\.rom") as raised:
+        libasm.homes(lost, tree.capture(lost))
+    assert "`f`" in raised.value.findings[0].reason

@@ -131,8 +131,13 @@ def scan(text: str) -> dict[str, str]:
     return found
 
 
-def _rom_words(cfg: Config, held: Any, roms: dict[str, bytes], version: str, name: str) -> tuple[list[int], int] | None:
-    """The words and address of a function name in a version, or None when its extent is unknown."""
+def _rom_words(
+    cfg: Config, held: Any, roms: dict[str, bytes], version: str, name: str, *, needed: bool = False
+) -> tuple[list[int], int] | None:
+    """The words and address of a function name in a version, or None when its extent is unknown. A ROM that is not
+    there yields None too (a tree is checked without ROMs: a stand-in nothing can show foreign stays what it is, which
+    is what a ROM-present run decides for a tree already extracted); a placement that cannot be decided without
+    those words (`needed`) refuses naming the routine. A ROM that is there but not the configured one refuses."""
     table = held.symbols[version]
     vram, rom, size, kind = table[name]
     if kind != "func" or rom is None:
@@ -144,6 +149,17 @@ def _rom_words(cfg: Config, held: Any, roms: dict[str, bytes], version: str, nam
     if size <= 0 or size % 4:
         return None
     if version not in roms:
+        if not (cfg.project.root / "roms" / f"baserom.{version}.z64").is_file():
+            if needed:
+                raise Refusal(
+                    Finding(
+                        "library-asm.rom",
+                        f"`{name}` is a library routine nothing owns and only the {version} ROM shows its code",
+                        path=f"roms/baserom.{version}.z64",
+                        action=f"run unbake sync with roms/baserom.{version}.z64 present and commit the result",
+                    )
+                )
+            return None
         roms[version] = config.rom(cfg.project, version).read_bytes()
     raw = roms[version][rom : rom + size]
     if len(raw) != size:
@@ -188,7 +204,7 @@ def homes(cfg: Config, held: Any) -> dict[str, Any]:
                 continue
             toolchain = adapters.row(recipes.of(cfg, module.path).toolchain)
             for holder in (v for v in cfg.project.versions if name in held.symbols[v]):
-                found = _rom_words(cfg, held, roms, holder, name)
+                found = _rom_words(cfg, held, roms, holder, name, needed=True)
                 if found is None or not foreign(found[0], found[1], toolchain):
                     break
             else:
