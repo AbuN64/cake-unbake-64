@@ -345,7 +345,7 @@
       ]
      },
      "state": {
-      "type": "string"
+      "enum": ["fuzzy", "unmatched"]
      }
     },
     "required": [

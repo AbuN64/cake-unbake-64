@@ -146,6 +146,11 @@ def percent(credit: Credit) -> float:
     return 100.0 if credit.exact or credit.score >= 1.0 else round(credit.score * 100, 2)
 
 
+def fuzzy(credit: Credit) -> bool:
+    """Whether an unmatched credit row earns a positive measured score, independent of source form."""
+    return not credit.exact and credit.score > 0
+
+
 def build_credits(
     versions: list[str],
     tree: Any,
@@ -285,7 +290,7 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
             ):
                 bucket[prefix + "total"] += size
                 bucket[prefix + "matched"] += earned
-            bucket["functions_fuzzy"] += int(function and not row.exact and row.score > 0)
+            bucket["functions_fuzzy"] += int(function and fuzzy(row))
             bucket["code_fuzzy"] += round(row.score * (row.code - row.kept))
             bucket["data_fuzzy"] += round(row.score * row.data)
     return totals, segments, kinds

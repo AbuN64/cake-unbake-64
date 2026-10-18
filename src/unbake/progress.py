@@ -84,7 +84,7 @@ def unmatched(config: Any, tree: Any) -> list[Json]:
                 "size": row.code,
                 "percent": report.percent(row),
                 "path": row.member.group or None,
-                "state": row.member.state,
+                "state": "fuzzy" if report.fuzzy(row) else "unmatched",
             }
             for row in report.credits(config, tree)
             if row.code > 0 and not row.exact

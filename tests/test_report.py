@@ -516,3 +516,29 @@ def test_blobs_bar_reserves_unknown_space_and_excludes_code_data_platform():
     assert report._blobs_line("blobs", {"blobs_decoded": 0, "blobs_total": 0, "unknown_total": 1000}, 20) == (
         "blobs [" + "░" * 20 + "]   0.00%  0 of 1,000"
     )
+
+
+@pytest.mark.parametrize("score,broken", [(None, False), (0.0, False), (0.25, False), (1.0, False), (0.5, True)])
+def test_next_fuzzy_state_matches_measured_summary_and_preserves_zero_score_c_links(
+    published_case, monkeypatch, score, broken
+):
+    config, tree = published_case
+    facts = _facts(exact=(4096, 16, "func"), alias=(4100, 0, "func"), fuzzy=(4112, 8, "func"), asm=(4120, 8, "func"))
+    rows = _credits(
+        tree, facts, scored={} if score is None else {"fuzzy": {"a": score}}, broken=("src/a.c",) if broken else ()
+    )
+    monkeypatch.setattr(report, "credits", lambda config, tree: rows)
+    result = report.run(config, {"next": True})
+    configuration.validate("result.report", result, "report")
+    expected = int(bool(score) and not broken)
+    assert sum(row["state"] == "fuzzy" for row in result["next"]) == expected
+    assert result["versions"]["a"]["functions_fuzzy"] == expected
+    assert {row["name"]: row["state"] for row in result["next"]} == {
+        "asm": "unmatched",
+        "fuzzy": "fuzzy" if expected else "unmatched",
+    }
+    document = json.loads((config.project.root / "progress.json").read_bytes())
+    assert document["carts"][0]["functions"]["fuzzy"] == expected
+    body = next(row for row in document["map"]["fns"] if row[0] == "fuzzy")
+    assert body[4:] == ["src/a.c", 3]
+    assert {row["name"] for row in result["next"]} == {"asm", "fuzzy"}  # no exact C or zero-byte aliases
