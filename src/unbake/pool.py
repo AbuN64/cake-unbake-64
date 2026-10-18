@@ -77,7 +77,6 @@ def _init(limit: int) -> None:
     memory_worker_bytes is the budget that sizes the pool and trims a job's memo; the refusal sits well above it, so
     a job that needs more than the plan finishes instead of dying (the host guard freezes a runaway)."""
     global _in_worker
-    os.nice(10)  # pool work yields to whatever else the host runs
     inherited = next(
         int(line.split()[1]) * 1024
         for line in Path("/proc/self/status").read_text().splitlines()
@@ -1230,7 +1229,7 @@ def _is_make(program: str) -> bool:
 
 def main(argv: Sequence[str]) -> int:
     """`python -m unbake.pool [--work N] -- CMD...`: the shell form of `cores`. Only a CMD whose arguments contain `{j}`
-    holds a share of the host slots (as `{j}` and UNBAKE_CORES); any other CMD runs directly at nice 10, taking none."""
+    holds a share of the host slots (as `{j}` and UNBAKE_CORES); any other CMD runs directly, taking none."""
     import subprocess
 
     from unbake import config as configuration
@@ -1240,35 +1239,22 @@ def main(argv: Sequence[str]) -> int:
         work, args = int(args[1]), args[2:]
     command = args[1:] if args[:1] == ["--"] else args
     if not any("{j}" in a for a in command):
-        return subprocess.run(command, preexec_fn=lambda: os.nice(10)).returncode
+        return subprocess.run(command).returncode
     try:
         host = configuration.load_host(Path(os.environ.get("UNBAKE_HOST", Path.home() / ".config/unbake/unbake.toml")))
-    except Refusal:  # no usable host file: run the command alone at nice 10, holding no slots
+    except Refusal:  # no usable host file: run the command alone, holding no slots
         return subprocess.run(
-            [a.replace("{j}", "1") for a in command],
-            env={**os.environ, "UNBAKE_CORES": "1"},
-            preexec_fn=lambda: os.nice(10),
+            [a.replace("{j}", "1") for a in command], env={**os.environ, "UNBAKE_CORES": "1"}
         ).returncode
     if _is_make(command[0]) and "-j{j}" in command:  # elastic: the jobserver is fed from the slot pool
         with jobserver(host, work) as (j, env, fds):
             if not fds:
-                return subprocess.run(
-                    [a.replace("{j}", str(j)) for a in command],
-                    env={**os.environ, **env},
-                    preexec_fn=lambda: os.nice(10),
-                ).returncode
-            nice = shutil.which("nice")  # the feeder thread is alive: no preexec_fn, it is not fork-safe with threads
+                return subprocess.run([a.replace("{j}", str(j)) for a in command], env={**os.environ, **env}).returncode
             return subprocess.run(
-                [*([nice, "-n", "10"] if nice else []), *(a for a in command if a != "-j{j}")],
-                env={**os.environ, **env},
-                pass_fds=fds,
+                [a for a in command if a != "-j{j}"], env={**os.environ, **env}, pass_fds=fds
             ).returncode
     with cores(host, work) as j:
-        child = subprocess.run(
-            [a.replace("{j}", str(j)) for a in command],
-            env={**os.environ, "UNBAKE_CORES": str(j)},
-            preexec_fn=lambda: os.nice(10),
-        )
+        child = subprocess.run([a.replace("{j}", str(j)) for a in command], env={**os.environ, "UNBAKE_CORES": str(j)})
     return child.returncode
 
 

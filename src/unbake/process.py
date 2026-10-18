@@ -3,7 +3,6 @@
 import ctypes
 import os
 import selectors
-import shutil
 import signal
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -51,14 +50,6 @@ def scratch(root: Path) -> Path:
     return path
 
 
-_NICE = shutil.which("nice") or ""
-
-
-def _yield_cpu() -> None:
-    """Runs in the child before exec: every spawned tool yields to whatever else the host runs."""
-    os.nice(10)
-
-
 def _execute(
     name: str,
     argv: Sequence[str | Path],
@@ -79,16 +70,13 @@ def _execute(
         destination: int | IO[bytes] = subprocess.PIPE
         if stdout_path is not None:
             destination = stack.enter_context(stdout_path.open("wb"))
-        # a jobserver's feeder thread is alive while make runs: no preexec_fn then, it is not fork-safe with threads
-        niced = [_NICE, "-n", "10", *argv] if pass_fds and _NICE else None
         proc = subprocess.Popen(
-            niced or argv,
+            argv,
             cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=destination,
             stderr=subprocess.PIPE,
             start_new_session=True,
-            preexec_fn=None if niced else _yield_cpu,
             env={**os.environ, **env, "TMPDIR": str(tmp)},
             pass_fds=tuple(pass_fds),
         )

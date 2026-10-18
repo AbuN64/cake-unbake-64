@@ -314,15 +314,9 @@ def test_children_get_the_project_tmpdir(tmp_path):
     assert result.stdout.decode() == str(tmp_path / ".unbake" / "tmp") and scratch.is_dir()
 
 
-def test_every_spawned_tool_runs_at_nice_10(tmp_path, monkeypatch):
-    seen = {}
-    real = process.subprocess.Popen
-    monkeypatch.setattr(process.subprocess, "Popen", lambda *a, **kw: seen.update(kw) or real(*a, **kw))
-    process.run("nice", ("/bin/true",), tmp_path, tmp=tmp_path / "tmp")
-    niced = []
-    monkeypatch.setattr(process.os, "nice", niced.append)
-    seen["preexec_fn"]()
-    assert niced == [10]
+def test_a_spawned_tool_keeps_the_priority_of_its_caller(tmp_path):
+    result = process.run("nice", ("/usr/bin/nice",), tmp_path, tmp=tmp_path / "tmp")
+    assert int(result.stdout) == os.nice(0)
 
 
 @pytest.mark.parametrize(

@@ -697,14 +697,12 @@ def test_slots_grow_and_shrink_without_duplicate_locks_or_releasing_active_jobs(
     assert len(pool._slots) == len(set(pool._slots)) == 12
 
 
-def test_pool_workers_run_at_nice_10(monkeypatch):
-    niced = []
-    monkeypatch.setattr(pool.os, "nice", niced.append)
+def test_pool_workers_keep_the_priority_of_their_caller(monkeypatch):
+    monkeypatch.setattr(pool.os, "nice", lambda n: pytest.fail("a worker lowers no priority"), raising=False)
     monkeypatch.setattr(pool.resource, "setrlimit", lambda *a: None)
     monkeypatch.setattr(pool.ctypes, "CDLL", lambda name: type("L", (), {"prctl": lambda self, *a: None})())
     monkeypatch.setattr(pool, "_in_worker", False)
     pool._init(1 << 30)
-    assert niced == [10]
 
 
 def _host(tmp_path, slots=16, workers=16):
@@ -782,7 +780,7 @@ def test_the_executor_forks_the_host_fan_once_and_never_again_for_more_work(tmp_
     assert made == [9]
 
 
-def test_the_shell_form_passes_the_held_share_and_runs_at_nice_10(tmp_path, monkeypatch):
+def test_the_shell_form_passes_the_held_share_and_lowers_no_priority(tmp_path, monkeypatch):
     host_file = tmp_path / "host.toml"
     monkeypatch.setenv("UNBAKE_HOST", str(host_file))
     monkeypatch.setattr(configuration, "load_host", lambda p: _host(tmp_path, slots=8, workers=8))
@@ -794,10 +792,7 @@ def test_the_shell_form_passes_the_held_share_and_runs_at_nice_10(tmp_path, monk
     assert pool.main(["--", "pytest", "-n", "{j}"]) == 3
     argv, kw = ran[0]
     assert argv == ["pytest", "-n", "4"] and kw["env"]["UNBAKE_CORES"] == "4"
-    niced = []
-    monkeypatch.setattr(pool.os, "nice", niced.append)
-    kw["preexec_fn"]()
-    assert niced == [10]
+    assert "preexec_fn" not in kw
     for f in held:
         f.close()
 
@@ -833,7 +828,6 @@ def test_a_worker_closes_the_parents_slot_and_command_locks(tmp_path, monkeypatc
     slot, mine = (tmp_path / "s").open("a"), (tmp_path / "c").open("a")
     monkeypatch.setattr(pool, "_slots", [slot])
     monkeypatch.setattr(pool, "_cmd", [mine])
-    monkeypatch.setattr(pool.os, "nice", lambda n: 0)
     monkeypatch.setattr(pool.resource, "setrlimit", lambda *a: None)
     monkeypatch.setattr(pool.ctypes, "CDLL", lambda n: SimpleNamespace(prctl=lambda *a: 0))
     monkeypatch.setattr(pool, "_in_worker", False)
@@ -966,7 +960,7 @@ def test_a_job_under_memory_pressure_leaves_only_the_memo_it_started_with(monkey
     assert set(effort._memo) == {("base", 0)}
 
 
-def test_a_refused_host_file_runs_the_command_alone_at_nice_ten(monkeypatch, tmp_path):
+def test_a_refused_host_file_runs_the_command_alone(monkeypatch, tmp_path):
     calls, acquired = _shell_pool(monkeypatch, tmp_path)
 
     def refuse(path):
@@ -975,7 +969,7 @@ def test_a_refused_host_file_runs_the_command_alone_at_nice_ten(monkeypatch, tmp
     monkeypatch.setattr(configuration, "load_host", refuse)
     assert pool.main(["--work", "3", "--", "tool", "-j{j}"]) == 7
     assert acquired == [] and len(calls) == 1 and calls[0][0] == ["tool", "-j1"]
-    assert calls[0][1]["env"]["UNBAKE_CORES"] == "1" and calls[0][1]["preexec_fn"]
+    assert calls[0][1]["env"]["UNBAKE_CORES"] == "1" and "preexec_fn" not in calls[0][1]
 
 
 def test_an_unreadable_cache_entry_is_a_miss_in_a_keyed_group(cfg) -> None:
@@ -1038,8 +1032,8 @@ def test_a_make_build_runs_on_a_jobserver_fed_from_the_slot_pool(tmp_path, monke
     monkeypatch.setattr(pool, "_feed", lambda tokens, spare, stop, taken: None)
     pool.main(["--", "/usr/bin/make", "-j{j}", "check"])
     command, options = calls[0]
-    assert command[-2:] == ["/usr/bin/make", "check"]  # no fixed -j: the first grant is only where the build starts
-    assert command[1:3] == ["-n", "10"] and "preexec_fn" not in options  # the feeder thread runs: no preexec_fn
+    assert command == ["/usr/bin/make", "check"]  # no fixed -j: the first grant is only where the build starts
+    assert "preexec_fn" not in options  # the feeder thread runs: no preexec_fn, and no priority is lowered
     flags = options["env"]["MAKEFLAGS"]
     assert flags.startswith("-j4 --jobserver-auth=") and options["pass_fds"]
     assert options["env"]["UNBAKE_CORES"] == "4"
@@ -1220,7 +1214,6 @@ def test_a_worker_is_refused_memory_only_well_above_the_budget_that_sizes_the_po
     limits, marks = [], []
     monkeypatch.setattr(pool.resource, "setrlimit", lambda which, value: limits.append(value))
     monkeypatch.setattr(pool.effort, "mark_fork", lambda data, budget=0: marks.append((data, budget)))
-    monkeypatch.setattr(pool.os, "nice", lambda n: 0)
     monkeypatch.setattr(pool.ctypes, "CDLL", lambda name: type("L", (), {"prctl": lambda self, *a: 0})())
     monkeypatch.setattr(pool, "_slots", [])
     monkeypatch.setattr(pool, "_cmd", [])

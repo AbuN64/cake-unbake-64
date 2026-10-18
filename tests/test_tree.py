@@ -324,3 +324,58 @@ def test_a_function_is_code_though_a_version_knows_it_only_from_an_untyped_alias
     held = tree.capture(fixture.config(tmp_path, sources=sources, symbols=symbols))
     (module,) = held.modules
     assert module.sections["b"]["c_func"] == ".text"
+
+
+def test_a_later_command_rebuilds_nothing_of_an_unchanged_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = fixture.config(tmp_path)
+    first = tree.capture(config)
+    runs, built = fixture.cpp_runs(tmp_path), []
+    real = tree._build
+    monkeypatch.setattr(tree, "_build", lambda *a: built.append(1) or real(*a))
+    monkeypatch.setattr(effort, "_memo", {})  # a new command: only the durable cache is left
+    again = tree.capture(config)
+    assert again == first and again.owner("a", "c_func") == "src/main/c_func.c"
+    assert not built and fixture.cpp_runs(tmp_path) == runs
+
+
+def test_a_later_command_after_one_edit_parses_only_that_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = fixture.config(tmp_path)
+    tree.capture(config)
+    edit(config, "src/main/c_func.c", "s32 c_func(void) { return 7; }\n")
+    runs, parsed = fixture.cpp_runs(tmp_path), []
+    real = tree._parsed
+    monkeypatch.setattr(tree, "_parsed", lambda *a, **kw: parsed.append(a[1]) or real(*a, **kw))
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert set(parsed) == {"src/main/c_func.c"} and len(parsed) == 2  # one file in its two versions
+    assert fixture.cpp_runs(tmp_path) - runs == 4
+
+
+def test_parse_keys_are_one_function_for_a_header_read_off_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A header outside src/ and include/ is read from disk; the key that stores a parse and the key that looks it
+    up must agree, or that file is parsed again by every command."""
+    config = fixture.config(tmp_path)
+    root = config.project.root
+    (root / "asm/a/include").mkdir(parents=True)
+    (root / "asm/a/include/gen.h").write_text("#define GEN 1\n")
+    edit(config, "src/main/c_func.c", '#include "gen.h"\ns32 c_func(void) { return 1; }\n')
+    tree.capture(config)
+    runs = fixture.cpp_runs(tmp_path)
+    monkeypatch.setattr(effort, "_memo", {})
+    monkeypatch.setattr(store, "cached_object", lambda config, kind, key, produce: produce())  # no tree entry
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) == runs  # every file parse is a hit
+    (root / "asm/a/include/gen.h").write_text("#define GEN 2\n")
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) > runs  # the header is an input of the parse
+
+
+def test_the_tool_does_not_lower_its_own_priority() -> None:
+    import inspect
+
+    from unbake import process
+
+    assert "nice" not in inspect.getsource(pool).replace("niceness", "") and "nice(" not in inspect.getsource(process)

@@ -20,6 +20,7 @@ from unbake import adapters, effort, pool, process, recipes, store, symbols
 from unbake.contracts import Config, Finding, Refusal, sha256
 
 KIND = "tree.file"
+TREE = "tree.captured"  # a whole captured tree, keyed by its inputs
 LITERALS = "literals_"  # a fact `literals_<function>` places that function's file's compiler-emitted rodata
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
 _INCLUDE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
@@ -360,10 +361,16 @@ def parse(
 
 
 def _parsed(
-    config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None] | None = None
+    config: Config,
+    path: str,
+    text: bytes,
+    version: str,
+    read: Callable[[str], bytes | None] | None = None,
+    key: str | None = None,
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
-    """`parse` and the linker section of each defined or stand-in name, kept together in one cache entry."""
-    key = _key(config, path, text, version, read or _read_from(config))
+    """`parse` and the linker section of each defined or stand-in name, kept together in one cache entry. A caller that
+    already made the key (`_key` over the reader the entry is looked up with) passes it, so both name one entry."""
+    key = key or _key(config, path, text, version, read or _read_from(config))
 
     def produce() -> bytes:
         kinds: dict[str, str] = {}
@@ -407,10 +414,27 @@ def _files(config: Config, overlay: Mapping[str, bytes | None]) -> dict[str, byt
     return blobs
 
 
-def _parse_job(item: tuple[Any, ...]) -> tuple[list[str], list[str], list[str], dict[str, str]]:
-    config, path, text, version, overlay = item
+def _reader(
+    config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, bytes | None]
+) -> Callable[[str], bytes | None]:
+    """What a file's parse reads: the captured blobs, else (a file outside src/include: a relative or generated header)
+    the disk, an overlay's deletion staying absent. Each path is read once."""
     disk = _read_from(config)
-    return _parsed(config, path, text, version, lambda p: overlay[p] if p in overlay else disk(p))
+    seen: dict[str, bytes | None] = {}
+
+    def read(path: str) -> bytes | None:
+        if path in blobs:
+            return blobs[path]
+        if path not in seen:
+            seen[path] = None if path in overlay else disk(path)
+        return seen[path]
+
+    return read
+
+
+def _parse_job(item: tuple[Any, ...]) -> tuple[list[str], list[str], list[str], dict[str, str]]:
+    config, path, text, version, key = item
+    return _parsed(config, path, text, version, key=key)
 
 
 def _digest(config: Config, blobs: Mapping[str, bytes]) -> str:
@@ -421,10 +445,31 @@ def _digest(config: Config, blobs: Mapping[str, bytes]) -> str:
 def capture(config: Config, overlay: Mapping[str, bytes | None] = {}) -> Tree:
     with effort.stage("tree.capture"):
         blobs = _files(config, overlay)
-        return effort.memo(("tree", _digest(config, blobs)), lambda: _build(config, blobs, overlay))
+        digest = _digest(config, blobs)
+        return effort.memo(("tree", digest), lambda: _captured(config, blobs, digest, overlay))
 
 
-def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, bytes | None]) -> Tree:
+def _captured(config: Config, blobs: Mapping[str, bytes], digest: str, overlay: Mapping[str, bytes | None]) -> Tree:
+    """The tree of these files: a pure function of them, the parse keys (headers read off disk included) and the
+    tool's code, so a later command finds it in the durable cache and builds nothing."""
+    jobs = _jobs(config, blobs)
+    keys = _keys(config, blobs, jobs, overlay)
+    key = sha256(json.dumps([store.code(), digest, keys]).encode())
+    return store.cached_object(config, TREE, key, lambda: _build(config, blobs, jobs, keys, overlay))
+
+
+def _jobs(config: Config, blobs: Mapping[str, bytes]) -> list[tuple[str, str]]:
+    versions: tuple[str, ...] = tuple(_project(config).versions)
+    return [(p, v) for p in blobs if p.startswith("src/") and _is_source(p) for v in versions]
+
+
+def _build(
+    config: Config,
+    blobs: Mapping[str, bytes],
+    jobs: Sequence[tuple[str, str]],
+    keys: Sequence[str],
+    overlay: Mapping[str, bytes | None],
+) -> Tree:
     project = _project(config)
     versions: tuple[str, ...] = tuple(project.versions)
     tables = {
@@ -436,9 +481,7 @@ def _build(config: Config, blobs: Mapping[str, bytes], overlay: Mapping[str, byt
         )
         for v in versions
     }
-    sources = [p for p in blobs if p.startswith("src/") and _is_source(p)]
-    jobs = [(p, v) for p in sources for v in versions]
-    parsed = _parse_all(config, blobs, jobs, overlay)
+    parsed = _parse_all(config, blobs, jobs, keys)
     owned: dict[str, dict[str, list[str]]] = defaultdict(dict)
     stand: dict[str, dict[str, list[str]]] = defaultdict(dict)
     fuzzy: dict[str, set[str]] = defaultdict(set)
@@ -499,15 +542,21 @@ def _literals(
     return findings
 
 
-def _parse_all(
+def _keys(
     config: Config, blobs: Mapping[str, bytes], jobs: Sequence[tuple[str, str]], overlay: Mapping[str, bytes | None]
+) -> list[str]:
+    """The parse key of each (file, version): the one key function, whichever process parses or looks it up."""
+    read = _reader(config, blobs, overlay)
+    return [_key(config, p, blobs[p], v, read) for p, v in jobs]
+
+
+def _parse_all(
+    config: Config, blobs: Mapping[str, bytes], jobs: Sequence[tuple[str, str]], keys: Sequence[str]
 ) -> list[tuple[list[str], list[str], list[str], dict[str, str]]]:
     """Every (file, version) result: hits of the cache are read here, only the misses are parsed (in the pool)."""
-    read = blobs.get
-    keys = [_key(config, p, blobs[p], v, read) for p, v in jobs]
     hits = {k: store.get(config, KIND, k) for k in set(keys)}
     todo = [i for i, k in enumerate(keys) if hits[k] is None]
-    items = [(config, jobs[i][0], blobs[jobs[i][0]], jobs[i][1], dict(overlay)) for i in todo]
+    items = [(config, jobs[i][0], blobs[jobs[i][0]], jobs[i][1], keys[i]) for i in todo]
     done = dict(zip(todo, pool.map(config, "tree.parse", _parse_job, items), strict=True)) if items else {}
     out = []
     for i, k in enumerate(keys):
