@@ -202,6 +202,13 @@
      "data_split": {
       "type": "string",
       "minLength": 1
+     },
+     "jump_table_base": {
+      "type": "integer",
+      "minimum": 1
+     },
+     "rdata_alloc": {
+      "type": "boolean"
      }
     },
     "required": [

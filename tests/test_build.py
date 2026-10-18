@@ -307,7 +307,7 @@ def test_makefile_variable_blocks(tmp_path):
     assert [line.split(": ")[1].split(" ")[0] for line in lines] == ["TC", "CPPFLAGS", "CFLAGS"]
     assert lines[2].endswith("-mno-fix4300 -O1") and " -O2 " not in lines[2]
     assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
-    assert "sed -nE" in text and text.count("sed ") == 4  # PROVIDE lines (facts, .L labels); data files; code files
+    assert "sed -nE" in text and text.count("sed ") == 5  # PROVIDE lines (facts, .L labels); data files; code files; jump tables
     assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
 
@@ -697,3 +697,13 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
     source.write_text(".text\n.align 2\nf:\n.section .rodata\n.align 3\n.word 1\n.half 2\n.text\n.align 2\n")
     subprocess.run([sys.executable, "-I", "-c", code, str(source)], check=True)
     assert source.read_text() == ".text\n.align 2\nf:\n.section .rodata\n.4byte 1\n.2byte 2\n.text\n.align 2\n"
+
+
+def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
+    """jump_table_base and rdata_alloc of a toolchain row become recipe lines around its assembler."""
+    lines = build._recipe("gcc-2.8.1-sn64").splitlines()
+    sed = next(i for i, line in enumerate(lines) if "\\.L[0-9]+" in line)
+    asm = next(i for i, line in enumerate(lines) if "asn64" in line)
+    assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
+    assert lines[asm + 1] == "$(Q)$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
+    assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")

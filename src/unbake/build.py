@@ -161,8 +161,13 @@ def _recipe(id: str) -> str:
     ]
     if row["emits_asm"]:
         lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s))')  # data packed at the byte
+        if row.get("jump_table_base"):
+            entry = r"^([ \t]*\.word[ \t]+\.L[0-9]+)[ \t]*$$"
+            lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
         template, _ = adapters.assemble_template(row)
         lines.append(_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]})))
+        if row.get("rdata_alloc"):
+            lines.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
     body = "\n".join(f"$(Q){line}" for line in lines)
     return f"define COMPILE_{key}\n{body}\nendef"
 
