@@ -427,7 +427,7 @@ _OWNER_RECORD = re.compile(r"Data[A-Z0-9][A-Za-z0-9]*")  # recipe's owner-local 
 
 def _owner_record(code: str, name: str) -> bool:
     """Whether `name` is the owner-local record of a data symbol this text declares as it or as a pointer to it: its
-    members are every offset the symbol's users access, the bytes between no one reads (owner 2026-10-15), so its
+    members are every offset the symbol's users access, the bytes between no one reads, so its
     padding is the evidence, not a view standing in for real fields."""
     return bool(_OWNER_RECORD.fullmatch(name)) and bool(
         re.search(rf"^[ \t]*extern\s+(?:struct\s+)?{name}\s*\*?\s*[A-Za-z_]\w*\s*;", code, re.M)

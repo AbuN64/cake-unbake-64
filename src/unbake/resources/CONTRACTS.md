@@ -34,7 +34,7 @@ in `#if VERSION_X`. The commands are `init`, `setup`, `sync [--check]`, `check`,
 the source rules and the `unclean` pool, and adds a header lint: each `extern` is declared at most once across `include/`
 and a name has the same declaration everywhere (cached in the `header.names` kind by header text).
 
-## Public API (every lane implements exactly its row and calls only these)
+## Public API (each module implements exactly its row and calls only these)
 
 
 | Module | Public functions |
@@ -122,7 +122,7 @@ Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/
 | CONTRIBUTING.md.in | title roms | repo.init |
 | README.md.in | title begin end | repo.init |
 
-## Source budgets (physical lines; planning allocations per owner 2026-10-08 — lint enforces only the total: a non-blocking warning above the soft cap of 6,000 and a failure above the hard cap of 7,200 (owner 2026-10-10))
+## Source budgets (physical lines; allocations are planning numbers; lint enforces only the total: a non-blocking warning above the soft cap of 6,000 and a failure above the hard cap of 7,200)
 
 - contracts: 653
 - adapters: 410

@@ -121,7 +121,7 @@ def test_a_file_rewritten_while_its_job_read_it_is_derived_again(scene):
 
 
 def test_a_code_bound_record_is_keyed_by_the_jobs_code_not_the_whole_install(scene, monkeypatch):
-    """Each T install cost every lane a 618 s cold generate: an install that leaves the job's code alone stays warm."""
+    """An install that leaves the job's code alone stays warm."""
     asked = []
     monkeypatch.setattr(delta, "code_identity", lambda function: asked.append(function) or "same job code")
     monkeypatch.setattr(delta.store, "code", lambda: 1 / 0)  # the install digest is never read

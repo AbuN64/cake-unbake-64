@@ -1,4 +1,4 @@
-"""Journal filesystem tests; Git is mocked so this lane never starts Git, and any Git call fails the test."""
+"""Journal filesystem tests; Git is mocked so the tests never start Git, and any Git call fails the test."""
 
 from __future__ import annotations
 

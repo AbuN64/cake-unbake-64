@@ -91,7 +91,7 @@ def _lines(names: list[str]) -> int:
 
 
 def test_line_budgets() -> None:
-    # Owner 2026-10-14: the line cap is soft; module allocations are planning numbers.
+    # The line cap is soft; module allocations are planning numbers.
     unknown = {p.stem for p in FILES} - set(BUDGETS) - {"__init__", "__main__"}
     assert not unknown, f"modules without a budget: {sorted(unknown)}"
     total = _lines([p.stem for p in FILES]) + _count(SRC / "contracts.py")
