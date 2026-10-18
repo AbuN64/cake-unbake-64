@@ -414,7 +414,12 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
 def sync(config: Config, params: Json) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
     files that would change."""
-    return _sync(config, params)[0]
+    result, current = _sync(config, params)
+    if not params.get("check") and (config.project.root / "README.md").is_file():
+        for path, content in report.files(config, current).items():
+            if store.write(config.project.root / path, content):
+                result["written"].append(path)
+    return result
 
 
 def _sync(config: Config, params: Json) -> tuple[Json, Any]:

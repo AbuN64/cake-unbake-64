@@ -65,7 +65,6 @@ def _no_partition(monkeypatch):  # the partition needs ROMs and segments: test_b
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.setattr(report.perfect, "census", lambda tree, rows, exact: ({}, frozenset()))
     return tmp_path
 
 
@@ -173,13 +172,10 @@ def test_functions_row_has_fuzzy_gradient():
 
 
 def test_tally_percentages():
-    bucket = {
-        **_bucket(code_total=80, code_matched=20, code_fuzzy=10, data_total=20, data_fuzzy=5),
-        "perfect_bytes": 40,
-    }
+    bucket = {**_bucket(code_total=80, code_matched=20, code_fuzzy=10, data_total=20, data_fuzzy=5)}
     tally = report._tally(bucket)
     assert (tally["fuzzy_bytes"], tally["code_percent"], tally["data_percent"]) == (15, 25.0, 0.0)
-    assert (tally["fuzzy_percent"], tally["perfect_percent"]) == (35.0, 40.0)
+    assert tally["fuzzy_percent"] == 35.0
 
 
 def _readme_case(root):
@@ -190,14 +186,8 @@ def _readme_case(root):
     config = _config(root, ("us", "eu"), meta=meta)
     values = {
         "us": {**_bucket(), "code_total": 1_088_548, "code_matched": 816_136, "code_fuzzy": 18_070}
-        | {"functions_total": 4196, "functions_matched": 3769, "functions_fuzzy": 100, "perfect_bytes": 108_854},
-        "eu": {
-            **_bucket(),
-            "code_total": 4_467_256,
-            "code_matched": 3_219_816,
-            "code_fuzzy": 165_330,
-            "perfect_bytes": 0,
-        },
+        | {"functions_total": 4196, "functions_matched": 3769, "functions_fuzzy": 100},
+        "eu": {**_bucket(), "code_total": 4_467_256, "code_matched": 3_219_816, "code_fuzzy": 165_330},
     }
     return config, {"versions": values}
 
@@ -210,8 +200,7 @@ def test_readme_block_exact(tmp_path):
         f"{begin}\n"
         "<pre><code>all  [██████████████▒░░░░░]  72.64% (~75.94%)  4,035,952 of 5,555,804 bytes</code>"
         "<br><code>us   [██████████████▒░░░░░]  74.97% (~76.63%)  816,136 of 1,088,548 bytes</code>"
-        "<br><code>eu   [██████████████▒░░░░░]  72.07% (~75.77%)  3,219,816 of 4,467,256 bytes</code>"
-        "<br><code>perfect [░░░░░░░░░░░░░░░░░░░░]   1.95%  108,854 of 5,555,804 bytes</code></pre>\n\n"
+        "<br><code>eu   [██████████████▒░░░░░]  72.07% (~75.77%)  3,219,816 of 4,467,256 bytes</code></pre>\n\n"
         f"| us (NUS-NRWE-0, North America). First NTSC release. SHA256 `{sha['us']}` |\n"
         "|---|\n"
         "| <pre><code>code      [██████████████▒░░░░░]  74.97% (~76.63%)  816,136 of 1,088,548</code>"
@@ -329,7 +318,7 @@ def test_readme_with_blob_accounting_keeps_the_old_rows_and_adds_the_partition(t
         row["unknown_total"] = row["rom_size"] - current["versions"][v]["code_total"] - 4096 - row["blobs_total"]
         current["versions"][v].update(row)
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
-    for row in ("code      [", "data      [", "functions [", "perfect"):  # values of the old rows are the same
+    for row in ("code      [", "data      [", "functions ["):  # values of the old rows are the same
         assert row.strip() in plain and row.strip() in out
     assert "blobs     [████████▒▒▒▒▒▒▒▒▒▒▒▒]  40.00% (~100.00%)  400 of 1,000</code>" in out
     assert "boot      [▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒]   0.00% (~100.00%)  0 of 4,096</code>" in out

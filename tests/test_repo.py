@@ -540,3 +540,16 @@ def test_init_refuses_a_directory_that_is_not_empty(init_case):
     with pytest.raises(Refusal) as refused:
         repo.init(params)
     assert refused.value.findings[0].key == "init.request"
+
+
+def test_sync_refreshes_readme_from_the_current_report_renderer(world, monkeypatch):
+    (world.root / "README.md").write_text("old progress")
+    calls = []
+    monkeypatch.setattr(
+        repo.report, "files", lambda config, tree: calls.append(tree) or {"README.md": b"current progress"}
+    )
+    result = repo.sync(world.cfg, {"check": False})
+    assert (world.root / "README.md").read_bytes() == b"current progress"
+    assert "README.md" in result["written"] and len(calls) == 1
+    repo.sync(world.cfg, {"check": True})
+    assert len(calls) == 1

@@ -11,7 +11,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from unbake import blobs, effort, perfect, present, rescore, store
+from unbake import blobs, effort, present, rescore, store
 from unbake import config as configuration
 from unbake.contracts import Finding, Json, Refusal, sha256_file
 
@@ -114,7 +114,6 @@ def _tally(b: Json) -> Json:
         "code_percent": _pct(b["code_matched"], b["code_total"]),
         "data_percent": _pct(b["data_matched"], b["data_total"]),
         "fuzzy_percent": _pct(b["code_matched"] + b["data_matched"] + fuzzy, b["code_total"] + b["data_total"]),
-        "perfect_percent": _pct(b["perfect_bytes"], b["code_total"] + b["data_total"]),
     }
 
 
@@ -257,17 +256,14 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
             "functions_fuzzy",
             "code_fuzzy",
             "data_fuzzy",
-            "perfect_bytes",
         ),
         0,
     )
     rows = credits(config, tree)
-    perfect_modules = perfect.census(tree, rows, exact_versions(config, tree))[1]
     totals = {v: dict(zero) for v in config.project.version}
     segments: defaultdict[str, Buckets] = defaultdict(dict)
     kinds: defaultdict[str, Buckets] = defaultdict(dict)
     for row in rows:
-        whole = bool(row.member.group) and row.member.group in perfect_modules  # its module is one perfect object
         for bucket in (
             totals[row.version],
             segments[row.segment].setdefault(row.version, dict(zero)),
@@ -284,7 +280,6 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
             bucket["functions_fuzzy"] += int(function and not row.exact and row.score > 0)
             bucket["code_fuzzy"] += round(row.score * (row.code - row.kept))
             bucket["data_fuzzy"] += round(row.score * row.data)
-            bucket["perfect_bytes"] += (row.code + row.data) if whole else 0
     return totals, segments, kinds
 
 
@@ -363,10 +358,7 @@ def _versions(config: Any, tree: Any, totals: Buckets) -> dict[str, Json]:
 def progress(config: Any, tree: Any) -> Json:
     """The per-version credit the README shows."""
     with effort.stage("report.progress"):
-        return {
-            "versions": _versions(config, tree, _tallies(config, tree)[0]),
-            "perfect": perfect.census(tree, credits(config, tree), exact_versions(config, tree))[0],
-        }
+        return {"versions": _versions(config, tree, _tallies(config, tree)[0])}
 
 
 def current(config: Any, tree: Any) -> Json:
@@ -382,7 +374,6 @@ def current(config: Any, tree: Any) -> Json:
             "segments": {s: {v: _tally(b) for v, b in rows.items()} for s, rows in segments.items()},
             "kinds": {k: {v: _tally(b) for v, b in rows.items()} for k, rows in kinds.items()},
             "debt": debt,
-            "perfect": perfect.census(tree, credits(config, tree), exact_versions(config, tree))[0],
         }
 
 
@@ -431,13 +422,6 @@ def _blob_rows(held: Json, cells: int, code: int, data: int) -> list[str]:
     ]
 
 
-def _perfect_line(label: str, perfect_bytes: int, total: int, cells: int) -> str:
-    """The second art bar: bytes of modules that are one proven object with proven flags and only exact members."""
-    percent = _pct(perfect_bytes, total)
-    shade = int(percent // (100 / cells))
-    return f"{label} [{'▒' * shade}{'░' * (cells - shade)}]  {percent:5.2f}%  {perfect_bytes:,} of {total:,} bytes"
-
-
 def _rom_sha256(config: Any, version: str) -> str:
     path = configuration.rom(config.project, version)
     return effort.memo(("rom-sha256", str(path)), lambda: sha256_file(path))
@@ -474,14 +458,6 @@ def readme(text: str, config: Any, report: Json) -> str:
             _line(label.ljust(width), bucket, cells) + " bytes"
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.version)]
         ]
-        lines.append(
-            _perfect_line(
-                "perfect".ljust(width),
-                sum(versions[v]["perfect_bytes"] for v in project.version),
-                total["code_total"] + total["data_total"],
-                cells,
-            )
-        )
         if counted:
             sums = {k: sum(versions[v][k] for v in project.version) for k in _BLOB_KEYS}
             lines.append(_blobs_line("blobs".ljust(width), sums, cells) + " bytes")
