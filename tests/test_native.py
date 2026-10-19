@@ -423,3 +423,13 @@ def test_a_shorter_candidate_is_compared_against_the_targets_whole_extent(world,
     proof = native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg))
     assert not proof.exact and proof.target_sha256 == sha256(bytes(0x18))
     assert any(".text size 8 != 24" in m for m in proof.missing)
+
+
+def test_the_selected_function_is_read_at_its_own_object_offset_whatever_an_earlier_member_measures(world):
+    world.defined = {"stand_in": (".text", 0, 16), "c_func": (".text", 0x20, 16)}  # the member before it is longer
+    world.sizes = {".text": 0x30}
+    _outputs((None, None, None, None, None, world.linker), {".text": b"\x01" * 0x20 + bytes(0x10)})
+    proof = native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg))
+    assert proof.exact, proof.missing
+    (placed,) = world.linker.placements[-1:]
+    assert placed[0].vram == 0x400 - 0x20  # the text starts where the selected function's address less its offset says

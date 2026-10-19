@@ -261,12 +261,15 @@ def _output(table: Any, section: str) -> str | None:
 
 
 def _anchors(
-    facts: Any, defined: dict[str, tuple[str, int, int]], table: Any, mask: int
+    facts: Any, defined: dict[str, tuple[str, int, int]], table: Any, mask: int, selected: str = ""
 ) -> tuple[dict[str, int], dict[str, int]]:
     """(vram of the start of each linker section, its size) from the object's defined symbols the version places: the
-    section starts where a symbol's address less its offset in the object says."""
+    section starts where a symbol's address less its offset in the object says. The selected function anchors its own
+    section, so it sits at its address whatever an earlier member of the object measures; the other sections start
+    at their earliest placed symbol."""
     base: dict[str, int] = {}
-    for name, (section, value, _) in sorted(defined.items(), key=lambda kv: kv[1][1]):
+    order = sorted(defined.items(), key=lambda kv: (kv[0] != selected, kv[1][1]))
+    for name, (section, value, _) in order:
         fact, out = facts.get(name), _output(table, section)
         if fact is None or out is None or out == ".bss":
             continue
@@ -414,7 +417,7 @@ def _link(
         return _gap(unit, name, version, recipe, source, object_sha, f"unproved {name}: the object does not define it")
     table = config.sections()
     mask = config.load_resource("rom.toml").get("text_mask", _WORD)
-    starts, _ = _anchors(facts, defined, table, mask)
+    starts, _ = _anchors(facts, defined, table, mask, name)
     totals: dict[str, int] = {}
     for title, size in sizes.items():
         if (out := _output(table, title)) is not None:
