@@ -95,7 +95,7 @@ for line in text.splitlines():
     if not all(a for a, _ in stack):
         continue
     stand = re.match(r"\s*INCLUDE_(ASM|DATA|RODATA)\(\s*\"?(\w+)\"?\s*,\s*(\w+)\s*\)\s*;?\s*$", line)
-    if stand:
+    if stand and "include_asm.h" in text:  # like the real header: without it the call stays as written
         folder = "nonmatchings" if stand[1] == "ASM" else "data"
         section = {"ASM": ".text", "DATA": ".data", "RODATA": ".rodata"}[stand[1]]
         out.append('__asm__(".section %s\\n.include \\"%s/%s/%s.s\\"");' % (section, folder, stand[2], stand[3]))

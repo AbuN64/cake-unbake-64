@@ -56,6 +56,16 @@ def test_unowned_and_duplicate(tmp_path: Path) -> None:
     assert finding.key == "tree.duplicate" and finding.unit == "c_func" and finding.versions == ("a",)
 
 
+def test_a_stand_in_without_the_header_still_owns_its_name(tmp_path: Path) -> None:
+    """The header is written on top by sync; until then the file is read as it will be, not left unowned."""
+    sources = {
+        "src/main/c_func.c": "s32 c_func(void) { return 1; }\n",
+        "src/main/stand_in.c": "INCLUDE_ASM(main, stand_in);\n",
+    }
+    held = tree.capture(fixture.config(tmp_path, sources=sources))
+    assert held.owner("a", "stand_in") == "src/main/stand_in.c"
+
+
 def test_labels_inside_data_need_no_owner(tmp_path: Path) -> None:
     """A data name after data in one mapping is a label of that piece; a name at an owned address is a second name of
     those bytes; a function after data, and data after a function or in another mapping, still need an owner."""

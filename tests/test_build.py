@@ -865,3 +865,52 @@ def test_make_cache_hit_repairs_missing_report_verdict(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "_make", Mock(side_effect=AssertionError("cached build must not rerun")))
     build.make_check(config, held)
     assert json.loads((tmp_path / ".unbake/check.json").read_bytes())["exact"] == ["eu-1", "us"]
+
+
+def _said(monkeypatch) -> list[str]:
+    said: list[str] = []
+    monkeypatch.setattr(build.effort, "say", said.append)
+    return said
+
+
+def test_a_function_fact_with_no_rom_is_placed_by_its_segment(tmp_path, monkeypatch):
+    """`f_1 = 0x80200410; // type:func` names no rom, yet the segment at 0x80200400 maps it to 0x1010: it starts a `c`
+    piece there and a finding asks for the rom (a row with no rom was dropped from the yaml, so the function was never
+    split from the data piece before it)."""
+    said = _said(monkeypatch)
+    config = make_config(tmp_path)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(
+        "d_0 = 0x80200400; // rom:0x1000\nf_1 = 0x80200410; // type:func\nabs_1 = 0x80000400; // type:func\n"
+    )
+    facts = {"d_0": (0x80200400, 0x1000, None, "data"), "f_1": (0x80200410, None, None, "func")}
+    module = Module("src/a.c", "main", {"us": ("d_0",)}, (), {"us": ()}, {"us": {"d_0": ".data"}})
+    out = build.splat_yaml(config, "us", Tree("digest", (module,), {"us": facts})).decode()
+    assert "[0x1000, data, main/d_0]\n      - [0x1010, c, main]\n" in out
+    assert said == ["us: f_1 at 0x80200410 names no rom; its segment maps it to 0x1010 (add rom:0x1010)"]
+
+
+def test_a_data_piece_at_a_functions_rom_is_reported_as_shadowing_it(tmp_path, monkeypatch):
+    """A four-byte data name at the first instruction of `f_1` wins the address, so splat wrote f_1's assembly from the
+    second instruction (static_0_802A2270 in RageWars us-rev1); the generator now says so."""
+    said = _said(monkeypatch)
+    config = make_config(tmp_path)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("f_1 = 0x80200410; // type:func rom:0x1010\n")
+    facts = {"f_1": (0x80200410, 0x1010, None, "func"), "d_pre": (0x80200410, 0x1010, None, "data")}
+    module = Module("src/a.c", "main", {"us": ("d_pre",)}, (), {"us": ("d_pre",)}, {"us": {"d_pre": ".data"}})
+    build.splat_yaml(config, "us", Tree("digest", (module,), {"us": facts}))
+    assert len(said) == 1 and said[0].startswith("us: f_1 at rom 0x1010 is shadowed by the data piece main/d_pre")
+
+
+def test_the_canonical_name_of_a_function_the_c_spells_by_an_alias_has_that_owner():
+    """The C defines `f_alias`; the fact names `f_canon` at the same address: both are one function and one owner,
+    while `owned` stays strict (a second name never gets a piece of its own)."""
+    module = Module("src/a.c", "main", {"us": ("f_alias",)}, (), {"us": ()}, {"us": {"f_alias": ".text"}})
+    facts = {
+        "f_alias": (0x80200400, 0x1000, None, "func"),
+        "f_canon": (0x80200400, 0x1000, None, "func"),
+        "f_other": (0x80200500, 0x1100, None, "func"),
+    }
+    held = Tree("digest", (module,), {"us": facts})
+    assert held.owner("us", "f_canon") == held.owner("us", "f_alias") == "src/a.c"
+    assert held.owned("us", "f_canon") is None and held.owner("us", "f_other") is None
+    assert held.owner("us", "unknown") is None and held.owner("eu-1", "f_canon") is None

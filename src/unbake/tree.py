@@ -29,6 +29,7 @@ _TOKEN = re.compile(
     r"""/\*.*?\*/|//[^\n]*|(?P<str>"(?:\\.|[^"\\\n])*")|'(?:\\.|[^'\\\n])*'|(?P<id>[A-Za-z_][A-Za-z0-9_]*)|\d[\w.]*|(?P<p>[^\s])""",
     re.S,
 )
+_UNEXPANDED = re.compile(r"^[ \t]*(INCLUDE_(?:ASM|DATA|RODATA))[ \t]*\(", re.M)  # a stand-in call cpp left as it was
 _STAND_IN = re.compile(r'\.include\s+"(?:nonmatchings|data)/[^/"]+/([^/"]+)\.s"')
 
 
@@ -55,13 +56,35 @@ class Tree:
     modules: tuple[Module, ...]
     symbols: Mapping[str, Mapping[str, symbols.Symbol]] = field(default_factory=dict, compare=False, repr=False)
     _owners: Mapping[tuple[str, str], str] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _addresses: dict[str, dict[int, str]] = field(default_factory=dict, init=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         owners = {(v, n): m.path for m in self.modules for v, names in m.owns.items() for n in names}
         object.__setattr__(self, "_owners", owners)
 
-    def owner(self, version: str, name: str) -> str | None:
+    def owned(self, version: str, name: str) -> str | None:
+        """The file that defines or stands in for exactly this name, nothing else."""
         return self._owners.get((version, name))
+
+    def owner(self, version: str, name: str) -> str | None:
+        """Who owns `name`: the file that defines it, else the file that owns a second name of the same bytes (the C
+        spells an alias, a fact names the canonical symbol: both are one function, one owner)."""
+        found = self._owners.get((version, name))
+        if found is not None:
+            return found
+        fact = self.symbols.get(version, {}).get(name)
+        return None if fact is None else self._at(version).get(fact[0])
+
+    def _at(self, version: str) -> dict[int, str]:
+        """address -> owning file of every owned name of the version that has a symbol fact."""
+        if version not in self._addresses:
+            table = self.symbols.get(version, {})
+            found: dict[int, str] = {}
+            for (v, n), path in sorted(self._owners.items()):
+                if v == version and n in table:
+                    found.setdefault(table[n][0], path)
+            self._addresses[version] = found
+        return self._addresses[version]
 
     def order(self, version: str, segment: str) -> tuple[str, ...]:
         """The module paths of a segment by the first address they own in the version."""
@@ -540,9 +563,14 @@ def _parsed(
         kinds: dict[str, str] = {}
         with store.work(config) as home:
             ahead = _materialize(home, overlays)
-            plain = _scan(_preprocess(config, path, text, version, ("-P", *ahead)), kinds)
+            source = text
+            expanded = _preprocess(config, path, source, version, ("-P", *ahead))
+            if _UNEXPANDED.search(expanded):  # no header yet: read the file as sync will write it
+                source = b'#include "include_asm.h"\n' + text
+                expanded = _preprocess(config, path, source, version, ("-P", *ahead))
+            plain = _scan(expanded, kinds)
             fuzzy_kinds: dict[str, str] = {}
-            fuzzy = _scan(_preprocess(config, path, text, version, ("-P", "-DNON_MATCHING", *ahead)), fuzzy_kinds)
+            fuzzy = _scan(_preprocess(config, path, source, version, ("-P", "-DNON_MATCHING", *ahead)), fuzzy_kinds)
         for name in fuzzy[0]:  # a NON_MATCHING body's kind too, so a body of nothing can be told from a data row
             if name in fuzzy_kinds:
                 kinds.setdefault(name, fuzzy_kinds[name])

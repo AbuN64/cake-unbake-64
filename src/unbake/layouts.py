@@ -21,8 +21,7 @@ Json = dict[str, Any]  # a mutable row of the result
 
 _REQUEST_OFFSET = re.compile(r"\+(0x[0-9A-Fa-f]+)\b")
 _SEMANTIC = re.compile(
-    r"unresolved|semantic|pointee|consumer evidence|to confirm|likely|derive from|identity unresolved",
-    re.IGNORECASE,
+    r"unresolved|semantic|pointee|consumer evidence|to confirm|likely|derive from|identity unresolved", re.IGNORECASE
 )
 
 

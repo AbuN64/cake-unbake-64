@@ -226,7 +226,7 @@ def plan(cfg: Config, held: Any) -> dict[str, bytes]:
     def free(version: str, name: str) -> bool:
         """The version's owner of the name is a library stand-in, or nothing owns it: a `.s` defines the name in every
         version whose facts hold it, so every one of them must give up a stand-in to it."""
-        owner = by_path.get(held.owner(version, name) or "")
+        owner = by_path.get(held.owned(version, name) or "")
         if owner is None:
             return name in lost
         return config.library(cfg.project, owner.path) and name in owner.stand_ins.get(version, ())

@@ -119,7 +119,7 @@ def test_assembly_unit_yields_a_version_whose_bytes_at_its_address_another_sourc
     cfg.project.libraries = ("src/sdk",)
     held = tree.capture(cfg)
     assert held.owner("a", "f") == "src/sdk/f.s"
-    assert held.owner("b", "f") is None and held.owner("b", "d") == "src/x.c"
+    assert held.owned("b", "f") is None and held.owner("b", "d") == "src/x.c"
 
 
 def test_versions_whose_stand_in_lives_in_another_file_must_render_the_same_assembly(library):

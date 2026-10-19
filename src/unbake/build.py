@@ -483,7 +483,22 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
             for n in m.owns.get(v, ())
             if sections.get(n, ".text") == ".text" and (fact := table.get(n)) is not None and fact[1] is not None
         )
-        rows = [r for r in versions.symbol_addrs(config, v) if r.rom is not None]
+        every = versions.symbol_addrs(config, v)
+        rows = [r for r in every if r.rom is not None]
+        for r in every:  # a function fact with no rom is placed by the segment that maps its address
+            at = _placed(r, versions.pieces(config, v)) if r.rom is None and r.kind in _CODE else None
+            if at is not None:
+                rows.append(versions.Row(r.name, r.vram, r.kind, at, r.size, r.line))
+                finding = Finding(
+                    "symbol.unplaced",
+                    f"{v}: {r.name} at 0x{r.vram:08X} names no rom; its segment maps it to 0x{at:X} (add rom:0x{at:X})",
+                    path=symbols.path(v),
+                    unit=r.name,
+                    versions=(v,),
+                    blocking=False,
+                )
+                span.add(findings=[finding])
+                effort.say(finding.reason)
         listed = {r.name for r in rows}
         rows += [  # owned data starts its own piece, though aliases.txt alone or no rom of its row places it
             versions.Row(n, fact[0], fact[3], fact[1], fact[2], 0)
@@ -492,7 +507,7 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
         ]
         rows.sort(key=lambda r: (r.rom or 0, r.name in stand))  # at one address the owned name wins
         free = set(held.unowned(v))
-        labels = {n for n in held.symbols.get(v, {}) if n not in free and held.owner(v, n) is None}
+        labels = {n for n in held.symbols.get(v, {}) if n not in free and held.owned(v, n) is None}
         for segment, (piece, start, end, _) in zip(
             project.version[v].segments, versions.pieces(config, v), strict=True
         ):
@@ -534,11 +549,33 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
                 kind = "rodata" if sections.get(r.name, "").startswith(".rodata") else "data"
                 cells.append((r.rom or 0, kind, f"{segment.name}/{r.name}"))
             cells += [(rom, _C, segment.name) for rom in entries if start < rom < end]
+            code_at = {r.rom: r.name for r in rows if r.kind in _CODE and r.rom is not None}
+            for at, kind, name in cells:
+                if kind != _C and at in code_at and not name.endswith("/" + code_at[at]):
+                    finding = Finding(
+                        "symbol.shadowed",
+                        f"{v}: {code_at[at]} at rom 0x{at:X} is shadowed by the data piece {name}: splat writes its "
+                        "assembly from the next instruction, not from its first",
+                        path=symbols.path(v),
+                        unit=code_at[at],
+                        versions=(v,),
+                        blocking=False,
+                    )
+                    span.add(findings=[finding])
+                    effort.say(finding.reason)
             cells.sort(key=lambda c: (c[0], c[1] != _C))  # at one address, data outranks a restart of code
             kept = [c for c, after in zip(cells, [*cells[1:], None], strict=True) if after is None or after[0] > c[0]]
             out += ["    subsegments:", *(f"      - [0x{at:X}, {kind}, {name}]" for at, kind, name in kept)]
         out.append(f"  - [0x{cuts[-1][2]:X}]")
         return ("\n".join(out) + "\n").encode()
+
+
+def _placed(row: versions.Row, pieces: Sequence[tuple[str, int, int, int]]) -> int | None:
+    """The rom the segment that maps `row.vram` gives it, None when no segment with a vram does."""
+    for _, start, end, vram in pieces:
+        if vram and vram <= row.vram < vram + end - start:
+            return start + row.vram - vram
+    return None
 
 
 def _fetched(toolchains: Sequence[str]) -> set[str]:

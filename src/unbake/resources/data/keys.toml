@@ -378,6 +378,14 @@ sentence = "a record repeats the body of another record; use the one record"
 owner = "build"
 sentence = "an off-boundary data symbol is folded into the preceding chunk"
 
+[key."symbol.unplaced"]
+owner = "build"
+sentence = "a function fact names no rom, so its segment places it"
+
+[key."symbol.shadowed"]
+owner = "build"
+sentence = "a data piece sits at a function's first byte, so its assembly starts later"
+
 [key."blobs.schema"]
 owner = "blobs"
 sentence = "blobs.toml is not valid against its schema"

@@ -327,6 +327,9 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
         return texts[path]
 
     for module in current.modules:
+        headless = "include_asm.h" not in "\n".join(lines(module.path))
+        if headless and not configuration.is_assembly(module.path) and any(module.stand_ins.values()):
+            touched.add(module.path)  # its stand-ins were read with the header, which the write below puts on top
         every = {n for names in module.stale.values() for n in names}
         if every:
             _drop(lines(module.path), sorted(every))
