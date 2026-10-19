@@ -322,7 +322,7 @@ def candidate(
         digest((config_.digest, sorted((p, sha256(b)) for p, b in written.items()))),
     )
     defs, _, fuzzy = tree.parse(
-        config_, path, data, version, lambda p: written[p] if p in written else _disk(config_, p)
+        config_, path, data, version, lambda p: written[p] if p in written else _disk(config_, p), written
     )
     table = symbol_facts(config_, version, written)
     owned = [n for n in dict.fromkeys([*defs, *fuzzy]) if n in table]

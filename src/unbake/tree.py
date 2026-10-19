@@ -382,6 +382,17 @@ def preprocess(config: Config, path: str, version: str, text: bytes | None = Non
     return _preprocess(config, path, text, version, (), markers)
 
 
+def _materialize(home: Path, overlays: Mapping[str, bytes | None] | None) -> tuple[str, ...]:
+    """Write every overlay file under `home` and the include flags that put it ahead of the tree's `include` and
+    `src`, so a header that only the overlay holds is found like one the tree has."""
+    written = {p: b for p, b in (overlays or {}).items() if b is not None}
+    for name, content in written.items():
+        target = home / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    return (f"-I{home / 'include'}", f"-I{home / 'src'}") if written else ()
+
+
 def _preprocess(
     config: Config, path: str, text: bytes | None, version: str, extra: Sequence[str], markers: bool = False
 ) -> str:
@@ -420,10 +431,16 @@ def _read_from(config: Config) -> Callable[[str], bytes | None]:
 
 
 def parse(
-    config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None] | None = None
+    config: Config,
+    path: str,
+    text: bytes,
+    version: str,
+    read: Callable[[str], bytes | None] | None = None,
+    overlays: Mapping[str, bytes | None] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
-    """(C-defined names, stand-in names, NON_MATCHING names) of one file in one version. Never compiles."""
-    first, second, third, _ = _parsed(config, path, text, version, read)
+    """(C-defined names, stand-in names, NON_MATCHING names) of one file in one version. Never compiles. Every file of
+    `overlays`, new or existing, is in the preprocessor's search ahead of the tree."""
+    first, second, third, _ = _parsed(config, path, text, version, read, None, overlays)
     return first, second, third
 
 
@@ -434,6 +451,7 @@ def _parsed(
     version: str,
     read: Callable[[str], bytes | None] | None = None,
     key: str | None = None,
+    overlays: Mapping[str, bytes | None] | None = None,
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
     """`parse` and the linker section of each defined or stand-in name, kept together in one cache entry. A caller that
     already made the key (`_key` over the reader the entry is looked up with) passes it, so both name one entry."""
@@ -444,8 +462,10 @@ def _parsed(
 
     def produce() -> bytes:
         kinds: dict[str, str] = {}
-        plain = _scan(_preprocess(config, path, text, version, ("-P",)), kinds)
-        fuzzy = _scan(_preprocess(config, path, text, version, ("-P", "-DNON_MATCHING")))
+        with store.work(config) as home:
+            ahead = _materialize(home, overlays)
+            plain = _scan(_preprocess(config, path, text, version, ("-P", *ahead)), kinds)
+            fuzzy = _scan(_preprocess(config, path, text, version, ("-P", "-DNON_MATCHING", *ahead)))
         mine = set(plain[0])
         row = [plain[0], plain[1], [n for n in dict.fromkeys(fuzzy[0]) if n not in mine], kinds]
         return json.dumps(row).encode()

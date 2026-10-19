@@ -405,10 +405,39 @@ def test_a_preprocessor_failure_keeps_the_fatal_error_and_its_site_not_only_the_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = fixture.config(tmp_path)
-    stderr = b"<stdin>:2:10: fatal error: MISSING.h: No such file or directory\n #include <MISSING.h>\n\ncompilation terminated.\n"
+    stderr = (
+        b"<stdin>:2:10: fatal error: MISSING.h: No such file or directory\n #include <MISSING.h>\n\n"
+        b"compilation terminated.\n"
+    )
     monkeypatch.setattr(tree.process, "run", lambda *a, **k: fixture.native_result(exit=1, stderr=stderr))
     with pytest.raises(Refusal) as caught:
         tree._preprocess(config, "src/main/c_func.c", b"#include <MISSING.h>\n", "a", ())
     (finding,) = caught.value.findings
     assert "MISSING.h: No such file or directory" in finding.reason and "compilation terminated" not in finding.reason
     assert (finding.path, finding.line, finding.versions) == ("src/main/c_func.c", 2, ("a",))
+
+
+def test_a_new_header_only_an_overlay_holds_is_in_the_preprocessors_search_ahead_of_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = fixture.config(tmp_path)
+    seen: list[tuple[list[str], bool]] = []
+
+    def run(phase, argv, cwd, **kw):
+        flags = [a for a in argv if str(a).startswith("-I")]
+        home = Path(
+            next(f for f in flags if f.endswith("/include"))[2:]
+            if any(f.endswith("/include") for f in flags)
+            else "/none"
+        )
+        seen.append((flags, (home / "COMMON/NEW.H").is_file()))
+        return fixture.native_result(stdout=b"int f(void) { return 0; }\n")
+
+    monkeypatch.setattr(tree.process, "run", run)
+    text = b'#include "COMMON/NEW.H"\nint f(void) { return 0; }\n'
+    names = tree.parse(config, "src/main/c_func.c", text, "a", None, {"include/COMMON/NEW.H": b"typedef int t;\n"})
+    assert names[0] == ["f"]
+    assert seen and all(found for _, found in seen)  # the header existed while cpp ran, in both parses
+    assert all(
+        flags.index(next(f for f in flags if f.endswith("/include"))) < flags.index("-Iinclude") for flags, _ in seen
+    )
