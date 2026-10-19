@@ -391,9 +391,17 @@ def _preprocess(
     argv = _argv(config, path, version, path if text is None else "-", extra, markers)
     result = process.run("tree.cpp", argv, root, tmp=process.scratch(root), stdin=text or b"")
     if result.exit != 0:
-        lines = result.stderr.decode(errors="replace").strip().splitlines()
+        lines = [ln.strip() for ln in result.stderr.decode(errors="replace").splitlines() if ln.strip()]
+        shown = [ln for ln in lines if ln != "compilation terminated."]  # the footer says nothing of the cause
+        site = next((m for ln in shown if (m := re.match(r"(?:<stdin>|[\w./-]+):(\d+)(?::\d+)?: ", ln))), None)
         raise Refusal(
-            Finding("native.exit", reason=lines[-1] if lines else "cpp failed", path=path, versions=(version,))
+            Finding(
+                "native.exit",
+                reason="; ".join(shown or lines) or "cpp failed",
+                path=path,
+                line=int(site[1]) if site else 0,
+                versions=(version,),
+            )
         )
     return result.stdout.decode(errors="replace")
 

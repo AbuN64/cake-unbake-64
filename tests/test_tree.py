@@ -399,3 +399,16 @@ def test_a_header_is_read_and_walked_once_for_all_the_files_that_reach_it(tmp_pa
     assert max(after_fifty.values()) <= 3 and len(set(shared)) == 1
     alone = [tree._key(config, f"src/x/f{i}.c", t, "a", read) for i, t in enumerate(texts[:3])]
     assert alone == shared[:3]  # the shared walk makes the very key an unshared one makes
+
+
+def test_a_preprocessor_failure_keeps_the_fatal_error_and_its_site_not_only_the_footer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = fixture.config(tmp_path)
+    stderr = b"<stdin>:2:10: fatal error: MISSING.h: No such file or directory\n #include <MISSING.h>\n\ncompilation terminated.\n"
+    monkeypatch.setattr(tree.process, "run", lambda *a, **k: fixture.native_result(exit=1, stderr=stderr))
+    with pytest.raises(Refusal) as caught:
+        tree._preprocess(config, "src/main/c_func.c", b"#include <MISSING.h>\n", "a", ())
+    (finding,) = caught.value.findings
+    assert "MISSING.h: No such file or directory" in finding.reason and "compilation terminated" not in finding.reason
+    assert (finding.path, finding.line, finding.versions) == ("src/main/c_func.c", 2, ("a",))
