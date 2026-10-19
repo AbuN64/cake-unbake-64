@@ -48,18 +48,21 @@ def run(config: Config, params: Json) -> Json:
         versions: set[str] = set()
         for row in rows:
             name = row["member"]
-            held_in, path, segment = publish.holders(captured, name)
-            if path not in texts:
-                old[path] = publish.read_file(reads, path)
-                texts[path] = (old[path] or b"").decode()
-            texts[path] = publish.splice(texts[path], segment, name, Path(row["file"]).read_text(), False, "data")
-            versions.update(held_in)
+            for owner in publish.owners(captured, name):
+                path = owner.path
+                if path not in texts:
+                    old[path] = publish.read_file(reads, path)
+                    texts[path] = (old[path] or b"").decode()
+                texts[path] = publish.splice(
+                    texts[path], owner.segment, name, Path(row["file"]).read_text(), False, "data"
+                )
+                versions.update(owner.versions)
         writes: dict[str, bytes | None] = {p: t.encode() for p, t in texts.items()}
         blocking, debt = publish.judged(config, writes, old)
         publish.refuse_blocking(blocking)
         message = f"publish {len(rows)} data members"
         plan = publish.make_plan("publish", captured.digest, writes, tuple(sorted(writes)), debt, message)
-        landing = publish.Landing(plan, reads, tuple(sorted(versions)), "", "", "", old)
+        landing = publish.Landing(plan, reads, tuple(sorted(versions)), "", (), old)
         files = publish.apply_checked(config, landing)
         landed, submissions = [], []
         for row in rows:

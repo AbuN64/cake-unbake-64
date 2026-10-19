@@ -433,3 +433,13 @@ def test_the_selected_function_is_read_at_its_own_object_offset_whatever_an_earl
     assert proof.exact, proof.missing
     (placed,) = world.linker.placements[-1:]
     assert placed[0].vram == 0x400 - 0x20  # the text starts where the selected function's address less its offset says
+
+
+def test_a_measured_module_compiles_only_the_non_matching_bodies_of_the_names_measured(world):
+    block = "#ifdef NON_MATCHING\nint {}(void) {{ return 1; }}\n#endif\n"
+    text = block.format("sibling") + block.format("c_func")
+    snapshot, *_ = native.candidate(world.cfg, "a", "src/main/c_func.c", text, None, None, ["c_func"])
+    assert snapshot.overlays["src/main/c_func.c"].decode().splitlines()[0] == "#if 0"
+    assert snapshot.overlays["src/main/c_func.c"].decode().splitlines()[3] == "#ifdef NON_MATCHING"
+    whole, *_ = native.candidate(world.cfg, "a", "src/main/c_func.c", text)
+    assert whole.overlays["src/main/c_func.c"].decode() == text  # no names: the module as it is

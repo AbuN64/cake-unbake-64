@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,18 +23,62 @@ def _measure_job(item: tuple[Any, ...]) -> Proof:
     return native.measure(config, version, name, path, text, overrides, overlays)
 
 
-def measure_versions(
-    config: Config,
-    held: Sequence[str],
-    name: str,
-    path: str,
-    text: str,
-    overrides: Json | None = None,
-    overlays: Mapping[str, bytes] | None = None,
+@dataclass(frozen=True)
+class Placed:
+    """The module text one owner of the name is measured as: the candidate spliced in, and where each line of it came
+    from (a line of the file on disk, or of the candidate)."""
+
+    owner: publish.Owner
+    text: str
+    origins: tuple[publish.Origin, ...]
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """A candidate placed in every file that owns its function: one text per owner, measured in its versions."""
+
+    name: str
+    file: Path
+    source: str
+    placed: tuple[Placed, ...]
+
+    @property
+    def held(self) -> tuple[str, ...]:
+        return tuple(sorted(v for p in self.placed for v in p.owner.versions))
+
+    def at(self, version: str) -> Placed:
+        return next(p for p in self.placed if version in p.owner.versions)
+
+
+_SITE = re.compile(r"([\w./-]+\.\w+):(\d+)")
+
+
+def _sited(proof: Proof, resolved: Resolved) -> Proof:
+    """The proof with every line the compiler names in the module's new text said where a reader can open it: a line
+    of the candidate is `CANDIDATE:LINE`, a line of the file the file's own line. The new text is not on disk, so its
+    line numbers mean nothing to anyone else (every line after the candidate is shifted by what was added)."""
+    placed = resolved.at(proof.version)
+
+    def fix(match: re.Match[str]) -> str:
+        line = int(match[2])
+        if match[1] != placed.owner.path or not 0 < line <= len(placed.origins):
+            return match[0]
+        kind, number = placed.origins[line - 1]
+        return f"{resolved.file}:{number}" if kind == "candidate" else f"{match[1]}:{number}"
+
+    return replace(proof, missing=tuple(_SITE.sub(fix, m) for m in proof.missing))
+
+
+def _measure(
+    config: Config, resolved: Resolved, overrides: Json | None = None, overlays: Mapping[str, bytes] | None = None
 ) -> tuple[Proof, ...]:
-    """One proof per holding version, measured side by side."""
-    jobs = [(config, v, name, path, text, overrides, overlays) for v in held]
-    return tuple(pool.map(config, "compare.measure", _measure_job, jobs))
+    """One proof per holding version, each measured as the text of its own owner, side by side."""
+    jobs = [
+        (config, v, resolved.name, p.owner.path, p.text, overrides, overlays)
+        for p in resolved.placed
+        for v in p.owner.versions
+    ]
+    return tuple(_sited(proof, resolved) for proof in pool.map(config, "compare.measure", _measure_job, jobs))
 
 
 def score_functions(config: Config, path: str, names: Sequence[str], version: str) -> dict[str, float]:
@@ -143,23 +187,14 @@ def _member(captured: tree.Tree, versions_: Sequence[str], source: str, function
     )
 
 
-def _replace(current: str, name: str, source: str) -> str:
-    """`current` with the definition of `name` it already holds replaced by the candidate's (a landed function)."""
-    declared, body = publish.candidate(source, name)
-    parts = [p for p in publish.items(current) if p.kind == "function" and p.name == name]
-    if len(parts) != 1:
-        raise Refusal(Finding("land.request", f"{name} has no single definition to replace.", unit=name))
-    new = (declared + "\n\n" if declared and declared not in current else "") + body.strip()
-    return current[: parts[0].start] + new + current[parts[0].end :]
-
-
-def _text(current: str, segment: str, name: str, source: str) -> str:
-    """The module with the candidate in place of the stand-in of `name`, or of its landed definition."""
+def _text(current: str, segment: str, name: str, source: str) -> tuple[str, list[publish.Origin]]:
+    """The module with the candidate in place of the stand-in of `name`, or of its landed definition, and where each
+    of its lines came from."""
     try:
-        return publish.splice(current, segment, name, source, False)
+        return publish.splice_traced(current, segment, name, source, False)
     except Refusal as refusal:
         if any(f.key == "land.duplicate" for f in refusal.findings):
-            return _replace(current, name, source)
+            return publish.replace_traced(current, name, source)
         raise
 
 
@@ -169,17 +204,21 @@ def _resolve(
     function: str | None,
     version: str | None = None,
     extras: Mapping[str, bytes] | None = None,
-) -> tuple[str, str, str, tuple[str, ...], str, str]:
-    """(name, module path, candidate source, holding versions, segment, new module text) of one candidate; a named
-    version selects the file that owns the function there, and a change-set file that replaces that owner is the
-    text the candidate is spliced into."""
+) -> Resolved:
+    """One candidate placed in every file that owns its function (a named version selects the file that owns it
+    there); a change-set file that replaces an owner is the text the candidate is spliced into."""
     source = _source(file)
     captured = tree.capture(config)
     name = _member(captured, config.project.versions, source, function)
-    held, path, segment = publish.holders(captured, name, version)
-    given = (extras or {}).get(path)
-    current = given.decode() if given is not None else (config.project.root / path).read_text(encoding="utf-8")
-    return name, path, source, held, segment, _text(current, segment, name, source)
+    placed = []
+    for owner in publish.owners(captured, name, version):
+        given = (extras or {}).get(owner.path)
+        current = (
+            given.decode() if given is not None else (config.project.root / owner.path).read_text(encoding="utf-8")
+        )
+        text, origins = _text(current, owner.segment, name, source)
+        placed.append(Placed(owner, text, tuple(origins)))
+    return Resolved(name, file, source, tuple(placed))
 
 
 def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
@@ -190,8 +229,9 @@ def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
 def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, out: bool = True) -> dict[str, Any]:
     """Measure one candidate in every holding version and enter it in the inbox when it is exact (or a fuzzy gain)."""
     extras = _extras(config, files[1:])
-    name, path, source, held, _, text = _resolve(config, files[0], params.get("function"), None, extras)
-    proofs = measure_versions(config, held, name, path, text, None, extras)
+    resolved = _resolve(config, files[0], params.get("function"), None, extras)
+    name, source, held = resolved.name, resolved.source, resolved.held
+    proofs = _measure(config, resolved, None, extras)
     found = list(gaps(name, held, proofs))
     entry = None
     try:
@@ -202,7 +242,7 @@ def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, o
         found.extend(refusal.findings)
     drain = land.drain(config) if entry and out else None
     return {
-        "unit": path,
+        "unit": ", ".join(p.owner.path for p in resolved.placed),
         "member": name,
         "proofs": proofs,
         "found": found,
@@ -275,11 +315,15 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
     for n, group in enumerate(groups):
         try:
             given = _extras(config, group[1:])
-            resolved[n] = (*_resolve(config, group[0], None, None, given), given)
+            resolved[n] = (_resolve(config, group[0], None, None, given), given)
         except Refusal as refusal:
             resolved[n] = refusal
     jobs = [
-        (config, v, r[0], r[1], r[5], None, r[6]) for r in resolved.values() if not isinstance(r, Refusal) for v in r[3]
+        (config, v, r[0].name, p.owner.path, p.text, None, r[1])
+        for r in resolved.values()
+        if not isinstance(r, Refusal)
+        for p in r[0].placed
+        for v in p.owner.versions
     ]
     measured = iter(pool.map(config, "compare.measure", _measure_job, jobs) if jobs else [])
     rows: list[dict[str, Any]] = []
@@ -288,13 +332,13 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
     for n, r in resolved.items():
         if isinstance(r, Refusal):
             continue
-        proofs[n] = tuple(next(measured) for _ in r[3])
+        proofs[n] = tuple(_sited(next(measured), r[0]) for _ in r[0].held)
         calls[n] = {
-            "request": _request(r[0], groups[n][0], params.get("note")),
+            "request": _request(r[0].name, groups[n][0], params.get("note")),
             "proofs": proofs[n],
-            "source": r[2].encode(),
+            "source": r[0].source.encode(),
             "origin": "submit",
-            "extras": r[6],
+            "extras": r[1],
         }
     entered = dict(zip(calls, land.submit_many(config, list(calls.values())), strict=True))
     for n, group in enumerate(groups):
@@ -314,12 +358,12 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
             row.update(findings=[asdict(f) for f in r.findings], refused=True)
         else:
             result = entered[n]
-            found = list(gaps(r[0], r[3], proofs[n]))
+            found = list(gaps(r[0].name, r[0].held, proofs[n]))
             if isinstance(result, Refusal):
                 found.extend(result.findings)
             entry = None if isinstance(result, Refusal) else result
             row.update(
-                member=r[0],
+                member=r[0].name,
                 id=entry.id if entry else None,
                 operation=entry.operation if entry else "none",
                 exact=all(p.exact for p in proofs[n]),
@@ -462,9 +506,8 @@ def _score_variants(config: Config, params: Json) -> Json:
 
 def _score_one(config: Config, params: Json) -> Json:
     extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
-    name, path, _, held, _, text = _resolve(
-        config, Path(params["file"]), params.get("function"), params.get("version"), extras
-    )
+    resolved = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"), extras)
+    name, held = resolved.name, resolved.held
     overrides = _overrides(params)
     preferred = config.project.names_from
     version = params.get("version") or (preferred if preferred in held else held[0])
@@ -477,8 +520,14 @@ def _score_one(config: Config, params: Json) -> Json:
                 action="pass --version one of the holding versions",
             )
         )
-    proof = native.measure(config, version, name, path, text, overrides, extras)
-    proofs = [native.measure(config, v, name, path, text, overrides, extras) for v in held if v != version]
+
+    def measured(v: str) -> Proof:
+        placed = resolved.at(v)
+        return _sited(native.measure(config, v, name, placed.owner.path, placed.text, overrides, extras), resolved)
+
+    path, text = resolved.at(version).owner.path, resolved.at(version).text
+    proof = measured(version)
+    proofs = [measured(v) for v in held if v != version]
     proofs.insert(0, proof)
     table = native.symbol_facts(config, version, extras)
     facts = table[name]
@@ -507,7 +556,7 @@ def _score_one(config: Config, params: Json) -> Json:
     limit = params.get("lines") or 80
     shown = _compact(everything, params.get("lines") or 40) if params.get("short") else everything[:limit]
     matched = round(symptoms.score(built, target) * len(target) / 4) if built and target else 0
-    snapshot, unit, recipe, _ = native.candidate(config, version, path, text, overrides, extras)
+    snapshot, unit, recipe, _ = native.candidate(config, version, path, text, overrides, extras, [name])
     source_findings = policy.evaluate(snapshot, path, text, None, False)
     result: dict[str, Any] = {
         "unit": path,

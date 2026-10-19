@@ -184,10 +184,10 @@ def test_the_write_goes_through_the_journal(world, monkeypatch):
     assert applied == ["publish"]
 
 
-def test_holders_name_the_segment_of_the_name_not_of_the_file(world):
-    held, path, segment = publish.holders(world.tree, "other")
-    assert (held, path, segment) == (("eu", "us"), "src/a.c", "ovl")  # the file's own segment is main
-    assert publish.holders(world.tree, "func_80000010")[2] == "main"
+def test_owners_name_the_segment_of_the_name_not_of_the_file(world):
+    (owner,) = publish.owners(world.tree, "other")
+    assert owner == publish.Owner("src/a.c", "ovl", ("eu", "us"))  # the file's own segment is main
+    assert publish.owners(world.tree, "func_80000010")[0].segment == "main"
 
 
 HELPER = (
@@ -259,10 +259,55 @@ def _split_tree():
     return SimpleNamespace(modules=modules, owner=lambda v, n: owners.get((v, n)))
 
 
-def test_holders_refuse_different_owners_unless_the_request_names_a_version():
+def test_each_version_is_owned_by_the_file_that_owns_it_there_unless_the_request_names_a_version():
     captured = _split_tree()
+    assert publish.owners(captured, "func_x") == (
+        publish.Owner("b.c", "main", ("eu",)),
+        publish.Owner("a.c", "main", ("us", "us-rev1")),
+    )
+    assert publish.owners(captured, "func_x", "eu") == (publish.Owner("b.c", "main", ("eu",)),)
+    assert publish.owners(captured, "func_x", "us") == (publish.Owner("a.c", "main", ("us", "us-rev1")),)
+
+
+def test_a_candidate_lands_in_every_file_that_owns_its_name_and_builds_every_version(world):
+    (world.root / "src/b.c").write_text('#include "game.h"\nINCLUDE_ASM("main", func_80000010);\n')
+    other = SimpleNamespace(path="src/b.c", segment="main", owns={"jp": ("func_80000010",)}, placed={})
+    world.tree.modules[0].owns["us"] = ("keep", "func_80000010", "other")
+    world.tree.modules = (*world.tree.modules, other)
+    owners = {"jp": "src/b.c", "us": "src/a.c", "eu": "src/a.c"}
+    world.tree.owner = lambda v, n: owners.get(v)
+    world.config.project.version["jp"] = SimpleNamespace(sha1=hashlib.sha1(rom("jp")).hexdigest())
+    receipt = publish.land(world.config, world.submission())
+    assert sorted(receipt.files) == ["src/a.c", "src/b.c"]
+    assert "return a + table[0];" in (world.root / "src/a.c").read_text()
+    assert "return a + table[0];" in (world.root / "src/b.c").read_text()
+    assert sorted(t.split("/")[1] for t in world.makes[0]) == ["eu", "jp", "us"]
+
+
+def test_the_new_text_says_which_lines_are_the_files_and_which_the_candidates():
+    text, origins = publish.splice_traced(OWNER, "main", "func_80000010", CANDIDATE, fuzzy=False)
+    lines = text.splitlines()
+    assert len(origins) == len(lines)
+    at = lines.index("int func_80000010(int a) {")
+    assert origins[at] == ("candidate", 5)  # line 5 of CANDIDATE
+    assert origins[lines.index("static int table[2];")] == ("candidate", 2)
+    assert origins[lines.index("int keep(void) { return 1; }")] == ("disk", 3)
+    assert origins[lines.index('INCLUDE_ASM("main", other);')] == ("disk", 7)  # shifted by what was added above it
+
+
+DATA_OWNER = '#include "types.h"\n/* data */\nunsigned int D_blob_1[1] = {\n    0x00000000,\n};\nint after;\n'
+
+
+def test_data_the_file_defines_in_c_is_replaced_by_the_candidate_when_it_has_no_stand_in():
+    text = publish.splice(DATA_OWNER, "main", "D_blob_1", "u8 *D_blob_1 = 0;\n", False, "data")
+    assert text == '#include "types.h"\n/* data */\nu8 *D_blob_1 = 0;\nint after;\n'
+
+
+def test_data_without_a_stand_in_or_a_single_definition_is_still_refused():
     with pytest.raises(Refusal) as error:
-        publish.holders(captured, "func_x")
-    assert "different files in different versions" in error.value.findings[0].reason
-    assert publish.holders(captured, "func_x", "eu") == (("eu",), "b.c", "main")
-    assert publish.holders(captured, "func_x", "us") == (("us", "us-rev1"), "a.c", "main")
+        publish.splice(DATA_OWNER, "main", "D_other", "int D_other = 1;\n", False, "data")
+    assert error.value.findings[0].key == "land.request"
+    twice = DATA_OWNER + "unsigned int D_blob_1[1] = {0};\n"
+    with pytest.raises(Refusal) as error:
+        publish.splice(twice, "main", "D_blob_1", "u8 *D_blob_1 = 0;\n", False, "data")
+    assert error.value.findings[0].key == "land.duplicate"

@@ -361,9 +361,55 @@ def test_score_keeps_the_targets_own_extent_whatever_the_candidate_builds(world,
 
 def test_an_owning_source_overlay_is_the_text_the_candidate_is_spliced_into(world):
     owner = '#include "include_asm.h"\n\nenum { IDLE = 3 };\nINCLUDE_ASM("main", stand_in);\n'
-    name, path, _, _, _, text = compare._resolve(
+    resolved = compare._resolve(
         world.cfg, world.tmp / "stand_in.c", None, None, {"src/main/stand_in.c": owner.encode()}
     )
-    assert (name, path) == ("stand_in", "src/main/stand_in.c")
+    text = resolved.placed[0].text
+    assert (resolved.name, resolved.placed[0].owner.path) == ("stand_in", "src/main/stand_in.c")
     assert "enum { IDLE = 3 };" in text and "return 2;" in text and 'INCLUDE_ASM("main", stand_in)' not in text
-    assert "enum" not in compare._resolve(world.cfg, world.tmp / "stand_in.c", None)[5]  # no overlay: the disk text
+    assert "enum" not in compare._resolve(world.cfg, world.tmp / "stand_in.c", None).placed[0].text  # the disk text
+
+
+def test_a_candidate_is_measured_in_each_file_that_owns_it_with_that_files_own_text(world, monkeypatch):
+    captured = compare.tree.capture(world.cfg)  # before the second file exists: one file owns the name on disk
+    monkeypatch.setattr(compare.tree, "capture", lambda config: captured)
+    second = world.cfg.project.root / "src/ovl/second.c"
+    second.write_text('#include "include_asm.h"\nint other;\nINCLUDE_ASM("ovl", stand_in);\n')
+    owners = (
+        compare.publish.Owner("src/main/stand_in.c", "main", ("a",)),
+        compare.publish.Owner("src/ovl/second.c", "ovl", ("b",)),
+    )
+    monkeypatch.setattr(compare.publish, "owners", lambda captured, name, version=None: owners)
+    compare.run(world.cfg, _params(world, function="stand_in"))
+    by_version = {v: (path, text) for v, _, path, text in world.measured}
+    assert by_version["a"][0] == "src/main/stand_in.c" and by_version["b"][0] == "src/ovl/second.c"
+    assert "int other;" in by_version["b"][1] and "int other;" not in by_version["a"][1]
+    assert all("return 2;" in text and "INCLUDE_ASM" not in text for _, text in by_version.values())
+
+
+def test_a_site_in_the_new_text_names_the_candidates_line_or_the_files_own_line(world, monkeypatch):
+    owner = "src/main/stand_in.c"
+    where = f"{owner}:4: conflicting types for `x'; {owner}:1: previous declaration of `x'; include/h.h:4: kept"
+
+    def broken(config, version, name, path, text, overrides=None, overlays=None):
+        return fixture.proof(path, name, version, False, (f"version {version}: compile.error: {where}",))
+
+    monkeypatch.setattr(compare.native, "measure", broken)
+    result = compare.run(world.cfg, _params(world, function="stand_in"))
+    candidate = str(world.tmp / "stand_in.c")  # the owner's lines 3-5 are the candidate's lines 1-3
+    missing = result["gaps"][0]["missing"][0]
+    assert f"{candidate}:2: conflicting types" in missing and f"{owner}:1: previous declaration" in missing
+    assert "include/h.h:4: kept" in missing
+
+
+def test_a_line_after_the_candidate_is_the_files_line_before_it_was_shifted(world, monkeypatch):
+    owner = world.cfg.project.root / "src/main/stand_in.c"
+    owner.write_text(owner.read_text() + "int after;\n")  # disk line 4; the new text has it on line 6
+    where = "src/main/stand_in.c:6: conflicting types for `after'"
+    monkeypatch.setattr(
+        compare.native,
+        "measure",
+        lambda config, v, name, path, text, *a: fixture.proof(path, name, v, False, (f"version {v}: {where}",)),
+    )
+    result = compare.run(world.cfg, _params(world, function="stand_in"))
+    assert "src/main/stand_in.c:4: conflicting types for `after'" in result["gaps"][0]["missing"][0]

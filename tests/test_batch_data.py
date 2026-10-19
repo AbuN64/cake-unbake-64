@@ -55,3 +55,17 @@ def test_a_batch_that_does_not_build_exact_changes_nothing(world):
     with pytest.raises(Refusal):
         batch_data.run(world.config, _params(world))
     assert world.owner == before
+
+
+def test_a_batch_retypes_data_the_owner_already_defines_in_c_and_builds_it(world, monkeypatch):
+    monkeypatch.setattr(batch_data.store, "log", lambda c, kind, body: None)
+    world.root.joinpath("src/a.c").write_text(
+        'INCLUDE_DATA("main", D_80001000);\n/* font */\nunsigned int D_80002000[1] = {\n    0,\n};\n'
+        "int f(void) { return 0; }\n"
+    )
+    world.root.joinpath("d2.c").write_text("unsigned char *D_80002000 = 0;\n")
+    batch_data.run(world.config, _params(world))
+    text = world.owner
+    assert "unsigned char *D_80002000 = 0;" in text and "unsigned int D_80002000[1]" not in text
+    assert "/* font */" in text and "INCLUDE_DATA" not in text
+    assert world.makes == [["build/eu/game.z64", "build/us/game.z64"]]  # the bytes are proven by the exact build

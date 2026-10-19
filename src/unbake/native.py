@@ -6,7 +6,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -308,10 +308,12 @@ def candidate(
     text: str,
     overrides: Json | None = None,
     overlays: Mapping[str, bytes] | None = None,
+    names: Collection[str] | None = None,
 ) -> tuple[Snapshot, UnitSpec, Recipe, list[str]]:
     """(the snapshot holding `text` as the module `path`, its compile identity, its recipe with NON_MATCHING defined,
-    the names it owns in the version), from a parse of the one module: nothing else of the tree is read."""
-    data = text.encode()
+    the names it owns in the version), from a parse of the one module: nothing else of the tree is read. With `names`,
+    only their NON_MATCHING bodies are compiled."""
+    data = (text if names is None else tree.fuzzy_only(text, names)).encode()
     written = {**(overlays or {}), path: data}
     snapshot = Snapshot(
         config_,
@@ -368,7 +370,7 @@ def measure_names(
     are asked for, and only the link and compare are made per function."""
     with effort.stage("native.measure"):
         source = sha256(text.encode())
-        snapshot, unit, recipe, owned = candidate(config_, version, path, text, overrides, overlays)
+        snapshot, unit, recipe, owned = candidate(config_, version, path, text, overrides, overlays, names)
         proofs: dict[str, Proof] = {}
         wanted = [n for n in dict.fromkeys(names) if n in owned]
         for name in names:

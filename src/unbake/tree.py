@@ -11,7 +11,7 @@ import functools
 import json
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -380,6 +380,64 @@ def preprocess(config: Config, path: str, version: str, text: bytes | None = Non
     """The text the build's compiler reads for the source `path` in `version`, byte for byte the Makefile's preprocess
     step: of the file on disk, or of `text` as that file; `markers` keeps line markers a row's -P would drop."""
     return _preprocess(config, path, text, version, (), markers)
+
+
+_CONDITIONAL = re.compile(r"[ \t]*#[ \t]*(if|ifdef|ifndef|else|elif|endif)\b")
+_GUARD = re.compile(r"([ \t]*#[ \t]*)ifdef[ \t]+NON_MATCHING[ \t]*(\r?\n?)$")
+
+
+def fuzzy_only(text: str, names: Collection[str]) -> str:
+    """`text` with the NON_MATCHING body of every function but `names` switched off: a measured module compiles the
+    bodies of the names it measures, and a sibling's body (its own includes and declarations, often the older context
+    of the file) is no part of what a name's bytes depend on. A switched-off block keeps its line count and its `#else`
+    side, so every diagnostic names the line it names in `text`."""
+    lines = text.splitlines(keepends=True)
+    stack: list[list[int]] = []  # [line of the opening directive, line of its #else or -1]
+    blocks: list[tuple[int, int, int]] = []  # NON_MATCHING blocks: (opening line, #else line or -1, #endif line)
+    for number, line in enumerate(lines):
+        kind = _CONDITIONAL.match(line)
+        if kind is None:
+            continue
+        if kind[1] in ("if", "ifdef", "ifndef"):
+            stack.append([number, -1])
+        elif kind[1] in ("else", "elif") and stack and stack[-1][1] < 0:
+            stack[-1][1] = number
+        elif kind[1] == "endif" and stack:
+            opened, other = stack.pop()
+            if _GUARD.match(lines[opened]):
+                blocks.append((opened, other, number))
+    for opened, other, closed in blocks:
+        body = "".join(lines[opened + 1 : other if other >= 0 else closed])
+        if not set(_scan(body)[0]) & set(names) and (m := _GUARD.match(lines[opened])):
+            lines[opened] = f"{m[1]}if 0{m[2]}"
+    return "".join(lines)
+
+
+def origins(config: Config, path: str, version: str, text: bytes | None = None) -> list[tuple[str, int]]:
+    """Per line of `preprocess(config, path, version, text)`, the file and line it was written on: the build's own
+    output has no line markers, so a compiler diagnostic that names a line of it is read through this. A line the
+    preprocessor made from nothing (a blank one) takes the line after the last written one."""
+    marked = preprocess(config, path, version, text, True).splitlines()
+    written: list[tuple[str, int, bool]] = []  # (file, line, blank) of every line that is not a marker
+    current, number = path, 1
+    for line in marked:
+        if m := re.match(r'# (\d+) "([^"]*)"', line):
+            current, number = (path if m[2] == "<stdin>" else m[2]), int(m[1])
+        else:
+            written.append((current, number, not line.strip()))
+            number += 1
+    found: list[tuple[str, int]] = []
+    at = 0
+    for line in preprocess(config, path, version, text).splitlines():
+        if line.strip():
+            while at < len(written) and written[at][2]:
+                at += 1
+            found.append(written[at][:2] if at < len(written) else (path, 0))
+            at += 1
+        else:
+            last = found[-1] if found else (path, 0)
+            found.append((last[0], last[1] + 1))
+    return found
 
 
 def _materialize(home: Path, overlays: Mapping[str, bytes | None] | None) -> tuple[str, ...]:

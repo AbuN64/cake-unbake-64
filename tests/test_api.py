@@ -143,6 +143,16 @@ def test_build_context_holds_what_the_permuter_needs(tmp_path: Path, toolchains)
     assert candidate["source"].strip() == "int fuzzy(void) { return 2; }"  # a candidate preprocessed as the module
 
 
+def test_build_context_says_where_each_line_of_the_source_was_written(tmp_path: Path, toolchains) -> None:
+    config = fixture.config(tmp_path)
+    asm = config.project.root / "asm/a/nonmatchings/ovl/fuzzy.s"
+    asm.parent.mkdir(parents=True, exist_ok=True)
+    asm.write_text("glabel fuzzy\n")
+    found = api.build_context(config, "fuzzy", "a", b"#ifdef GAME\nint fuzzy(void) { return 2; }\n#endif\n")
+    assert len(found["lines"]) == len(found["source"].splitlines()) > 0
+    assert all(site[0] == "src/ovl/fuzzy.c" for site in found["lines"])
+
+
 def test_build_context_refuses_a_name_no_module_owns(tmp_path: Path, toolchains) -> None:
     with pytest.raises(Refusal, match="no module owns"):
         api.build_context(fixture.config(tmp_path), "nobody", "a")

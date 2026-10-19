@@ -441,3 +441,42 @@ def test_a_new_header_only_an_overlay_holds_is_in_the_preprocessors_search_ahead
     assert all(
         flags.index(next(f for f in flags if f.endswith("/include"))) < flags.index("-Iinclude") for flags, _ in seen
     )
+
+
+def test_each_line_of_the_build_output_is_said_to_be_written_where_it_was(monkeypatch):
+    """The output the build compiles has no line markers; its lines are read through the marked output, whose blank
+    lines the build output collapses."""
+    marked = (
+        '# 1 "<stdin>"\n# 1 "<built-in>"\n# 1 "<stdin>"\n# 1 "include/a.h" 1\nint a;\n\n\nint b;\n'
+        '# 3 "<stdin>" 2\n\nint first;\n'
+    )
+    plain = "int a;\nint b;\n\nint first;\n"
+    outputs = {True: marked, False: plain}
+    monkeypatch.setattr(tree, "preprocess", lambda config, path, version, text=None, markers=False: outputs[markers])
+    sites = tree.origins(None, "src/x.c", "us")
+    assert sites[0] == ("include/a.h", 1) and sites[1] == ("include/a.h", 4)
+    assert sites[3] == ("src/x.c", 4)  # `int first;` is on line 4 of the file whatever the blank lines before it
+    assert len(sites) == 4
+
+
+FUZZY_MODULE = (
+    'extern int a;\n#ifdef NON_MATCHING\n#include "sibling.h"\nint sibling(void) { return 1; }\n#else\n'
+    'INCLUDE_ASM("main", sibling);\n#endif\n#ifdef NON_MATCHING\nint wanted(void) { return 2; }\n#else\n'
+    'INCLUDE_ASM("main", wanted);\n#endif\n#ifdef NON_MATCHING\nint third(void) { return 3; }\n#endif\n'
+)
+
+
+def test_only_the_non_matching_bodies_of_the_measured_names_stay_on():
+    text = tree.fuzzy_only(FUZZY_MODULE, ["wanted"])
+    lines = text.splitlines()
+    assert len(lines) == len(FUZZY_MODULE.splitlines())  # every diagnostic keeps its line
+    assert lines[1] == "#if 0" and lines[7] == "#ifdef NON_MATCHING" and lines[12] == "#if 0"
+    assert 'INCLUDE_ASM("main", sibling);' in text  # the switched-off block keeps its stand-in side
+    assert tree.fuzzy_only(FUZZY_MODULE, ["wanted", "third"]).splitlines()[12] == "#ifdef NON_MATCHING"
+    assert tree.fuzzy_only(FUZZY_MODULE, []).count("#if 0") == 3
+
+
+def test_a_conditional_inside_a_body_does_not_end_the_block():
+    text = "#ifdef NON_MATCHING\n#if X\nint a;\n#endif\nint wanted(void) { return 1; }\n#endif\n"
+    assert tree.fuzzy_only(text, ["wanted"]) == text
+    assert tree.fuzzy_only(text, ["other"]).startswith("#if 0\n#if X\n")

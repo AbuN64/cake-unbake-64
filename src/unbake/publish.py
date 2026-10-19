@@ -158,11 +158,9 @@ def _declarations(declared: str) -> list[str]:
     return [declared[i.start : i.end].strip() for i in items(declared)]
 
 
-def candidate(source: str, name: str | None) -> tuple[str, str]:
-    """(declarations, body): the candidate's definition of `name`, and every other top-level item it brings. A data
-    candidate (no `name`) is all body."""
-    if name is None:
-        return "", source.strip() + "\n"
+def _pieces(source: str, name: str) -> tuple[list[tuple[str, int]], str, int]:
+    """([(declaration, its first line in `source`)], body, the body's first line): the candidate's definition of
+    `name`, and every other top-level item it brings, each with where `source` has it."""
     parts = items(source)
     mine = [k for k, p in enumerate(parts) if p.kind == "function" and p.name == name]
     if len(mine) != 1:
@@ -173,20 +171,68 @@ def candidate(source: str, name: str | None) -> tuple[str, str]:
         first -= 1  # the comments written above the function travel with it
     body = source[parts[first].start : parts[k].end].strip() + "\n"
     rest = [p for j, p in enumerate(parts) if not first <= j <= k and p.kind != "comment"]
-    texts = [source[p.start : p.end].strip() for p in rest]
-    opened = sum(bool(re.match(r"#\s*if", t)) for t in texts)
-    closed = sum(bool(re.match(r"#\s*endif", t)) for t in texts)
+    texts = [(source[p.start : p.end].strip(), source.count("\n", 0, p.start) + 1) for p in rest]
+    opened = sum(bool(re.match(r"#\s*if", t)) for t, _ in texts)
+    closed = sum(bool(re.match(r"#\s*endif", t)) for t, _ in texts)
     if opened != closed:
         raise Refusal(Finding("land.request", f"The candidate wraps {name} in a conditional.", unit=name))
-    return "\n".join(texts), body
+    return texts, body, source.count("\n", 0, parts[first].start) + 1
 
 
-def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: str = "function") -> str:
-    """`text` with the stand-in line (or earlier fuzzy block) of `name` replaced by the candidate, and the
-    candidate's other top-level items the file lacks added right above it, after every include that precedes it."""
-    declared, body = candidate(source, name if kind == "function" else None)
+def candidate(source: str, name: str | None) -> tuple[str, str]:
+    """(declarations, body): the candidate's definition of `name`, and every other top-level item it brings. A data
+    candidate (no `name`) is all body."""
+    if name is None:
+        return "", source.strip() + "\n"
+    texts, body, _ = _pieces(source, name)
+    return "\n".join(t for t, _ in texts), body
+
+
+Origin = tuple[str, int]  # ("disk" | "candidate", the line of that text the output line came from)
+Piece = tuple[str, str, int]  # (origin, text, the line of that origin the text starts at)
+
+
+def _traced(pieces: Sequence[Piece]) -> tuple[str, list[Origin]]:
+    """The joined text of (origin, text, first line) pieces, and per output line the piece and line it came from."""
+    out = "".join(t for _, t, _ in pieces)
+    starts, offset = [], 0
+    for _, t, _ in pieces:
+        starts.append(offset)
+        offset += len(t)
+    origins: list[Origin] = []
+    k, at = 0, 0
+    while at < len(out):
+        while k + 1 < len(pieces) and starts[k + 1] <= at:
+            k += 1
+        kind, t, first = pieces[k]
+        origins.append((kind, first + t.count("\n", 0, at - starts[k])))
+        at = out.find("\n", at) + 1 or len(out)
+    return out, origins
+
+
+def _definition(text: str, name: str) -> Item:
+    """The one top-level definition with an initializer that `text` holds for the data `name`."""
+    own = re.compile(rf"\b{re.escape(name)}\b\s*(?:\[[^\]]*\]\s*)*=")
+    found = [i for i in items(text) if i.kind == "decl" and own.search(text[i.start : i.end])]
+    if len(found) != 1:
+        raise Refusal(
+            Finding(
+                "land.duplicate" if re.search(rf"\b{re.escape(name)}\b", text) else "land.request",
+                f"{name} has no stand-in line in its file and no single definition to replace.",
+                unit=name,
+            )
+        )
+    return found[0]
+
+
+def splice_traced(
+    text: str, segment: str, name: str, source: str, fuzzy: bool, kind: str = "function"
+) -> tuple[str, list[Origin]]:
+    """`splice`, and per line of the new text where it came from: a line of `text` (the file as it is on disk) or a
+    line of the candidate `source`, so a diagnostic naming a line of the new text names a place a reader can open."""
+    texts, body, body_line = _pieces(source, name) if kind == "function" else ([], source.strip() + "\n", 1)
     found = re.compile(_stand_in(segment, name), re.M).search(text)
-    if found is None:
+    if found is None and kind == "function":
         raise Refusal(
             Finding(
                 "land.duplicate" if re.search(rf"\b{re.escape(name)}\b", text) else "land.request",
@@ -194,24 +240,64 @@ def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: s
                 unit=name,
             )
         )
-    start, end, new = found.start(), found.end(), body
-    if enclosing := _block(text, found.start()):
-        # the NON_MATCHING body is the old candidate: the new one takes its place, and the else side (its nested version
-        # guards and the other stand-ins) stays; the stand-in itself goes unless the candidate is only fuzzy
-        top, head, tail, close = enclosing
-        rest = text[head:tail]
+
+    def disk(lo: int, hi: int) -> Piece:
+        return "disk", text[lo:hi], text.count("\n", 0, lo) + 1
+
+    def cand(t: str, line: int) -> Piece:
+        return "candidate", t, line
+
+    head: list[Piece]
+    tail: list[Piece]
+    if found is None:
+        # data already defined in C: its definition is the text the candidate replaces; the build proves the bytes
+        item = _definition(text, name)
+        start, end = item.start, item.end
+        head, tail = [cand(body.rstrip("\n"), body_line)], []
+    else:
+        start, end = found.start(), found.end()
+        head, tail = [cand(body, body_line)], []
         if fuzzy:
-            new = _wrap_over(body, rest)
-        else:
-            rest = re.compile(_stand_in(segment, name), re.M).sub("", rest, count=1)
-            new = body + rest
-        start, end = top, close
-    elif fuzzy:
-        new = wrap(segment, name, body)
-    before, after = text[:start], text[end:]
-    have = {_norm(d) for d in _declarations(_visible(before))}
-    wanted = [d for d in _declarations(declared) if _norm(d) not in have]
-    return before + "".join(d + "\n" for d in wanted) + "\n" * bool(wanted) + new + after
+            head = [cand("#ifdef NON_MATCHING\n" + body.rstrip() + "\n#else\n", body_line)]
+            tail = [cand("INCLUDE_ASM(" + f'"{segment}", {name});\n#endif\n', body_line)]
+        if enclosing := _block(text, found.start()):
+            # the NON_MATCHING body is the old candidate: the new one takes its place, and the else side (its nested
+            # version guards and the other stand-ins) stays; the stand-in itself goes unless the candidate is only fuzzy
+            top, other, close, finish = enclosing
+            start, end = top, finish
+            if fuzzy:
+                tail = [disk(other, close), cand("#endif\n", body_line)]
+            else:
+                head, tail = [cand(body, body_line)], [disk(other, found.start()), disk(found.end(), close)]
+    have = {_norm(d) for d in _declarations(_visible(text[:start]))}
+    wanted = [(d, line) for d, line in texts if _norm(d) not in have]
+    pieces = [disk(0, start)]
+    pieces += [cand(d + "\n", line) for d, line in wanted]
+    pieces += [cand("\n", wanted[0][1])] if wanted else []
+    pieces += head + tail + [disk(end, len(text))]
+    return _traced([p for p in pieces if p[1]])
+
+
+def replace_traced(current: str, name: str, source: str) -> tuple[str, list[Origin]]:
+    """`current` with the definition of `name` it already holds replaced by the candidate's (a landed function), and
+    per line of the new text where it came from."""
+    texts, body, body_line = _pieces(source, name)
+    parts = [p for p in items(current) if p.kind == "function" and p.name == name]
+    if len(parts) != 1:
+        raise Refusal(Finding("land.request", f"{name} has no single definition to replace.", unit=name))
+    first, last = parts[0].start, parts[0].end
+    pieces: list[Piece] = [("disk", current[:first], 1)]
+    if texts and "\n".join(t for t, _ in texts) not in current:
+        pieces += [("candidate", t + ("\n" if k < len(texts) - 1 else "\n\n"), n) for k, (t, n) in enumerate(texts)]
+    pieces += [("candidate", body.strip(), body_line), ("disk", current[last:], current.count("\n", 0, last) + 1)]
+    return _traced([p for p in pieces if p[1]])
+
+
+def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: str = "function") -> str:
+    """`text` with the stand-in line (or earlier fuzzy block) of `name` replaced by the candidate, and the
+    candidate's other top-level items the file lacks added right above it, after every include that precedes it. Data
+    that the file defines in C has that definition replaced."""
+    return splice_traced(text, segment, name, source, fuzzy, kind)[0]
 
 
 # ---------------------------------------------------------------- planning
@@ -224,13 +310,21 @@ class Reads:
 
 
 @dataclass(frozen=True)
+class Owner:
+    """One file that owns a name, the segment it places it in, and the versions it owns it in."""
+
+    path: str
+    segment: str
+    versions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Landing:
     plan: Plan
     reads: Reads
     versions: tuple[str, ...]
     name: str
-    path: str
-    segment: str
+    owners: tuple[Owner, ...]
     old: Mapping[str, bytes | None]
 
 
@@ -261,30 +355,34 @@ def read_file(reads: Reads, path: str) -> bytes | None:
     return data
 
 
-def holders(captured: tree.Tree, name: str, version: str | None = None) -> tuple[tuple[str, ...], str, str]:
-    """(versions holding `name`, the one file owning it in all of them, its segment). With `version`, the owner is
-    the file that owns it there and the holders are the versions that file owns it in: another version's different
-    owner is another context, not a reason to refuse a request that names the version."""
+def owners(captured: tree.Tree, name: str, version: str | None = None) -> tuple[Owner, ...]:
+    """The files that own `name`, each with the versions it owns it in and its segment. A version is landed in the file
+    that owns the name there, so versions owned by different files are different owners of one request, each given the
+    same candidate. With `version`, only the file that owns it in that version, and the versions it holds it in: the
+    other owners are another context, not part of a request that names the version."""
     held = sorted({v for m in captured.modules for v, names in m.owns.items() if name in names})
     if not held:
         raise Refusal(Finding("land.request", f"{name} is owned by no file in any version.", unit=name))
     if version in held:
         chosen = captured.owner(version, name)
         held = [v for v in held if captured.owner(v, name) == chosen]
-    owners = {captured.owner(v, name) for v in held}
-    if len(owners) != 1 or None in owners:
+    paths: dict[str, list[str]] = {}
+    for v in held:
+        paths.setdefault(captured.owner(v, name) or "", []).append(v)
+    if "" in paths:
         raise Refusal(
             Finding(
                 "land.request",
-                f"{name} is owned by different files in different versions.",
+                f"{name} is owned by no single file in {', '.join(paths[''])}.",
                 unit=name,
-                versions=tuple(held),
-                missing=tuple(sorted(o or "" for o in owners)),
+                versions=tuple(paths[""]),
             )
         )
-    path = next(iter(owners)) or ""
-    module = next(m for m in captured.modules if m.path == path)
-    return tuple(held), path, module.placed.get(held[0], {}).get(name, module.segment)
+    found = []
+    for path, vs in paths.items():
+        module = next(m for m in captured.modules if m.path == path)
+        found.append(Owner(path, module.placed.get(vs[0], {}).get(name, module.segment), tuple(vs)))
+    return tuple(found)
 
 
 def judged(
@@ -311,21 +409,21 @@ def prepare(
         name = request["function"]
         source = Path(request["file"]).read_text(encoding="utf-8")
         captured = tree.capture(config)
-        held, path, segment = holders(captured, name)
+        found = owners(captured, name)
         reads = Reads(config, {})
-        old: dict[str, bytes | None] = {p: read_file(reads, p) for p in (path, *extras)}
-        current = old[path]
-        if current is None:
-            raise Refusal(Finding("land.request", f"{path} is missing.", path=path, unit=name))
-        writes: dict[str, bytes | None] = {
-            **extras,
-            path: splice(current.decode(), segment, name, source, fuzzy).encode(),
-        }
+        old: dict[str, bytes | None] = {p: read_file(reads, p) for p in (*(o.path for o in found), *extras)}
+        writes: dict[str, bytes | None] = {**extras}
+        for owner in found:
+            current = old[owner.path]
+            if current is None:
+                raise Refusal(Finding("land.request", f"{owner.path} is missing.", path=owner.path, unit=name))
+            writes[owner.path] = splice(current.decode(), owner.segment, name, source, fuzzy).encode()
         blocking, debt = judged(config, writes, old)
         refuse_blocking(blocking)
         operation = "fuzzy" if fuzzy else "publish"
-        plan = make_plan(operation, captured.digest, writes, (path,), debt, message or f"{operation} {name}")
-        return Landing(plan, reads, held, name, path, segment, old)
+        affected = tuple(o.path for o in found)
+        plan = make_plan(operation, captured.digest, writes, affected, debt, message or f"{operation} {name}")
+        return Landing(plan, reads, tuple(sorted({v for o in found for v in o.versions})), name, found, old)
 
 
 def accept(config: Config, request: Json, extras: Mapping[str, bytes], fuzzy: bool) -> Landing:
@@ -387,11 +485,11 @@ def apply_checked(config: Config, landing: Landing) -> tuple[str, ...]:
 # ---------------------------------------------------------------- scores
 def scores(config: Config, landing: Landing) -> dict[str, float]:
     """The candidate's score per version: the NON_MATCHING variant measured, linked alone at the function's address."""
-    text = (landing.plan.writes[landing.path] or b"").decode()
     out: dict[str, float] = {}
     failed: list[Proof] = []
-    for version in landing.versions:
-        proof = cast(Callable[..., Proof], native.measure)(config, version, landing.name, landing.path, text)
+    for owner, version in ((o, v) for o in landing.owners for v in o.versions):
+        text = (landing.plan.writes[owner.path] or b"").decode()
+        proof = cast(Callable[..., Proof], native.measure)(config, version, landing.name, owner.path, text)
         if any(proof.symptoms.get(k) for k in ("compile_failed", "unresolved", "no_measurement")):
             failed.append(proof)
         out[version] = proof.score
