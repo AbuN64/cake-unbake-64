@@ -60,7 +60,10 @@ For a data batch, the manifest is a nonempty JSON list of `{"member": "data/unre
 records. File paths are relative to the manifest. Every member must be unpublished data. All holding versions are
 proved in one worker dispatch and the batch lands in one journal commit; a failed proof leaves the project untouched.
 `--withhold` explicitly permits each member to land only in its exact versions, retaining extracted data elsewhere.
-Every command prints one JSON object on stdout. Human text goes to stderr.
+Every command prints one JSON object on stdout. Human text goes to stderr. Its `cache` field holds the hits and
+misses of the command's cache lookups, in total and per kind, in every result (`--short` too, which drops the stage
+tree it was once read from). `setup` extracts a version again exactly when the facts it was extracted from
+(`symbol_addrs.txt`, `splat.yaml`, the ROM, splat) differ from the stamp in that tree's `asm/<version>/`.
 
 See [compiler ownership](compiler-families.md) and
 [publication](publication.md) for the recipe and proof contracts.

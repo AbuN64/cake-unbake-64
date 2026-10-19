@@ -378,3 +378,41 @@ def test_command_project_still_overrides_global_project(monkeypatch, command_val
 def test_version_prints_the_release(capsys):
     assert cli.main(["--version"]) == 0
     assert capsys.readouterr().out.strip() == f"unbake {unbake.__version__}"
+
+
+def test_every_result_carries_the_cache_counts_of_its_command_even_when_short(
+    monkeypatch: Patch, capsys: Capture
+) -> None:
+    """The stage tree is what `--short` drops; the counts must not live only there."""
+
+    def handler(cfg: Any, params: dict[str, Any]) -> dict[str, Any]:
+        cli.effort.count("score", True)
+        with cli.effort.stage("inner"):
+            cli.effort.count("build", False)
+            cli.effort.count("build", False)
+        return {"unit": "src/f.c", "exact": False, "proofs": []}
+
+    monkeypatch.setattr(cli, "_handler", lambda name: handler)
+    monkeypatch.setattr(cli.config, "load", lambda root, host: object())
+    monkeypatch.setattr(cli.effort, "bind", lambda cfg: None)
+    for flag in ([], ["--short"]):
+        cli.main(["score", "f.c", "--host", "host.toml", *flag])
+        document = _envelope(capsys.readouterr().out)
+        assert document["cache"] == {
+            "hits": 1,
+            "misses": 2,
+            "kinds": {"build": {"hits": 0, "misses": 2}, "score": {"hits": 1, "misses": 0}},
+        }
+
+
+def test_a_refused_command_still_reports_its_cache_counts(monkeypatch: Patch, capsys: Capture) -> None:
+    def handler(cfg: Any, params: dict[str, Any]) -> dict[str, Any]:
+        cli.effort.count("extract", True)
+        raise Refusal(Finding("setup.splat", "no"))
+
+    monkeypatch.setattr(cli, "_handler", lambda name: handler)
+    monkeypatch.setattr(cli.config, "load", lambda root, host: object())
+    monkeypatch.setattr(cli.effort, "bind", lambda cfg: None)
+    cli.main(["setup", "--host", "host.toml"])
+    document = _envelope(capsys.readouterr().out)
+    assert not document["ok"] and document["cache"]["hits"] == 1 and document["cache"]["misses"] == 0

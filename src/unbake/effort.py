@@ -703,6 +703,21 @@ def counters() -> dict[str, tuple[int, int]]:
     return {k: (v[0], v[1]) for k, v in _counters.items()}
 
 
+def cache_total(stages: Json) -> Json:
+    """Hits and misses of the whole command, in total and per cache kind: the command's own (outermost) stage already
+    holds every lookup made under it, so nothing is summed over the nested stages. An empty tree falls back to this
+    process's counters."""
+    pairs = stages.get("cache") if stages else None
+    if not pairs:
+        pairs = counters()
+    kinds = {k: {"hits": int(v[0]), "misses": int(v[1])} for k, v in sorted(pairs.items()) if v[0] or v[1]}
+    return {
+        "hits": sum(v["hits"] for v in kinds.values()),
+        "misses": sum(v["misses"] for v in kinds.values()),
+        "kinds": kinds,
+    }
+
+
 @contextmanager
 def capture() -> Iterator[list[StageRecord]]:
     global _closed, _counters, _sink, _buffer, _invocation, _seen

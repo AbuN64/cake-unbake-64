@@ -74,12 +74,14 @@ def _emit(name: str, code: int, result: Json | None, findings: Sequence[Finding]
     if code != 0 and not findings:  # a failure always names its cause
         findings = [Finding("internal.no-cause", f"{name} exited {code} without any finding naming why")]
     ordered = sorted(findings, key=lambda f: not f.blocking)
+    stages = effort.tree()
     document = {
         "ok": code == 0,
         "invocation": effort.invocation(),
         "result": result,
         "findings": [asdict(f) for f in ordered],
-        "stages": effort.tree(),
+        "stages": stages,
+        "cache": effort.cache_total(stages),  # kept by --short too: the stage tree it drops is not where it is read
     }
     if short and result is not None:  # the verdict and the diff only: no stage tree or proofs
         missing = sorted({m for p in result.get("proofs", ()) for m in p["missing"]})[:8]

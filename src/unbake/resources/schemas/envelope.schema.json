@@ -119,6 +119,42 @@
     "object",
     "null"
    ]
+  },
+  "cache": {
+   "type": "object",
+   "properties": {
+    "hits": {
+     "type": "integer"
+    },
+    "misses": {
+     "type": "integer"
+    },
+    "kinds": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "hits": {
+        "type": "integer"
+       },
+       "misses": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "hits",
+       "misses"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "hits",
+    "misses",
+    "kinds"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [
@@ -126,7 +162,8 @@
   "invocation",
   "result",
   "findings",
-  "stages"
+  "stages",
+  "cache"
  ],
  "additionalProperties": false
 }
