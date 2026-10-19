@@ -134,6 +134,25 @@ def _wrap_over(body: str, fallback: str) -> str:
     return f"#ifdef NON_MATCHING\n{body.rstrip()}\n#else\n{fallback}#endif\n"
 
 
+def _visible(before: str) -> str:
+    """The lines of `before` a declaration inserted right after it can rely on: those at the same preprocessor
+    nesting, in the same branch of every conditional still open. A closed conditional, another branch or anything
+    after the insertion point is not visible."""
+    stack: list[int] = []
+    seen = 0
+    marked: list[tuple[tuple[int, ...], str]] = []
+    for line in before.splitlines(keepends=True):
+        kind = _DIRECTIVE.match(line)
+        word = kind[1] if kind else ""
+        if word in ("else", "elif", "endif") and stack:
+            stack.pop()
+        marked.append((tuple(stack), line))
+        if word in ("if", "ifdef", "ifndef", "else", "elif"):
+            seen += 1
+            stack.append(seen)
+    return "".join(line for frames, line in marked if frames == tuple(stack[: len(frames)]))
+
+
 def _declarations(declared: str) -> list[str]:
     """The top-level items of the declarations, each whole: a function's closing brace is never an item of its own."""
     return [declared[i.start : i.end].strip() for i in items(declared)]
@@ -190,7 +209,7 @@ def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: s
     elif fuzzy:
         new = wrap(segment, name, body)
     before, after = text[:start], text[end:]
-    have = _norm(before + new + after)
+    have = {_norm(d) for d in _declarations(_visible(before))}
     wanted = [d for d in _declarations(declared) if _norm(d) not in have]
     return before + "".join(d + "\n" for d in wanted) + "\n" * bool(wanted) + new + after
 

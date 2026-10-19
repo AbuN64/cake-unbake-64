@@ -231,3 +231,16 @@ def test_a_fuzzy_candidate_replaces_the_non_matching_body_over_the_untouched_els
     assert "old()" not in text and text.count("#ifdef NON_MATCHING") == 1
     assert text.index("return a + table[0];") < text.index("#else") < text.index('INCLUDE_ASM("main", func_80000010)')
     assert '#if defined(VERSION_EU)\nINCLUDE_ASM("main", other);' in text
+
+
+def test_a_declaration_is_reused_only_when_visible_before_the_candidate_in_its_branch():
+    owner = (
+        '#include "game.h"\n#ifdef NON_MATCHING\nint func_80000010(void) { return 0; }\n#else\n'
+        'INCLUDE_ASM("main", func_80000010);\n#endif\n#ifdef NON_MATCHING\n#include "types.h"\nint later(void);\n#endif\n'
+        '#ifdef OTHER\n#include "types.h"\n#endif\n'
+    )
+    source = '#include "types.h"\n#include "game.h"\nint func_80000010(void) {\n    return 1;\n}\n'
+    text = publish.splice(owner, "main", "func_80000010", source, fuzzy=False)
+    assert text.index('#include "types.h"') < text.index("int func_80000010")  # not borrowed from a later block
+    assert text.count('#include "game.h"') == 1  # visible before, unconditional: reused
+    assert text.count('#include "types.h"') == 3
