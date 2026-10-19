@@ -46,6 +46,8 @@ def _path(marker: str, root: Path, overlay: Path | None, real: bool = True) -> t
     return str(path), False
 
 
+_VIEW_DIR = re.compile(r"^build/views/[0-9a-f]{16}/")  # the directory a view with overlaid files is made in
+
 _DIRECTIVE = re.compile(rb'^[ \t]*(?:#[ \t]*include|\.include)[ \t]*([<"])([^>"\n]+)[>"]', re.M)
 
 
@@ -58,13 +60,20 @@ def _link_relative(overlay: Path, root: Path, path: str, content: bytes) -> None
     for _, name in directives(content):
         relative = os.path.normpath(Path(path).parent / name.decode())
         real, target = root / relative, overlay / relative
-        if not relative.startswith("..") and real.is_file() and not (target.exists() or target.is_symlink()):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            pending = target.with_name(f".{target.name}.{uuid.uuid4().hex}")
-            pending.unlink(missing_ok=True)
-            pending.symlink_to(real)
-            os.replace(pending, target)  # atomic: another job making the same link finds it whole, never half-made
+        if not relative.startswith("..") and real.is_file() and _link(target, real):
             _link_relative(overlay, root, relative, real.read_bytes())
+
+
+def _link(target: Path, real: Path) -> bool:
+    """Link `real` at `target` unless something is there; True when this call made the link."""
+    if target.exists() or target.is_symlink():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pending = target.with_name(f".{target.name}.{uuid.uuid4().hex}")
+    pending.unlink(missing_ok=True)
+    pending.symlink_to(real)
+    os.replace(pending, target)  # atomic: another job making the same link finds it whole, never half-made
+    return True
 
 
 def headers(snapshot: Snapshot, unit: UnitSpec, argv: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -322,12 +331,18 @@ def get(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, *, lin
                 for path, content in selected.items():
                     if content is not None and not snapshot.tree:
                         _link_relative(home, root, path, content)
+                # A quoted include is found beside the file naming it, so every file the unit reads sits in the view
+                # directory: a real header naming an overlaid one by a relative path finds the overlaid one.
+                if not snapshot.tree:
+                    for path, _ in reads:
+                        if path not in selected and (root / path).is_file():
+                            _link(home / path, root / path)
             include = [root / "include", root / "src"]
             if overlay is not None:
                 include = [home / "include", include[0], home / "src", include[1]]
             if snapshot.tree:
                 include = [home / "include", home / "src"]
-            source = (home if overlay is not None and unit.path in snapshot.overlays else root) / unit.path
+            source = (home if overlay is not None else root) / unit.path
             work = home / ".work"
             work.mkdir(parents=True, exist_ok=True)
             out = work / "view.i"
@@ -415,7 +430,7 @@ def diagnostic(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe,
 
     def fix(match: re.Match[str]) -> str:
         if match[1] not in paths:
-            paths[match[1]] = _path(match[1], root, None)[0]
+            paths[match[1]] = _VIEW_DIR.sub("", _path(match[1], root, None)[0])
         path, line = paths[match[1]], int(match[2])
         if path not in lengths:
             raw = None if path.endswith(".i") else snapshot.peek(path)

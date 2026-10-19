@@ -274,16 +274,28 @@ def _anchors(
     return base, {}
 
 
-def symbol_facts(cfg: Config, version: str) -> dict[str, symbols.Symbol]:
-    """The symbol facts of one version, parsed once per content of the file."""
-    data = (cfg.project.root / versions.symbol_file(version)).read_bytes()
+def symbol_facts(
+    cfg: Config, version: str, overlays: Mapping[str, bytes | None] | None = None
+) -> dict[str, symbols.Symbol]:
+    """The symbol facts of one version, parsed once per content of the file; a fact file in `overlays` stands in for
+    the one on disk."""
+    given = (overlays or {}).get(versions.symbol_file(version))
+    data = given if given is not None else (cfg.project.root / versions.symbol_file(version)).read_bytes()
     return effort.memo(("native.facts", version, sha256(data)), lambda: symbols.parse(data.decode(errors="replace")))
 
 
-def version_records(cfg: Config) -> dict[str, Version]:
-    """The version records (ROM, segments, symbols), read once per config."""
+def version_records(cfg: Config, overlays: Mapping[str, bytes | None] | None = None) -> dict[str, Version]:
+    """The version records (ROM, segments, symbols), read once per config and per fact file an overlay replaces."""
     root = cfg.project.root
-    return effort.memo(("native.versions", cfg.digest), lambda: versions.read(cfg, lambda p: (root / p).read_bytes()))
+    given = {p: b for p, b in (overlays or {}).items() if b is not None and p in _fact_files(cfg)}
+    return effort.memo(
+        ("native.versions", cfg.digest, tuple(sorted((p, sha256(b)) for p, b in given.items()))),
+        lambda: versions.read(cfg, lambda p: given[p] if p in given else (root / p).read_bytes()),
+    )
+
+
+def _fact_files(cfg: Config) -> frozenset[str]:
+    return frozenset(versions.symbol_file(v) for v in cfg.project.versions)
 
 
 def candidate(
@@ -302,14 +314,14 @@ def candidate(
         config_,
         "",
         None,
-        version_records(config_),
+        version_records(config_, written),
         written,
         digest((config_.digest, sorted((p, sha256(b)) for p, b in written.items()))),
     )
     defs, _, fuzzy = tree.parse(
         config_, path, data, version, lambda p: written[p] if p in written else _disk(config_, p)
     )
-    table = symbol_facts(config_, version)
+    table = symbol_facts(config_, version, written)
     owned = [n for n in dict.fromkeys([*defs, *fuzzy]) if n in table]
     row = file_facts(config_.project, path)
     options = {k: list(v) for k, v in (("add", row.cflags), ("omit", row.omit)) if v}
@@ -376,7 +388,7 @@ def measure_names(
                         symptoms=symptoms.from_missing(lines),
                     )
                 return proofs
-            facts = symbol_facts(config_, version)
+            facts = symbol_facts(config_, version, snapshot.overlays)
             for name in wanted:
                 proofs[name] = _link(snapshot, unit, version, name, recipe, source, obj, work, facts)
         return proofs
@@ -422,7 +434,7 @@ def _link(
     record = snapshot.versions[version]
     target = rom_view(record, fact[1], fact[1] + size)
     section = _output(table, defined[name][0]) or ".text"
-    symbols_data = versions.symbols_ld(cfg, version)
+    symbols_data = versions.symbols_ld(cfg, version, snapshot.overlays)
     row = config.toolchain(recipe.toolchain)
     key = digest(
         (

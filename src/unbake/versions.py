@@ -169,10 +169,12 @@ def _linked(rows: Sequence[Row], spans: Sequence[tuple[int, int]], mask: int) ->
     return out
 
 
-def symbols_ld(config: Config, version: str) -> bytes:
-    """The scoring symbol script of one version (PROVIDE per symbol), kept in the cache only, keyed by the fact file."""
+def symbols_ld(config: Config, version: str, overlays: Mapping[str, bytes | None] | None = None) -> bytes:
+    """The scoring symbol script of one version (PROVIDE per symbol), kept in the cache only, keyed by the fact file;
+    a fact file in `overlays` stands in for the one on disk."""
     with effort.stage("versions.symbols_ld"):
-        data = (config.project.root / symbol_file(version)).read_bytes()
+        given = (overlays or {}).get(symbol_file(version))
+        data = given if given is not None else (config.project.root / symbol_file(version)).read_bytes()
         mask = configuration.load_resource("rom.toml").get("text_mask", _WORD)
         key = digest((version, sha256(data), mask, code_identity(_linked)))
 

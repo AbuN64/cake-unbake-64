@@ -236,7 +236,7 @@ def test_overlay_paths_mapped_back(lane, source_overlaid):
     assert lane.made["include/active.h"][0] == writes["include/active.h"]
     assert "include/deleted.h" not in lane.made
     assert lane.preprocess.call_args.args == (
-        (home if source_overlaid else lane.root) / lane.unit.path,
+        home / lane.unit.path,  # the source too is read from the view directory, beside the headers it names
         lane.recipe,
         "a",
         [home / "include", lane.root / "include", home / "src", lane.root / "src"],
@@ -406,6 +406,18 @@ def test_a_relative_include_beside_an_overlaid_header_is_linked_from_the_real_tr
     _get(lane, snapshot)
     assert lane.made["include/types.h"][0] == (lane.root / "include/types.h").read_bytes()
     assert lane.made["include/z.h"][1]  # a link into the real tree
+
+
+def test_a_real_header_naming_an_overlaid_one_relatively_finds_the_overlaid_one(lane):
+    (lane.root / "include/sub").mkdir()
+    (lane.root / "include/types.h").write_bytes(b"typedef int old;\n")
+    (lane.root / "include/sub/mid.h").write_bytes(b'#include "../types.h"\n')  # not overlaid itself
+    (lane.root / lane.unit.path).write_bytes(b'#include "sub/mid.h"\n')
+    snapshot = _overlay(lane.snapshot, {"include/types.h": b"typedef long new;\n"})
+    _get(lane, snapshot)
+    assert lane.made["include/types.h"] == (b"typedef long new;\n", False)
+    assert lane.made["include/sub/mid.h"][1]  # the includer sits in the view directory, so "../" stays inside it
+    assert lane.made[lane.unit.path][1]
 
 
 def test_two_creators_of_the_same_overlay_link_both_succeed(tmp_path, monkeypatch):
@@ -637,3 +649,12 @@ def test_a_new_install_with_the_same_view_code_keeps_the_view_identity_and_a_vie
         monkeypatch.setattr(view, "_code", lambda source=source: source)
         identities[name] = view._identity(None, recipe)
     assert identities["one"] == identities["two"] != identities["edit"]
+
+
+def test_diagnostic_names_project_paths_for_files_of_the_view_directory(lane):
+    (lane.root / "include/type.h").write_text("int previous;\n")
+    lane.text = f'# 1 "{lane.root / lane.unit.path}"\nint value;\n'
+    text = f"build/views/{'ab' * 8}/{lane.unit.path}:1: conflicting types; include/type.h:1: previous declaration"
+    assert view.diagnostic(lane.snapshot, lane.unit, "a", lane.recipe, text) == (
+        f"{lane.unit.path}:1: conflicting types; include/type.h:1: previous declaration"
+    )

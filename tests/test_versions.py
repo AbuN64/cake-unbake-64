@@ -110,3 +110,11 @@ def test_an_untyped_name_in_a_data_span_keeps_its_address_and_a_label_in_code_is
     assert "PROVIDE(gGlobal = 0x80300010);" in out  # a global read through lui/addiu keeps hi16 0x8030
     assert "PROVIDE(gLabel = 0x00200410);" in out and "PROVIDE(bare = 0x00200420);" in out  # code labels link masked
     assert "PROVIDE(func_one = 0x00200400);" in out and "PROVIDE(gTable = 0x80210000);" in out
+
+
+def test_symbols_ld_takes_the_overlaid_fact_file_over_the_one_on_disk(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(store, "cached", lambda _c, _k, _key, produce: produce())
+    given = {"versions/us/symbol_addrs.txt": TEXT + b"gAdded = 0x80300000;\n"}
+    assert "gAdded" not in versions.symbols_ld(config, "us").decode()
+    assert "PROVIDE(gAdded = 0x80300000);" in versions.symbols_ld(config, "us", given).decode()

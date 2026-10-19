@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -12,6 +13,7 @@ from unbake import alloc, effort, land, native, policy, pool, publish, sched, st
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Proof, Refusal
 
+_LOCATION = re.compile(r"([\w./-]+\.\w+):(\d+): (?!previous)")  # PATH:LINE: of a diagnostic, not of its note
 _ROOT_ERROR = "the file {} does not exist"
 
 
@@ -466,20 +468,23 @@ def _score_one(config: Config, params: Json) -> Json:
     proof = native.measure(config, version, name, path, text, overrides, extras)
     proofs = [native.measure(config, v, name, path, text, overrides, extras) for v in held if v != version]
     proofs.insert(0, proof)
-    facts = native.symbol_facts(config, version)[name]
+    facts = native.symbol_facts(config, version, extras)[name]
     built = store.get(config, "bytes", proof.built_sha256) or b""
     size = len(built) or (facts[2] or 0)
     target = (
-        versions.rom_bytes(native.version_records(config)[version], facts[1] or 0, (facts[1] or 0) + size)
+        versions.rom_bytes(native.version_records(config, extras)[version], facts[1] or 0, (facts[1] or 0) + size)
         if size
         else b""
     )
     if not built and not proof.exact:
+        reason = "; ".join(ln for m in proof.missing for ln in m.splitlines() if ln.strip())
+        where = _LOCATION.search(reason)  # the first place the compiler names; a conflict's other one is in the reason
         raise Refusal(
             Finding(
                 "score.compile",
-                reason="; ".join(ln for m in proof.missing for ln in m.splitlines() if ln.strip())
-                or "no instructions were built",
+                reason=reason or "no instructions were built",
+                path=where[1] if where else "",
+                line=int(where[2]) if where else 0,
                 unit=path,
                 versions=(version,),
                 action="fix the compile error shown",

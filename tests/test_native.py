@@ -372,3 +372,22 @@ def test_several_functions_of_one_module_compile_once(world):
     proofs = native.measure_names(world.cfg, "a", ["c_func", "fuzzy", "c_func"], path, _text(world.cfg))
     assert sorted(proofs) == ["c_func", "fuzzy"] and proofs["c_func"].exact and not proofs["fuzzy"].exact
     assert len(world.recipes) == 1 and world.linker.link.call_count == 1  # one compile, one link per owned name
+
+
+def test_a_symbol_file_in_the_overlay_is_the_one_the_link_resolves_against(world):
+    seen = []
+    plain = world.linker.link.side_effect
+
+    def link(obj, placed, symbols, work, trim):
+        seen.append(symbols.read_text())
+        return plain(obj, placed, symbols, work, trim)
+
+    world.linker.link.side_effect = link
+    path = "versions/a/symbol_addrs.txt"
+    overlay = (world.cfg.project.root / path).read_bytes() + b"gOverlaid = 0x80158A80; // type:data\n"
+    native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg))
+    native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg), None, {path: overlay})
+    assert "gOverlaid" not in seen[0]
+    assert "PROVIDE(gOverlaid = 0x80158A80);" in seen[1]
+    snapshot, *_ = native.candidate(world.cfg, "a", "src/main/c_func.c", "int x;\n", None, {path: overlay})
+    assert snapshot.versions["a"].symbols["gOverlaid"] == 0x80158A80  # undefined-symbol checks see it too
