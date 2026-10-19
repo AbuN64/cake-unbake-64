@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from unbake import config as configuration
-from unbake import tree
+from unbake import symbols, tree
 from unbake.contracts import Config, Finding
 
 KEY = "source.non_matching_foreign_body"
@@ -58,7 +58,9 @@ def findings(config: Config, modules: Sequence[Any], scores: Mapping[str, Mappin
                 _finding(config, module.path, name, f"{name} is not a symbol of {', '.join(versions)}", versions)
             )
         for name in module.fuzzy:
-            held = scores.get(name, {})
+            held = {  # a handwritten target is not compiler output: its score says nothing about the body
+                v: s for v, s in scores.get(name, {}).items() if s >= FLOOR or not symbols.handwritten(config, v, name)
+            }
             if held and 0 < max(held.values()) < FLOOR:  # 0 is a body that does not build, which scores nothing
                 best = max(held, key=lambda v: held[v])
                 found.append(

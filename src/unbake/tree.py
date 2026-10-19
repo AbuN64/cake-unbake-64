@@ -133,6 +133,9 @@ def _argv(
 
 
 # ---------------------------------------------------------------- one file
+LOCAL_TEXT = ".text.local"
+
+
 def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
     """(names defined at depth 0, names whose stand-in the text assembles), each in text order. With `kinds`, also the
     linker section of each name: `.text` for a function, a stand-in's own `.section`, `.rodata` for a const, `.data`
@@ -160,7 +163,9 @@ def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], li
                 if name and not _inlined(stmt):
                     defined.append(name)
                     if kinds is not None:
-                        kinds[name] = ".text"  # code, though a version knows the name only from an untyped alias
+                        # code, though a version knows the name only from an untyped alias; a static one is the file's
+                        # own helper, which no symbol of any version is ever meant to name
+                        kinds[name] = LOCAL_TEXT if "static" in stmt[: stmt.index("(")] else ".text"
                 stmt = [*stmt, "{}"]
                 stmt.append("<body>")
             elif depth == 0:
@@ -802,7 +807,7 @@ def _duplicates(owned: Mapping[str, Mapping[str, Iterable[str]]], versions: Sequ
 def _section(fact: symbols.Symbol, kind: str | None) -> str:
     """The linker section a name's bytes are in: code for a function, else what the source says (a stand-in's own
     `.section`, const, initialised or not)."""
-    return ".text" if fact[3] == "func" else kind or ".data"
+    return ".text" if fact[3] == "func" or kind == LOCAL_TEXT else kind or ".data"
 
 
 def _module(

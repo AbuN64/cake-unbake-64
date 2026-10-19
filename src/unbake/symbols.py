@@ -187,6 +187,15 @@ def _asm(config: Config, version: str, name: str) -> str:
         return ""
 
 
+HANDWRITTEN = "/* Handwritten function */"  # what splat writes above the extracted assembly of a handwritten function
+
+
+def handwritten(config: Config, version: str, name: str) -> bool:
+    """Whether the project's extracted assembly marks `name` as handwritten in `version`: its bytes are no compiler's
+    output, so no C for it is judged by how closely a compiler's code agrees with them."""
+    return HANDWRITTEN in _asm(config, version, name)
+
+
 def _mask(text: str) -> bytes:
     """The code of an asm file with immediates and jump targets cleared: equal in versions that move data."""
     words = []

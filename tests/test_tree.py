@@ -500,3 +500,15 @@ def test_a_non_matching_body_a_symbol_of_another_version_names_is_not_unnamed(tm
     )
     held = tree.capture(fixture.config(tmp_path, sources={"src/ovl/fuzzy.c": text}))
     assert not any(m.unnamed for m in held.modules)
+
+
+def test_a_static_helper_in_a_non_matching_block_is_the_files_own_and_not_unnamed(tmp_path: Path) -> None:
+    text = (
+        '#include "include_asm.h"\n\n#ifdef NON_MATCHING\nstatic s32 helper(s32 a) {\n    return a;\n}\n\n'
+        "s32 fuzzy_us(s32 a) {\n    return helper(a);\n}\n#else\nINCLUDE_ASM(ovl, fuzzy);\n#endif\n"
+    )
+    held = tree.capture(fixture.config(tmp_path, sources={"src/ovl/fuzzy.c": text}))
+    module = {m.path: m for m in held.modules}["src/ovl/fuzzy.c"]
+    assert module.unnamed == {"a": ("fuzzy_us",), "b": ("fuzzy_us",)}  # helper is not named; the extern stray still is
+    assert tree._scan("static s32 f(void) { return 1; }\n", kinds := {})[0] == ["f"] and kinds == {"f": tree.LOCAL_TEXT}
+    assert tree._section(("x", 0, 0, "data"), tree.LOCAL_TEXT) == ".text"

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
-from unbake import foreign, land, tree
+import fixture
+import pytest
+
+from unbake import foreign, land, symbols, tree
 from unbake.contracts import Refusal
 
 TEXT = """#include "x.h"
@@ -19,6 +23,12 @@ void f(void) {
 INCLUDE_ASM("seg", f);
 #endif
 """
+
+
+@pytest.fixture(autouse=True)
+def _compiler_made(monkeypatch):
+    """Every target is compiler output unless a test says otherwise (the stub config has no assembly to read)."""
+    monkeypatch.setattr(symbols, "handwritten", lambda config, version, name: False)
 
 
 def _world(tmp_path, **module):
@@ -98,3 +108,24 @@ def test_check_without_a_rom_names_it_and_does_not_refuse(tmp_path, monkeypatch)
     monkeypatch.setattr(land.rescore, "rows", missing)
     (finding,) = land._bodies(config, ["src/a.c"])
     assert finding.key == "config.file" and not finding.blocking
+
+
+def test_a_body_whose_target_the_project_marks_handwritten_is_not_judged_by_its_score(tmp_path, monkeypatch):
+    config, modules = _world(tmp_path)
+    monkeypatch.setattr(symbols, "handwritten", lambda c, version, name: version == "us")
+    (finding,) = foreign.findings(config, modules, {"f": {"us": 0.02, "eu": 0.03}})
+    assert finding.versions == ("eu",)  # the handwritten version drops out, the compiler-made one is still judged
+    assert foreign.findings(config, modules, {"f": {"us": 0.02}}) == ()
+    assert foreign.findings(config, modules, {"f": {"us": 0.0}}) == ()
+
+
+def test_the_project_marks_a_function_handwritten_by_the_comment_splat_writes_above_its_assembly(tmp_path, monkeypatch):
+    monkeypatch.undo()  # the real reader
+    config = fixture.config(tmp_path)
+    asm = Path(config.project.root) / "asm/a/nonmatchings/ovl/fuzzy.s"
+    asm.parent.mkdir(parents=True, exist_ok=True)
+    asm.write_text("glabel fuzzy\n")
+    assert not symbols.handwritten(config, "a", "fuzzy")
+    asm.write_text('.include "macro.inc"\n\n/* Handwritten function */\nglabel fuzzy\n')
+    assert symbols.handwritten(config, "a", "fuzzy")
+    assert not symbols.handwritten(config, "b", "fuzzy")  # the other version has no assembly extracted
