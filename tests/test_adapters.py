@@ -443,3 +443,15 @@ def test_an_assemble_template_without_includes_still_gets_the_include_directorie
     nonmatchings/... must still find the extracted assembly, so the directories follow the flags."""
     steps = adapters.chain_steps(adapter_config, "fake-9", recipe, [Path("/project/asm/a")], "unit")
     assert steps[1].argv[-4:] == ("-I/project/asm/a", "{in}", "-o", "{out}")
+
+
+def test_a_row_that_leaves_rdata_unallocated_gets_the_makefiles_objcopy_step(adapter_config, chains, recipe):
+    plain = adapters.chain_steps(adapter_config, "fake-9", recipe, [], "unit")
+    assert [s.phase for s in plain] == ["compile", "assemble"]
+    chains["toolchain"]["fake-9"]["rdata_alloc"] = True
+    steps = adapters.chain_steps(adapter_config, "fake-9", recipe, [], "unit")
+    assert [s.phase for s in steps] == ["compile", "assemble", "objcopy"]
+    flags = steps[2].argv
+    assert flags[1:] == ("--set-section-flags", ".rdata=alloc,load,readonly,data,contents", "{in}", "{out}")
+    assert flags[0] == str(adapter_config.host.tools["mips_objcopy"])
+    assert adapter_config.host.tools["mips_objcopy"] in adapters.toolchain(adapter_config, "fake-9").tool_files()

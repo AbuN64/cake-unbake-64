@@ -148,6 +148,8 @@ class TemplateToolchain:
                 files.append(process.tool(self.config, self.row.get("as_host", "mips_as")))
             elif name in self.config.host.tools:
                 files.append(self.config.host.tools[name])
+        if self.row.get("rdata_alloc"):
+            files.append(process.tool(self.config, "mips_objcopy"))
         return files
 
     def values(self, **given: Sequence[str]) -> dict[str, Sequence[str]]:
@@ -327,6 +329,12 @@ def chain_steps(config: Config, id: str, recipe: Recipe, include: Sequence[Path]
             )
         )
         steps.append(Step("assemble", "source.o", tuple(argv)))
+        if row.get(
+            "rdata_alloc"
+        ):  # the Makefile's own step: the assembler leaves .rdata unallocated and the link drops it
+            flags = (".rdata=alloc,load,readonly,data,contents",)
+            objcopy = str(process.tool(config, "mips_objcopy"))
+            steps.append(Step("objcopy", "allocated.o", (objcopy, "--set-section-flags", *flags, "{in}", "{out}")))
     return tuple(steps)
 
 
