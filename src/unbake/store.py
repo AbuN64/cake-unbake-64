@@ -10,6 +10,7 @@ import os
 import pickle
 import re
 import shutil
+import stat
 import tempfile
 import time
 import traceback
@@ -41,6 +42,25 @@ def write(path: Path, content: bytes) -> bool:
     part.replace(path)
     effort.forget("pin", "includes", "closure", "listing")  # the memoised reads of project files are stale now
     return True
+
+
+def unshare(root: Path) -> int:
+    """Give every file under `root` that other trees may share (a hard link, or a read-only file from a shared setup
+    cache) a private writable copy, made beside it and renamed over, so a tool that writes in place (splat) can never
+    write through a link into the cache or a neighbouring tree. Returns the number of files replaced."""
+    replaced = 0
+    for directory, _, names in os.walk(root):
+        for name in names:
+            path = Path(directory) / name
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or (info.st_nlink == 1 and info.st_mode & 0o200):
+                continue
+            part = path.with_name(f".{uuid.uuid4().hex}.part")
+            shutil.copyfile(path, part)
+            part.chmod(info.st_mode & 0o7777 | 0o200)
+            part.replace(path)
+            replaced += 1
+    return replaced
 
 
 def _packages() -> list[Path]:

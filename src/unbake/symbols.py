@@ -334,7 +334,7 @@ def join(config: Config) -> tuple[Correspondence, ...]:
         for b in sorted({m[3] for m in made}):
             renames = {y: x for x, _, y, v in made if v == b}
             file = config.project.root / path(b)
-            file.write_text(rename_lines(file.read_text(), renames))
+            store.write(file, rename_lines(file.read_text(), renames).encode())
         return tuple(made)
 
 

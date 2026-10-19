@@ -624,3 +624,44 @@ def test_an_extraction_that_died_leaves_no_stamp(world, monkeypatch):
     with pytest.raises(Refusal):
         world.setup()
     assert not (world.root / "asm/a/.unbake-extract").exists()
+
+
+def test_extract_job_extracts_again_when_an_asm_file_changed_under_its_stamp(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    asm = tmp_path / "asm" / "us"
+    asm.mkdir(parents=True)
+    (asm / "a.s").write_bytes(b"good\n")
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    ran = []
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v: "K")
+    monkeypatch.setattr(repo.build, "extract", lambda c, v: ran.append(v))
+    monkeypatch.setattr(repo, "_checked", lambda *a: None)
+    repo._write_asm_manifest(config, "us")
+    repo.store.write(repo._extract_stamp(config, "us"), b"K")
+    assert repo.extract_job((config, "us")) is False
+    (asm / "a.s").write_bytes(b"evil\n")
+    assert repo._asm_damaged(config, "us") == ["asm/us/a.s"]
+    assert repo.extract_job((config, "us")) is True
+    assert ran == ["us"]
+
+
+def test_missing_auto_symbols_file_makes_extract_job_extract_again(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    (tmp_path / "asm" / "us").mkdir(parents=True)
+    (tmp_path / "asm" / "us" / "a.s").write_bytes(b"x\n")
+    auto = tmp_path / "build" / "us" / "undefined_syms_auto.txt"
+    auto.parent.mkdir(parents=True)
+    auto.write_bytes(b"sym = 0;\n")
+    stale = tmp_path / "build" / "us" / "link.ld"
+    stale.write_bytes(b"old")
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v: "K")
+    monkeypatch.setattr(repo.build, "extract", lambda c, v: None)
+    monkeypatch.setattr(repo, "_checked", lambda *a: None)
+    repo._write_asm_manifest(config, "us")
+    repo.store.write(repo._extract_stamp(config, "us"), b"K")
+    auto.unlink()
+    assert repo.extract_job((config, "us")) is True
+    assert not stale.exists()

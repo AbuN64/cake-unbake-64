@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import multiprocessing
+import os
 import pickle
 import threading
 import time
@@ -404,3 +405,47 @@ def test_content_named_kinds_survive_an_install_and_code_keyed_kinds_do_not(
     store.put(cfg, kind, "key", b"value")
     monkeypatch.setattr(store, "code", lambda: "install-two")
     assert (store.get(cfg, kind, "key") == b"value") is shared
+
+
+def test_write_leaves_the_other_hard_link_untouched(tmp_path):
+    shared, mine = tmp_path / "cache" / "a.s", tmp_path / "tree" / "a.s"
+    shared.parent.mkdir()
+    mine.parent.mkdir()
+    shared.write_bytes(b"old\n")
+    shared.chmod(0o444)
+    os.link(shared, mine)
+    assert store.write(mine, b"new\n")
+    assert mine.read_bytes() == b"new\n"
+    assert shared.read_bytes() == b"old\n"
+    assert shared.stat().st_nlink == 1
+
+
+def test_unshare_breaks_links_so_an_in_place_writer_cannot_reach_the_cache(tmp_path):
+    shared, mine, private = (
+        tmp_path / "cache" / "a.s",
+        tmp_path / "tree" / "asm" / "a.s",
+        tmp_path / "tree" / "asm" / "b.s",
+    )
+    shared.parent.mkdir()
+    mine.parent.mkdir(parents=True)
+    shared.write_bytes(b"old\n")
+    shared.chmod(0o444)
+    os.link(shared, mine)
+    private.write_bytes(b"own\n")
+    inode = private.stat().st_ino
+    assert store.unshare(tmp_path / "tree" / "asm") == 1
+    mine.write_bytes(b"splat\n")  # what splat does: open, truncate, write
+    assert shared.read_bytes() == b"old\n"
+    assert shared.stat().st_nlink == 1
+    assert private.stat().st_ino == inode
+    assert not list(mine.parent.glob(".*.part"))
+
+
+def test_unshare_copies_a_readonly_file_even_when_unlinked(tmp_path):
+    only = tmp_path / "asm" / "a.s"
+    only.parent.mkdir()
+    only.write_bytes(b"x")
+    only.chmod(0o444)
+    assert store.unshare(tmp_path / "asm") == 1
+    assert os.access(only, os.W_OK)
+    assert only.read_bytes() == b"x"

@@ -60,7 +60,7 @@ def _pins_bad(dest: Path, pins: Json) -> list[str]:
         if have != want:
             bad.append(rel)
     if fresh != known and dest.is_dir():
-        manifest.write_text(json.dumps(fresh))
+        store.write(manifest, json.dumps(fresh).encode())
     return bad
 
 
@@ -638,6 +638,9 @@ def _make(config: Config, target: str) -> NativeResult:
 def extract(config: Config, version: str | None = None) -> NativeResult:
     """`make extract`: splat splits one version's baserom (default: all) into asm/<v>/."""
     with effort.stage("build.extract"):
+        # splat writes in place; a tree set up from a shared cache holds hard links to it, so no link may survive
+        root = config.project.root / "asm"
+        store.unshare(root / version if version else root)
         result = _make(config, f"extract-{version}" if version else "extract")
         if result.exit != 0:
             tail = result.stderr.decode(errors="replace").splitlines()
@@ -687,7 +690,7 @@ def make_check(config: Config, held: Tree | None = None) -> Json:
         result = _make(config, "check")
         if result.exit == 0:
             stamp.parent.mkdir(parents=True, exist_ok=True)
-            stamp.write_text(json.dumps({"inputs": inputs(config)}))
+            store.write(stamp, json.dumps({"inputs": inputs(config)}).encode())
             report.record(
                 config,
                 held or tree.capture(config),

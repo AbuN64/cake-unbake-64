@@ -491,6 +491,7 @@ def _materialize(home: Path, overlays: Mapping[str, bytes | None] | None) -> tup
     for name, content in written.items():
         target = home / name
         target.parent.mkdir(parents=True, exist_ok=True)
+        target.unlink(missing_ok=True)  # never write through a link into the real tree
         target.write_bytes(content)
     return (f"-I{home / 'include'}", f"-I{home / 'src'}") if written else ()
 

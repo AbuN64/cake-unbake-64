@@ -507,6 +507,46 @@ def _extracted_key(config: Config, v: str) -> str | None:
     return stamp.read_text() if stamp.is_file() else None
 
 
+def _asm_manifest_path(config: Config, v: str) -> Path:
+    return config.project.root / "asm" / v / ".unbake-asm.json"
+
+
+def _asm_files(config: Config, v: str) -> dict[str, Path]:
+    """What one extraction generates, by project path: asm/<v>/ and the splat files build/<v>/*_auto.txt."""
+    root = config.project.root
+    found = [p for p in sorted((root / "asm" / v).rglob("*")) if p.is_file() and not p.name.startswith(".unbake")]
+    found += sorted((root / "build" / v).glob("*_auto.txt"))
+    return {str(p.relative_to(root)): p for p in found}
+
+
+def _write_asm_manifest(config: Config, v: str) -> None:
+    """Size, mtime and sha1 of every file the extraction wrote, so a later run can tell a file that changed under it."""
+    rows = {}
+    for rel, p in _asm_files(config, v).items():
+        info = p.stat()
+        rows[rel] = [info.st_size, info.st_mtime_ns, sha1(p.read_bytes())]
+    store.write(_asm_manifest_path(config, v), json.dumps(rows, sort_keys=True).encode())
+
+
+def _asm_damaged(config: Config, v: str) -> list[str]:
+    """Files of asm/<v>/ that are missing or whose bytes differ from what the extraction recorded (a write through a
+    shared link, an editor). Size and mtime clear a file at once; only a changed one is hashed. [] when no record."""
+    try:
+        rows = json.loads(_asm_manifest_path(config, v).read_text())
+    except (FileNotFoundError, ValueError):
+        return []
+    base = config.project.root
+    damaged = []
+    for rel, (size, mtime, digest_) in sorted(rows.items()):
+        try:
+            info = (base / rel).stat()
+            if (info.st_size, info.st_mtime_ns) != (size, mtime) and sha1((base / rel).read_bytes()) != digest_:
+                damaged.append(rel)
+        except FileNotFoundError:
+            damaged.append(rel)
+    return damaged
+
+
 def extract_job(job: tuple[Config, str]) -> bool:
     """One splat run unless asm/<v>/ already holds the extraction of this input; true when splat ran.
 
@@ -516,12 +556,19 @@ def extract_job(job: tuple[Config, str]) -> bool:
     config, v = job
     key = _extract_key(config, v)
     if (config.project.root / "asm" / v).is_dir() and _extracted_key(config, v) == key:
-        return False
+        damaged = _asm_damaged(config, v)
+        if not damaged:
+            return False
+    # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
+    # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.
+    for old in (config.project.root / "build" / v).glob("*.ld"):
+        old.unlink(missing_ok=True)
     stamp = _extract_stamp(config, v)
     stamp.unlink(missing_ok=True)  # an extraction that dies half-way is not the one the old stamp named
     _checked(build.extract(config, v), "setup.splat", f"extract {v}")
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text(key)
+    _write_asm_manifest(config, v)
+    store.write(stamp, key.encode())
     return True
 
 

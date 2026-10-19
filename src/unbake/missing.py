@@ -14,7 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from unbake import symbols, versions
+from unbake import store, symbols, versions
 from unbake.contracts import Config, Json
 
 _NAME = re.compile(r"^(?:(D|func|jtbl)_)(?:auto_)?([0-9A-Fa-f]{8})$")
@@ -196,7 +196,7 @@ def _append(config: Config, where: str, rows: list[Json], key: str, render: Any)
     add = [r for r in rows if r[key] not in have]
     if add:
         sep = "" if not text or text.endswith("\n") else "\n"
-        file.write_text(text + sep + "".join(render(r) for r in add))
+        store.write(file, (text + sep + "".join(render(r) for r in add)).encode())
     return [r[key] for r in add]
 
 
