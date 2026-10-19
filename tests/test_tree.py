@@ -222,7 +222,7 @@ def test_edit_reparses_only_the_edited_file(tmp_path: Path) -> None:
     before = fixture.cpp_runs(tmp_path)
     edit(config, "src/main/c_func.c", "s32 c_func(void) { return 7; }\n")
     tree.capture(config)
-    assert fixture.cpp_runs(tmp_path) - before == 4  # one file, two versions, two runs each
+    assert fixture.cpp_runs(tmp_path) - before == 2  # one file, two versions, one run each
 
 
 def test_rename_hits_file_cache(tmp_path: Path) -> None:
@@ -358,7 +358,7 @@ def test_a_later_command_after_one_edit_parses_only_that_file(tmp_path: Path, mo
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert set(parsed) == {"src/main/c_func.c"} and len(parsed) == 2  # one file in its two versions
-    assert fixture.cpp_runs(tmp_path) - runs == 4
+    assert fixture.cpp_runs(tmp_path) - runs == 2
 
 
 def test_parse_keys_are_one_function_for_a_header_read_off_disk(
@@ -522,3 +522,39 @@ def test_a_static_helper_in_a_non_matching_block_is_the_files_own_and_not_unname
     assert module.unnamed == {"a": ("fuzzy_us",), "b": ("fuzzy_us",)}  # helper is not named; the extern stray still is
     assert tree._scan("static s32 f(void) { return 1; }\n", kinds := {})[0] == ["f"] and kinds == {"f": tree.LOCAL_TEXT}
     assert tree._section(("x", 0, 0, "data"), tree.LOCAL_TEXT) == ".text"
+
+
+def _fuzzy_runs(config: Config, monkeypatch: pytest.MonkeyPatch, opened: list[str], path: str) -> tuple[int, int]:
+    """(second expansions made, scans made) parsing one file of the fixture when the preprocessor opened `opened`."""
+    real = tree._expand
+    seconds, scans = [], []
+    monkeypatch.setattr(tree, "_expand", lambda *a, **k: (real(*a, **k)[0], opened))
+    real_pre, real_scan = tree._preprocess, tree._scan
+    monkeypatch.setattr(tree, "_preprocess", lambda *a, **k: seconds.append(1) or real_pre(*a, **k))
+    monkeypatch.setattr(tree, "_scan", lambda *a, **k: scans.append(1) or real_scan(*a, **k))
+    tree._parsed(config, path, (config.project.root / path).read_bytes(), "a", key=f"k-{path}-{opened}")
+    return len(seconds), len(scans)
+
+
+def test_a_file_nothing_of_which_can_tell_the_macro_is_expanded_and_scanned_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _fuzzy_runs(fixture.config(tmp_path), monkeypatch, [], "src/main/c_func.c") == (0, 1)
+
+
+def test_a_header_that_holds_the_word_brings_the_second_expansion_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = fixture.config(tmp_path)
+    (config.project.root / "include" / "plain.h").write_text("int plain;\n")
+    (config.project.root / "include" / "fuzzy.h").write_text("#ifdef NON_MATCHING\nint x;\n#endif\n")
+    assert _fuzzy_runs(config, monkeypatch, ["include/plain.h"], "src/main/c_func.c") == (0, 1)
+    # the header holds the word but the expansion does not change: the second expansion is made, its scan is not
+    assert _fuzzy_runs(config, monkeypatch, ["include/plain.h", "include/fuzzy.h"], "src/main/c_func.c") == (1, 1)
+    assert _fuzzy_runs(config, monkeypatch, ["include/missing.h"], "src/main/c_func.c") == (1, 1)
+
+
+def test_a_file_holding_the_word_is_expanded_both_ways_and_scanned_for_each(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _fuzzy_runs(fixture.config(tmp_path), monkeypatch, [], "src/ovl/fuzzy.c") == (1, 2)

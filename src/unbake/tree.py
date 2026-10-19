@@ -236,8 +236,11 @@ def _function_name(stmt: Sequence[str]) -> str:
     return stmt[at - 1] if at and _ident(stmt[at - 1]) else ""
 
 
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def _ident(token: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token))
+    return _IDENT.fullmatch(token) is not None
 
 
 _ASM = {"__asm__", "asm", "__asm"}
@@ -247,14 +250,14 @@ _SECTION = re.compile(r"\.section\s+(\.[\w.]+)")  # a stand-in may give each nam
 
 
 def _statement(stmt: Sequence[str], defined: list[str], stand_ins: list[str], kinds: dict[str, str]) -> None:
-    if any(t in _ASM for t in stmt):
+    if not _ASM.isdisjoint(stmt):
         joined = "".join(_unquote(t) for t in stmt if t.startswith('"'))
         for found in _STAND_IN.finditer(joined):
             sections = _SECTION.findall(joined[: found.start()])
             kinds[found[1]] = sections[-1] if sections else ".text"
             stand_ins.append(found[1])
         return
-    if not stmt or stmt[0] in {"typedef", "extern"} or "typedef" in stmt or "extern" in stmt:
+    if not stmt or "typedef" in stmt or "extern" in stmt:
         return
     pieces: list[list[str]] = [[]]
     depth = 0
@@ -497,8 +500,21 @@ def _preprocess(
 ) -> str:
     """What the build's preprocessor makes of `path` for `version`, with `extra` flags: of `text` as that file (read
     on stdin), or of the file on disk when `text` is None (its own name in any line markers, as the build has it)."""
+    return _expand(config, path, text, version, extra, markers, listing=False)[0]
+
+
+def _expand(
+    config: Config,
+    path: str,
+    text: bytes | None,
+    version: str,
+    extra: Sequence[str],
+    markers: bool = False,
+    listing: bool = True,
+) -> tuple[str, list[str]]:
+    """`_preprocess`, and with `listing` the paths of the headers the preprocessor opened (its `-H` list)."""
     root = config.project.root
-    argv = _argv(config, path, version, path if text is None else "-", extra, markers)
+    argv = _argv(config, path, version, path if text is None else "-", [*extra, *(["-H"] if listing else [])], markers)
     result = process.run("tree.cpp", argv, root, tmp=process.scratch(root), stdin=text or b"")
     if result.exit != 0:
         lines = [ln.strip() for ln in result.stderr.decode(errors="replace").splitlines() if ln.strip()]
@@ -513,7 +529,27 @@ def _preprocess(
                 versions=(version,),
             )
         )
-    return result.stdout.decode(errors="replace")
+    opened = [m[1] for ln in result.stderr.decode(errors="replace").splitlines() if (m := _OPENED.match(ln))]
+    return result.stdout.decode(errors="replace"), opened
+
+
+_OPENED = re.compile(r"\.+ (\S.*)$")  # a line of the preprocessor's -H list: dots for the depth, then the header
+_FUZZY_WORD = b"NON_"  # what a file must hold for -DNON_MATCHING to be able to change what it expands to
+_MENTIONS: dict[tuple[str, int, int], bool] = {}
+
+
+def _mentions(root: Path, header: str) -> bool:
+    """Whether the header holds the word, read once per process while the file is unchanged. A header that cannot be
+    read counts as holding it."""
+    full = root / header
+    try:
+        stat = full.stat()
+        key = (str(full), stat.st_mtime_ns, stat.st_size)
+        if key not in _MENTIONS:
+            _MENTIONS[key] = _FUZZY_WORD in full.read_bytes()
+        return _MENTIONS[key]
+    except OSError:
+        return True
 
 
 def _read_from(config: Config) -> Callable[[str], bytes | None]:
@@ -564,13 +600,18 @@ def _parsed(
         with store.work(config) as home:
             ahead = _materialize(home, overlays)
             source = text
-            expanded = _preprocess(config, path, source, version, ("-P", *ahead))
+            expanded, opened = _expand(config, path, source, version, ("-P", *ahead))
             if _UNEXPANDED.search(expanded):  # no header yet: read the file as sync will write it
                 source = b'#include "include_asm.h"\n' + text
-                expanded = _preprocess(config, path, source, version, ("-P", *ahead))
+                expanded, opened = _expand(config, path, source, version, ("-P", *ahead))
             plain = _scan(expanded, kinds)
             fuzzy_kinds: dict[str, str] = {}
-            fuzzy = _scan(_preprocess(config, path, source, version, ("-P", "-DNON_MATCHING", *ahead)), fuzzy_kinds)
+            root = config.project.root
+            if _FUZZY_WORD in source or any(_mentions(root, h) for h in opened):
+                other = _preprocess(config, path, source, version, ("-P", "-DNON_MATCHING", *ahead))
+                fuzzy = plain if other == expanded else _scan(other, fuzzy_kinds)
+            else:  # nothing the preprocessor read can tell the macro: the second expansion is the first
+                fuzzy = plain
         for name in fuzzy[0]:  # a NON_MATCHING body's kind too, so a body of nothing can be told from a data row
             if name in fuzzy_kinds:
                 kinds.setdefault(name, fuzzy_kinds[name])
