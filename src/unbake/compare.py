@@ -164,15 +164,21 @@ def _text(current: str, segment: str, name: str, source: str) -> str:
 
 
 def _resolve(
-    config: Config, file: Path, function: str | None, version: str | None = None
+    config: Config,
+    file: Path,
+    function: str | None,
+    version: str | None = None,
+    extras: Mapping[str, bytes] | None = None,
 ) -> tuple[str, str, str, tuple[str, ...], str, str]:
     """(name, module path, candidate source, holding versions, segment, new module text) of one candidate; a named
-    version selects the file that owns the function there."""
+    version selects the file that owns the function there, and a change-set file that replaces that owner is the
+    text the candidate is spliced into."""
     source = _source(file)
     captured = tree.capture(config)
     name = _member(captured, config.project.versions, source, function)
     held, path, segment = publish.holders(captured, name, version)
-    current = (config.project.root / path).read_text(encoding="utf-8")
+    given = (extras or {}).get(path)
+    current = given.decode() if given is not None else (config.project.root / path).read_text(encoding="utf-8")
     return name, path, source, held, segment, _text(current, segment, name, source)
 
 
@@ -184,7 +190,7 @@ def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
 def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, out: bool = True) -> dict[str, Any]:
     """Measure one candidate in every holding version and enter it in the inbox when it is exact (or a fuzzy gain)."""
     extras = _extras(config, files[1:])
-    name, path, source, held, _, text = _resolve(config, files[0], params.get("function"))
+    name, path, source, held, _, text = _resolve(config, files[0], params.get("function"), None, extras)
     proofs = measure_versions(config, held, name, path, text, None, extras)
     found = list(gaps(name, held, proofs))
     entry = None
@@ -268,7 +274,8 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
     resolved: dict[int, Any] = {}
     for n, group in enumerate(groups):
         try:
-            resolved[n] = (*_resolve(config, group[0], None), _extras(config, group[1:]))
+            given = _extras(config, group[1:])
+            resolved[n] = (*_resolve(config, group[0], None, None, given), given)
         except Refusal as refusal:
             resolved[n] = refusal
     jobs = [
@@ -454,8 +461,10 @@ def _score_variants(config: Config, params: Json) -> Json:
 
 
 def _score_one(config: Config, params: Json) -> Json:
-    name, path, _, held, _, text = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"))
     extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
+    name, path, _, held, _, text = _resolve(
+        config, Path(params["file"]), params.get("function"), params.get("version"), extras
+    )
     overrides = _overrides(params)
     preferred = config.project.names_from
     version = params.get("version") or (preferred if preferred in held else held[0])

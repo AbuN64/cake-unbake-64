@@ -357,3 +357,13 @@ def test_score_keeps_the_targets_own_extent_whatever_the_candidate_builds(world,
     params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "lines": None, "short": False}
     result = compare._score_one(world.cfg, params)
     assert result["words"] == {"built": 2, "target": 4, "matched": 2}
+
+
+def test_an_owning_source_overlay_is_the_text_the_candidate_is_spliced_into(world):
+    owner = '#include "include_asm.h"\n\nenum { IDLE = 3 };\nINCLUDE_ASM("main", stand_in);\n'
+    name, path, _, _, _, text = compare._resolve(
+        world.cfg, world.tmp / "stand_in.c", None, None, {"src/main/stand_in.c": owner.encode()}
+    )
+    assert (name, path) == ("stand_in", "src/main/stand_in.c")
+    assert "enum { IDLE = 3 };" in text and "return 2;" in text and 'INCLUDE_ASM("main", stand_in)' not in text
+    assert "enum" not in compare._resolve(world.cfg, world.tmp / "stand_in.c", None)[5]  # no overlay: the disk text
