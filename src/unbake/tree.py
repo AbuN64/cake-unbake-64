@@ -44,6 +44,9 @@ class Module:
     placed: Mapping[str, Mapping[str, str]] = field(default_factory=dict, compare=False)  # version -> name -> segment
     stale: Mapping[str, tuple[str, ...]] = field(default_factory=dict, compare=False)  # version -> superseded stand-ins
     library: bool = False
+    unnamed: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict, compare=False
+    )  # version -> NON_MATCHING functions that no version has a symbol for
 
 
 @dataclass(frozen=True)
@@ -386,14 +389,10 @@ _CONDITIONAL = re.compile(r"[ \t]*#[ \t]*(if|ifdef|ifndef|else|elif|endif)\b")
 _GUARD = re.compile(r"([ \t]*#[ \t]*)ifdef[ \t]+NON_MATCHING[ \t]*(\r?\n?)$")
 
 
-def fuzzy_only(text: str, names: Collection[str]) -> str:
-    """`text` with the NON_MATCHING body of every function but `names` switched off: a measured module compiles the
-    bodies of the names it measures, and a sibling's body (its own includes and declarations, often the older context
-    of the file) is no part of what a name's bytes depend on. A switched-off block keeps its line count and its `#else`
-    side, so every diagnostic names the line it names in `text`."""
-    lines = text.splitlines(keepends=True)
+def non_matching_blocks(lines: Sequence[str]) -> list[tuple[int, int, int]]:
+    """The NON_MATCHING conditionals of the lines: (opening line, `#else` line or -1, `#endif` line), 0-based."""
     stack: list[list[int]] = []  # [line of the opening directive, line of its #else or -1]
-    blocks: list[tuple[int, int, int]] = []  # NON_MATCHING blocks: (opening line, #else line or -1, #endif line)
+    blocks: list[tuple[int, int, int]] = []
     for number, line in enumerate(lines):
         kind = _CONDITIONAL.match(line)
         if kind is None:
@@ -406,9 +405,23 @@ def fuzzy_only(text: str, names: Collection[str]) -> str:
             opened, other = stack.pop()
             if _GUARD.match(lines[opened]):
                 blocks.append((opened, other, number))
-    for opened, other, closed in blocks:
+    return blocks
+
+
+def defined(text: str) -> list[str]:
+    """The names `text` defines as C functions."""
+    return _scan(text)[0]
+
+
+def fuzzy_only(text: str, names: Collection[str]) -> str:
+    """`text` with the NON_MATCHING body of every function but `names` switched off: a measured module compiles the
+    bodies of the names it measures, and a sibling's body (its own includes and declarations, often the older context
+    of the file) is no part of what a name's bytes depend on. A switched-off block keeps its line count and its `#else`
+    side, so every diagnostic names the line it names in `text`."""
+    lines = text.splitlines(keepends=True)
+    for opened, other, closed in non_matching_blocks(lines):
         body = "".join(lines[opened + 1 : other if other >= 0 else closed])
-        if not set(_scan(body)[0]) & set(names) and (m := _GUARD.match(lines[opened])):
+        if not set(defined(body)) & set(names) and (m := _GUARD.match(lines[opened])):
             lines[opened] = f"{m[1]}if 0{m[2]}"
     return "".join(lines)
 
@@ -523,7 +536,11 @@ def _parsed(
         with store.work(config) as home:
             ahead = _materialize(home, overlays)
             plain = _scan(_preprocess(config, path, text, version, ("-P", *ahead)), kinds)
-            fuzzy = _scan(_preprocess(config, path, text, version, ("-P", "-DNON_MATCHING", *ahead)))
+            fuzzy_kinds: dict[str, str] = {}
+            fuzzy = _scan(_preprocess(config, path, text, version, ("-P", "-DNON_MATCHING", *ahead)), fuzzy_kinds)
+        for name in fuzzy[0]:  # a NON_MATCHING body's kind too, so a body of nothing can be told from a data row
+            if name in fuzzy_kinds:
+                kinds.setdefault(name, fuzzy_kinds[name])
         mine = set(plain[0])
         row = [plain[0], plain[1], [n for n in dict.fromkeys(fuzzy[0]) if n not in mine], kinds]
         return json.dumps(row).encode()
@@ -633,6 +650,7 @@ def _build(
     owned: dict[str, dict[str, list[str]]] = defaultdict(dict)
     stand: dict[str, dict[str, list[str]]] = defaultdict(dict)
     fuzzy: dict[str, set[str]] = defaultdict(set)
+    unnamed: dict[str, dict[str, list[str]]] = defaultdict(dict)
     sections: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
     defined = {(version, n) for (path, version), (defs, *_) in zip(jobs, parsed, strict=True) for n in defs}
     stale: dict[str, dict[str, list[str]]] = defaultdict(dict)
@@ -643,6 +661,10 @@ def _build(
         if old or set(ins) & mine:
             stale[path][version] = [n for n in dict.fromkeys(ins) if n in table and (n in mine or n in old)]
         names = [n for n in dict.fromkeys([*defs, *ins]) if n in table and n not in old]
+        if lost := [
+            n for n in dict.fromkeys(nm) if kinds.get(n) == ".text" and not any(n in t for t in tables.values())
+        ]:
+            unnamed[path][version] = lost  # a body for a function no version has is built into nothing
         if names:
             owned[path][version] = sorted(names, key=lambda n, t=table: (_rom(t, n), n))  # type: ignore[misc]
             stand[path][version] = [n for n in ins if n in table and n not in mine and n not in old]
@@ -652,7 +674,18 @@ def _build(
     findings = _duplicates(owned, versions)
     findings += _literals(tables, owned, sections)
     modules = tuple(
-        _module(config, path, owned[path], stand[path], fuzzy[path], sections[path], tables, findings, stale[path])
+        _module(
+            config,
+            path,
+            owned[path],
+            stand[path],
+            fuzzy[path],
+            sections[path],
+            tables,
+            findings,
+            stale[path],
+            unnamed[path],
+        )
         for path in sorted({*owned, *stale})
     )
     if findings:
@@ -782,6 +815,7 @@ def _module(
     tables: Mapping[str, Mapping[str, symbols.Symbol]],
     findings: list[Finding],
     stale: Mapping[str, list[str]],
+    unnamed: Mapping[str, list[str]],
 ) -> Module:
     """The module record. Its segment is the one its first function lies in: a file may also own data that lies in
     segments of their own (the rodata of its code), and each name's own segment is found from its address."""
@@ -814,4 +848,5 @@ def _module(
         placed,
         {v: tuple(n) for v, n in stale.items() if n},
         library=configuration.is_assembly(path) and configuration.library(config.project, path),
+        unnamed={v: tuple(n) for v, n in unnamed.items()},
     )

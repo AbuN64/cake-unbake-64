@@ -445,3 +445,7 @@ sentence = "an unowned library routine cannot be placed without the ROM that sho
 [key."source.library-asm"]
 owner = "policy"
 sentence = "assembly source is outside a configured library directory"
+
+[key."source.non_matching_foreign_body"]
+owner = "foreign"
+sentence = "a NON_MATCHING body is not the body of its function"

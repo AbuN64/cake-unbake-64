@@ -6,11 +6,12 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from unbake import api, effort, journal, policy, process, publish, report, store, tree
+from unbake import api, effort, foreign, journal, policy, process, publish, report, rescore, store, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Proof, Receipt, Refusal, Submission, digest, proof_from, sha256
 
@@ -306,6 +307,18 @@ def land_command(config: Config, params: Json) -> Json:
     return drain(config)
 
 
+def _bodies(config: Config, paths: Sequence[str]) -> tuple[Finding, ...]:
+    """The foreign-body rule over the NON_MATCHING bodies of `paths`. A body is measured once per content (the score
+    cache); a version whose ROM is missing is named and left unmeasured."""
+    held = tree.capture(config)
+    modules = [m for m in held.modules if m.path in set(paths) and (m.fuzzy or m.unnamed)]
+    try:
+        scores = rescore.rows(config, SimpleNamespace(digest=held.digest, modules=modules), report.facts(config))
+    except Refusal as refusal:
+        return tuple(replace(f, blocking=False) for f in refusal.findings)
+    return foreign.findings(config, modules, scores)
+
+
 def check_command(config: Config, params: Json) -> Json:
     """The source rules over the files that own names (or the given paths); a blocking finding refuses."""
     with effort.stage("land.check_command"):
@@ -316,6 +329,7 @@ def check_command(config: Config, params: Json) -> Json:
         for path in paths:
             if (text := _peek(config, path)) is not None:
                 findings.extend(policy.evaluate(snapshot, path, text.decode(), None, False))
+        findings.extend(_bodies(config, paths))
         publish.refuse_blocking(findings)
         report.record(config, tree.capture(config), commit=snapshot.commit, counts=policy.counts(findings))
         if params.get("strict") and findings:

@@ -36,7 +36,7 @@ def _capture(config: Any) -> Any:
     return import_module("unbake.tree").capture(config)
 
 
-def _facts(config: Any) -> rescore.Facts:
+def facts(config: Any) -> rescore.Facts:
     """Per version the symbol_addrs facts: name -> (vram, rom, size, type), each size the file leaves out filled in."""
     read = import_module("unbake.api").symbols
     return {v: _sized(config, v, read(config, v)) for v in config.project.version}
@@ -248,13 +248,13 @@ def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
     these same rows."""
 
     def build() -> tuple[Credit, ...]:
-        facts = _facts(config)
+        held = facts(config)
         return build_credits(
             list(config.project.version),
             tree,
-            facts,
+            held,
             exact_versions(config, tree),
-            rescore.rows(config, tree, facts),
+            rescore.rows(config, tree, held),
             _broken(config, tree),
             _extents(config, tree),
         )
@@ -264,7 +264,7 @@ def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
 
 def scores(config: Any, tree: Any) -> dict[str, dict[str, float]]:
     """name -> version -> cached fuzzy score of every NON_MATCHING function (what `unbake score` and the API read)."""
-    return rescore.rows(config, tree, _facts(config))
+    return rescore.rows(config, tree, facts(config))
 
 
 def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:

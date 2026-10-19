@@ -480,3 +480,23 @@ def test_a_conditional_inside_a_body_does_not_end_the_block():
     text = "#ifdef NON_MATCHING\n#if X\nint a;\n#endif\nint wanted(void) { return 1; }\n#endif\n"
     assert tree.fuzzy_only(text, ["wanted"]) == text
     assert tree.fuzzy_only(text, ["other"]).startswith("#if 0\n#if X\n")
+
+
+def test_a_non_matching_body_naming_no_symbol_is_recorded_as_unnamed(tmp_path: Path) -> None:
+    text = (
+        '#include "include_asm.h"\n\n#ifdef NON_MATCHING\ns32 fuzzy_us(s32 a) {\n    return a;\n}\n#else\n'
+        "INCLUDE_ASM(ovl, fuzzy);\n#endif\n"
+    )
+    held = tree.capture(fixture.config(tmp_path, sources={"src/ovl/fuzzy.c": text}))
+    module = {m.path: m for m in held.modules}["src/ovl/fuzzy.c"]
+    assert module.unnamed == {"a": ("fuzzy_us",), "b": ("fuzzy_us",)} and module.fuzzy == ()
+    assert not any(m.unnamed for m in held.modules if m is not module)
+
+
+def test_a_non_matching_body_a_symbol_of_another_version_names_is_not_unnamed(tmp_path: Path) -> None:
+    text = (
+        '#include "include_asm.h"\n\n#ifdef NON_MATCHING\ns32 fuzzy(s32 a) {\n    return a;\n}\n#else\n'
+        "INCLUDE_ASM(ovl, fuzzy);\n#endif\n"
+    )
+    held = tree.capture(fixture.config(tmp_path, sources={"src/ovl/fuzzy.c": text}))
+    assert not any(m.unnamed for m in held.modules)
