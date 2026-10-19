@@ -190,6 +190,12 @@ def test_holders_name_the_segment_of_the_name_not_of_the_file(world):
     assert publish.holders(world.tree, "func_80000010")[2] == "main"
 
 
+HELPER = (
+    "static double twice(double value)\n{\n    return value + value;\n}\n"
+    "double func_80000010(double value)\n{\n    return twice(value);\n}\n"
+)
+
+
 @pytest.mark.parametrize(
     "helper",
     [
@@ -203,3 +209,25 @@ def test_a_helpers_closing_brace_survives_whatever_the_brace_layout(helper):
     assert text.count("{") == text.count("}")
     assert [p.name for p in publish.items(text) if p.kind == "function"] == ["keep", "twice", "func_80000010"]
     assert "func_80000010" in tree._scan(text)[0]
+
+
+NESTED = (
+    '#include "game.h"\n#ifdef NON_MATCHING\nvoid func_80000010(void) { old(); }\n#else\n'
+    '#if !defined(VERSION_EU)\nINCLUDE_ASM("main", func_80000010);\n#endif\n'
+    '#if defined(VERSION_EU)\nINCLUDE_ASM("main", other);\n#endif\n#endif\n'
+)
+
+
+def test_the_candidate_replaces_a_non_matching_body_and_keeps_the_nested_version_guards():
+    text = publish.splice(NESTED, "main", "func_80000010", CANDIDATE, fuzzy=False)
+    assert "old()" not in text and "NON_MATCHING" not in text
+    assert "return a + table[0];" in text and 'INCLUDE_ASM("main", func_80000010)' not in text
+    assert '#if defined(VERSION_EU)\nINCLUDE_ASM("main", other);\n#endif' in text
+    assert text.count("#if") == text.count("#endif")
+
+
+def test_a_fuzzy_candidate_replaces_the_non_matching_body_over_the_untouched_else_side():
+    text = publish.splice(NESTED, "main", "func_80000010", CANDIDATE, fuzzy=True)
+    assert "old()" not in text and text.count("#ifdef NON_MATCHING") == 1
+    assert text.index("return a + table[0];") < text.index("#else") < text.index('INCLUDE_ASM("main", func_80000010)')
+    assert '#if defined(VERSION_EU)\nINCLUDE_ASM("main", other);' in text

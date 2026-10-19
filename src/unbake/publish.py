@@ -101,19 +101,37 @@ def _stand_in(segment: str, name: str) -> str:
     return rf'^[ \t]*{_KINDS}\([ \t]*"{re.escape(segment)}"[ \t]*,[ \t]*{re.escape(name)}[ \t]*\)[ \t]*;[ \t]*\n?'
 
 
-def _block(segment: str, name: str) -> re.Pattern[str]:
-    """A fuzzy candidate's block: the NON_MATCHING body over the stand-in it falls back to."""
-    return re.compile(
-        r"^#ifdef NON_MATCHING[ \t]*\n(?:(?!^#ifdef NON_MATCHING).)*?^#else[ \t]*\n"
-        + _stand_in(segment, name)
-        + r"^#endif[^\n]*(?:\n|$)",
-        re.M | re.S,
-    )
+_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|else|elif|endif)\b[^\n]*(?:\n|$)", re.M)
+
+
+def _block(text: str, at: int) -> tuple[int, int, int, int] | None:
+    """(start of the `#ifdef NON_MATCHING` line, start of its `#else` body, start of its `#endif` line, end of that
+    line) of the innermost NON_MATCHING conditional whose `#else` side holds offset `at`, whatever the layout and
+    whatever conditionals nest inside either side."""
+    stack: list[list[int]] = []  # [start, else body start or -1, is NON_MATCHING]
+    best: tuple[int, int, int, int] | None = None
+    for m in _DIRECTIVE.finditer(text):
+        kind = m[1]
+        if kind in ("if", "ifdef", "ifndef"):
+            guard = re.fullmatch(r"\s*#\s*ifdef\s+NON_MATCHING\s*", m[0]) is not None
+            stack.append([m.start(), -1, int(guard)])
+        elif kind == "else" and stack and stack[-1][1] < 0:
+            stack[-1][1] = m.end()
+        elif kind == "endif" and stack:
+            start, other, flagged = stack.pop()
+            if flagged and 0 <= other <= at < m.start() and (best is None or start > best[0]):
+                best = (start, other, m.start(), m.end())
+    return best
 
 
 def wrap(segment: str, name: str, body: str) -> str:
     """A fuzzy body behind NON_MATCHING, falling back to the stand-in."""
     return f'#ifdef NON_MATCHING\n{body.rstrip()}\n#else\nINCLUDE_ASM("{segment}", {name});\n#endif\n'
+
+
+def _wrap_over(body: str, fallback: str) -> str:
+    """A fuzzy body behind NON_MATCHING over the else side `fallback`, which keeps its stand-ins."""
+    return f"#ifdef NON_MATCHING\n{body.rstrip()}\n#else\n{fallback}#endif\n"
 
 
 def _declarations(declared: str) -> list[str]:
@@ -148,8 +166,7 @@ def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: s
     """`text` with the stand-in line (or earlier fuzzy block) of `name` replaced by the candidate, and the
     candidate's other top-level items the file lacks added right above it, after every include that precedes it."""
     declared, body = candidate(source, name if kind == "function" else None)
-    new = wrap(segment, name, body) if fuzzy else body
-    found = _block(segment, name).search(text) or re.compile(_stand_in(segment, name), re.M).search(text)
+    found = re.compile(_stand_in(segment, name), re.M).search(text)
     if found is None:
         raise Refusal(
             Finding(
@@ -158,7 +175,21 @@ def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: s
                 unit=name,
             )
         )
-    before, after = text[: found.start()], text[found.end() :]
+    start, end, new = found.start(), found.end(), body
+    if enclosing := _block(text, found.start()):
+        # the NON_MATCHING body is the old candidate: the new one takes its place, and the else side (its nested version
+        # guards and the other stand-ins) stays; the stand-in itself goes unless the candidate is only fuzzy
+        top, head, tail, close = enclosing
+        rest = text[head:tail]
+        if fuzzy:
+            new = _wrap_over(body, rest)
+        else:
+            rest = re.compile(_stand_in(segment, name), re.M).sub("", rest, count=1)
+            new = body + rest
+        start, end = top, close
+    elif fuzzy:
+        new = wrap(segment, name, body)
+    before, after = text[:start], text[end:]
     have = _norm(before + new + after)
     wanted = [d for d in _declarations(declared) if _norm(d) not in have]
     return before + "".join(d + "\n" for d in wanted) + "\n" * bool(wanted) + new + after
