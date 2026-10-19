@@ -468,9 +468,10 @@ def _score_one(config: Config, params: Json) -> Json:
     proof = native.measure(config, version, name, path, text, overrides, extras)
     proofs = [native.measure(config, v, name, path, text, overrides, extras) for v in held if v != version]
     proofs.insert(0, proof)
-    facts = native.symbol_facts(config, version, extras)[name]
+    table = native.symbol_facts(config, version, extras)
+    facts = table[name]
     built = store.get(config, "bytes", proof.built_sha256) or b""
-    size = len(built) or (facts[2] or 0)
+    size = native.extent(table, name) or len(built)  # not the candidate's size
     target = (
         versions.rom_bytes(native.version_records(config, extras)[version], facts[1] or 0, (facts[1] or 0) + size)
         if size

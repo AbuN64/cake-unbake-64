@@ -391,3 +391,35 @@ def test_a_symbol_file_in_the_overlay_is_the_one_the_link_resolves_against(world
     assert "PROVIDE(gOverlaid = 0x80158A80);" in seen[1]
     snapshot, *_ = native.candidate(world.cfg, "a", "src/main/c_func.c", "int x;\n", None, {path: overlay})
     assert snapshot.versions["a"].symbols["gOverlaid"] == 0x80158A80  # undefined-symbol checks see it too
+
+
+def test_extent_is_the_size_in_the_facts_else_the_distance_to_the_next_symbol():
+    facts = {
+        "sized": (0x80000000, 0x1000, 8, "func"),
+        "bare": (0x80000010, 0x1010, None, "func"),
+        "inner": (0x80000014, 0x1014, None, "label"),
+        "next": (0x80000028, 0x1028, None, "func"),
+        "last": (0x80000040, 0x1040, None, "func"),
+        "romless": (0x80000050, None, None, "func"),
+    }
+    assert [native.extent(facts, n) for n in ("sized", "bare", "next", "last", "romless", "absent")] == [
+        8, 0x18, 0x18, None, None, None,
+    ]  # fmt: skip
+
+
+def test_a_shorter_candidate_is_compared_against_the_targets_whole_extent(world, monkeypatch):
+    facts = native.symbol_facts(world.cfg, "a")
+    base = facts["c_func"]
+    monkeypatch.setattr(
+        native,
+        "symbol_facts",
+        lambda *a, **k: {
+            **facts,
+            "c_func": (base[0], base[1], None, base[3]),
+            "stand_in": (base[0] + 0x18, base[1] + 0x18, None, "func"),
+        },
+    )
+    _outputs((None, None, None, None, None, world.linker), {".text": bytes(8)})
+    proof = native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg))
+    assert not proof.exact and proof.target_sha256 == sha256(bytes(0x18))
+    assert any(".text size 8 != 24" in m for m in proof.missing)

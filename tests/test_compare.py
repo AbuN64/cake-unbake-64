@@ -343,3 +343,17 @@ def test_compact_keeps_hunk_headers_and_changed_lines():
     diff = ["--- a", "+++ b", "@@ -1 +1 @@", " same", "-old", "+new"]
     assert compare._compact(diff, 2) == ["@@ -1 +1 @@", "-old"]
     assert SimpleNamespace  # the module under test imports nothing else of the test helpers
+
+
+def test_score_keeps_the_targets_own_extent_whatever_the_candidate_builds(world, monkeypatch):
+    built = bytes(8)  # a shorter candidate: the target is still the function's 16 bytes
+    _built(world, built)
+    proof = fixture.proof("src/main/stand_in.c", "stand_in", "a", False, ("version a: .text size 8 != 16",))
+    proof = replace(proof, built_sha256=sha256(built))
+    monkeypatch.setattr(compare.native, "measure", lambda config, v, *a, **k: replace(proof, version=v))
+    monkeypatch.setattr(compare.versions, "rom_bytes", lambda record, start, end: bytes(end - start))
+    monkeypatch.setattr(compare.native, "candidate", lambda *a, **k: (Mock(), Mock(), Mock(), []))
+    monkeypatch.setattr(compare.policy, "evaluate", lambda *a: ())
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "lines": None, "short": False}
+    result = compare._score_one(world.cfg, params)
+    assert result["words"] == {"built": 2, "target": 4, "matched": 2}

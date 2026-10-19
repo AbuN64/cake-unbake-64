@@ -429,7 +429,7 @@ def _link(
         for out, size in sorted(totals.items())
         if size
     )
-    size = fact[2] if fact[2] is not None else defined[name][2]
+    size = extent(facts, name) or defined[name][2]  # the target's own extent; the object's only when facts have none
     rom_view = versions.rom_bytes
     record = snapshot.versions[version]
     target = rom_view(record, fact[1], fact[1] + size)
@@ -494,6 +494,18 @@ def _link(
         return json.dumps(asdict(proof), sort_keys=True).encode()
 
     return proof_from(json.loads(store.cached(cfg, "proof", key, produce)))
+
+
+def extent(facts: Mapping[str, symbols.Symbol], name: str) -> int | None:
+    """The byte size of `name` in the version's facts: its own `size:`, else the distance in ROM to the next named
+    symbol; None when neither is known. It never depends on what a candidate built."""
+    fact = facts.get(name)
+    if fact is None or fact[1] is None:
+        return None
+    if fact[2] is not None:
+        return fact[2]
+    after = [f[1] - fact[1] for f in facts.values() if f[1] is not None and f[1] > fact[1] and f[3] != "label"]
+    return min(after) if after else None
 
 
 def _literal_reads(
