@@ -236,7 +236,8 @@ def test_a_fuzzy_candidate_replaces_the_non_matching_body_over_the_untouched_els
 def test_a_declaration_is_reused_only_when_visible_before_the_candidate_in_its_branch():
     owner = (
         '#include "game.h"\n#ifdef NON_MATCHING\nint func_80000010(void) { return 0; }\n#else\n'
-        'INCLUDE_ASM("main", func_80000010);\n#endif\n#ifdef NON_MATCHING\n#include "types.h"\nint later(void);\n#endif\n'
+        'INCLUDE_ASM("main", func_80000010);\n#endif\n'
+        '#ifdef NON_MATCHING\n#include "types.h"\nint later(void);\n#endif\n'
         '#ifdef OTHER\n#include "types.h"\n#endif\n'
     )
     source = '#include "types.h"\n#include "game.h"\nint func_80000010(void) {\n    return 1;\n}\n'
@@ -244,3 +245,24 @@ def test_a_declaration_is_reused_only_when_visible_before_the_candidate_in_its_b
     assert text.index('#include "types.h"') < text.index("int func_80000010")  # not borrowed from a later block
     assert text.count('#include "game.h"') == 1  # visible before, unconditional: reused
     assert text.count('#include "types.h"') == 3
+
+
+def _split_tree():
+    """func_x owned by a.c in us and us-rev1, by b.c in eu."""
+    owners = {("us", "func_x"): "a.c", ("us-rev1", "func_x"): "a.c", ("eu", "func_x"): "b.c"}
+    modules = tuple(
+        SimpleNamespace(
+            path=p, segment="main", placed={}, owns={v: ("func_x",) for (v, _), o in owners.items() if o == p}
+        )
+        for p in ("a.c", "b.c")
+    )
+    return SimpleNamespace(modules=modules, owner=lambda v, n: owners.get((v, n)))
+
+
+def test_holders_refuse_different_owners_unless_the_request_names_a_version():
+    captured = _split_tree()
+    with pytest.raises(Refusal) as error:
+        publish.holders(captured, "func_x")
+    assert "different files in different versions" in error.value.findings[0].reason
+    assert publish.holders(captured, "func_x", "eu") == (("eu",), "b.c", "main")
+    assert publish.holders(captured, "func_x", "us") == (("us", "us-rev1"), "a.c", "main")

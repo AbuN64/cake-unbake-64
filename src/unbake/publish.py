@@ -261,11 +261,16 @@ def read_file(reads: Reads, path: str) -> bytes | None:
     return data
 
 
-def holders(captured: tree.Tree, name: str) -> tuple[tuple[str, ...], str, str]:
-    """(versions holding `name`, the one file owning it in all of them, its segment)."""
+def holders(captured: tree.Tree, name: str, version: str | None = None) -> tuple[tuple[str, ...], str, str]:
+    """(versions holding `name`, the one file owning it in all of them, its segment). With `version`, the owner is
+    the file that owns it there and the holders are the versions that file owns it in: another version's different
+    owner is another context, not a reason to refuse a request that names the version."""
     held = sorted({v for m in captured.modules for v, names in m.owns.items() if name in names})
     if not held:
         raise Refusal(Finding("land.request", f"{name} is owned by no file in any version.", unit=name))
+    if version in held:
+        chosen = captured.owner(version, name)
+        held = [v for v in held if captured.owner(v, name) == chosen]
     owners = {captured.owner(v, name) for v in held}
     if len(owners) != 1 or None in owners:
         raise Refusal(

@@ -163,12 +163,15 @@ def _text(current: str, segment: str, name: str, source: str) -> str:
         raise
 
 
-def _resolve(config: Config, file: Path, function: str | None) -> tuple[str, str, str, tuple[str, ...], str, str]:
-    """(name, module path, candidate source, holding versions, segment, new module text) of one candidate."""
+def _resolve(
+    config: Config, file: Path, function: str | None, version: str | None = None
+) -> tuple[str, str, str, tuple[str, ...], str, str]:
+    """(name, module path, candidate source, holding versions, segment, new module text) of one candidate; a named
+    version selects the file that owns the function there."""
     source = _source(file)
     captured = tree.capture(config)
     name = _member(captured, config.project.versions, source, function)
-    held, path, segment = publish.holders(captured, name)
+    held, path, segment = publish.holders(captured, name, version)
     current = (config.project.root / path).read_text(encoding="utf-8")
     return name, path, source, held, segment, _text(current, segment, name, source)
 
@@ -451,7 +454,7 @@ def _score_variants(config: Config, params: Json) -> Json:
 
 
 def _score_one(config: Config, params: Json) -> Json:
-    name, path, _, held, _, text = _resolve(config, Path(params["file"]), params.get("function"))
+    name, path, _, held, _, text = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"))
     extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
     overrides = _overrides(params)
     preferred = config.project.names_from
