@@ -591,3 +591,36 @@ def test_sync_check_refuses_a_progress_file_that_differs_from_what_sync_writes(w
     (finding,) = refused.value.findings
     assert (finding.key, finding.missing) == ("sync.changed", ("README.md",))
     assert (world.root / "README.md").read_text() == "zero percent"
+
+
+def test_a_tree_whose_facts_went_back_to_an_earlier_input_is_extracted_again(world):
+    """The extraction in asm/<v>/ is the one of the last facts, whatever other trees or earlier runs extracted."""
+    original = (world.root / "versions/a/symbol_addrs.txt").read_text()
+    world.setup()
+    _write(world.root, "versions/a/symbol_addrs.txt", original + "f_new = 0x80000500; // type:func rom:0x1100\n")
+    world.setup()
+    _write(world.root, "versions/a/symbol_addrs.txt", original)  # the first input again: a "seen" key, other assembly
+    result = world.setup()
+    assert world.extracts == ["a", "b", "a", "a"] and result["extracted"] == ["a"]
+
+
+def test_assembly_a_neighbour_tree_extracted_is_not_this_trees_extraction(world):
+    world.setup()
+    (world.root / "asm/a/.unbake-extract").unlink()  # this tree's assembly came from some other input
+    (world.root / ".unbake/setup.json").unlink()
+    world.cache.update({("extract", repo._extract_key(world.cfg, "a")): b"stamped by a neighbour"})
+    result = world.setup()
+    assert world.extracts == ["a", "b", "a"] and result["extracted"] == ["a"]
+
+
+def test_an_extraction_that_died_leaves_no_stamp(world, monkeypatch):
+    world.setup()
+    _write(world.root, "versions/a/symbol_addrs.txt", "f_main = 0x80000400; // type:func rom:0x1000 size:0x40\n")
+
+    def die(config, v):
+        raise Refusal(Finding("setup.splat", "splat died"))
+
+    monkeypatch.setattr(repo.build, "extract", die)
+    with pytest.raises(Refusal):
+        world.setup()
+    assert not (world.root / "asm/a/.unbake-extract").exists()

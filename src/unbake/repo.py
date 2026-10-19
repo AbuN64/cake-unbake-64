@@ -490,22 +490,32 @@ def symbols_command(config: Config, params: Json) -> Json:
     return {"symbols": {v: {n: list(row) for n, row in api.symbols(config, v).items()} for v in wanted}}
 
 
+def _extract_stamp(config: Config, v: str) -> Path:
+    return config.project.root / "asm" / v / ".unbake-extract"
+
+
+def _extracted_key(config: Config, v: str) -> str | None:
+    """The key of the extraction this tree's asm/<v>/ holds (written beside it), None when there is none."""
+    stamp = _extract_stamp(config, v)
+    return stamp.read_text() if stamp.is_file() else None
+
+
 def extract_job(job: tuple[Config, str]) -> bool:
-    """One splat run unless the extract cache holds this input; true when splat ran."""
+    """One splat run unless asm/<v>/ already holds the extraction of this input; true when splat ran.
+
+    The proof is a stamp written beside the extracted files: the tree's own asm/<v>/ was made from the input named
+    there. A host-wide cache of "this input was extracted somewhere" cannot say what this tree holds, so a tree whose
+    facts moved on and came back (or whose neighbour extracted the same input) kept stale assembly."""
     config, v = job
-    key, ran = _extract_key(config, v), []
-
-    def produce() -> bytes:
-        ran.append(v)
-        _checked(build.extract(config, v), "setup.splat", f"extract {v}")
-        return key.encode()
-
-    if (config.project.root / "asm" / v).is_dir():
-        store.cached(config, "extract", key, produce)
-    else:
-        produce()  # no tree to trust: a stamp alone is not the extraction
-        store.cached(config, "extract", key, key.encode)
-    return bool(ran)
+    key = _extract_key(config, v)
+    if (config.project.root / "asm" / v).is_dir() and _extracted_key(config, v) == key:
+        return False
+    stamp = _extract_stamp(config, v)
+    stamp.unlink(missing_ok=True)  # an extraction that dies half-way is not the one the old stamp named
+    _checked(build.extract(config, v), "setup.splat", f"extract {v}")
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(key)
+    return True
 
 
 @cache
@@ -544,7 +554,7 @@ def _state(config: Config) -> str:
         [p.read_bytes() for p in sorted(Path(__file__).parent.rglob("*")) if p.is_file() and p.suffix != ".pyc"]
     )  # the tool's content, not when it was touched
     facts = [sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes()) for v in config.project.versions]
-    stamps = [_extract_key(config, v) for v in _extractable(config)]
+    stamps = [(_extract_key(config, v), _extracted_key(config, v)) for v in _extractable(config)]
     return digest((head, dirty, config.digest, tool, facts, stamps))
 
 
