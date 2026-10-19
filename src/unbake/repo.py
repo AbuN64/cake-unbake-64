@@ -486,6 +486,10 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
 
 
 def symbols_command(config: Config, params: Json) -> Json:
+    if params.get("missing") or params.get("write"):
+        from unbake import missing
+
+        return missing.command(config, {**params, "write": params.get("write") and params.get("missing")})
     wanted = [params["version"]] if params.get("version") else list(config.project.versions)
     return {"symbols": {v: {n: list(row) for n, row in api.symbols(config, v).items()} for v in wanted}}
 

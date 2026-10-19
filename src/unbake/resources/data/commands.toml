@@ -34,6 +34,8 @@ help = "The symbol facts of one version (name, vram, rom, size, type), or of eve
 handler = "repo.symbols_command"
 params = [
   { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "only this version" },
+  { name = "missing", kind = "flag", type = "str", required = false, multiple = false, help = "report the names the assembly uses that no fact defines, by provenance, instead of the facts" },
+  { name = "write", kind = "flag", type = "str", required = false, multiple = false, help = "with --missing: add the placeable ones (RAM, register and offset constants) to versions/<v>/symbol_addrs.txt" },
 ]
 
 [command.compare]

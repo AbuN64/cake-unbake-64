@@ -651,6 +651,28 @@ def test_code_sed_keeps_the_relocation_of_a_64_bit_load_and_words_the_rest(tmp_p
     ]
 
 
+def test_code_sed_words_a_handwritten_line_but_keeps_one_that_carries_a_relocation(tmp_path):
+    """A handwritten lui/lw pair on a symbol keeps %hi/%lo for the link; one with no symbol is its word."""
+    import subprocess
+
+    lines = build.makefile(make_config(tmp_path)).decode().splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith("CODE_SED :="))
+    end = next(i for i in range(at, len(lines)) if not lines[i].endswith("\\"))
+    (tmp_path / "rules.mk").write_text("\n".join(lines[at : end + 1]) + "\nrun:\n\t@sed -E $(CODE_SED) in.s\n")
+    mark = "/* handwritten instruction */"
+    (tmp_path / "in.s").write_text(
+        f"/* 1 80001000 3C0C800D */  lui         $t4, %hi(D_800D92A4) {mark}\n"
+        f"/* 5 80001004 8D8C92A4 */  lw          $t4, %lo(D_800D92A4)($t4) {mark}\n"
+        f"/* 9 80001008 40026000 */  mfc0        $v0, $12 {mark}\n"
+    )
+    out = subprocess.run(["make", "-s", "-f", "rules.mk", "run"], cwd=tmp_path, capture_output=True, text=True).stdout
+    assert out.splitlines() == [
+        f"/* 1 80001000 3C0C800D */  lui         $t4, %hi(D_800D92A4) {mark}",
+        f"/* 5 80001004 8D8C92A4 */  lw          $t4, %lo(D_800D92A4)($t4) {mark}",
+        "/* 9 80001008 40026000 */  .word 0x40026000",
+    ]
+
+
 def test_extract_rewrites_each_data_piece_as_its_rom_slice_keeping_labels(tmp_path):
     """FILL_DATA of the generated Makefile: splat's short data file becomes the ROM bytes up to the next row."""
     import subprocess

@@ -13,10 +13,10 @@
      "maxItems": 4
     }
    }
+  },
+  "missing": {
+   "type": "object"
   }
  },
- "required": [
-  "symbols"
- ],
  "additionalProperties": false
 }
