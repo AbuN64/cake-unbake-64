@@ -169,18 +169,31 @@ def _linked(rows: Sequence[Row], spans: Sequence[tuple[int, int]], mask: int) ->
     return out
 
 
+def _fact_bytes(config: Config, path: str, overlays: Mapping[str, bytes | None] | None, needed: bool) -> bytes:
+    """A fact file's bytes: the overlay's, else the tree's; empty when an optional file is absent."""
+    given = (overlays or {}).get(path)
+    if given is not None:
+        return given
+    file = config.project.root / path
+    return file.read_bytes() if needed or file.is_file() else b""
+
+
 def symbols_ld(config: Config, version: str, overlays: Mapping[str, bytes | None] | None = None) -> bytes:
-    """The scoring symbol script of one version (PROVIDE per symbol), kept in the cache only, keyed by the fact file;
-    a fact file in `overlays` stands in for the one on disk."""
+    """The scoring symbol script of one version (PROVIDE per symbol), kept in the cache only, keyed by the fact files:
+    every fact of symbol_addrs.txt and of aliases.txt (the names the former does not list), as the whole-ROM link
+    provides them; a fact file in `overlays` stands in for the one on disk."""
     with effort.stage("versions.symbols_ld"):
-        given = (overlays or {}).get(symbol_file(version))
-        data = given if given is not None else (config.project.root / symbol_file(version)).read_bytes()
+        data = _fact_bytes(config, symbol_file(version), overlays, True)
+        aliases = _fact_bytes(config, symbols.aliases_path(version), overlays, False)
         mask = configuration.load_resource("rom.toml").get("text_mask", _WORD)
-        key = digest((version, sha256(data), mask, code_identity(_linked)))
+        key = digest((version, sha256(data), sha256(aliases), mask, code_identity(_linked, _fact_bytes)))
 
         def produce() -> bytes:
             spans = [(v, v + e - s) for _, s, e, v in segments(config, version) if v]
-            out = _linked(parse_symbol_addrs(data), spans, mask)
+            rows = parse_symbol_addrs(data)
+            named = {r.name for r in rows}
+            extra = [r for r in parse_symbol_addrs(aliases, symbols.aliases_path(version)) if r.name not in named]
+            out = _linked([*rows, *extra], spans, mask)
             return "".join(f"PROVIDE({n} = 0x{a:08X});\n" for n, a in sorted(out.items())).encode()
 
         return store.cached(config, "generated", key, produce)

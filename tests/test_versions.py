@@ -118,3 +118,15 @@ def test_symbols_ld_takes_the_overlaid_fact_file_over_the_one_on_disk(tmp_path, 
     given = {"versions/us/symbol_addrs.txt": TEXT + b"gAdded = 0x80300000;\n"}
     assert "gAdded" not in versions.symbols_ld(config, "us").decode()
     assert "PROVIDE(gAdded = 0x80300000);" in versions.symbols_ld(config, "us", given).decode()
+
+
+def test_symbols_ld_provides_the_aliases_file_names_symbol_addrs_does_not_list(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(store, "cached", lambda _c, _k, _key, produce: produce())
+    (tmp_path / "versions/us/aliases.txt").write_bytes(b"D_auto_80210040 = 0x80210040;\nfunc_one = 0x80299999;\n")
+    out = versions.symbols_ld(config, "us").decode()
+    assert "PROVIDE(D_auto_80210040 = 0x80210040);" in out  # the whole-ROM link provides every alias too
+    assert "PROVIDE(func_one = 0x00200400);" in out and "0x80299999" not in out  # symbol_addrs.txt wins a clash
+    given = {"versions/us/aliases.txt": b"D_overlaid = 0x80210050;\n"}
+    over = versions.symbols_ld(config, "us", given).decode()
+    assert "D_overlaid" in over and "D_auto_80210040" not in over
