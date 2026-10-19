@@ -22,7 +22,7 @@ API = {
 }
 _DOCUMENTED = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 CONTRACTS = "unbake.contracts"
-PROCESS_OWNERS = {"process.py", "pool.py", "effort.py"}
+PROCESS_OWNERS = {"process.py", "pool.py", "effort.py", "runslice.py"}
 FORBIDDEN = ("subprocess", "multiprocessing", "concurrent.futures", "threading")
 DISPATCH = {"gcc", "ido", "c", "asm", "data", "resource"}
 
@@ -156,7 +156,7 @@ def test_removed_names_absent(path: Path) -> None:
 
 
 def test_only_human_writes_stderr() -> None:
-    allowed = {"human.py", "cli.py", "effort.py"}
+    allowed = {"human.py", "cli.py", "effort.py", "runslice.py"}
     for path in FILES:
         if path.name not in allowed:
             assert "sys.stderr" not in path.read_text(encoding="utf-8"), f"{path.name} writes to sys.stderr"

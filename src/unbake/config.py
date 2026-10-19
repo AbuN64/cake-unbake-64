@@ -319,6 +319,7 @@ def load_host(path: Path) -> Host:
         origins=origins,
         digest=digest(document),
         move_wait_s=float(res.get("move_wait_s", 600)),
+        run_slice=res.get("run_slice"),
         # the pool never forks more than the workers, and a host file's cap bounds it further
         slots=max(
             1, min(counts["workers"], math.floor(counts["cores"] * res["cap"])) if "cap" in res else counts["workers"]

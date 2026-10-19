@@ -47,6 +47,10 @@
     "move_wait_s": {
      "type": "number",
      "exclusiveMinimum": 0
+    },
+    "run_slice": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_.@-]+\\.slice$"
     }
    },
    "required": [

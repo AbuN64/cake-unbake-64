@@ -326,6 +326,7 @@ class Host:
     digest: str
     move_wait_s: float = 0.0  # resources.move_wait_s: how long a move or setup waits for the structure lock
     slots: int = 0  # host-wide worker budget all heavy work divides: floor(cores * cap), at most explicit workers
+    run_slice: str | None = None  # resources.run_slice: the systemd user slice `unbake-run` starts itself in, if any
     cache_keep_commits: int = 20  # cache.keep_commits: how many commits of a clone's HEAD keep their cache entries live
 
 

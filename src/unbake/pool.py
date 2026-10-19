@@ -1361,6 +1361,9 @@ def run() -> int:
     """The `unbake-run` entry point: `unbake-run make -j{j} check` is how anything builds on a host that shares its
     cores. The build takes its fair share of the host slots as a make jobserver, grows into slots other commands
     free and gives them back as they ask. A raw `make -jN` is invisible to the slots and starves every other command."""
+    from unbake import runslice
+
+    runslice.start(Path(os.environ.get("UNBAKE_HOST", Path.home() / ".config/unbake/unbake.toml")))
     return main(sys.argv[1:])
 
 
