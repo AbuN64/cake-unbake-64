@@ -7,6 +7,7 @@ import ctypes
 import fcntl
 import gc
 import io
+import json
 import os
 import pickle
 import resource
@@ -68,6 +69,10 @@ WARM = ("catalog", "spellings", "authority", "spellers")  # content-keyed indexe
 _carried: dict[str, dict[Any, Any]] = {}  # name -> a module's content-keyed table a spill file carries the news of
 _sent: dict[str, set[Any]] = {}  # name -> the keys of that table a spill file of this command carried already
 _forked: set[str] = set()  # the keys of `_SHARED` the current workers were forked with
+
+
+_WAITS = "waits.jsonl"  # in the slot directory: one line per wait of 60 s or more, whoever waited (effort.WAIT_NOTE)
+_WAITS_KEEP = 1 << 20  # bytes: the wait log keeps its newest half once it grows past this
 
 
 _HARD_LIMIT = 4  # a worker is refused memory at this many times host memory_worker_bytes; that budget sizes the pool
@@ -135,6 +140,38 @@ def _foreign(base: Path) -> tuple[list[Path], list[Path]]:
     return dirs, sorted(p for p in files if _busy(p))
 
 
+def _note_wait(what: str, seconds: float, detail: str, project: str) -> None:
+    """Appends one line for a wait of this command to the host's wait log (the slot directory's `waits.jsonl`), as a
+    single O_APPEND write so concurrent commands never interleave: who waited, for what, how long, and who held it.
+    The log is the host's, not a project's: the peek reads one file for every tree on the host."""
+    pool = _dir[0] if _dir else Path(os.environ.get("XDG_RUNTIME_DIR", "")) / _POOL
+    line = {
+        "at": round(time.time(), 1),
+        "pid": os.getpid(),
+        "project": project,
+        "what": what,
+        "seconds": round(seconds, 1),
+        "detail": detail,
+    }
+    try:
+        path = pool / _WAITS
+        if path.exists() and path.stat().st_size > _WAITS_KEEP:
+            kept = path.read_bytes()[-_WAITS_KEEP // 2 :].partition(b"\n")[2]
+            part = path.with_name(f".{_WAITS}.{os.getpid()}")
+            part.write_bytes(kept)
+            part.replace(path)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            os.write(fd, (json.dumps(line) + "\n").encode())
+        finally:
+            os.close(fd)
+    except OSError:  # a missing or read-only runtime directory loses the line, never the command
+        pass
+
+
+effort.wait_hook = _note_wait
+
+
 def _pool(base: Path) -> Path:
     """The slot directory of this protocol, once no command of another protocol is live: their slots are other files,
     so running beside one would book the same cores twice. Until they finish this command sleeps on their pidfds and
@@ -145,7 +182,9 @@ def _pool(base: Path) -> Path:
         effort.say(f"unbake: waiting for {reason} to finish")
         with effort.stage("pool.protocol") as span:  # the wait is a stage of its own in the tree
             span.add(items=len(live), findings=[Finding("pool.protocol", reason, blocking=False)])
+            began = time.perf_counter()
             _drain(base)
+            effort.waited(time.perf_counter() - began, "slots", f"slot protocol of pids {named}")
     pool = base / _POOL
     pool.mkdir(exist_ok=True)
     return pool
@@ -297,6 +336,13 @@ def _queued(pool: Path) -> bool:
     return any(t < _ticket[0] for t in queue) if _ticket else bool(queue)
 
 
+def _waiting() -> bool:
+    """Whether another command waits for a host slot now: a ticket in the queue that is not this process's own."""
+    if not _dir:
+        return False
+    return any(not t.name.endswith(f"-{os.getpid()}") for t in _queue(_dir[0]))
+
+
 def _enter(pool: Path) -> None:
     """Takes a place in the queue for a free slot (once per wait)."""
     if not _ticket:
@@ -410,7 +456,7 @@ def _acquire(want: int, active: int = 0, cap: int = 0) -> None:
         _share = min(want, inherited)
         _slots[:] = [Path(os.devnull).open() for _ in range(min(_share, cap or _share))]  # noqa: SIM115
         return
-    base, start = Path(os.environ.get("XDG_RUNTIME_DIR", "")), time.perf_counter()
+    base = Path(os.environ.get("XDG_RUNTIME_DIR", ""))
     if not base.is_dir():
         raise Refusal(
             Finding("worker.crash", "XDG_RUNTIME_DIR is not a directory: the worker slots live there", path=str(base))
@@ -455,13 +501,14 @@ def _acquire(want: int, active: int = 0, cap: int = 0) -> None:
             with effort.stage("pool.wait_slot") as span:
                 held = f"held by pids {', '.join(str(p) for p in holders)}" if holders else "held by no live command"
                 span.add(items=len(holders), findings=[Finding("pool.wait_slot", held, blocking=False)])
+                began = time.perf_counter()
                 _wait_free(pool, mine, want)
+                effort.waited(time.perf_counter() - began, "slots", held)
             _, size, share = _divide(pool, mine, want)  # a release frees whole shares: take the rest of this one too
             _share = share
             _take(pool, size, min(share, cap) if cap else share)
         finally:
             _leave()
-    effort.waited(time.perf_counter() - start)
 
 
 def _release() -> None:
@@ -1114,7 +1161,9 @@ def gather(config: Config, groups: Sequence[tuple[Any, ...]]) -> list[list[Any]]
                         outcomes = [(False, exc, {})] * len(picked)
                     run.settle(picked, outcomes)
                 if not inline:
-                    if time.monotonic() - rebalanced >= _REBALANCE:  # peers are probed now and then, not per chunk
+                    # peers are probed now and then, not per chunk; but a chunk that ended while another command
+                    # waits for a slot is a job boundary: the freed slot goes to it, never into the next chunk
+                    if time.monotonic() - rebalanced >= _REBALANCE or (completed and _waiting()):
                         rebalanced = time.monotonic()
                         with _users_lock:  # never hold a slot no worker of this pool can use: more than the
                             # executor forked, or more than the chunks still to run, go back to the other commands;
@@ -1194,6 +1243,8 @@ def _shed(spare: int, taken: list[io.IOBase], last: list[int]) -> bool:
         peers, _, share = _divide(_dir[0], Path(_cmd[0].name), _want, using)
         if len(peers) < 2:  # no other command to give a slot to: a token make has not read yet stays
             return False
+        if len(_slots) > max(1, share) and _waiting():  # a token back in the pipe is a job that ended: while a
+            idle = now  # peer waits and this build holds more than its share, that token is the peer's, not make's
         given = False
         while len(_slots) > max(1, share) and idle > 0:
             try:
@@ -1304,6 +1355,13 @@ def main(argv: Sequence[str]) -> int:
     with cores(host, work) as j:
         child = subprocess.run([a.replace("{j}", str(j)) for a in command], env={**os.environ, "UNBAKE_CORES": str(j)})
     return child.returncode
+
+
+def run() -> int:
+    """The `unbake-run` entry point: `unbake-run make -j{j} check` is how anything builds on a host that shares its
+    cores. The build takes its fair share of the host slots as a make jobserver, grows into slots other commands
+    free and gives them back as they ask. A raw `make -jN` is invisible to the slots and starves every other command."""
+    return main(sys.argv[1:])
 
 
 if __name__ == "__main__":

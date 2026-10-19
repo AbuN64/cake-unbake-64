@@ -620,6 +620,8 @@ class StageRecord:
     busy_seconds: float = 0.0  # pool: wall the workers spent inside jobs, summed
     spans: int = 1  # how many worker spans of one pool this record folds, by path
     slot_seconds: float = 0.0  # pool: host slots held times the seconds held (the share peers left it), summed
+    slot_wait_seconds: float = 0.0  # command: seconds spent waiting for host worker slots held by other commands
+    lock_wait_seconds: float = 0.0  # command: seconds spent waiting for project locks held by other commands
 
 
 # ---------------------------------------------------------------- adapter protocols

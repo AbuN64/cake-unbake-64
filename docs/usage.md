@@ -75,6 +75,12 @@ make extract
 make check
 ```
 
+On a host that several commands share, build through the host's worker slots instead of a raw `make -jN`, which the
+slots cannot see or limit: `unbake-run make -j{j} check` (the same for `extract` and `CHECK=tree`). The build takes its
+fair share as a make jobserver, grows into slots other commands free and gives them back to commands that wait. The
+host file comes from `UNBAKE_HOST`; without one the command runs alone on one job. `unbake setup`, `check`, `score`
+and `verify` already build this way; only a hand-run `make` needs `unbake-run`.
+
 `make check CHECK=tree` checks only that the committed generated files are present and current, with no ROM.
 
 ## CI

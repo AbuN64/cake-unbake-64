@@ -3,6 +3,7 @@
 import fcntl
 import importlib
 import io
+import json
 import os
 import pickle
 import resource
@@ -20,7 +21,7 @@ import pytest
 from test_effort import _config
 
 from unbake import config as configuration
-from unbake import effort, pool
+from unbake import effort, human, pool
 from unbake.contracts import Finding, Refusal, sha256
 
 _RAISED = ValueError("unset")
@@ -1804,3 +1805,118 @@ def test_the_ticket_of_a_dead_command_holds_nobody_back(tmp_path):
     pool._acquire(2)
     assert len(pool._slots) == 2 and not ghost.exists()
     pool._drop_executor()
+
+
+def _ticket(runtime, pid):
+    """The queue ticket of another live command that waits for a slot (its lock file is held, so it is alive)."""
+    held = _commands(runtime, 1)
+    os.rename(held[0].name, _slots_dir(runtime) / f"cmd-{pid}.lock")
+    ticket = _slots_dir(runtime) / f"wait-{time.time_ns():020d}-{pid}"
+    ticket.touch()
+    return held, ticket
+
+
+def test_only_another_commands_ticket_means_a_command_waits(monkeypatch):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    pool._acquire(4)
+    assert pool._waiting() is False  # nobody queued
+    pool._enter(pool._dir[0])
+    assert pool._waiting() is False  # this process's own place in the queue is no other command
+    pool._leave()
+    held, _ = _ticket(runtime, 90007)
+    assert pool._waiting() is True
+    for f in held:
+        f.close()
+    pool._release()
+
+
+@pytest.mark.parametrize("queued", [True, False])
+def test_a_chunk_that_ends_while_another_command_waits_is_a_rebalance_however_recent_the_last(
+    tmp_path, monkeypatch, mocked_parallel, queued
+):
+    """The 10-19 hog: rebalances were at most one per half second, so a chunk ending in between sent its slot straight
+    into the next long chunk and a waiter saw no slot for 20 minutes. A waiting command makes every job boundary one."""
+    config = replace(_config(tmp_path), host=_host(tmp_path, slots=12, workers=12))
+    monkeypatch.setattr(pool, "_REBALANCE", 1e9)  # the timer never fires
+    monkeypatch.setattr(pool, "_size", 12)
+    monkeypatch.setattr(pool, "_waiting", lambda: queued)
+    asked = []
+    real = pool._acquire
+    monkeypatch.setattr(pool, "_acquire", lambda *a, **k: asked.append(a) or real(*a, **k))
+    with effort.command("check", []):
+        assert pool.map(config, "units", _square, list(range(8))) == [v * v for v in range(8)]
+    assert len(asked) == (1 + 8 if queued else 1)  # the first take, then one look per chunk only while one waits
+
+
+def test_a_build_over_its_share_gives_a_token_that_came_back_to_a_waiting_command_at_once(tmp_path, monkeypatch):
+    read, write = os.pipe()
+    os.write(write, b"+")  # one job just ended: its token lies in the pipe, not seen at an earlier look
+    spare = os.open(f"/proc/self/fd/{read}", os.O_RDONLY | os.O_NONBLOCK)
+    slots = [(tmp_path / f"slot{i}").open("a") for i in range(4)]
+    given = []
+    monkeypatch.setattr(pool, "_dir", [tmp_path])
+    monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a+")])
+    monkeypatch.setattr(pool, "_slots", list(slots))
+    monkeypatch.setattr(pool, "_fed", [])
+    monkeypatch.setattr(pool, "_want", 4)
+    peers = [tmp_path / "cmd-1.lock", tmp_path / "cmd-2.lock"]
+    monkeypatch.setattr(pool, "_divide", lambda *a: (peers, 4, 2))
+    monkeypatch.setattr(pool, "_give", given.append)
+    monkeypatch.setattr(pool, "_signal", lambda pool_dir: None)
+    monkeypatch.setattr(pool, "_waiting", lambda: False)
+    pool._shed(spare, [], [])
+    assert given == []  # no one waits: a token make has not read yet stays
+    monkeypatch.setattr(pool, "_waiting", lambda: True)
+    pool._shed(spare, [], [])
+    assert given == [slots[3]] and pool._idle(spare) == 0  # a waiter: the token and its slot go at the first look
+    for fd in (read, write, spare):
+        os.close(fd)
+
+
+def test_a_wait_over_a_minute_is_one_line_in_the_hosts_wait_log_and_a_short_one_none(tmp_path, monkeypatch):
+    runtime = Path(os.environ["XDG_RUNTIME_DIR"])
+    monkeypatch.setattr(effort, "wait_hook", pool._note_wait)
+    pool._acquire(4)  # the slot directory exists
+    with effort.command("score", []):
+        effort.waited(5.0, "slots", "held by pids 7")
+        effort.waited(61.5, "slots", "held by pids 7, 8")
+        effort.waited(70.0, "lock", "land.lock")
+        effort.waited(2.0)
+    lines = [json.loads(line) for line in (runtime / pool._POOL / pool._WAITS).read_text().splitlines()]
+    assert [(r["what"], r["seconds"], r["detail"]) for r in lines] == [
+        ("slots", 61.5, "held by pids 7, 8"),
+        ("lock", 70.0, "land.lock"),
+    ]
+    assert all(r["pid"] == os.getpid() and r["at"] > 0 for r in lines)
+    root = next(r for r in effort.closed() if r.kind == "command")
+    assert (root.slot_wait_seconds, root.lock_wait_seconds) == (66.5, 72.0)
+    assert human.summary(effort.closed())[1] == "wait 66.5s for slots, 72.0s for locks"
+    pool._release()
+
+
+def test_the_wait_log_keeps_its_newest_half_past_its_size(monkeypatch):
+    pool._acquire(2)
+    path = pool._dir[0] / pool._WAITS
+    path.write_text("".join(json.dumps({"n": n}) + "\n" for n in range(40)))
+    monkeypatch.setattr(pool, "_WAITS_KEEP", 200)
+    pool._note_wait("slots", 90.0, "x", "")
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[-1]["what"] == "slots" and rows[0]["n"] > 20 and all(isinstance(r, dict) for r in rows)
+    pool._release()
+
+
+def test_a_command_that_waits_for_slots_counts_the_seconds_it_blocked_not_the_whole_acquire(tmp_path, monkeypatch):
+    peer = 424242
+    monkeypatch.setattr(pool, "_wait_free", lambda *a: pool._slots.append(open(os.devnull)))  # noqa: SIM115
+    monkeypatch.setattr(pool, "_slots", [])
+    monkeypatch.setattr(pool, "_cmd", [])
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("UNBAKE_CORES", raising=False)
+    held = [(_slots_dir(tmp_path) / f"slot-{i}.lock").open("a") for i in range(2)]
+    held.append((_slots_dir(tmp_path) / f"cmd-{peer}.lock").open("a"))
+    for f in held:
+        fcntl.flock(f, fcntl.LOCK_EX)
+    seen = []
+    monkeypatch.setattr(pool.effort, "waited", lambda seconds, what="lock", detail="": seen.append((what, detail)))
+    pool._acquire(2)
+    assert seen == [("slots", f"held by pids {peer}")]

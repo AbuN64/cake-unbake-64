@@ -219,7 +219,7 @@ def _flock(path: Path, flags: int, *, wait: bool = True, wait_s: float | None = 
                     fcntl.flock(fd, flags)
                 else:
                     taken = _poll(fd, flags, wait_s)
-            effort.waited(time.perf_counter() - start)
+            effort.waited(time.perf_counter() - start, "lock", path.name)
             if not taken:
                 yield None
                 return

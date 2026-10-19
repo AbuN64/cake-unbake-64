@@ -139,7 +139,7 @@ def test_exclusive_waits_for_a_held_lock_and_records_the_wait(cfg: Config, tmp_p
     proc = multiprocessing.get_context("fork").Process(target=_hold_child, args=(cfg, started, release))
     proc.start()
     waits: list[float] = []
-    monkeypatch.setattr(effort, "waited", waits.append)
+    monkeypatch.setattr(effort, "waited", lambda seconds, *rest: waits.append(seconds))
     try:
         _wait(started)
         threading.Timer(0.3, release.write_text, ["go"]).start()

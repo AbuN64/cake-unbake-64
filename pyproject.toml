@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 unbake = "unbake.cli:main"
+unbake-run = "unbake.pool:run"
 
 [project.optional-dependencies]
 dev = [

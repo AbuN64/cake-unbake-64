@@ -96,6 +96,13 @@ def summary(records: Sequence[StageRecord]) -> list[str]:
         f"(parent {root.parent_cpu_seconds:.2f}s, workers {root.worker_cpu_seconds:.2f}s, "
         f"native {root.native_cpu_seconds:.2f}s cpu)"
     ]
+    waits = [
+        f"{seconds:.1f}s for {what}"
+        for what, seconds in (("slots", root.slot_wait_seconds), ("locks", root.lock_wait_seconds))
+        if seconds >= 0.05
+    ]
+    if waits:
+        lines.append("wait " + ", ".join(waits))
     memory = []
     for label, field in (("parent", "parent"), ("workers", "worker")):
         key = f"resources.memory_{field}_bytes"

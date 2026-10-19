@@ -32,8 +32,13 @@ _memo: dict[object, Any] = {}  # pure readers' values for this command, by input
 _dispatched: dict[str, tuple[str, ...]] = {}  # gather stage span -> the dispatches it ran
 _seen: set[tuple[str, ...]] = set()  # slow stage paths already closed in this command
 _listeners: list[Callable[[str, Json], None]] = []
+_waits: dict[str, float] = {}  # this command's seconds waiting, by what it waited for: "slots" or "lock"
+wait_hook: Callable[[str, float, str, str], None] | None = (
+    None  # (what, seconds, detail, project root): the host's wait log, set by pool
+)
 _walls: dict[str, float] = {}  # the previous command's wall seconds by stage path, for "expected" on start lines
 LOG_BYTES = 64 << 20  # the stage log keeps its newest half once it grows past this
+WAIT_NOTE = 60.0  # a wait this long (seconds) is also written, one line, to the host's wait log by `wait_hook`
 WALL_DEPTH = 3  # stages this shallow report live progress and are remembered in .unbake/walls.json
 
 
@@ -258,9 +263,14 @@ class _Open:
         self.findings.extend(findings)
 
 
-def waited(seconds: float) -> None:
+def waited(seconds: float, what: str = "lock", detail: str = "") -> None:
+    """Counts `seconds` this command blocked on `what` ("lock" or "slots"): into the innermost stage, into the
+    command's total, and, past `WAIT_NOTE`, into the host's wait log with `detail` (who held it)."""
     if _stack.get():
         _stack.get()[-1].wait += seconds
+    _waits[what] = _waits.get(what, 0.0) + seconds
+    if seconds >= WAIT_NOTE and wait_hook is not None:
+        wait_hook(what, seconds, detail, str(_config.project.root) if _config else "")
 
 
 def _limits() -> dict[str, Any]:
@@ -431,6 +441,11 @@ def _close(opened: _Open, status: str) -> StageRecord:
             resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
         ),
         worker_rss_peak_bytes=max((c.worker_rss_peak_bytes for c in children), default=0),
+        **(
+            {"slot_wait_seconds": _waits.get("slots", 0.0), "lock_wait_seconds": _waits.get("lock", 0.0)}
+            if opened.kind == "command"
+            else {}
+        ),
     )
     if children:
         covered, cursor = 0, opened.start
@@ -497,6 +512,7 @@ def command(name: str, argv: Sequence[str]) -> Iterator[None]:
     global _closed, _counters, _config, _sink, _buffer, _invocation, _memo, _seen
     _closed, _counters, _config, _sink, _buffer, _invocation = [], {}, None, None, [], uuid4().hex
     _memo, _seen = {}, set()
+    _waits.clear()
     token = _stack.set(())
     try:
         with _scope(_Open(name, "command")):

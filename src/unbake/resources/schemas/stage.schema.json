@@ -260,6 +260,14 @@
   "slot_seconds": {
    "type": "number",
    "minimum": 0
+  },
+  "slot_wait_seconds": {
+   "type": "number",
+   "minimum": 0
+  },
+  "lock_wait_seconds": {
+   "type": "number",
+   "minimum": 0
   }
  },
  "required": [
