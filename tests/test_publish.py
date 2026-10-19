@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unbake import journal, publish
+from unbake import journal, publish, tree
 from unbake.contracts import Refusal, Submission
 
 OWNER = (
@@ -188,3 +188,18 @@ def test_holders_name_the_segment_of_the_name_not_of_the_file(world):
     held, path, segment = publish.holders(world.tree, "other")
     assert (held, path, segment) == (("eu", "us"), "src/a.c", "ovl")  # the file's own segment is main
     assert publish.holders(world.tree, "func_80000010")[2] == "main"
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "static double twice(double value) { return value + value; }",
+        "static double twice(double value)\n{\n    return value + value;\n}",
+    ],
+)
+def test_a_helpers_closing_brace_survives_whatever_the_brace_layout(helper):
+    source = helper + "\ndouble func_80000010(double value)\n{\n    return twice(value);\n}\n"
+    text = publish.splice(OWNER, "main", "func_80000010", source, fuzzy=False)
+    assert text.count("{") == text.count("}")
+    assert [p.name for p in publish.items(text) if p.kind == "function"] == ["keep", "twice", "func_80000010"]
+    assert "func_80000010" in tree._scan(text)[0]

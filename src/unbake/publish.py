@@ -116,6 +116,11 @@ def wrap(segment: str, name: str, body: str) -> str:
     return f'#ifdef NON_MATCHING\n{body.rstrip()}\n#else\nINCLUDE_ASM("{segment}", {name});\n#endif\n'
 
 
+def _declarations(declared: str) -> list[str]:
+    """The top-level items of the declarations, each whole: a function's closing brace is never an item of its own."""
+    return [declared[i.start : i.end].strip() for i in items(declared)]
+
+
 def candidate(source: str, name: str | None) -> tuple[str, str]:
     """(declarations, body): the candidate's definition of `name`, and every other top-level item it brings. A data
     candidate (no `name`) is all body."""
@@ -155,7 +160,7 @@ def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: s
         )
     before, after = text[: found.start()], text[found.end() :]
     have = _norm(before + new + after)
-    wanted = [d for d in re.split(r"\n(?=\S)", declared) if d.strip() and _norm(d) not in have]
+    wanted = [d for d in _declarations(declared) if _norm(d) not in have]
     return before + "".join(d + "\n" for d in wanted) + "\n" * bool(wanted) + new + after
 
 
