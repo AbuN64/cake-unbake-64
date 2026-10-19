@@ -782,3 +782,46 @@ def test_audit_allows_a_drop_the_removed_c_explains(tmp_path, monkeypatch):
     (tmp_path / "progress.json").write_text(json.dumps({"carts": [_cart("us", 1)]}))
     result = policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
     assert result["paths"] == ["src/a.c"]
+
+
+def test_scope_blames_only_the_paths_whose_own_count_rose():
+    # the wtmain9234 shape: a header gains two rows while an unchanged includer keeps its own
+    row = Finding("source.union-view", "a union gives one storage two types: union", path="include/UNUSED.H")
+    unused = [replace(row, line=n) for n in (1, 2)]
+    owner_old = [replace(row, path="include/OWNER.H", line=n) for n in range(5)]
+    owner_new = [replace(row, path="include/OWNER.H", line=n) for n in range(7)]
+    writes = {"include/UNUSED.H", "include/OWNER.H"}
+    blocking, debt = policy.scope(unused + owner_old, unused + owner_new, writes)
+    assert {f.path for f in blocking} == {"include/OWNER.H"} and len(blocking) == 2
+    assert {f.path for f in debt} == {"include/UNUSED.H", "include/OWNER.H"}
+    assert policy.scope(unused + owner_old, unused + owner_old, writes)[0] == ()  # nothing rose
+    assert policy.scope(unused + owner_old, unused + owner_old[1:], writes)[0] == ()  # a line shift or a drop
+
+
+def test_scope_a_row_moved_between_paths_is_free_even_beside_a_rise_elsewhere():
+    row = Finding("source.fake-type", "invented: func_1", path="src/a.c")
+    other = Finding("source.fake-type", "invented: func_2", path="src/c.c")
+    moved = replace(row, path="src/b.c")
+    added = replace(other, path="src/d.c")
+    blocking, _ = policy.scope((row, other), (moved, other, added), {"src/a.c", "src/b.c", "src/c.c", "src/d.c"})
+    assert blocking == (added,)
+
+
+def test_audit_names_the_path_that_added_the_rows_not_an_unchanged_includer(tmp_path, monkeypatch):
+    import subprocess
+
+    json = _audit_repo(tmp_path, monkeypatch)
+    union = "union { int a; float b; } v%d;\n"
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include/a.h").write_text(union % 0)
+    (tmp_path / "include/z.h").write_text(union % 1)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    for args in (["add", "-A"], ["commit", "-q", "-m", "unions"]):
+        subprocess.run([*git, *args], check=True)
+    (tmp_path / "include/a.h").write_text(union % 0 + union % 2 + union % 3)
+    (tmp_path / "include/z.h").write_text("/* touched */\n" + union % 1)
+    with pytest.raises(policy.Refusal) as refused:
+        policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
+    assert {f.path for f in refused.value.findings} == {"include/a.h"}
+    assert all("union-view 1 -> 3" in f.reason for f in refused.value.findings)
+    assert json  # the repo helper's module

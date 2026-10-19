@@ -805,13 +805,25 @@ def scope(
     before: Sequence[Finding], after: Sequence[Finding], writes: Collection[str]
 ) -> tuple[tuple[Finding, ...], tuple[Finding, ...]]:
     # A row is its rule and subject, wherever it is: moving text between files is free and a repeated row is new once
-    # it outnumbers the old text's, so the repo-wide total of a rule never rises through any path.
-    prior = Counter((f.key, f.reason) for f in before)
+    # it outnumbers the old text's, so the repo-wide total of a rule never rises through any path. When a total does
+    # rise, the paths blamed are the ones whose own count of that row rose (never one whose count is unchanged), each
+    # reported with its count before and after.
+    def rows(findings: Sequence[Finding]) -> Counter[tuple[tuple[str, str], str]]:
+        return Counter(((f.key, f.reason), f.path) for f in findings)
+
+    old, new = rows(before), rows(after)
+    total: Counter[tuple[str, str]] = Counter()
+    for (row, _), n in new.items():
+        total[row] += n
+    for (row, _), n in old.items():
+        total[row] -= n
     blocking, debt = [], []
+    seen: Counter[tuple[tuple[str, str], str]] = Counter()
     for finding in after:
         row = (finding.key, finding.reason)
-        prior[row] -= 1
-        if finding.path in writes and prior[row] < 0:
+        at = (row, finding.path)
+        seen[at] += 1
+        if finding.path in writes and total[row] > 0 and seen[at] > old[at]:
             blocking.append(replace(finding, blocking=True))
         else:
             debt.append(replace(finding, blocking=False))
@@ -1288,7 +1300,14 @@ def audit_command(params: Json) -> Json:
             after.extend(text_findings(path, new.read_text(errors="replace"), False))
     blocking, _ = scope(before, after, paths)
     if blocking:
-        raise Refusal(*blocking)
+        held, now = Counter((f.key, f.path) for f in before), Counter((f.key, f.path) for f in after)
+        raise Refusal(
+            *(
+                replace(f, reason=f"{f.reason} ({f.path}: {f.key.removeprefix('source.')} {held[at]} -> {now[at]})")
+                for f in blocking
+                for at in [(f.key, f.path)]
+            )
+        )
     removed = _removed_functions(paths, root, against, git, tmp)
     dropped = _credit_drops(root, against, git, tmp)
     unexplained = {v: n for v, n in dropped.items() if n > removed}
