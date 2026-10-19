@@ -204,6 +204,7 @@ def _integer(text: str) -> int | None:
 
 _OFFSET = re.compile(
     r"(?:\(\s*(?:char|u8|s8|unsigned char)\s*\*\s*\)\s*)?&?\s*([A-Za-z_]\w*)\s*\+\s*(0[xX][0-9A-Fa-f]+|\d+)\b"
+    r"(?!\s*[*/%<>])"  # a literal that is the left operand of a product, quotient or shift is scaled, not a byte offset
 )
 # An operand of a bitwise operator is a mask, never an address: `&`, `|` or `^` (a literal has no address to take, so
 # `& 0x800FFFFF` is the binary and), `~`, or their assignments, before the literal; the binary operator after it.

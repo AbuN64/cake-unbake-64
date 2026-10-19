@@ -563,6 +563,13 @@ def test_cross_global_offset_hits(snapshot, monkeypatch):
     assert list(policy._address_literals(snapshot, PATH, code)) == [1]
 
 
+def test_pointer_arithmetic_on_a_named_symbol_is_not_an_address_literal(snapshot, monkeypatch):
+    _placed_snapshot(snapshot, monkeypatch)
+    code = "f(D_800D7000 + 0x1000 / sizeof(u64));\nf(D_800D7000 + 0x100 * 2);\nf(D_800D7000 + 0x100 << 2);\n"
+    assert policy._address_literals(snapshot, PATH, code) == {}
+    assert list(policy._address_literals(snapshot, PATH, "f(D_800D7000 + 0x1000);\n")) == [1]
+
+
 def test_address_literal_skips_float_fragments_and_reads_octal(snapshot, monkeypatch):
     _placed_snapshot(snapshot, monkeypatch)
     code = "float a = 0.000212f;\nfloat b = 1e-05;\nfloat c = 1.5e+3;\nint d = 020000000000;\nint e = 0x800D7010U;\n"
