@@ -340,3 +340,44 @@ def test_a_cited_function_answers_a_request_whose_type_has_no_accesses(tmp_path:
 def test_types_command_refuses_a_project_without_assembly(tmp_path: Path):
     with pytest.raises(Refusal):
         layouts.types_command({"project": tmp_path})
+
+
+FUNCTIONS = {
+    "nonmatchings/main/func_80200000.s": ("func_80200000", "lw $v0, 0x8($a0)\njr $ra\n nop"),
+    "nonmatchings/lib/func_80200100.s": ("func_80200100", "lw $v0, 0x4($a1)\njr $ra\n nop"),
+}
+
+
+def nested_tree(root: Path) -> Path:
+    for rel, body in FUNCTIONS.items():
+        file = root / "asm/us-rev1" / rel
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(asm(body))
+    return root
+
+
+def test_collect_finds_functions_nested_under_nonmatchings(tmp_path: Path):
+    root = nested_tree(tmp_path)
+    assert sorted(f.name for f in layouts.collect(root, "us-rev1")) == ["func_80200000", "func_80200100"]
+
+
+def test_the_function_list_reads_lines_or_a_symbol_column(tmp_path: Path):
+    plain = tmp_path / "a.txt"
+    plain.write_text("# boot\nfunc_a\n\nfunc_b\nfunc_a\n")
+    assert layouts.read_functions(plain) == ["func_a", "func_b"]
+    table = tmp_path / "b.tsv"
+    table.write_text("order\tsymbol\tclass\n1\tfunc_c\tmatched\n2\tfunc_d\topen\n")
+    assert layouts.read_functions(table) == ["func_c", "func_d"]
+    table.write_text("order\tname\n1\tx\n")
+    with pytest.raises(Refusal):
+        layouts.read_functions(table)
+
+
+def test_functions_limit_the_records_to_those_a_listed_function_touches(tmp_path: Path):
+    root = nested_tree(tmp_path)
+    (root / "boot.txt").write_text("func_80200000\nmissing\n")
+    out = layouts.types_command({"project": root, "all": True, "functions": root / "boot.txt"})
+    assert out["listed_functions"] == 2
+    assert out["records"] and all(r["listed_functions"] == ["func_80200000"] for r in out["records"])
+    everything = layouts.types_command({"project": root, "all": True})
+    assert len(everything["records"]) > len(out["records"])

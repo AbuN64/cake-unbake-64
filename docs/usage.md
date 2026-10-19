@@ -45,7 +45,7 @@ and `symbols`.
 
 ## Types
 
-`unbake types` proposes record layouts from the loads and stores in `asm/<version>/*.s` and never writes a header.
+`unbake types` proposes record layouts from the loads and stores in `asm/<version>/**/*.s` (flat or nested under `nonmatchings/`) and never writes a header.
 It needs no host config, only the extracted assembly (`unbake setup`), `versions/<v>/symbol_addrs.txt` and the C
 headers under `include/` (function signatures are also read from `src/`).
 
@@ -53,6 +53,7 @@ headers under `include/` (function signatures are also read from `src/`).
 unbake types                                   # default version us-rev1; named records only, JSON on stdout
 unbake types --out types.json --text types.txt # full JSON (stable keys) and the human view of proposals and diffs
 unbake types --requests REQUESTS.md --out t.json   # also settle each open request line
+unbake types --functions boot.tsv --out t.json   # only records those functions touch (symbol per line, or TSV with a symbol column)
 unbake types --record Dest --record sym:D_800CDD10 # only these records; --all adds per-function argument records
 ```
 

@@ -8,6 +8,7 @@
     "summary": {"type": "object"},
     "records": {"type": "array", "items": {"type": "object", "required": ["name", "kind", "fields"]}},
     "requests": {"type": "object"},
+    "listed_functions": {"type": "integer"},
     "written": {"type": "string"}
   },
   "additionalProperties": false

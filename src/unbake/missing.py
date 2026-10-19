@@ -14,7 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from unbake import symbols
+from unbake import symbols, versions
 from unbake.contracts import Config, Json
 
 _NAME = re.compile(r"^(?:(D|func|jtbl)_)(?:auto_)?([0-9A-Fa-f]{8})$")
@@ -45,7 +45,7 @@ def references(config: Config, version: str) -> dict[str, list[tuple[str, int, s
     root = config.project.root
     seen: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
     defined: set[str] = set()
-    for file in sorted((root / "asm" / version).rglob("*.s")):
+    for file in versions.asm_files(root, version):
         rel = file.relative_to(root).as_posix()
         for number, line in enumerate(file.read_text(errors="replace").splitlines(), 1):
             label = re.match(r"^\s*(?:glabel|dlabel|jlabel)\s+(\S+)", line)

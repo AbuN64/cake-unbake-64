@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from unbake import accesses, cheaders, symbols
+from unbake import accesses, cheaders, symbols, versions
 from unbake.accesses import Access, Base
 from unbake.contracts import Finding, Refusal
 
@@ -157,6 +157,9 @@ class Record:
         item["functions"].setdefault(access.function, access.pc)
         self.roots.add(root)
 
+    def functions(self) -> set[str]:
+        return {fn for item in self.items.values() for fn in item["functions"]}
+
     def fields(self, names: Mapping[int, str]) -> tuple[list[Json], list[Json]]:
         """(fields, overlaps): one field per distinct start offset, the widest access that starts there; an access
         that starts inside a field already placed is an overlap, not a second field."""
@@ -286,13 +289,9 @@ def compare(headers: cheaders.Headers, tag: str, fields: list[Json]) -> tuple[li
 # ---- the whole run
 
 
-def _function_paths(root: Path, version: str) -> list[Path]:
-    return sorted((root / "asm" / version).glob("*.s"))
-
-
 def collect(root: Path, version: str) -> list[accesses.Function]:
     out: list[accesses.Function] = []
-    for path in _function_paths(root, version):
+    for path in versions.asm_files(root, version):
         out.extend(accesses.read(path))
     return out
 
@@ -301,7 +300,7 @@ def _spacing(table: Mapping[str, symbols.Symbol]) -> dict[str, int]:
     """name -> distance to the next data symbol's address: a bound on the record, never its size."""
     data = sorted({(v[0], n) for n, v in table.items() if v[3] != "func"})
     out: dict[str, int] = {}
-    for (vram, name), following in zip(data, [*data[1:], (0, "")], strict=True):
+    for (vram, name), following in zip(data, [*data[1:], (0, "")], strict=False):
         if following[0] > vram:
             out.setdefault(name, following[0] - vram)
     return out
@@ -312,9 +311,11 @@ def infer(
     version: str,
     functions: Iterable[accesses.Function] | None = None,
     headers: cheaders.Headers | None = None,
+    only: Collection[str] | None = None,
 ) -> Json:
     """Every record the assembly of one version shows, with its inferred fields and, for header-named records, the
-    disagreements with the header."""
+    disagreements with the header. With `only`, the records some listed function reads or writes, each naming those
+    functions in `listed_functions`."""
     functions = list(functions) if functions is not None else collect(root, version)
     if headers is None:
         headers = cheaders.Headers()
@@ -354,6 +355,9 @@ def infer(
     summary: dict[str, int] = defaultdict(int)
     for key in sorted(records):
         rec = records[key]
+        touched = sorted(rec.functions() & set(only)) if only is not None else []
+        if only is not None and not touched:
+            continue
         struct = headers.struct(key) if rec.kind == "struct" else None
         if struct is not None:
             names[key] = {f.offset: f.name for f in struct.fields if not f.pad and f.name and f.type.kind != "struct"}
@@ -375,6 +379,8 @@ def infer(
             "gaps": _gaps(fields),
             "proposal": _proposal(key.split(":", 1)[-1] if rec.kind != "struct" else key, fields, None),
         }
+        if only is not None:
+            row["listed_functions"] = touched
         if struct is not None:
             issues, facts = compare(headers, key, fields)
             row["header"] = facts
@@ -560,6 +566,25 @@ def text_view(inferred: Json, only: set[str] | None = None) -> str:
     return "\n".join(lines)
 
 
+def read_functions(path: Path) -> list[str]:
+    """The symbols of a function list: one per line, or a TSV whose header row has a `symbol` column. Blank lines and
+    `#` lines are skipped."""
+    try:
+        lines = [ln.rstrip("\r\n") for ln in path.read_text(errors="replace").splitlines()]
+    except OSError as error:
+        raise Refusal(Finding("types.input", str(error))) from error
+    lines = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    column = None
+    if lines and "\t" in lines[0]:
+        head = [c.strip() for c in lines[0].split("\t")]
+        if "symbol" not in head:
+            raise Refusal(Finding("types.input", f"{path}: a TSV function list needs a `symbol` column"))
+        column = head.index("symbol")
+        lines = lines[1:]
+    names = [ln.split("\t")[column] if column is not None and column < len(ln.split("\t")) else ln for ln in lines]
+    return list(dict.fromkeys(n.strip() for n in names if n.strip()))
+
+
 def types_command(params: Json) -> Json:
     root = Path(params["project"])
     version = params.get("version") or "us-rev1"
@@ -567,8 +592,11 @@ def types_command(params: Json) -> Json:
         raise Refusal(Finding("types.input", f"no extracted assembly at asm/{version}: run `unbake setup` first"))
     headers = cheaders.Headers()
     headers.read(root)
-    inferred = infer(root, version, None, headers)
+    listed = read_functions(Path(params["functions"])) if params.get("functions") else None
+    inferred = infer(root, version, None, headers, listed)
     result: Json = {"version": version, "summary": inferred["summary"]}
+    if listed is not None:
+        result["listed_functions"] = len(listed)
     wanted = set(params.get("record") or ())
     records = [r for r in inferred["records"] if not wanted or r["name"] in wanted]
     if not params.get("all"):

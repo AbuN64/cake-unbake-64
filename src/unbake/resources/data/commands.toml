@@ -156,6 +156,7 @@ params = [
   { name = "requests", kind = "option", type = "path", required = false, multiple = false, help = "a REQUESTS.md: say which open request lines the inferred layouts answer" },
   { name = "record", kind = "option", type = "str", required = false, multiple = true, help = "only these records (struct tag, or sym:NAME for a global)" },
   { name = "all", kind = "flag", type = "str", required = false, multiple = false, help = "also list the per-function argument records" },
+  { name = "functions", kind = "option", type = "path", required = false, multiple = false, help = "only records these functions read or write: one symbol per line, or a TSV with a symbol column" },
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write the full JSON here and keep the result to counts" },
   { name = "text", kind = "option", type = "path", required = false, multiple = false, help = "write the human view (proposals and header disagreements) here" },
 ]

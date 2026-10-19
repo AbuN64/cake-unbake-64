@@ -140,6 +140,13 @@ def segment_of(config: Config, version: str, row: Row) -> str:
     )
 
 
+def asm_files(root: Path, version: str) -> list[Path]:
+    """Every extracted assembly file of one version, however splat nested it: asm/<v>/nonmatchings/<segment>/<name>.s
+    and asm/<v>/data/<segment>/<name>.s, or flat asm/<v>/<segment>.s. The one discovery the commands that read
+    assembly share."""
+    return sorted((root / "asm" / version).rglob("*.s"))
+
+
 def asm_path(config: Config, version: str, name: str) -> Path:
     """The asm file splat writes for one function: asm/<v>/nonmatchings/<segment>/<name>.s."""
     with effort.stage("versions.asm_path"):
