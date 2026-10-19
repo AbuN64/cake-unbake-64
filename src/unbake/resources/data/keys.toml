@@ -449,3 +449,7 @@ sentence = "assembly source is outside a configured library directory"
 [key."source.non_matching_foreign_body"]
 owner = "foreign"
 sentence = "a NON_MATCHING body is not the body of its function"
+
+[key."types.input"]
+owner = "layouts"
+sentence = "types has no extracted assembly or no readable requests file to read"

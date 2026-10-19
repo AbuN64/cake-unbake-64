@@ -43,6 +43,45 @@ A function that is exact in every version lands at once with a ROM proof and a c
 The commands are `init`, `setup`, `sync`, `check`, `audit`, `compare`, `score`, `submit`, `land`, `report`, `map`
 and `symbols`.
 
+## Types
+
+`unbake types` proposes record layouts from the loads and stores in `asm/<version>/*.s` and never writes a header.
+It needs no host config, only the extracted assembly (`unbake setup`), `versions/<v>/symbol_addrs.txt` and the C
+headers under `include/` (function signatures are also read from `src/`).
+
+```sh
+unbake types                                   # default version us-rev1; named records only, JSON on stdout
+unbake types --out types.json --text types.txt # full JSON (stable keys) and the human view of proposals and diffs
+unbake types --requests REQUESTS.md --out t.json   # also settle each open request line
+unbake types --record Dest --record sym:D_800CDD10 # only these records; --all adds per-function argument records
+```
+
+Each access is one load or store: offset, width and kind (`lb`/`lbu` signed or unsigned byte, `lh`/`lhu`, `lw`/`sw`
+word, `lwc1`/`swc1` float, `ldc1`/`sdc1` double). The object is a global symbol (`%hi`/`%lo`, with or without an
+addend), a function argument, a pointer loaded from another object's field, or an indexed element of an array. A
+register is followed through moves, `addiu` offsets and `addu` indexing inside one function only (a forward dataflow;
+a register that differs between two paths is dropped), and a call clobbers the caller-saved registers: a pointer
+handed to a callee is not followed into it. So an access through a register the flow lost is simply not seen.
+
+A record is a header struct when a prototype argument, a global's declaration or a pointer field's type names it,
+otherwise a global symbol (`sym:NAME`) or an argument (`arg:function#argN`). One field is proposed per start offset
+(the widest access there), with `s8/u8/s16/u16/s32/f32/f64` from width and opcode, `void *` when the loaded word is
+dereferenced, called, passed where the callee's prototype takes a pointer, or a symbol's address is stored in it, and
+`unk<OFFSET>` unless a header already names the offset. The size reported is `observed` (the furthest access), the
+header's, and for a global the distance to the next data symbol, which bounds the record but is never its size.
+
+The diff against a header names each access that has no field (`unknown-field`), lies in a reserved array
+(`hidden-in-padding`), starts inside a field (`mid-field`), has another width (`width`), passes the struct's end
+(`past-end`), proves a pointer where the header has an integer (`pointer-as-int`), uses float opcodes on an integer
+field (`float-as-int`) or a signed/unsigned opcode against the other (`signedness`).
+
+With `--requests`, an open request (a `- ` line not marked SETTLED) is matched to the record it names, or failing
+that to the argument records of the functions it cites, and gets one status: `answered` (every `+0x` offset has an
+access: the row gives type, width, pointer and the functions), `answered-via-function` (the same, found only through a
+cited function's argument), `layout` (the offsets have evidence but the line also asks for a meaning, such as a
+pointee or a name, that assembly cannot give), `partial`, `no-evidence`, `no-record` or `no-offset`; `missing` says
+what is absent.
+
 ## Project
 
 A project is `config.toml` at schema 4: `name`, `toolchain`, optional `title`, `names_from`, `libraries`, `cppflags`,

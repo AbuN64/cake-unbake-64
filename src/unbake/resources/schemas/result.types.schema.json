@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "unbake:result.types",
+  "type": "object",
+  "required": ["version", "summary"],
+  "properties": {
+    "version": {"type": "string"},
+    "summary": {"type": "object"},
+    "records": {"type": "array", "items": {"type": "object", "required": ["name", "kind", "fields"]}},
+    "requests": {"type": "object"},
+    "written": {"type": "string"}
+  },
+  "additionalProperties": false
+}

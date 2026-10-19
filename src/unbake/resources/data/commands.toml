@@ -144,3 +144,16 @@ params = [
   { name = "input", kind = "argument", type = "path", required = true, multiple = false, help = "generic names/types JSON" },
   { name = "bindings", kind = "option", type = "path", required = false, multiple = false, help = "complete measured current type layouts with original identities" },
 ]
+
+[command.types]
+configured = false
+help = "Propose record layouts from the assembly's loads and stores, diff them with the C headers, and settle header requests; writes nothing tracked."
+handler = "layouts.types_command"
+params = [
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version whose asm/<version> is read (default us-rev1)" },
+  { name = "requests", kind = "option", type = "path", required = false, multiple = false, help = "a REQUESTS.md: say which open request lines the inferred layouts answer" },
+  { name = "record", kind = "option", type = "str", required = false, multiple = true, help = "only these records (struct tag, or sym:NAME for a global)" },
+  { name = "all", kind = "flag", type = "str", required = false, multiple = false, help = "also list the per-function argument records" },
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write the full JSON here and keep the result to counts" },
+  { name = "text", kind = "option", type = "path", required = false, multiple = false, help = "write the human view (proposals and header disagreements) here" },
+]
