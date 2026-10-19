@@ -43,13 +43,14 @@ _TONES = (
     ("p1", "platform"),
 )
 _LEGEND = (28, 72, 72, 28)  # block widths of the legend bar: none, fuzzy low, fuzzy high, exact
-# blobs and platform in the site's tones: its amber identified and decoded blobs, its strong edge colour for boot
+# blobs and platform in muted tones: a light teal for identified and a deep teal for decoded blobs sit calmly beside
+# the indigo code ramp and stay apart from it; the site's strong edge colour is for boot
 _OVERVIEW_STYLE = (
     _STYLE.replace("text{font:6px", "text{font:10px").replace(".h{fill:#c4472d}", "")
-    + ".b1{fill:#e3c27a}.b2{fill:#b87a14}.p1{fill:#b9b2a3}"
+    + ".b1{fill:#bfdcd6}.b2{fill:#3f8f84}.p1{fill:#b9b2a3}"
     + ".bt{fill:#1b1a17}.bt.q10{fill:#fbf9f3}"
-    + "@media (prefers-color-scheme:dark){.b1{fill:#7a6232}.b2{fill:#d9a441}.p1{fill:#6a6658}"
-    + ".bt.b1,.bt.p1{fill:#f0ead8}.bt.q0{fill:#f0ead8}.bt.q10{fill:#1b1a17}}"
+    + "@media (prefers-color-scheme:dark){.b1{fill:#2f4f4a}.b2{fill:#6fb8ac}.p1{fill:#6a6658}"
+    + ".bt.b2{fill:#1b1a17}.bt.b1,.bt.p1{fill:#f0ead8}.bt.q0{fill:#f0ead8}.bt.q10{fill:#1b1a17}}"
 )
 
 

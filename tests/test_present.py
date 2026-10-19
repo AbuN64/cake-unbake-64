@@ -67,7 +67,10 @@ def test_overview_draws_platform_spans_and_labels_their_layer():
 def test_overview_legend_is_one_strip_in_the_site_palette():
     layers = {"decoded": [(0, 256)], "identified": [(256, 512)], "platform": [(0x10000, 0x10100)]}
     svg = present.overview([], "us", layers).decode()
-    assert "#ecdcaa" not in svg and "#b98b1d" not in svg and "#e3c27a" in svg and "prefers-color-scheme:dark" in svg
+    for yellow in ("#ecdcaa", "#b98b1d", "#e3c27a", "#b87a14", "#7a6232", "#d9a441"):
+        assert yellow not in svg
+    assert ".b1{fill:#bfdcd6}.b2{fill:#3f8f84}" in svg and ".b1{fill:#2f4f4a}.b2{fill:#6fb8ac}" in svg
+    assert "prefers-color-scheme:dark" in svg
     swatches = [m for m in svg.split("<rect")[1:]]
     assert len({m.split('y="')[1].split('"')[0] for m in swatches}) == 1  # every swatch on the one row
     for name in ("identified", "decoded", "platform", "0 %", "100 %"):
@@ -93,3 +96,25 @@ def test_overview_bands_rows_whose_only_breaks_are_seams_between_blobs_of_one_cl
     svg = present.overview([], "us", layers).decode()
     assert ">0x000000\u20130x020000</text>" in svg  # the seam does not split the band
     assert "0x030000</text>" in svg  # a 4 KiB hole is a real gap: that row stays mixed
+
+
+def _luminance(color: str) -> float:
+    channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_blob_tones_keep_their_label_text_readable_in_both_modes():
+    # label ink on each blob fill (WCAG AA 4.5): dark ink on teal in light mode, light ink on identified in dark mode
+    assert _contrast("#bfdcd6", "#1b1a17") >= 4.5 and _contrast("#3f8f84", "#1b1a17") >= 4.5
+    assert _contrast("#2f4f4a", "#f0ead8") >= 4.5 and _contrast("#6fb8ac", "#1b1a17") >= 4.5
+
+
+def test_a_decoded_band_label_is_not_the_colour_of_its_dark_mode_fill():
+    svg = present.overview([], "us", {"decoded": [(0, 2 * present.OVERVIEW_ROW)]}).decode()
+    assert ">0x000000" in svg and ".bt.b2{fill:#1b1a17}" in svg.split("prefers-color-scheme:dark")[-1]
