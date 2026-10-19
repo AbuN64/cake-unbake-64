@@ -311,3 +311,111 @@ def test_data_without_a_stand_in_or_a_single_definition_is_still_refused():
     with pytest.raises(Refusal) as error:
         publish.splice(twice, "main", "D_blob_1", "u8 *D_blob_1 = 0;\n", False, "data")
     assert error.value.findings[0].key == "land.duplicate"
+
+
+COMPOUND = (
+    '#include "game.h"\nint keep(void) { return 1; }\n'
+    '#if defined(VERSION_US) && defined(NON_MATCHING)\n#include "types.h"\nint func_80000010(void) { old(); }\n#else\n'
+    '#if !defined(VERSION_EU)\nINCLUDE_ASM("main", func_80000010);\n#endif\n#endif\nINCLUDE_ASM("main", other);\n'
+)
+WHOLE_FILE = (
+    '#include "game.h"\nint keep(void) { return 1; }\n'
+    '#if defined(VERSION_US) && defined(NON_MATCHING)\n#include "types.h"\n'
+    "int func_80000010(void) {\n    return 2;\n}\n"
+    '#else\n#if !defined(VERSION_EU)\nINCLUDE_ASM("main", func_80000010);\n#endif\n#endif\n'
+)
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "#ifdef NON_MATCHING",
+        "#  ifdef   NON_MATCHING  ",
+        "#if defined(NON_MATCHING)",
+        "#if defined NON_MATCHING",
+        "#if defined(VERSION_US) && defined(NON_MATCHING)",
+        "#if (defined(NON_MATCHING) || 0) && (1 || 0) /* note */",
+    ],
+)
+def test_every_spelling_of_the_non_matching_guard_is_one(guard):
+    assert tree.guard(guard + "\n") is not None
+    assert tree.fuzzy_only(
+        f'{guard}\nint f(void) {{ return 1; }}\n#else\nINCLUDE_ASM("m", f);\n#endif\n', []
+    ).startswith("#")
+    assert tree.non_matching_blocks([guard + "\n", "x\n", "#else\n", "y\n", "#endif\n"]) == [(0, 2, 4)]
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "#if 1",
+        "#ifndef NON_MATCHING",
+        "#if !defined(NON_MATCHING)",
+        "#ifdef OTHER",
+        "#if defined(A)",
+        "#if FOO(NON_MATCHING)",
+    ],
+)
+def test_other_conditionals_are_not_the_non_matching_guard(guard):
+    assert tree.guard(guard + "\n") is None
+
+
+def test_the_candidate_replaces_the_body_behind_a_compound_guard():
+    text = publish.splice(COMPOUND, "main", "func_80000010", CANDIDATE, fuzzy=False)
+    assert "old()" not in text and "return a + table[0];" in text and 'INCLUDE_ASM("main", func_80000010)' not in text
+    assert 'INCLUDE_ASM("main", other);' in text
+    assert text.count("#if") == text.count("#endif")
+
+
+def test_a_whole_file_candidate_with_a_compound_guard_lands_without_stray_directives():
+    text = publish.splice(COMPOUND, "main", "func_80000010", WHOLE_FILE, fuzzy=False)
+    assert "return 2;" in text and "old()" not in text and 'INCLUDE_ASM("main", other)' in text
+    assert text.count('INCLUDE_ASM("main", func_80000010)') == 0
+    assert text.count("#if") == text.count("#endif") and "#else" not in text
+    assert text.count('#include "types.h"') == 1 and text.count('#include "game.h"') == 1
+    assert [p.name for p in publish.items(text) if p.kind == "function"] == ["keep", "func_80000010"]
+
+
+def test_a_whole_file_candidate_over_a_plain_stand_in_drops_its_own_wrapper():
+    text = publish.splice(OWNER, "main", "func_80000010", WHOLE_FILE, fuzzy=False)
+    assert "#if" not in text and "#else" not in text and "return 2;" in text
+    assert text.count('INCLUDE_ASM("main", other)') == 1
+
+
+def test_a_nested_guard_and_a_plain_ifdef_whole_file_candidate_still_land():
+    whole = (
+        "#ifdef NON_MATCHING\nint func_80000010(void) { return 3; }\n#else\n"
+        'INCLUDE_ASM("main", func_80000010);\n#endif\n'
+    )
+    for owner in (NESTED, COMPOUND):
+        text = publish.splice(owner, "main", "func_80000010", whole, fuzzy=False)
+        assert "return 3;" in text and text.count("#if") == text.count("#endif")
+        assert 'INCLUDE_ASM("main", func_80000010)' not in text
+
+
+def test_a_fuzzy_candidate_over_a_compound_guard_keeps_one_guarded_block():
+    text = publish.splice(COMPOUND, "main", "func_80000010", WHOLE_FILE, fuzzy=True)
+    assert "old()" not in text and text.count("#ifdef NON_MATCHING") == 1
+    assert text.index("return 2;") < text.index("#else") < text.index('INCLUDE_ASM("main", func_80000010)')
+    assert text.count("#if") == text.count("#endif")
+
+
+LATER = (
+    "#ifdef NON_MATCHING\nint later(void) {\n    return 4;\n}\n#else\n"
+    'INCLUDE_ASM("main", later);\n#endif\nINCLUDE_ASM("main", tail);\n'
+)
+
+
+def test_a_whole_file_candidate_does_not_bring_the_files_later_functions_again():
+    owner = COMPOUND + LATER
+    source = owner.replace("int func_80000010(void) { old(); }", "int func_80000010(void) {\n    return 5;\n}")
+    text = publish.splice(owner, "main", "func_80000010", source, fuzzy=False)
+    assert "return 5;" in text and "old()" not in text
+    assert text.count("int later(void)") == 1 and text.count('INCLUDE_ASM("main", later)') == 1
+    assert text.count('INCLUDE_ASM("main", tail)') == 1 and text.count("#if") == text.count("#endif")
+
+
+def test_a_helper_after_the_function_that_the_file_lacks_still_comes_along():
+    source = CANDIDATE + "static int helper(void) {\n    return 6;\n}\n"
+    text = publish.splice(OWNER, "main", "func_80000010", source, fuzzy=False)
+    assert text.count("static int helper(void)") == 1

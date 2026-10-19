@@ -1,7 +1,7 @@
 """Landing: a candidate replaces its stand-in line in the file that owns the name, and the builds must still match."""
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -113,8 +113,7 @@ def _block(text: str, at: int) -> tuple[int, int, int, int] | None:
     for m in _DIRECTIVE.finditer(text):
         kind = m[1]
         if kind in ("if", "ifdef", "ifndef"):
-            guard = re.fullmatch(r"\s*#\s*ifdef\s+NON_MATCHING\s*", m[0]) is not None
-            stack.append([m.start(), -1, int(guard)])
+            stack.append([m.start(), -1, int(tree.guard(m[0]) is not None)])
         elif kind == "else" and stack and stack[-1][1] < 0:
             stack[-1][1] = m.end()
         elif kind == "endif" and stack:
@@ -158,19 +157,77 @@ def _declarations(declared: str) -> list[str]:
     return [declared[i.start : i.end].strip() for i in items(declared)]
 
 
-def _pieces(source: str, name: str) -> tuple[list[tuple[str, int]], str, int]:
+def _wrapper(source: str, parts: Sequence[Item], k: int) -> set[int]:
+    """The indexes of the items that are only the NON_MATCHING wrapper of the candidate's function `parts[k]`: the
+    `#if`/`#else`/`#endif` lines of every NON_MATCHING conditional (any spelling of its guard) whose first side holds
+    it, and its whole `#else` side, which is the stand-in the candidate replaces. The function's own `#include` and
+    declarations in the first side are not wrapper and stay."""
+    stack: list[list[int]] = []  # [index of the opening directive, index of its #else or -1]
+    dropped: set[int] = set()
+    for j, part in enumerate(parts):
+        if part.kind != "directive":
+            continue
+        word = re.match(r"#[ \t]*(\w+)", source[part.start : part.end])
+        kind = word[1] if word else ""
+        if kind in ("if", "ifdef", "ifndef"):
+            stack.append([j, -1])
+        elif kind in ("else", "elif") and stack and stack[-1][1] < 0:
+            stack[-1][1] = j
+        elif kind == "endif" and stack:
+            opened, other = stack.pop()
+            if tree.guard(source[parts[opened].start : parts[opened].end] + "\n") and opened < k < (
+                other if other >= 0 else j
+            ):
+                dropped |= {opened, j, *(range(other, j) if other >= 0 else ())}
+    return dropped
+
+
+def _groups(text: str, parts: Sequence[Item], indexes: Sequence[int]) -> list[list[int]]:
+    """The `indexes` of `parts` (comments left out) cut into top-level groups: one item outside any conditional, or a
+    whole conditional from its `#if` to its `#endif` with everything inside."""
+    groups: list[list[int]] = []
+    depth = 0
+    for j in indexes:
+        if parts[j].kind == "comment":
+            continue
+        word = re.match(r"#[ \t]*(\w+)", text[parts[j].start : parts[j].end]) if parts[j].kind == "directive" else None
+        kind = word[1] if word else ""
+        if depth == 0:
+            groups.append([])
+        groups[-1].append(j)
+        depth += 1 if kind in ("if", "ifdef", "ifndef") else -1 if kind == "endif" and depth else 0
+    return groups
+
+
+def _group_text(text: str, parts: Sequence[Item], group: Sequence[int]) -> str:
+    return _norm("\n".join(text[parts[j].start : parts[j].end] for j in group))
+
+
+def _held(text: str) -> frozenset[str]:
+    """Every top-level group of `text` (see `_groups`), whitespace-normalized: what a whole-file candidate that
+    carries the rest of its file brings again."""
+    parts = items(text)
+    return frozenset(_group_text(text, parts, g) for g in _groups(text, parts, range(len(parts))))
+
+
+def _pieces(source: str, name: str, known: Collection[str] = ()) -> tuple[list[tuple[str, int]], str, int]:
     """([(declaration, its first line in `source`)], body, the body's first line): the candidate's definition of
-    `name`, and every other top-level item it brings, each with where `source` has it."""
+    `name`, and every other top-level item it brings, each with where `source` has it. A whole group after the
+    definition that the file already holds (`known`, from `_held`) is the file's own later text, not something the
+    candidate brings: a whole-file candidate does not duplicate the functions and stand-ins after it."""
     parts = items(source)
     mine = [k for k, p in enumerate(parts) if p.kind == "function" and p.name == name]
     if len(mine) != 1:
         raise Refusal(Finding("land.request", f"The candidate must define {name} exactly once.", unit=name))
     k = mine[0]
+    dropped = _wrapper(source, parts, k)
     first = k
     while first > 0 and parts[first - 1].kind == "comment":
         first -= 1  # the comments written above the function travel with it
     body = source[parts[first].start : parts[k].end].strip() + "\n"
-    rest = [p for j, p in enumerate(parts) if not first <= j <= k and p.kind != "comment"]
+    after = [j for j in range(k + 1, len(parts)) if j not in dropped]
+    again = {j for g in _groups(source, parts, after) if _group_text(source, parts, g) in known for j in g}
+    rest = [p for j, p in enumerate(parts) if not first <= j <= k and j not in dropped | again and p.kind != "comment"]
     texts = [(source[p.start : p.end].strip(), source.count("\n", 0, p.start) + 1) for p in rest]
     opened = sum(bool(re.match(r"#\s*if", t)) for t, _ in texts)
     closed = sum(bool(re.match(r"#\s*endif", t)) for t, _ in texts)
@@ -230,7 +287,10 @@ def splice_traced(
 ) -> tuple[str, list[Origin]]:
     """`splice`, and per line of the new text where it came from: a line of `text` (the file as it is on disk) or a
     line of the candidate `source`, so a diagnostic naming a line of the new text names a place a reader can open."""
-    texts, body, body_line = _pieces(source, name) if kind == "function" else ([], source.strip() + "\n", 1)
+    if kind == "function":
+        texts, body, body_line = _pieces(source, name, _held(text))
+    else:
+        texts, body, body_line = [], source.strip() + "\n", 1
     found = re.compile(_stand_in(segment, name), re.M).search(text)
     if found is None and kind == "function":
         raise Refusal(

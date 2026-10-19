@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import warnings
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -417,7 +418,63 @@ def preprocess(config: Config, path: str, version: str, text: bytes | None = Non
 
 
 _CONDITIONAL = re.compile(r"[ \t]*#[ \t]*(if|ifdef|ifndef|else|elif|endif)\b")
-_GUARD = re.compile(r"([ \t]*#[ \t]*)ifdef[ \t]+NON_MATCHING[ \t]*(\r?\n?)$")
+_OPENER = re.compile(r"([ \t]*#[ \t]*)(ifdef|if)\b(.*?)(\r?\n?)$", re.S)
+_EXPR_TOKEN = re.compile(r"\s*(defined\b|[A-Za-z_]\w*|0[xX][0-9a-fA-F]+|\d+|&&|\|\||[!=<>]=|[<>]|!|[()+\-*/%])")
+_DEFINED = re.compile(r"\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|([A-Za-z_]\w*))")
+
+
+def _condition(text: str, matching: bool) -> bool | None:
+    """The truth of an `#if` expression with NON_MATCHING defined or not, every other name defined and every other
+    identifier 0 (the build of the one version being measured), None when it is not an expression of those."""
+    text = re.sub(r"/\*.*?\*/|//.*", " ", text).rstrip()
+    out: list[str] = []
+    at = 0
+    while at < len(text):
+        m = _EXPR_TOKEN.match(text, at)
+        if m is None:
+            return None
+        at, word = m.end(), m[1]
+        if word == "defined":
+            named = _DEFINED.match(text, at)
+            if named is None:
+                return None
+            at = named.end()
+            out.append(str(matching if (named[1] or named[2]) == "NON_MATCHING" else True))
+        elif word[0].isalpha() or word[0] == "_":
+            out.append("0")
+        else:
+            out.append({"&&": " and ", "||": " or ", "!": " not "}.get(word, word))
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # `FOO(1)` reads as a call of 0: not an expression, so None below
+            return bool(eval("".join(out), {"__builtins__": {}}, {}))  # only the tokens built above
+    except Exception:
+        return None
+
+
+_PLAIN = re.compile(r"\s*(?:\(\s*)?NON_MATCHING\s*\)?\s*|\s*defined\s*\(?\s*NON_MATCHING\s*\)?\s*")
+
+
+def _plain(line: str) -> tuple[str, str] | None:
+    """`guard` for the one-condition spellings only (`#ifdef NON_MATCHING`, `#if defined(NON_MATCHING)`): the guards
+    whose sibling bodies a measured module switches off. A compound guard (`defined(A) && defined(NON_MATCHING)`)
+    stays on, as the file's own build has it: its stand-in side can need a version's symbols and flags that a
+    measure of another name does not have."""
+    m = _OPENER.match(line)
+    return guard(line) if m and _PLAIN.fullmatch(m[3]) else None
+
+
+def guard(line: str) -> tuple[str, str] | None:
+    """(the directive's leading `#`, its line ending) when `line` opens a conditional whose first side is the
+    NON_MATCHING side, whatever its spelling (`#ifdef NON_MATCHING`, `#if defined(A) && defined(NON_MATCHING)`): true
+    with NON_MATCHING defined and false without it."""
+    m = _OPENER.match(line)
+    if m is None or "NON_MATCHING" not in m[3]:
+        return None
+    expression = f"defined({m[3].strip()})" if m[2] == "ifdef" else m[3]
+    if _condition(expression, True) is True and _condition(expression, False) is False:
+        return m[1], m[4]
+    return None
 
 
 def non_matching_blocks(lines: Sequence[str]) -> list[tuple[int, int, int]]:
@@ -434,7 +491,7 @@ def non_matching_blocks(lines: Sequence[str]) -> list[tuple[int, int, int]]:
             stack[-1][1] = number
         elif kind[1] == "endif" and stack:
             opened, other = stack.pop()
-            if _GUARD.match(lines[opened]):
+            if guard(lines[opened]):
                 blocks.append((opened, other, number))
     return blocks
 
@@ -452,8 +509,8 @@ def fuzzy_only(text: str, names: Collection[str]) -> str:
     lines = text.splitlines(keepends=True)
     for opened, other, closed in non_matching_blocks(lines):
         body = "".join(lines[opened + 1 : other if other >= 0 else closed])
-        if not set(defined(body)) & set(names) and (m := _GUARD.match(lines[opened])):
-            lines[opened] = f"{m[1]}if 0{m[2]}"
+        if not set(defined(body)) & set(names) and (m := _plain(lines[opened])):
+            lines[opened] = f"{m[0]}if 0{m[1]}"
     return "".join(lines)
 
 

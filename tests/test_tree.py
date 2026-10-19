@@ -558,3 +558,13 @@ def test_a_file_holding_the_word_is_expanded_both_ways_and_scanned_for_each(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert _fuzzy_runs(fixture.config(tmp_path), monkeypatch, [], "src/ovl/fuzzy.c") == (1, 2)
+
+
+def test_a_compound_guard_is_a_block_but_its_sibling_body_stays_on():
+    text = (
+        "#if defined(A) && defined(NON_MATCHING)\nint other(void) { return 1; }\n"
+        '#else\nINCLUDE_ASM("m", other);\n#endif\n'
+    )
+    assert tree.non_matching_blocks(text.splitlines(keepends=True)) == [(0, 2, 4)]
+    assert tree.fuzzy_only(text, ["wanted"]) == text
+    assert tree.fuzzy_only(text.replace("defined(A) && ", ""), ["wanted"]).startswith("#if 0\n")
