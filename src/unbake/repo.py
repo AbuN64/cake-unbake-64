@@ -1172,6 +1172,9 @@ def setup(config: Config, params: Json) -> Json:
             raise Refusal(Finding("setup.busy", configuration.sentence("setup.busy")))
         journal.recover(config)
         project = config.project
+        # the machine paths the Makefile runs (compiler fronts among them) follow the installed tool on every setup:
+        # the build that decomp land runs is a plain `make check`, which never writes local.mk itself
+        store.write(project.root / "local.mk", build.local_mk(config))
         done = project.root / ".unbake/setup.json"
         kept = json.loads(done.read_bytes()) if done.exists() else None
         build_too = not params.get("no_make")
