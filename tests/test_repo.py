@@ -449,6 +449,30 @@ def test_sync_removes_a_stand_in_a_c_body_supersedes(world):
     assert "src/main/a.c" in result["written"]
 
 
+def test_sync_drops_a_word_array_a_literals_row_supersedes_and_the_file_that_held_only_it(world, monkeypatch):
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_chunk": (0x80100000, 0x2000, 8, "data")})
+    array = "#if VERSION_A\nconst unsigned int d_chunk[2] = {\n    0x00000001, 0x00000002,\n};\n#endif\n"
+    _write(world.root, "src/main/chunk.c", "\n" + array)
+    _write(world.root, "src/main/keep.c", "int f_keep(void) { return 1; }\n" + array)
+    world.tree = _tree(
+        {"src/main/chunk.c": {}, "src/main/keep.c": {"a": ("f_keep",)}},
+        stale={"src/main/chunk.c": {"a": ("d_chunk",)}, "src/main/keep.c": {"a": ("d_chunk",)}},
+    )
+    repo.sync(world.cfg, {"check": False})
+    assert not (world.root / "src/main/chunk.c").exists()
+    assert (world.root / "src/main/keep.c").read_text() == "int f_keep(void) { return 1; }\n"
+
+
+def test_sync_shrinks_a_word_array_to_the_words_before_a_literals_row(world, monkeypatch):
+    words = "    0x00000000, 0x00000001, 0x00000002, 0x00000003, 0x00000004,\n"
+    _write(world.root, "src/main/chunk.c", "const unsigned int d_chunk[5] = {\n" + words + "};\n")
+    facts = {"d_chunk": (0x80100000, 0x2000, 0x14, "data"), "literals_f": (0x80100004, 0x2004, None, "data")}
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: facts)
+    world.tree = _tree({"src/main/chunk.c": {"a": ("d_chunk",), "b": ("d_chunk",)}}, sections={"d_chunk": ".rodata"})
+    repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/chunk.c").read_text() == "const unsigned int d_chunk[1] = {\n    0x00000000,\n};\n"
+
+
 def test_a_name_in_no_segment_is_refused(world):
     world.tree = _tree({}, {"a": ["f_main"], "b": ()})
     monkey = {"f_main": (0x1, 0x10, 0, "func")}

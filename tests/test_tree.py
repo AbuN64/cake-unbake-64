@@ -100,6 +100,26 @@ def test_literals_fact_is_rodata_of_the_file_owning_its_function(tmp_path: Path)
     assert error.value.findings[0].key == "tree.literals"
 
 
+def test_literals_row_supersedes_a_data_stand_in_at_its_address(tmp_path: Path) -> None:
+    """The bytes a `literals_<fn>` row hands to a function leave the stand-in of another file that names them at that
+    address: it is stale (the sync drops it), not a second owner; a stand-in elsewhere stays."""
+    rows = {
+        "c_func": ("main", 0x0, "func"),
+        "literals_c_func": ("main", 0x20, "data"),
+        "chunk": ("main", 0x20, "data"),
+        "other": ("main", 0x60, "data"),
+    }
+    text = fixture.symbol_file("a", rows)
+    sources = {
+        "src/main/c.c": "s32 c_func(void) { return 1; }\n",
+        "src/main/d.c": "const unsigned int chunk[2] = {\n    0x1, 0x2,\n};\nconst unsigned int other[1] = {0};\n",
+    }
+    held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
+    data = next(m for m in held.modules if m.path == "src/main/d.c")
+    assert data.owns["a"] == ("other",) and data.stale["a"] == ("chunk",)
+    assert held.owner("a", "literals_c_func") == "src/main/c.c"
+
+
 def test_a_label_typed_name_inside_a_function_needs_no_owner(tmp_path: Path) -> None:
     rows = {"c_func": ("main", 0x0, "func"), "inside_c_func": ("main", 0x10, "label"), "after": ("main", 0x30, "func")}
     sources = {"src/main/c.c": "s32 c_func(void) { return 1; }\n"}

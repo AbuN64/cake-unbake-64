@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict
 from functools import cache
 from pathlib import Path
@@ -292,20 +292,92 @@ def _head(lines: Sequence[str]) -> int:
     return at
 
 
+def _array_of(lines: Sequence[str], name: str) -> tuple[int, int] | None:
+    """(first, last) line index of the word array `name` as the extractor writes it (`const unsigned int NAME[N] = {`
+    to the closing `};`), if the file defines it so."""
+    head = re.compile(rf"^\s*const\s+(?:unsigned\s+int|u32|s32|int)\s+{re.escape(name)}\s*\[\s*\d*\s*\]\s*=\s*\{{")
+    first = next((i for i, line in enumerate(lines) if head.match(line)), None)
+    if first is None:
+        return None
+    last = next((j for j in range(first, len(lines)) if lines[j].rstrip().endswith("};")), None)
+    return None if last is None else (first, last)
+
+
 def _drop(lines: list[str], names: Iterable[str]) -> None:
-    """Remove the stand-in line of each name, and an `#if` around it that holds nothing else."""
+    """Remove the stand-in of each name (its INCLUDE line, or the word array the extractor wrote), and an `#if` around
+    it that holds nothing else."""
     for name in names:
         pattern = _line_of(name)
         at = next((i for i, line in enumerate(lines) if pattern.match(line)), None)
+        end = at
         if at is None:
-            continue
+            found = _array_of(lines, name)
+            if found is None:
+                continue
+            at, end = found
+        assert end is not None
         opened = _CONDITIONAL.match(lines[at - 1]) if at > 0 else None
-        closed = _CONDITIONAL.match(lines[at + 1]) if at + 1 < len(lines) else None
+        closed = _CONDITIONAL.match(lines[end + 1]) if end + 1 < len(lines) else None
         guarded = bool(opened and opened[1] != "endif" and closed and closed[1] == "endif")
-        del lines[at - 1 if guarded else at : at + 2 if guarded else at + 1]
+        del lines[at - 1 if guarded else at : end + 2 if guarded else end + 1]
 
 
-def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
+_WORDS = re.compile(r"0[xX][0-9A-Fa-f]+")
+
+
+def _shrink(lines: list[str], name: str, words: int) -> bool:
+    """Cut the word array `name` to its first `words` words, written as the extractor writes one."""
+    found = _array_of(lines, name)
+    if found is None:
+        return False
+    first, last = found
+    values = _WORDS.findall("\n".join(lines[first + 1 : last + 1]))
+    if words >= len(values) or words < 1:
+        return False
+    kept = values[:words]
+    body = ["    " + " ".join(f"0x{int(v, 16):08X}," for v in kept[i : i + 8]) for i in range(0, len(kept), 8)]
+    head = re.sub(r"\[\s*\d*\s*\]", f"[{words}]", lines[first], count=1)
+    lines[first : last + 1] = [head, *body, "};"]
+    return True
+
+
+def _held_back(lines: Sequence[str]) -> bool:
+    """A file with no code, data or stand-in left: only blank lines, comments and preprocessor lines."""
+    return all(not line.strip() or line.lstrip().startswith(("#", "//", "/*", "*")) for line in lines)
+
+
+def _narrowed(config: Config, current: Any, lines: Callable[[str], list[str]]) -> set[str]:
+    """Shrink each word array that runs into the read-only bytes a `literals_` row hands to a function, to the words
+    before the row: the array names the bytes up to the next name, and the row now names the rest. The paths touched.
+    Versions that would cut one definition differently leave it as it is."""
+    cuts: dict[tuple[str, str], set[int]] = {}
+    for v in config.project.versions:
+        facts = api.symbols(config, v)
+        starts = sorted(f[1] for n, f in facts.items() if n.startswith(tree.LITERALS) and f[1] is not None)
+        if not starts:
+            continue
+        for module in current.modules:
+            if configuration.is_assembly(module.path):
+                continue
+            for name in module.owns.get(v, ()):
+                rom = facts[name][1] if name in facts else None
+                if (
+                    rom is None
+                    or name.startswith(tree.LITERALS)
+                    or not module.sections.get(v, {}).get(name, "").startswith(".rodata")
+                ):
+                    continue
+                after = next((s for s in starts if s > rom), None)
+                if after is not None and (after - rom) % 4 == 0:
+                    cuts.setdefault((module.path, name), set()).add((after - rom) // 4)
+    touched: set[str] = set()
+    for (path, name), counts in sorted(cuts.items()):
+        if len(counts) == 1 and _shrink(lines(path), name, next(iter(counts))):
+            touched.add(path)
+    return touched
+
+
+def stand_ins(config: Config, current: Any) -> dict[str, bytes | None]:
     """The files to write so that a name has a stand-in exactly when no file defines it in C: a stand-in a C body
     supersedes is removed, and every name of tree.unowned(v) gets a line, under the `#if` of the versions it is
     unowned in when that is not every version (another version may know the name only as a second name of owned
@@ -318,6 +390,7 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
     root, ext = config.project.root, _extension(current.modules)
     texts: dict[str, list[str]] = {}
     touched: set[str] = set()
+    data_dropped: set[str] = set()  # files that lost a data stand-in: one left with nothing goes
     placed: set[str] = set()
 
     def lines(path: str) -> list[str]:
@@ -334,6 +407,13 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
         if every:
             _drop(lines(module.path), sorted(every))
             touched.add(module.path)
+            if any(
+                n in api.symbols(config, v) and api.symbols(config, v)[n][3] != "func"
+                for v, names in module.stale.items()
+                for n in names
+            ):
+                data_dropped.add(module.path)
+    touched |= _narrowed(config, current, lines)
     library = libasm.homes(config, current)  # library routines kept out of game files
     sections = {(v, n): s for m in current.modules for v, names in m.sections.items() for n, s in names.items()}
     missing = {v: set(current.unowned(v)) for v in config.project.versions}
@@ -398,8 +478,11 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes]:
             rows.append((rom, path, name))
             rows.sort()
             sections[v, name] = section
-    writes: dict[str, bytes] = {}
+    writes: dict[str, bytes | None] = {}
     for path in sorted(touched):
+        if path in data_dropped and (root / path).is_file() and _held_back(texts[path]):
+            writes[path] = None  # every stand-in it held was superseded: nothing left to assemble
+            continue
         joined = "\n".join(texts[path])
         if "include_asm.h" not in joined and "INCLUDE_" in joined:
             joined = '#include "include_asm.h"\n\n' + joined
@@ -469,7 +552,8 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
         changed = {
             path: value
             for path, value in {**appended, **_generated(config, current)}.items()
-            if not (root / path).is_file() or (root / path).read_bytes() != value
+            if (root / path).is_file() != (value is not None)
+            or (value is not None and (root / path).read_bytes() != value)
         }
         if params.get("check"):
             if changed:
@@ -483,7 +567,11 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
                 )
             return {"written": [], "stand_ins": {}}, current
         for path, value in changed.items():
-            store.write(root / path, value)
+            if value is None:
+                (root / path).unlink()
+                effort.forget("pin", "includes", "closure", "listing")
+            else:
+                store.write(root / path, value)
         effort.count("sync", not changed)
         return {"written": sorted(changed), "stand_ins": {p: [] for p in sorted(appended)}}, current
 

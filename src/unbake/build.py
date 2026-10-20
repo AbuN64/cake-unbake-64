@@ -381,6 +381,56 @@ def _unaligned(config: Config, held: Tree, v: str) -> list[str]:
     return sorted(found)
 
 
+def _doubled(config: Config, held: Tree, v: str, piece: str) -> set[str]:
+    """The files whose compiled read-only data (a `literals_` row) starts on an 8-byte boundary: the ROM keeps the
+    alignment the compiler gave the section, which `SUBALIGN(1)` drops, so the link script asks for it where the
+    file's data starts (a no-op where the data before it already ends there)."""
+    table = held.symbols.get(v, {})
+    start, end, _ = _piece(config, v, piece)
+    first: dict[str, tuple[int, str]] = {}
+    for module in held.modules:
+        for name in module.owns.get(v, ()):
+            fact = table.get(name)
+            if fact is None or fact[1] is None or not start <= fact[1] < end:
+                continue
+            if module.sections.get(v, {}).get(name, ".text") == ".rodata":
+                first[module.path] = min(first.get(module.path, (fact[1], name)), (fact[1], name))
+    return {p for p, (_, name) in first.items() if name.startswith(tree.LITERALS) and table[name][0] % 8 == 0}
+
+
+def _apart(held: Tree, v: str, rows: Sequence[tuple[int, str, str]], config: Config) -> None:
+    """A file's object has one read-only section, listed where its first byte is: literals of a function that lie
+    later, after other files' data, would be left out of the ROM. Refuse, naming the function."""
+    table = held.symbols.get(v, {})
+    literal = {
+        (table[n][1], m.path): n
+        for m in held.modules
+        for n in m.owns.get(v, ())
+        if n.startswith(tree.LITERALS) and n in table
+    }
+    seen: set[tuple[str, str]] = set()
+    last: tuple[str, str] | None = None
+    bad: list[Finding] = []
+    for rom, path, section in rows:
+        key = (path, section)
+        name = literal.get((rom, path))
+        if key in seen and key != last and name is not None:
+            bad.append(
+                Finding(
+                    "sync.split",
+                    f"{name} in {v} lies after other files' data, apart from the rest of {path}",
+                    path=path,
+                    unit=name,
+                    versions=(v,),
+                    action=f"move {name[len(tree.LITERALS) :]} into a file of its own",
+                )
+            )
+        seen.add(key)
+        last = key
+    if bad:
+        raise Refusal(*bad)
+
+
 def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> list[str]:
     """The input sections of one version's segment in the order their bytes lie in the ROM: for each name a file owns
     in the segment, its section of that file's object (`.text` for code, the source's own section for data), the
@@ -389,13 +439,20 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     names rodata of its own in the segment."""
     rows = _rows(config, held, v, piece)
     named = {(path, section) for _, path, section in rows}
+    doubled = _doubled(config, held, v, piece)
     items: list[tuple[str, str]] = []
     for _, path, section in rows:
         if (path, section) not in items:
             items.append((path, section))
             if per_object and section == ".text" and (path, ".rodata") not in named:
                 items.append((path, ".rodata"))
-    return [f"{path}.o({_spelled(section)})" for path, section in items]
+    _apart(held, v, rows, config)
+    out: list[str] = []
+    for path, section in items:
+        if section == ".rodata" and path in doubled:
+            out.append(f". = ALIGN(8) /* {path}.o */")
+        out.append(f"{path}.o({_spelled(section)})")
+    return out
 
 
 def _header(name: str, by: Mapping[str, Segment], names: Sequence[str]) -> list[str]:
@@ -440,7 +497,7 @@ def linker(config: Config, held: Tree) -> bytes:
             out += _pass(blocks, names)
             out.append("    }")
             if not binary:
-                files = {v: list(dict.fromkeys(i.rpartition(".o(")[0] for i in orders[v])) for v in names}
+                files = {v: list(dict.fromkeys(i.rpartition(".o(")[0] for i in orders[v] if ".o(" in i)) for v in names}
                 bss = _blocks({v: [f"{f}.o(.bss .sbss COMMON)" for f in files[v]] for v in names})
                 out += [f"    .{name}.bss (NOLOAD) :", "    {", *_pass(bss, names), "    }"]
             out += ["#endif"] if whole else []

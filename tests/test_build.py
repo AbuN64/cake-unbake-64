@@ -914,3 +914,28 @@ def test_the_canonical_name_of_a_function_the_c_spells_by_an_alias_has_that_owne
     assert held.owner("us", "f_canon") == held.owner("us", "f_alias") == "src/a.c"
     assert held.owned("us", "f_canon") is None and held.owner("us", "f_other") is None
     assert held.owner("us", "unknown") is None and held.owner("eu-1", "f_canon") is None
+
+
+def test_a_literals_row_on_an_8_byte_boundary_asks_the_linker_for_that_alignment(tmp_path):
+    """SUBALIGN(1) drops the section alignment the ROM kept as padding after the data before the file's literals."""
+    tree = make_tree(
+        both("src/a.c", "f_1", "literals_f_8", sections={"literals_f_8": ".rodata"}),
+        both("src/b.c", "f_2", "literals_f_9", sections={"literals_f_9": ".rodata"}),
+    )
+    assert _body(build.linker(make_config(tmp_path), tree).decode()) == [
+        "src/a.c.o(.text);",
+        "src/b.c.o(.text);",
+        ". = ALIGN(8) /* src/a.c.o */;",
+        "src/a.c.o(.rodata .rdata);",
+        "src/b.c.o(.rodata .rdata);",
+    ]
+
+
+def test_literals_after_other_files_data_apart_from_their_file_are_refused(tmp_path):
+    tree = make_tree(
+        both("src/a.c", "f_1", "d_2", "literals_f_5", sections={"d_2": ".rodata", "literals_f_5": ".rodata"}),
+        both("src/b.c", "f_3", "d_4", sections={"d_4": ".rodata"}),
+    )
+    with pytest.raises(Refusal) as refused:
+        build.linker(make_config(tmp_path), tree)
+    assert refused.value.findings[0].key == "sync.split" and refused.value.findings[0].path == "src/a.c"

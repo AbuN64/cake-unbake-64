@@ -366,6 +366,10 @@ sentence = "a name is owned by two files in one version"
 owner = "tree"
 sentence = "a literals_<function> fact names a function no file owns; name the first function the file owns"
 
+[key."sync.split"]
+owner = "repo"
+sentence = "a function's literals sit in the ROM after other files' data, apart from the rest of its file's read-only data; move the function into a file of its own"
+
 [key."tree.segments"]
 owner = "tree"
 sentence = "a file owns names of more than one segment, or a symbol lies in no segment"

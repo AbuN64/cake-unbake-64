@@ -805,6 +805,7 @@ def _build(
     _yield_to_source(tables, owned, sections)
     findings = _duplicates(owned, versions)
     findings += _literals(tables, owned, sections)
+    _absorbed(tables, owned, sections, stale)
     modules = tuple(
         _module(
             config,
@@ -854,6 +855,45 @@ def _literals(
             owned[path][version] = sorted(names, key=lambda n, t=table: (_rom(t, n), n))  # type: ignore[misc]
             sections[path][version][name] = ".rodata"
     return findings
+
+
+def _absorbed(
+    tables: Mapping[str, Mapping[str, symbols.Symbol]],
+    owned: dict[str, dict[str, list[str]]],
+    sections: dict[str, dict[str, dict[str, str]]],
+    stale: dict[str, dict[str, list[str]]],
+) -> None:
+    """A `literals_<function>` row hands the read-only bytes at its address to the file that owns the function: a
+    stand-in of another file for a name at that same address (a data chunk, an array of words) no longer stands for
+    anything and is superseded, as a stand-in a C body replaces is. Only a source file can hold a stand-in."""
+    for version, table in tables.items():
+        rows = {
+            table[n][1]
+            for by_version in owned.values()
+            for n in by_version.get(version, ())
+            if n.startswith(LITERALS) and table[n][1] is not None
+        }
+        if not rows:
+            continue
+        for path in [p for p in owned if not configuration.is_assembly(p)]:
+            names = owned[path].get(version, [])
+            gone = [
+                n
+                for n in names
+                if not n.startswith(LITERALS)
+                and table[n][1] in rows
+                and sections[path][version].get(n, "").startswith(".rodata")
+            ]
+            if not gone:
+                continue
+            kept = [n for n in names if n not in gone]
+            stale[path][version] = [*dict.fromkeys([*stale[path].get(version, ()), *gone])]
+            if kept:
+                owned[path][version] = kept
+                sections[path][version] = {n: sections[path][version][n] for n in kept}
+            else:
+                owned[path].pop(version, None)
+                sections[path].pop(version, None)
 
 
 def _keys(
