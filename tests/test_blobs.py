@@ -79,6 +79,25 @@ def test_proven_fill_is_matched_blob_bytes_and_unproven_runs_stay_unknown():
     assert blobs.sweep(ROM, [], [], list(PLATFORM), decoded, [])["blobs_fill"] == 0  # no ROM bytes, no proof
 
 
+def test_a_gap_splits_into_one_value_runs_each_proven_by_its_end():
+    rom = bytearray(range(256)) * (ROM // 256)
+    rom[0x6004:0x7000] = bytes(0xFFC)  # zeros up to 0x7000 (align 0x1000), then the cart tail of 0xFF
+    rom[0x7000:] = b"\xff" * (ROM - 0x7000)
+    decoded = [(0x1000, 0x6004)]
+    out = blobs.sweep(ROM, [], [], list(PLATFORM), decoded, [], bytes(rom))
+    assert out["spans"]["fill"] == [(0x6004, 0x7000), (0x7000, ROM)]
+    assert out["blobs_fill"] == ROM - 0x6004 and out["unknown"] == 0
+    assert blobs.fill(bytes(rom), [(0x6004, ROM)]) == [(0x6004, 0x7000), (0x7000, ROM)]
+    # a run that is not at the gap's end, or whose end is not aligned past its length, stays unknown
+    mixed = bytearray(range(256)) * (ROM // 256)
+    mixed[0x2000:0x2010] = bytes(0x10)  # ends at 0x2010 but the gap goes on with other bytes
+    assert blobs.fill(bytes(mixed), [(0x1F00, 0x2100)]) == []
+    mixed[0x2100 - 8 : 0x2100] = bytes(8)  # a run shorter than RUN_MIN inside a longer gap proves nothing
+    assert blobs.fill(bytes(mixed), [(0x1F00, 0x2100)]) == []
+    mixed[0x2090:0x2100] = bytes(0x70)  # 0x70 < 0x100 (align of 0x2100): padding before the next item
+    assert blobs.fill(bytes(mixed), [(0x1F00, 0x2100)]) == [(0x2090, 0x2100)]
+
+
 def test_a_gap_of_two_values_is_never_fill():
     rom = bytearray(ROM)
     rom[0x2008] = 1
@@ -364,3 +383,67 @@ def test_shadowed_blobs_are_non_blocking_findings(tmp_path):
     (tmp_path / "blobs.toml").write_bytes(blobs.emit(DOC))
     (found,) = blobs.shadows(config, "v", [(0x2800, 0x2900)])
     assert found.key == "blobs.shadowed" and not found.blocking and "256 bytes" in found.reason
+
+
+# ---------------------------------------------------------------- land
+def _clean_project(config, monkeypatch, tmp_path):
+    from unbake import policy, tree
+
+    monkeypatch.setattr(tree, "capture", lambda c: _tree("land"))
+    monkeypatch.setattr(policy, "audit_command", lambda params: {"paths": []})
+    _credits(monkeypatch, f=(0x1000, 0x100, "func"))
+
+
+def test_land_imports_a_packet_and_reports_the_credit_it_gains(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    out = blobs.land(config, _packet(config))
+    assert (out["added"], out["unchanged"], out["files"]) == (1, 0, ["blobs.toml"])
+    assert out["delta"]["v"] == {"blobs_decoded": 0x1000, "blobs_identified": 0, "unknown": -0x1000}
+    assert [r["id"] for r in blobs.rows(config)] == ["level.0"]
+    again = blobs.land(config, _packet(config))  # idempotent: nothing written, no credit moves
+    assert (again["added"], again["unchanged"], again["files"]) == (0, 1, [])
+    assert again["delta"]["v"] == {"blobs_decoded": 0, "blobs_identified": 0, "unknown": 0}
+
+
+def test_land_puts_the_old_file_back_when_a_check_after_the_write_fails(tmp_path, monkeypatch):
+    from unbake import policy
+
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    (tmp_path / "blobs.toml").write_bytes(blobs.emit(DOC))
+    kept = (tmp_path / "blobs.toml").read_bytes()
+
+    def refuse(params):
+        raise Refusal(blobs.Finding("audit.credit_drop", "lost"))
+
+    monkeypatch.setattr(policy, "audit_command", refuse)
+    with pytest.raises(Refusal):
+        blobs.land(config, _packet(config))
+    assert (tmp_path / "blobs.toml").read_bytes() == kept
+
+
+def test_land_refuses_a_packet_the_import_refuses_and_writes_nothing(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    packet = _packet(config)
+    packet["rom_sha256"]["v"] = "00" * 32
+    with pytest.raises(Refusal):
+        blobs.land(config, packet)
+    assert not (tmp_path / "blobs.toml").exists()
+
+
+def test_blobs_toml_is_no_build_or_score_input():
+    """Facts-only landing skips the ROM build, and a blobs.toml edit rescores no code: no build, tree, rescore or
+    setup module reads the blobs file."""
+    import ast
+
+    root = Path(blobs.__file__).parent
+    for name in ("build", "tree", "rescore", "repo", "pool", "publish"):
+        imported = {
+            alias.name
+            for node in ast.walk(ast.parse((root / f"{name}.py").read_text()))
+            if isinstance(node, ast.ImportFrom) and node.module == "unbake"
+            for alias in node.names
+        }
+        assert "blobs" not in imported, name

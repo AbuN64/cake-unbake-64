@@ -442,6 +442,9 @@ sentence = "a blob's bytes lie under a credited symbol and stay counted as code 
 owner = "blobs"
 sentence = "a packet's ROM or evidence sha256 does not match what the project holds"
 
+[key."blobs.land"]
+owner = "blobs"
+sentence = "a facts-only landing failed a check after its write (readback, partition sum): blobs.toml is put back"
 [key."blobs.packet"]
 owner = "blobs"
 sentence = "the blobs command was given something it cannot read or run"

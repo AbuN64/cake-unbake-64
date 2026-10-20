@@ -7,6 +7,7 @@ formats, states, evidence by sha256), never bytes. `sweep` classifies every ROM 
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
@@ -20,6 +21,7 @@ from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha25
 
 FILE = "blobs.toml"
 Spans = list[tuple[int, int]]
+RUN_MIN = 16  # the shortest one-value run that proves padding inside a gap of other bytes
 _ORDER = ("name", "aliases", "type", "format", "codec", "state", "stored_size", "decoded_size", "parent", "decoded")
 
 
@@ -178,24 +180,30 @@ def length(spans: Iterable[tuple[int, int]]) -> int:
 
 def fill(rom: bytes, gaps: Spans) -> Spans:
     """The proven padding inside the unknown `gaps` of `rom` (owner decision B1: credited matched, no sixth type).
-    Proof is by layout, never by content guess: a whole gap of one byte value that ends where the next item's alignment
-    puts it (its length is below the largest power of two dividing its end), or the maximal one-value run that reaches
-    the end of the ROM (cart padding) and starts on a 16-byte boundary. The build emits these bytes like any other, so
-    `make check` proves them with the rest of the ROM."""
+    Proof is by layout, never by content guess. A gap is split into its maximal one-value runs, read from the gap's
+    end backwards. A run is padding when it reaches the end of the ROM (cart padding, credited from the 16-byte
+    boundary at or above its start unless it is the whole gap), or when it ends where the next item's alignment
+    puts it (its length is below the largest power of two dividing its end) and that end is the gap's end or the
+    start of the padding run after it. A gap that is one run is the whole-gap rule; a run inside a longer gap must
+    be at least `RUN_MIN` bytes, so that a last byte equal to its neighbour by chance proves nothing. The build
+    emits these bytes like any other, so `make check` proves them with the rest of the ROM."""
     out: Spans = []
     size = len(rom)
     for start, end in gaps:
-        value = rom[end - 1]
-        if rom.count(value, start, end) == end - start and (end == size or end - start < (end & -end)):
-            out.append((start, end))
-        elif end == size:
-            low = end - 1
-            while low > start and rom[low - 1] == value:
-                low -= 1
-            low = (low + 15) & ~15
-            if low < end:
-                out.append((low, end))
-    return out
+        runs = [(start + m.start(), start + m.end()) for m in re.finditer(rb"(.)\1*", rom[start:end], re.S)]
+        following = end  # the end a run must meet: the gap's end, then the start of the padding run after it
+        for low, high in reversed(runs):
+            if high != following or (len(runs) > 1 and high - low < RUN_MIN):
+                break
+            if high == size:
+                low = low if len(runs) == 1 else max(low, (low + 15) & ~15)
+                if low >= high:
+                    break
+            elif high - low >= (high & -high):
+                break
+            out.append((low, high))
+            following = low
+    return sorted(out)
 
 
 def sweep(
@@ -347,9 +355,91 @@ def apply_import(config: Config, plan: Plan) -> Json:
     return {"files": list(files), "add": "git add " + " ".join(files), "commit": f'git commit -m "{plan.message}"'}
 
 
+# ---------------------------------------------------------------- land
+_KEPT = ("rom_size", "code", "data", "platform", "blobs", "blobs_decoded", "blobs_identified", "unknown")
+
+
+def _partitions(config: Config) -> Json:
+    tree = import_module("unbake.tree").capture(config)
+    parts = import_module("unbake.report").partitions(config, tree)
+    return {v: {k: p[k] for k in (*_KEPT, "overlap", "outside")} for v, p in parts.items()}
+
+
+def land(config: Config, packet: Json) -> Json:
+    """Land a facts-only packet on the current tree: import it, read the file back, audit the source rules against
+    HEAD and check the partition of every version, no ROM build (blobs.toml is no build input: the build key reads
+    src, include, symbols and the extract recipe). A failed check puts the old file back and refuses, so a landing is
+    all or nothing. Returns the git commands, the counts and the per-version credit delta."""
+    with effort.stage("blobs.land"):
+        old = _read(config)
+        before = _partitions(config)
+        plan = import_plan(config, packet)
+        if plan.blocking:
+            raise Refusal(*plan.blocking)
+        have = load(config)["blob"]
+        counts = {
+            "added": sum(n not in have for n in packet["blob"]),
+            "unchanged": sum(have.get(n) == r for n, r in packet["blob"].items()),
+        }
+        text = plan.writes[FILE]
+        assert text is not None
+        done = apply_import(config, plan) if text != old else {"files": [], "add": "", "commit": ""}
+        try:
+            with effort.stage("blobs.land.readback"):
+                if _read(config) != text:
+                    raise Refusal(Finding("blobs.land", "blobs.toml read back differs from the plan", path=FILE))
+                document = parse(config, text)
+                wrong = sorted(n for n, r in packet["blob"].items() if document["blob"].get(n) != r)
+                if wrong:
+                    raise Refusal(
+                        Finding(
+                            "blobs.land", f"rows read back differ from the packet: {', '.join(wrong[:5])}", path=FILE
+                        )
+                    )
+            with effort.stage("blobs.land.audit"):
+                audit = import_module("unbake.policy").audit_command(
+                    {"project": str(config.project.root), "against": "HEAD"}
+                )
+            with effort.stage("blobs.land.partition"):
+                after = _partitions(config)
+                for v, p in after.items():
+                    held = sum(p[k] for k in ("code", "data", "platform", "blobs", "unknown"))
+                    if held != p["rom_size"] or p["overlap"] or p["outside"]:
+                        raise Refusal(
+                            Finding(
+                                "blobs.land",
+                                f"{v}: partition sums to {held} of {p['rom_size']} (overlap {p['overlap']}, "
+                                f"outside {p['outside']})",
+                                path=FILE,
+                                versions=(v,),
+                            )
+                        )
+        except Exception:
+            if old is None:
+                (Path(config.project.root) / FILE).unlink(missing_ok=True)
+            else:
+                store.write(Path(config.project.root) / FILE, old)
+            raise
+        delta = {
+            v: {k: after[v][k] - before[v][k] for k in ("blobs_decoded", "blobs_identified", "unknown")}
+            for v in after
+            if v in before
+        }
+        return {**counts, **done, "audit": {"paths": audit["paths"]}, "delta": delta, "partition": after}
+
+
 # ---------------------------------------------------------------- the command
+def _packet(path: str) -> Json:
+    try:
+        packet: Json = json.loads(Path(path).read_bytes())
+    except (OSError, ValueError) as error:
+        raise Refusal(Finding("blobs.packet", f"the packet cannot be read: {error}", path=path)) from error
+    return packet
+
+
 def run(config: Config, params: Json) -> Json:
-    """`unbake blobs`: list the blobs and the partition of every version; `import PACKET` merges an evidence packet."""
+    """`unbake blobs`: list the blobs and the partition of every version; `import PACKET` merges an evidence packet;
+    `land PACKET` imports it as a checked, all-or-nothing facts-only landing."""
     with effort.stage("blobs.run"):
         action = list(params.get("action") or ())
         if action == ["scan"]:
@@ -361,10 +451,7 @@ def run(config: Config, params: Json) -> Json:
         if action[:1] == ["import"]:
             if len(action) != 2:
                 raise Refusal(Finding("blobs.packet", "import takes exactly one packet file"))
-            try:
-                packet = json.loads(Path(action[1]).read_bytes())
-            except (OSError, ValueError) as error:
-                raise Refusal(Finding("blobs.packet", f"the packet cannot be read: {error}", path=action[1])) from error
+            packet = _packet(action[1])
             plan = import_plan(config, packet)
             if plan.blocking:
                 raise Refusal(*plan.blocking)
@@ -375,8 +462,14 @@ def run(config: Config, params: Json) -> Json:
             }
             done = apply_import(config, plan)
             return _result(config, {"imported": {**counts, **done}}, bool(params.get("json")))
+        if action[:1] == ["land"]:
+            if len(action) != 2:
+                raise Refusal(Finding("blobs.packet", "land takes exactly one packet file"))
+            return _result(config, {"landed": land(config, _packet(action[1]))}, bool(params.get("json")))
         if action:
-            raise Refusal(Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET, scan or migrate"))
+            raise Refusal(
+                Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET, land PACKET, scan or migrate")
+            )
         return _result(config, {}, bool(params.get("json")))
 
 
