@@ -962,7 +962,8 @@ def setup(config: Config, params: Json) -> Json:
         project = config.project
         done = project.root / ".unbake/setup.json"
         kept = json.loads(done.read_bytes()) if done.exists() else None
-        if kept and kept["state"] == _state(config):
+        build_too = not params.get("no_make")
+        if kept and kept["state"] == _state(config) and (kept["result"].get("make") or not build_too):
             effort.count("setup", True)
             return {**kept["result"], "extracted": [], "files": []}
         effort.count("setup", False)
@@ -978,9 +979,11 @@ def setup(config: Config, params: Json) -> Json:
         again = [v for v in project.versions if "Makefile" in written or f"versions/{v}/splat.yaml" in written]
         if again:  # the yaml changed under extraction: its output is the output of the old one
             extracted = sorted({*extracted, *_extract(config, again)})
-        with effort.stage("repo.setup.make"):
-            make = build.make_check(config, current)
-        report.progress(config, current)
+        make = None  # --no-make: the caller builds and records the verdict itself (decomp land's check gate)
+        if build_too:
+            with effort.stage("repo.setup.make"):
+                make = build.make_check(config, current)
+            report.progress(config, current)
         result = {"toolchains": toolchains, "extracted": sorted(extracted), "files": written, "make": make}
         store.write(done, json.dumps({"state": _state(config), "result": result}).encode())
         return result

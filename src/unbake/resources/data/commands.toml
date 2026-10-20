@@ -20,7 +20,9 @@ params = [
 [command.setup]
 help = "Install toolchains, extract every version, write the generated files and check that every version links to its ROM; one pass, uncommitted."
 handler = "repo.setup"
-params = []
+params = [
+  { name = "no-make", kind = "flag", type = "str", required = false, multiple = false, help = "prepare only (toolchains, extraction, generated files): the caller builds and runs unbake verify itself" },
+]
 
 [command.sync]
 help = "Write the generated Makefile, link script, split yamls and CI files, and a stand-in line for every symbol no source owns; --check writes nothing and refuses when a file would change."

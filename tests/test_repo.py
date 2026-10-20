@@ -289,6 +289,14 @@ def test_noop_setup_runs_nothing(world):
     assert again["extracted"] == [] and again["files"] == [] and again["make"] == MADE
 
 
+def test_a_setup_without_make_prepares_and_a_later_setup_still_builds(world):
+    result = repo.setup(world.cfg, {"no_make": True})
+    assert world.makes == [] and sorted(world.extracts) == ["a", "b"] and result["make"] is None
+    world.progress.assert_not_called()  # the caller's build records the verdict
+    assert repo.setup(world.cfg, {"no_make": True})["extracted"] == [] and world.makes == []  # nothing moved
+    assert world.setup()["make"] == MADE and world.makes == [(("check",), 4)]  # a full setup does not take it as done
+
+
 def test_extract_cache(world):
     world.setup()
     assert sorted(world.extracts) == ["a", "b"]
