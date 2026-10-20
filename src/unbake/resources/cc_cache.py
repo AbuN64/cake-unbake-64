@@ -236,35 +236,109 @@ def common(old: bytes, new: bytes) -> tuple[int, int]:
     return prefix, low
 
 
+def hunks(old: bytes, new: bytes) -> list[tuple[int, int, int, int]]:
+    """The whole-line ranges where `old` and `new` differ, as (old first line, old end, new first line, new end) in
+    line numbers: equal lines at both ends are trimmed, then lines found once in each text anchor the rest (the longest
+    run of them in the same order), so two edits far apart are two small hunks, not one that spans everything."""
+    from bisect import bisect_left
+
+    a, b = old.split(b"\n"), new.split(b"\n")
+    out: list[tuple[int, int, int, int]] = []
+    todo = [(0, len(a), 0, len(b))]
+    while todo:
+        alo, ahi, blo, bhi = todo.pop()
+        while alo < ahi and blo < bhi and a[alo] == b[blo]:
+            alo, blo = alo + 1, blo + 1
+        while alo < ahi and blo < bhi and a[ahi - 1] == b[bhi - 1]:
+            ahi, bhi = ahi - 1, bhi - 1
+        if alo == ahi and blo == bhi:
+            continue
+        pairs: list[tuple[int, int]] = []
+        if alo < ahi and blo < bhi:
+            once_a: dict[bytes, int] = {}
+            for i in range(alo, ahi):
+                once_a[a[i]] = -1 if a[i] in once_a else i
+            once_b: dict[bytes, int] = {}
+            for j in range(blo, bhi):
+                once_b[b[j]] = -1 if b[j] in once_b else j
+            pairs = sorted((i, once_b[line]) for line, i in once_a.items() if i >= 0 and once_b.get(line, -1) >= 0)
+        tails: list[int] = []  # patience: the longest increasing run of new-side positions
+        back: list[int] = [-1] * len(pairs)
+        ends: list[int] = []
+        for n, (_, j) in enumerate(pairs):
+            at = bisect_left(tails, j)
+            if at == len(tails):
+                tails.append(j)
+                ends.append(n)
+            else:
+                tails[at], ends[at] = j, n
+            back[n] = ends[at - 1] if at else -1
+        chain: list[tuple[int, int]] = []
+        n = ends[-1] if ends else -1
+        while n >= 0:
+            chain.append(pairs[n])
+            n = back[n]
+        if not chain:
+            out.append((alo, ahi, blo, bhi))
+            continue
+        chain.reverse()
+        here = (alo, blo)
+        for i, j in chain:
+            todo.append((here[0], i, here[1], j))
+            here = (i + 1, j + 1)
+        todo.append((here[0], ahi, here[1], bhi))
+    return sorted(out)
+
+
+def mentioned(names: set[bytes], text: bytes) -> set[bytes]:
+    """The names that occur in `text` as whole words."""
+    found: set[bytes] = set()
+    for name in names:
+        at = text.find(name)
+        while at >= 0:
+            before, after = text[at - 1 : at] if at else b"", text[at + len(name) : at + len(name) + 1]
+            if not (before.isalnum() or before == b"_" or after.isalnum() or after == b"_"):
+                found.add(name)
+                break
+            at = text.find(name, at + 1)
+    return found
+
+
 def types_only_differ(old: bytes, new: bytes) -> bool:
     """True when `old` and `new` differ only in type declarations (typedef, struct, union, enum definitions) and
     static inline functions that nothing else in the text names: no .s byte depends on such a declaration (the
-    compile has no debug output), so the same compiler writes the same assembly. The changed region (first to last
-    differing byte, widened to whole declarations) is the only text read closely; everything around it is searched
-    for the names it defines."""
-    import re
-
+    compile has no debug output), so the same compiler writes the same assembly. Each changed hunk, widened to whole
+    declarations, is the only text read closely; everything around them is searched for the names they define."""
     patterns()
-    prefix, suffix = common(old, new)
-    start = old.rfind(b"\n", 0, prefix) + 1
-    tail = suffix  # bytes of the common suffix still outside the region
-    for _ in range(80):
-        end_old, end_new = len(old) - tail, len(new) - tail
-        if complete(old[start:end_old]) and complete(new[start:end_new]):
-            break
-        if start:
-            start = old.rfind(b"\n", 0, start - 1) + 1
-        step = old.find(b"\n", end_old) + 1 - end_old if old.find(b"\n", end_old) >= 0 else tail
-        tail = max(tail - max(step, 1), 0)
-    else:
-        return False
-    end_old, end_new = len(old) - tail, len(new) - tail
-    parts = chunks(old[start:end_old]), chunks(new[start:end_new])
+    a, b = old.split(b"\n"), new.split(b"\n")
+    spans: list[list[int]] = [list(h) for h in hunks(old, new)]
+    at = 0
+    while at < len(spans):
+        alo, ahi, blo, bhi = spans[at]
+        for _ in range(80):
+            if complete(b"\n".join(a[alo:ahi])) and complete(b"\n".join(b[blo:bhi])):
+                break
+            if alo and blo:
+                alo, blo = alo - 1, blo - 1
+            if ahi < len(a) and bhi < len(b):
+                ahi, bhi = ahi + 1, bhi + 1
+        else:
+            return False
+        spans[at] = [alo, ahi, blo, bhi]
+        if at + 1 < len(spans) and spans[at + 1][0] <= ahi:  # the widened hunk reaches the next: one hunk
+            nxt = spans.pop(at + 1)
+            spans[at] = [alo, max(ahi, nxt[1]), blo, max(bhi, nxt[3])]
+            continue
+        at += 1
+    inside_a = [b"\n".join(a[s[0] : s[1]]) for s in spans]
+    inside_b = [b"\n".join(b[s[2] : s[3]]) for s in spans]
+    parts = chunks(b"\n".join(inside_a)), chunks(b"\n".join(inside_b))
     names = {n for side in parts for c in side for n in (defined(c) or ())}
     inrest: set[bytes] = set()
     if names:
-        rx = re.compile(rb"(?<![\w])(?:" + b"|".join(re.escape(n) for n in sorted(names)) + rb")(?![\w])")
-        inrest = set(rx.findall(old[:start])) | set(rx.findall(old[end_old:]))
+        edges = [0, *(x for s in spans for x in (s[0], s[1])), len(a)]
+        rest = b"\n".join(line for lo, hi in zip(edges[::2], edges[1::2], strict=True) for line in a[lo:hi])
+        inrest = mentioned(names, rest)
     return kept(parts[0], inrest) == kept(parts[1], inrest)
 
 

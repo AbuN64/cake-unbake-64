@@ -230,3 +230,16 @@ def test_a_static_inline_function_nothing_calls_may_differ():
     # a type the dropped function names is dropped with it
     typed = "typedef struct P { s32 a; } P;\nstatic __inline__ s32 pick(P *p) { return p->a; }\n"
     assert same((typed + base).encode(), base.encode())
+
+
+def test_hunks_split_two_edits_far_apart_and_the_words_are_whole():
+    lines = [f"int v{i};" for i in range(2000)]
+    other = list(lines)
+    other.insert(10, "typedef int A;")
+    other.insert(1501, "typedef long B;")
+    spans = cc_cache.hunks("\n".join(lines).encode(), "\n".join(other).encode())
+    assert len(spans) == 2
+    assert all(hi - lo < 5 for lo, hi, _, _ in spans)
+    assert cc_cache.mentioned({b"abc", b"xyz"}, b"abcd _xyz abc") == {b"abc"}
+    far = "\n".join(lines).encode()
+    assert cc_cache.types_only_differ(far, "\n".join(other).encode())
