@@ -946,3 +946,51 @@ def test_literals_after_other_files_data_apart_from_their_file_are_refused(tmp_p
     with pytest.raises(Refusal) as refused:
         build.linker(make_config(tmp_path), tree)
     assert refused.value.findings[0].key == "sync.split" and refused.value.findings[0].path == "src/a.c"
+
+
+# ---------------------------------------------------------------- rule changes make cannot see
+def _reflag_tree(tmp_path, makefile):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us", "de"]))
+    (tmp_path / "Makefile").write_text(makefile)
+    for v in ("us", "de"):
+        for unit in ("a", "b"):
+            obj = tmp_path / f"build/{v}/src/{unit}.c.o"
+            obj.parent.mkdir(parents=True, exist_ok=True)
+            obj.write_bytes(b"o")
+        (tmp_path / f"build/{v}/asm/d.s.o").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f"build/{v}/asm/d.s.o").write_bytes(b"o")
+    assert build.drop_reflagged(config) == 0  # the first build keeps its rules
+    return config
+
+
+ROW = "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): CFLAGS := -O1\n"
+
+
+def test_a_changed_per_file_row_drops_that_object_in_every_version(tmp_path):
+    config = _reflag_tree(tmp_path, "CFLAGS := -O2\n" + ROW)
+    assert build.drop_reflagged(config, ("# note\nCFLAGS := -O2\n" + ROW.replace("-O1", "-O3")).encode()) == 2
+    assert not (tmp_path / "build/us/src/a.c.o").exists() and not (tmp_path / "build/de/src/a.c.o").exists()
+    assert (tmp_path / "build/us/src/b.c.o").exists()
+    assert build.drop_reflagged(config, ("# note\nCFLAGS := -O2\n" + ROW.replace("-O1", "-O3")).encode()) == 0
+
+
+def test_a_changed_global_rule_drops_every_compiled_object(tmp_path):
+    config = _reflag_tree(tmp_path, "CFLAGS := -O2\n" + ROW)
+    (tmp_path / "Makefile").write_text("CFLAGS := -O3\n" + ROW)
+    assert build.drop_reflagged(config) == 4
+    assert (tmp_path / "build/us/asm/d.s.o").exists()  # an assembled file's rule names its one input
+
+
+def test_drop_including_rebuilds_objects_whose_output_includes_a_name(tmp_path):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    for unit, text in (("a", '.include "nonmatchings/x/f.s"\n'), ("b", '.include "data/y.s"\n')):
+        (tmp_path / f"build/us/{unit}.c.s").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f"build/us/{unit}.c.s").write_text(text)
+        (tmp_path / f"build/us/{unit}.c.o").write_bytes(b"o")
+    (tmp_path / "build/us/c.c.o").write_bytes(b"o")  # no compiler output to read: rebuilt to be safe
+    assert build.drop_including(config, "us", {"nonmatchings/x/f.s"}) == 2
+    assert sorted(p.name for p in (tmp_path / "build/us").glob("*.o")) == ["b.c.o"]

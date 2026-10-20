@@ -151,7 +151,8 @@ def _recipe(id: str) -> str:
         **{k: [v] for k, v in _MAKE.items()},
         "cc": [f"$(CC_{key})"],
         "as": [f"$(AS_{key})"],
-        "cppflags": ["$(CPPFLAGS) -MMD -MF $(@:.o=.d) -MT $@"],
+        # -MP: a phony rule per header, so a header a later commit deletes never stops an incremental build
+        "cppflags": ["$(CPPFLAGS) -MMD -MP -MF $(@:.o=.d) -MT $@"],
         "codegen": ["$(CFLAGS)"],
         "asflags": ["$(ASFLAGS) $(ASINC)"],
         "defines": ["$(DEFINES)"],
@@ -727,6 +728,68 @@ def project_inputs(project: Project) -> str:
     return sha256(repr(rows).encode())
 
 
+_FILE_RULE = re.compile(r"^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/(.+?\.o)\):")
+_INCLUDED = re.compile(rb'^\s*\.include\s+"([^"]+)"', re.M)
+
+
+def _objects(config: Config, version: str) -> list[Path]:
+    """The compiled objects of one version: build/<v>/<source>.o, not the assembled (.s.o) or binary (.bin.o) ones,
+    whose rule names their one input file."""
+    found = []
+    for directory, _, names in os.walk(config.project.root / "build" / version):
+        found += [Path(directory) / n for n in names if n.endswith(".o") and not n.endswith((".s.o", ".bin.o"))]
+    return found
+
+
+def drop_including(config: Config, version: str, names: set[str]) -> int:
+    """Remove the objects of `version` whose compiler output includes one of `names` (paths under asm/<v>/, as
+    INCLUDE_ASM spells them) or has no compiler output to read, so make rebuilds exactly those. Returns the count."""
+    dropped = 0
+    wanted = {n.encode() for n in names}
+    for obj in _objects(config, version):
+        try:
+            included = set(_INCLUDED.findall(obj.with_suffix(".s").read_bytes()))
+        except FileNotFoundError:
+            included = wanted
+        if included & wanted:
+            obj.unlink(missing_ok=True)
+            dropped += 1
+    return dropped
+
+
+def drop_reflagged(config: Config, new: bytes | None = None) -> int:
+    """make does not see a rule change, so the Makefile the objects in build/ were made by is kept
+    (.unbake/make.Makefile) and compared with the one about to build (`new`, default the tree's Makefile): an object
+    whose per-file row changed is removed in every version, and any other changed line (a global flag, a recipe)
+    removes every compiled object. Comment lines are ignored. The kept copy becomes the new one. Returns the count
+    removed; nothing is removed when no copy was kept (objects made before this rule)."""
+    root = config.project.root
+    kept, current = root / ".unbake/make.Makefile", root / "Makefile"
+    try:
+        new = current.read_bytes() if new is None else new
+    except FileNotFoundError:
+        return 0
+    try:
+        old = kept.read_bytes()
+    except FileNotFoundError:
+        old = new
+    store.write(kept, new)
+    moved = {
+        line for line in set(old.decode().splitlines()) ^ set(new.decode().splitlines()) if not line.startswith("#")
+    }
+    if not moved:
+        return 0
+    rules = {_FILE_RULE.match(line) for line in moved}
+    targets = None if None in rules else {m.group(1) for m in rules if m}
+    dropped = 0
+    for version in config.project.versions:
+        for obj in _objects(config, version):
+            if targets is None or str(obj.relative_to(root / "build" / version)) in targets:
+                obj.unlink(missing_ok=True)
+                dropped += 1
+    return dropped
+
+
 def make_check(config: Config, held: Tree | None = None) -> Json:
     """`make check`: one make run builds and links every version and verifies its sha1."""
     with effort.stage("build.make_check"):
@@ -744,6 +807,7 @@ def make_check(config: Config, held: Tree | None = None) -> Json:
             )
             return done
         effort.count("make-check", False)
+        drop_reflagged(config)
         result = _make(config, "check")
         if result.exit == 0:
             stamp.parent.mkdir(parents=True, exist_ok=True)

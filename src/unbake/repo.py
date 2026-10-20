@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import os
 import re
 import shutil
 from collections import Counter
@@ -660,6 +661,8 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
                 (root / path).unlink()
                 effort.forget("pin", "includes", "closure", "listing")
             else:
+                if path == "Makefile":  # a rule make cannot see changing: its objects go before the next build
+                    build.drop_reflagged(config, value)
                 store.write(root / path, value)
         effort.count("sync", not changed)
         return {"written": sorted(changed), "stand_ins": {p: [] for p in sorted(appended)}}, current
@@ -729,24 +732,77 @@ def extract_job(job: tuple[Config, str]) -> bool:
 
     The proof is a stamp written beside the extracted files: the tree's own asm/<v>/ was made from the input named
     there. A host-wide cache of "this input was extracted somewhere" cannot say what this tree holds, so a tree whose
-    facts moved on and came back (or whose neighbour extracted the same input) kept stale assembly."""
+    facts moved on and came back (or whose neighbour extracted the same input) kept stale assembly.
+
+    An extraction again writes into a fresh asm/<v>/ (the old one moved aside, so no file a cold extraction would not
+    write survives, and no link into a shared tree is written through), then hands the build only what changed: a file
+    whose bytes equal the last extraction gets its old mtime back, and when no shared include changed the
+    `.extracted` mark keeps its old time too and only the objects that include a changed file are rebuilt
+    (`build.drop_including`). A rename touches a few callers, not every object of the version."""
     config, v = job
     key = _extract_key(config, v)
-    if (config.project.root / "asm" / v).is_dir() and _extracted_key(config, v) == key:
-        damaged = _asm_damaged(config, v)
-        if not damaged:
-            return False
+    asm = config.project.root / "asm" / v
+    damaged = _asm_damaged(config, v) if asm.is_dir() else []  # what the last extraction wrote, still as written?
+    if asm.is_dir() and _extracted_key(config, v) == key and not damaged:
+        return False
     # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
     # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.
     for old in (config.project.root / "build" / v).glob("*.ld"):
         old.unlink(missing_ok=True)
+    before = None if damaged or not asm.is_dir() else _manifest_rows(config, v)
     stamp = _extract_stamp(config, v)
     stamp.unlink(missing_ok=True)  # an extraction that dies half-way is not the one the old stamp named
-    _checked(build.extract(config, v), "setup.splat", f"extract {v}")
+    aside = asm.with_name(f".{v}.{os.getpid()}.old")
+    shutil.rmtree(aside, ignore_errors=True)
+    if asm.is_dir():
+        asm.rename(aside)
+    try:
+        _checked(build.extract(config, v), "setup.splat", f"extract {v}")
+    finally:
+        shutil.rmtree(aside, ignore_errors=True)
     stamp.parent.mkdir(parents=True, exist_ok=True)
+    _keep_unchanged(config, v, before)
     _write_asm_manifest(config, v)
     store.write(stamp, key.encode())
     return True
+
+
+_INCLUDE = re.compile(rb'^\s*\.include\s+"([^"]+)"', re.M)
+
+
+def _manifest_rows(config: Config, v: str) -> dict[str, list[Any]] | None:
+    try:
+        rows = json.loads(_asm_manifest_path(config, v).read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+    return rows if isinstance(rows, dict) else None
+
+
+def _keep_unchanged(config: Config, v: str, before: Mapping[str, list[Any]] | None) -> None:
+    """After an extraction again: every file whose bytes equal the last extraction's gets that one's mtime back. When
+    every changed file is one only C objects include (not a top-level file, not a file other assembly includes), the
+    `.extracted` mark gets its old mtime too and the objects including a changed file are removed for make to rebuild;
+    otherwise the fresh mark rebuilds the whole version, as after a first extraction."""
+    if before is None:
+        return
+    root, prefix = config.project.root, f"asm/{v}/"
+    mark = f"{prefix}.extracted"
+    changed, nested = [rel for rel in before if not (root / rel).exists()], set()
+    for rel, path in _asm_files(config, v).items():
+        data = path.read_bytes()
+        nested.update(name.decode(errors="replace") for name in _INCLUDE.findall(data))
+        old = before.get(rel)
+        if rel == mark:
+            continue
+        if old and old[0] == len(data) and old[2] == sha1(data):
+            os.utime(path, ns=(old[1], old[1]))
+        else:
+            changed.append(rel)
+    names = {rel[len(prefix) :] for rel in changed if rel.startswith(prefix)}
+    if mark not in before or any("/" not in name or name in nested for name in names):
+        return
+    os.utime(root / mark, ns=(before[mark][1], before[mark][1]))
+    build.drop_including(config, v, names)
 
 
 @cache
@@ -758,11 +814,14 @@ def _splat_version(tool: Path, root: Path) -> bytes:
 
 
 def _extract_key(config: Config, v: str) -> str:
-    """splat version, yaml, symbol_addrs and ROM: nothing else decides what extraction writes."""
+    """splat version, the Makefile (its extract recipe rewrites what splat writes), yaml, symbol_addrs and ROM:
+    nothing else decides what extraction writes."""
     root = config.project.root
+    makefile = root / "Makefile"
     return digest(
         (
             _splat_version(config.host.tools["splat"], root),
+            sha1(makefile.read_bytes()) if makefile.is_file() else None,
             sha1((root / f"versions/{v}/splat.yaml").read_bytes()),
             sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes()),
             sha1(configuration.rom(config.project, v).read_bytes()),
@@ -819,7 +878,7 @@ def setup(config: Config, params: Json) -> Json:
             extracted = _extract(config, _extractable(config))
         synced, current = _sync(config, {"check": False})
         written = synced["written"]
-        again = [v for v in project.versions if f"versions/{v}/splat.yaml" in written]
+        again = [v for v in project.versions if "Makefile" in written or f"versions/{v}/splat.yaml" in written]
         if again:  # the yaml changed under extraction: its output is the output of the old one
             extracted = sorted({*extracted, *_extract(config, again)})
         with effort.stage("repo.setup.make"):

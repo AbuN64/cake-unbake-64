@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
@@ -197,6 +198,7 @@ class World:
             _write(root, f"versions/{v}/symbol_addrs.txt", "f_main = 0x80000400; // type:func rom:0x1000\n")
             _write(root, f"versions/{v}/splat.yaml", "generated\n")
         _write(root, "src/main/a.c", "int f_main(void) { return 1; }\n")
+        _write(root, "Makefile", "generated\n")  # as sync writes it: a Makefile change extracts again
 
         def capture(config, overlay=None):
             self.captures.append(dict(overlay or {}))
@@ -314,6 +316,7 @@ def _sync_world(world, unowned):
 
 
 def test_sync_check_lists_changes_and_writes_nothing(world):
+    (world.root / "Makefile").unlink()  # a tree sync has not written yet
     with pytest.raises(Refusal) as refused:
         repo.sync(world.cfg, {"check": True})
     (finding,) = refused.value.findings
@@ -325,6 +328,7 @@ def test_sync_check_lists_changes_and_writes_nothing(world):
 
 
 def test_sync_writes_the_generated_files_and_the_header_only_when_missing(world):
+    (world.root / "Makefile").unlink()  # a tree sync has not written yet
     written = repo.sync(world.cfg, {"check": False})["written"]
     assert {"Makefile", "demo.ld", "ci/run", ".github/workflows/ci.yml"} <= set(written)
     assert (world.root / "include/include_asm.h").read_text() == HEADER_TEXT
@@ -744,3 +748,65 @@ def test_words_inside_two_functions_or_off_code_are_no_jump_table():
     assert repo._jump_target([0x400010, 0x400050], code) is None
     assert repo._jump_target([0x400010, 0x500000], code) is None
     assert repo._jump_target([0x400010], code) is None
+
+
+# ---------------------------------------------------------------- extraction again: only what changed rebuilds
+def _extraction(tmp_path, monkeypatch, files):
+    """A tree extracted once from `files` (asm/us/ relative path -> bytes), an object per C unit including one file,
+    and a fake splat that writes whatever `files` holds at the time of the call."""
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    keys = iter(["K1", "K2", "K3"])
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v: next(keys))
+    monkeypatch.setattr(repo, "_checked", lambda *a: None)
+
+    def splat(c, v):
+        for rel, data in files.items():
+            _write(tmp_path, f"asm/us/{rel}", data.decode())
+        _write(tmp_path, "asm/us/.extracted", "")
+
+    monkeypatch.setattr(repo.build, "extract", splat)
+    assert repo.extract_job((config, "us")) is True
+    for unit, included in (("a", "nonmatchings/a/f.s"), ("b", "nonmatchings/b/g.s")):
+        _write(tmp_path, f"build/us/src/{unit}.c.s", f'    .include "{included}"\n')
+        _write(tmp_path, f"build/us/src/{unit}.c.o", "obj")
+    old = 1_000_000_000_000_000_000
+    for path in (tmp_path / "asm/us").rglob("*"):
+        if path.is_file():
+            os.utime(path, ns=(old, old))
+    repo._write_asm_manifest(config, "us")
+    return config, old
+
+
+def test_extracting_again_rebuilds_only_objects_including_a_changed_file(tmp_path, monkeypatch):
+    files = {"macro.inc": b"m\n", "nonmatchings/a/f.s": b"f\n", "nonmatchings/b/g.s": b"g\n", "data/d.s": b"d\n"}
+    config, old = _extraction(tmp_path, monkeypatch, files)
+    files["nonmatchings/a/f.s"] = b"f renamed\n"
+    del files["data/d.s"]  # a file the new facts no longer extract
+    assert repo.extract_job((config, "us")) is True
+    asm = tmp_path / "asm/us"
+    assert (asm / "macro.inc").stat().st_mtime_ns == old and (asm / "nonmatchings/b/g.s").stat().st_mtime_ns == old
+    assert (asm / ".extracted").stat().st_mtime_ns == old  # no whole-version rebuild
+    assert (asm / "nonmatchings/a/f.s").stat().st_mtime_ns != old
+    assert not (asm / "data/d.s").exists()  # a fresh directory: what a cold extraction holds, nothing older
+    assert not (tmp_path / "build/us/src/a.c.o").exists() and (tmp_path / "build/us/src/b.c.o").exists()
+    assert repo._asm_damaged(config, "us") == []
+
+
+def test_a_changed_shared_include_rebuilds_the_whole_version(tmp_path, monkeypatch):
+    files = {"macro.inc": b"m\n", "nonmatchings/a/f.s": b'.include "macro.inc"\n'}
+    config, old = _extraction(tmp_path, monkeypatch, files)
+    files["macro.inc"] = b"m2\n"
+    assert repo.extract_job((config, "us")) is True
+    assert (tmp_path / "asm/us/.extracted").stat().st_mtime_ns != old
+    assert (tmp_path / "asm/us/nonmatchings/a/f.s").stat().st_mtime_ns == old
+    assert (tmp_path / "build/us/src/a.c.o").exists()  # the fresh mark rebuilds every object of the version
+
+
+def test_an_extraction_over_damaged_assembly_rebuilds_the_whole_version(tmp_path, monkeypatch):
+    files = {"nonmatchings/a/f.s": b"f\n", "nonmatchings/b/g.s": b"g\n"}
+    config, old = _extraction(tmp_path, monkeypatch, files)
+    (tmp_path / "asm/us/nonmatchings/b/g.s").write_bytes(b"written through a link\n")
+    assert repo.extract_job((config, "us")) is True
+    assert (tmp_path / "asm/us/.extracted").stat().st_mtime_ns != old
