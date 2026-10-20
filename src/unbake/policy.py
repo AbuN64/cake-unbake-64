@@ -263,9 +263,52 @@ def _extents(snapshot: Snapshot, version: str) -> tuple[list[int], list[int], di
     return effort.memo(("extents", snapshot.digest, version), build)
 
 
-def _address_literals(snapshot: Snapshot, path: str, code: str) -> dict[int, str]:
+def _scalar(unit: str, name: str) -> bool:
+    """Whether the translation unit declares `name` only as an object that is no array (an int, a u64, a pointer): its
+    `NAME + K` adds to the value it holds, not to its address. Unknown (no declaration seen) is no scalar."""
+    found = False
+    for m in re.finditer(rf"\b{re.escape(name)}\b\s*([\[(=;,)]?)", unit):
+        if m[1] in ("[", "("):
+            return False  # an array or a function (or a use that indexes or calls it)
+        found = found or (
+            m[1] in (";", "=", ",") and _DECLARES.search(unit, max(0, m.start() - 80), m.start()) is not None
+        )
+    return found
+
+
+_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*["<]([^">]+)[">]', re.M)
+
+
+def _included(snapshot: Snapshot, path: str, code: str) -> str:
+    """The module's text and the text of every project header it includes, transitively (no preprocessor run: what
+    a check without a source view can read of the declarations the module sees)."""
+    texts, seen, todo = [code], {path}, [(path, code)]
+    while todo and len(seen) < 400:
+        at, text = todo.pop()
+        for name in _INCLUDE.findall(text):
+            for candidate in (f"include/{name}", f"{Path(at).parent.as_posix()}/{name}", f"src/{name}"):
+                if candidate in seen:
+                    break
+                data = snapshot.peek(candidate)
+                if data is not None:
+                    seen.add(candidate)
+                    texts.append(data.decode(errors="replace"))
+                    todo.append((candidate, texts[-1]))
+                    break
+    return "\n".join(texts)
+
+
+_DECLARES = re.compile(
+    r"(?:^|[;{}\n])\s*(?!(?:return|case|goto|sizeof|else|do)\b)(?:extern\s+|static\s+|volatile\s+|const\s+)*"
+    r"[A-Za-z_][\w\s]*\**\s*\Z"
+)  # a type before the name, no statement keyword
+
+
+def _address_literals(snapshot: Snapshot, path: str, code: str, view: SourceView | None = None) -> dict[int, str]:
     """Lines that spell a ROM address as a number: a literal in the mapped address space (from _KSEG0) inside a symbol's
-    range in a version holding the module, or `NAME + K` that reaches past the data symbol NAME in every holder."""
+    range in a version holding the module, or `NAME + K` that reaches past the data symbol NAME in every holder, unless
+    NAME is a scalar the unit declares (an int, u64 or pointer global: the sum is of its value) and no `&` takes its
+    address."""
     module = _module(snapshot, path)
     if module is None:
         return {}
@@ -282,6 +325,7 @@ def _address_literals(snapshot: Snapshot, path: str, code: str) -> dict[int, str
             if at >= 0 and value < ends[at]:
                 hits.setdefault(line(match.start()), match["int"])
                 break
+    unit: str | None = None  # the declarations the module sees, read at the first sum that needs them
     for match in _OFFSET.finditer(code):
         sizes = [
             e[2][match[1]][1] - e[2][match[1]][0]
@@ -289,6 +333,11 @@ def _address_literals(snapshot: Snapshot, path: str, code: str) -> dict[int, str
             if match[1] in e[2] and match[1] not in snapshot.versions[v].code
         ]
         if sizes and (reach := _integer(match[2])) is not None and all(reach >= size for size in sizes):
+            if "&" not in match[0]:
+                if unit is None:
+                    unit = view.text if view is not None else _included(snapshot, path, code)
+                if _scalar(unit, match[1]):
+                    continue
             hits.setdefault(line(match.start()), " ".join(match[0].split()))
     return hits
 
@@ -706,7 +755,7 @@ def _hits(
     elif check == "shared-declarations":
         lines = _shared(code, view, path, snapshot) if view else set()
     elif check == "address-literal":
-        return _address_literals(snapshot, path, code) if snapshot else {}
+        return _address_literals(snapshot, path, code, view) if snapshot else {}
     else:
         lines = _raw_gfx(code)
     return dict.fromkeys(lines, "")

@@ -570,6 +570,28 @@ def test_pointer_arithmetic_on_a_named_symbol_is_not_an_address_literal(snapshot
     assert list(policy._address_literals(snapshot, PATH, "f(D_800D7000 + 0x1000);\n")) == [1]
 
 
+def test_a_sum_with_the_value_of_a_scalar_global_is_not_an_address_literal(snapshot, monkeypatch):
+    # BT-OPUS-1: `D_801B4AA8 + 0x5A` (an s32 tick) and `D_80145DA0 + 12000000` (a u64) add to values, not addresses
+    _placed_snapshot(snapshot, monkeypatch)
+    code = "x = D_800D7000 + 0x5A;\n"
+    for declared in ("extern s32 D_800D7000;", "extern u64 D_800D7000;", "extern char *D_800D7000;"):
+        view = SimpleNamespace(text=f"{declared}\nvoid f(void) {{ {code} }}\n")
+        assert policy._address_literals(snapshot, PATH, code, view) == {}
+    for declared in ("extern u8 D_800D7000[];", ""):  # an array decays to its address; no declaration is no proof
+        view = SimpleNamespace(text=f"{declared}\nvoid f(void) {{ {code} }}\n")
+        assert list(policy._address_literals(snapshot, PATH, code, view)) == [1]
+    view = SimpleNamespace(text="extern s32 D_800D7000;\n")
+    assert list(policy._address_literals(snapshot, PATH, "p = (char *)&D_800D7000 + 0x20;\n", view)) == [1]
+
+
+def test_without_a_source_view_the_included_headers_declare_the_scalar(snapshot, monkeypatch):
+    _placed_snapshot(snapshot, monkeypatch)
+    headers = {"include/game.h": b'#include "ticks.h"\n', "include/ticks.h": b"extern s32 D_800D7000;\n"}
+    monkeypatch.setattr(snapshot, "peek", headers.get, raising=False)
+    code = '#include "game.h"\nvoid f(void) { x = D_800D7000 + 0x5A; }\n'
+    assert policy._address_literals(snapshot, PATH, code) == {}
+
+
 def test_address_literal_skips_float_fragments_and_reads_octal(snapshot, monkeypatch):
     _placed_snapshot(snapshot, monkeypatch)
     code = "float a = 0.000212f;\nfloat b = 1e-05;\nfloat c = 1.5e+3;\nint d = 020000000000;\nint e = 0x800D7010U;\n"
