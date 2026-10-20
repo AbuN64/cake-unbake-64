@@ -173,22 +173,25 @@ def _wrap_over(body: str, fallback: str) -> str:
 
 
 def _visible(before: str) -> str:
-    """The lines of `before` a declaration inserted right after it can rely on: those at the same preprocessor
-    nesting, in the same branch of every conditional still open. A closed conditional, another branch or anything
-    after the insertion point is not visible."""
+    """The top-level items of `before` a declaration inserted right after it can rely on: those at the same
+    preprocessor nesting, in the same branch of every conditional still open. A closed conditional, another branch
+    or anything after the insertion point is not visible. Only top-level directives open or close a conditional: one
+    inside a function body (`#if VERSION_X` around a statement) is part of that function, which stays whole (cut by
+    lines, the function no longer equalled the candidate's copy, so a whole-file candidate brought it twice)."""
     stack: list[int] = []
     seen = 0
     marked: list[tuple[tuple[int, ...], str]] = []
-    for line in before.splitlines(keepends=True):
-        kind = _DIRECTIVE.match(line)
+    for part in items(before):
+        text = before[part.start : part.end]
+        kind = _DIRECTIVE.match(text) if part.kind == "directive" else None
         word = kind[1] if kind else ""
         if word in ("else", "elif", "endif") and stack:
             stack.pop()
-        marked.append((tuple(stack), line))
+        marked.append((tuple(stack), text + "\n"))
         if word in ("if", "ifdef", "ifndef", "else", "elif"):
             seen += 1
             stack.append(seen)
-    return "".join(line for frames, line in marked if frames == tuple(stack[: len(frames)]))
+    return "".join(text for frames, text in marked if frames == tuple(stack[: len(frames)]))
 
 
 def _declarations(declared: str) -> list[str]:

@@ -629,3 +629,14 @@ def test_a_landing_that_moves_a_row_rewrites_only_the_split_and_link_files_and_r
     assert applied[1] == {"versions/a/splat.yaml": b"new split\n", "R.ld": b"link\n"}  # never the Makefile or CI
     assert applied[2] == {"versions/a/splat.yaml": b"old split\n", "R.ld": None}  # put back, then the landing
     assert applied[3] == {"versions/a/symbol_addrs.txt": b""}
+
+
+def test_a_whole_file_candidate_keeps_an_earlier_function_with_a_version_guard_in_its_body_once():
+    text = (
+        '#include "include_asm.h"\n\n'
+        "void before(int i) {\n    extern int helper(int);\n#if defined(VERSION_US)\n    helper(i);\n#else\n"
+        "    helper(i + 1);\n#endif\n}\n\n"
+        "/* the next one */\nvoid target(void) {\n    before(1);\n}\n\nvoid after(void) {\n}\n"
+    )
+    out, _ = publish.replace_traced(text, "target", text)
+    assert out == text  # the file scored as its own candidate is the file, `before` not brought twice
