@@ -29,6 +29,7 @@ help = "Write the generated Makefile, link script, split yamls and CI files, and
 handler = "repo.sync"
 params = [
   { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "write nothing; refuse naming the files that would change" },
+  { name = "settle", kind = "flag", type = "str", required = false, multiple = false, help = "write, then refuse as --check would unless a second sync would write nothing (sync and sync --check in one run)" },
 ]
 
 [command.symbols]

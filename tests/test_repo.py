@@ -335,6 +335,22 @@ def test_sync_check_lists_changes_and_writes_nothing(world):
     assert repo.sync(world.cfg, {"check": True}) == {"written": [], "stand_ins": {}}  # now nothing would change
 
 
+def test_sync_settle_writes_then_checks_again_only_after_a_write_and_refuses_a_moving_output(world, monkeypatch):
+    (world.root / "Makefile").unlink()
+    runs = []
+    real = repo._sync
+    monkeypatch.setattr(repo, "_sync", lambda c, p: runs.append(bool(p.get("check"))) or real(c, p))
+    assert "Makefile" in repo.sync(world.cfg, {"settle": True})["written"] and runs == [False, True]
+    runs.clear()
+    assert repo.sync(world.cfg, {"settle": True})["written"] == [] and runs == [False]  # a fixed point: no recheck
+    calls = iter(range(100))
+    generated = repo._generated
+    monkeypatch.setattr(repo, "_generated", lambda c, t: {**generated(c, t), "moving.txt": b"%d" % next(calls)})
+    with pytest.raises(Refusal) as refused:
+        repo.sync(world.cfg, {"settle": True})
+    assert refused.value.findings[0].key == "sync.changed" and "moving.txt" in refused.value.findings[0].missing
+
+
 def test_sync_writes_the_generated_files_and_the_header_only_when_missing(world):
     (world.root / "Makefile").unlink()  # a tree sync has not written yet
     written = repo.sync(world.cfg, {"check": False})["written"]

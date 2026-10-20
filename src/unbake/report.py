@@ -624,15 +624,26 @@ def progress_files(config: Any, tree: Any) -> dict[str, bytes]:
     return out
 
 
-def files(config: Any, tree: Any) -> dict[str, bytes]:
+def files(config: Any, tree: Any, settle: bool = False) -> dict[str, bytes]:
     """README.md with its progress block, the one image it embeds and an existing progress.json with its map files;
-    empty when `publish_hold` holds the tree, so the numbers on disk stay as they are."""
+    empty when `publish_hold` holds the tree, so the numbers on disk stay as they are. `settle`: refuse unless the
+    README written would come out the same again (the rest reads only the tree, which writing them does not change)."""
     with effort.stage("report.files"):
         if publish_hold(config, tree):
             return {}
         document = progress(config, tree)
         root = Path(config.project.root)
-        out = {"README.md": readme((root / "README.md").read_text(), config, document).encode()}
+        text = readme((root / "README.md").read_text(), config, document)
+        if settle and readme(text, config, document) != text:
+            raise Refusal(
+                Finding(
+                    "sync.changed",
+                    "1 generated or stand-in files differ from `unbake sync`",
+                    missing=("README.md",),
+                    action="run unbake sync and commit the result",
+                )
+            )
+        out = {"README.md": text.encode()}
         out.update(present.files(config, tree))
         if (root / "progress.json").is_file():
             out.update(progress_files(config, tree))

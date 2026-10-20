@@ -29,7 +29,7 @@ one `[version.<id>]` table per ROM, optional `[file."path or dir/"]` rows). Ther
 types.toml or version_differences. A file owns the names it defines or keeps behind `INCLUDE_ASM(SEG, NAME)`,
 `INCLUDE_DATA`, `INCLUDE_RODATA` and `INCLUDE_BSS(SEG, NAME, SIZE)`; `tree.capture(config, overlay)` reads it and
 `Tree.owner(version, name)` answers who owns a name. Fuzzy C sits in `#ifdef NON_MATCHING`; a per-version difference sits
-in `#if VERSION_X`. The commands are `init`, `setup [--no-make]`, `sync [--check]`, `check`, `audit`, `compare`, `score`, `probe`, `submit`,
+in `#if VERSION_X`. The commands are `init`, `setup [--no-make]`, `sync [--check|--settle]`, `check`, `audit`, `compare`, `score`, `probe`, `submit`,
 `land`, `report`, `map`, `symbols` and `names`. CI is `ci/run` (forge-neutral, the repository's own `make check CHECK=tree` only: a game repository never installs or calls unbake) with thin GitHub and GitLab wrappers. Policy keeps
 the source rules and the `unclean` pool, and adds a header lint: each `extern` is declared at most once across `include/`
 and a name has the same declaration everywhere (cached in the `header.names` kind by header text).

@@ -274,7 +274,7 @@ def test_the_command_set_is_the_C9_set() -> None:
         "verify",
         "types",
     }
-    assert [p["name"] for p in COMMANDS["sync"]["params"]] == ["check"]
+    assert [p["name"] for p in COMMANDS["sync"]["params"]] == ["check", "settle"]
 
 
 def test_sync_check_reaches_the_handler(argv: list[str], monkeypatch: Patch, capsys: Capture) -> None:

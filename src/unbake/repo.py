@@ -537,13 +537,19 @@ def jump_table_of(config: Config, version: str, rom: int) -> str | None:
 def sync(config: Config, params: Json) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
     files that would change. The README block, its image and progress.json follow the check verdict: with none for
-    this tree they are left as they are and a note says to check first."""
+    this tree they are left as they are and a note says to check first. With settle, write and then refuse as check
+    would unless a second sync would write nothing: when it wrote generated or stand-in files the check runs again in
+    this process on the tree it left; the README files it writes are not read by the capture, so their fixed point is
+    the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
     result, current = _sync(config, params)
+    if params.get("settle") and result["written"]:
+        _, current = _sync(config, {"check": True})
     if not (config.project.root / "README.md").is_file():
         return result
     if hold := report.publish_hold(config, current):
         return {**result, "notes": [asdict(hold)]}
-    wanted = report.files(config, current)
+    settle = bool(params.get("settle")) and not params.get("check")
+    wanted = report.files(config, current, settle=True) if settle else report.files(config, current)
     if params.get("check"):
         differ = sorted(p for p, v in wanted.items() if _read(config.project.root / p) != v)
         if differ:
