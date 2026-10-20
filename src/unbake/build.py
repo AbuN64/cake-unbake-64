@@ -681,8 +681,10 @@ def _cached_cc(config: Config, compiler: Path) -> str:
     cache = getattr(config.host, "cache_dir", None)
     if cache is None:
         return str(compiler)
-    front = Path(__file__).parent / "resources" / "cc_cache.py"
-    parts = ("python3", "-I", "-S", front, cache.with_name(f"{cache.name}.cc"), compiler)
+    # imported, not run as a script: a script is compiled again on every call, a module keeps its .pyc
+    start = "import sys;sys.path.insert(0,sys.argv.pop(1));import cc_cache;sys.exit(cc_cache.main(sys.argv))"
+    folder = Path(__file__).parent / "resources"
+    parts = ("python3", "-I", "-S", "-c", start, folder, cache.with_name(f"{cache.name}.cc"), compiler)
     return " ".join(shlex.quote(str(p)) for p in parts)
 
 

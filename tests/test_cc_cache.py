@@ -133,8 +133,10 @@ def test_local_mk_puts_each_compiler_behind_the_front(tmp_path):
     )
     text = build.local_mk(SimpleNamespace(host=host)).decode()
     line = next(row for row in text.splitlines() if row.startswith("CC_gcc_2_8_1_sn64 :="))
-    assert "cc_cache.py /home/x/.cache/unbake/content.cc /chains/gcc-2.8.1-sn64/cc1" in line
-    assert "python3 -I " in line
+    assert (
+        "import cc_cache" in line and "/resources /home/x/.cache/unbake/content.cc /chains/gcc-2.8.1-sn64/cc1" in line
+    )
+    assert "python3 -I -S -c " in line
     assert importlib.resources.files("unbake.resources").joinpath("cc_cache.py").is_file()
 
 
@@ -239,7 +241,9 @@ def test_hunks_split_two_edits_far_apart_and_the_words_are_whole():
     other.insert(1501, "typedef long B;")
     spans = cc_cache.hunks("\n".join(lines).encode(), "\n".join(other).encode())
     assert len(spans) == 2
-    assert all(hi - lo < 5 for lo, hi, _, _ in spans)
+    assert all(
+        lo == hi and new_hi - new_lo <= 16 for lo, hi, new_lo, new_hi in spans
+    )  # two insertions, nothing between
     assert cc_cache.mentioned({b"abc", b"xyz"}, b"abcd _xyz abc") == {b"abc"}
     far = "\n".join(lines).encode()
     assert cc_cache.types_only_differ(far, "\n".join(other).encode())

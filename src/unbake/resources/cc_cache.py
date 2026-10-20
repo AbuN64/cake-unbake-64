@@ -235,13 +235,12 @@ def common(old: bytes, new: bytes) -> tuple[int, int]:
     return prefix, low
 
 
-def hunks(old: bytes, new: bytes) -> list[tuple[int, int, int, int]]:
-    """The whole-line ranges where `old` and `new` differ, as (old first line, old end, new first line, new end) in
-    line numbers: equal lines at both ends are trimmed, then lines found once in each text anchor the rest (the longest
-    run of them in the same order), so two edits far apart are two small hunks, not one that spans everything."""
+def anchored(a: list[bytes], b: list[bytes]) -> list[tuple[int, int, int, int]]:
+    """The line ranges (a first, a end, b first, b end) where the line lists differ: equal lines at both ends are cut,
+    then lines found once in each list anchor the rest (the longest run of them in the same order), so two edits far
+    apart are two small ranges, not one that spans everything between."""
     from bisect import bisect_left
 
-    a, b = old.split(b"\n"), new.split(b"\n")
     out: list[tuple[int, int, int, int]] = []
     todo = [(0, len(a), 0, len(b))]
     while todo:
@@ -261,7 +260,7 @@ def hunks(old: bytes, new: bytes) -> list[tuple[int, int, int, int]]:
             for j in range(blo, bhi):
                 once_b[b[j]] = -1 if b[j] in once_b else j
             pairs = sorted((i, once_b[line]) for line, i in once_a.items() if i >= 0 and once_b.get(line, -1) >= 0)
-        tails: list[int] = []  # patience: the longest increasing run of new-side positions
+        tails: list[int] = []  # patience: the longest increasing run of b positions
         back: list[int] = [-1] * len(pairs)
         ends: list[int] = []
         for n, (_, j) in enumerate(pairs):
@@ -289,6 +288,31 @@ def hunks(old: bytes, new: bytes) -> list[tuple[int, int, int, int]]:
     return sorted(out)
 
 
+def hunks(old: bytes, new: bytes) -> list[list[int]]:
+    """The byte ranges [old start, old end, new start, new end] of whole lines where `old` and `new` differ. The
+    common head and tail are cut by halving first, so only the lines between the first and the last difference are
+    split and compared."""
+    head, tail = common(old, new)
+    lo = old.rfind(b"\n", 0, head) + 1  # the line of the first difference starts here in both texts
+    end = old.find(b"\n", len(old) - tail)  # and the line of the last one ends at a newline both texts have
+    keep = (end + 1 - (len(old) - tail)) if end >= 0 else tail
+    hi_old, hi_new = len(old) - tail + keep, len(new) - tail + keep
+    if lo >= hi_old and lo >= hi_new:
+        return []
+    mid_old, mid_new = old[lo:hi_old], new[lo:hi_new]
+    a, b = mid_old.split(b"\n"), mid_new.split(b"\n")
+    at_a, at_b = [0], [0]
+    for line in a:
+        at_a.append(at_a[-1] + len(line) + 1)
+    for line in b:
+        at_b.append(at_b[-1] + len(line) + 1)
+    top_a, top_b = len(mid_old), len(mid_new)
+    return [
+        [lo + min(at_a[w], top_a), lo + min(at_a[x], top_a), lo + min(at_b[y], top_b), lo + min(at_b[z], top_b)]
+        for w, x, y, z in anchored(a, b)
+    ]
+
+
 def mentioned(names: set[bytes], text: bytes) -> set[bytes]:
     """The names that occur in `text` as whole words."""
     found: set[bytes] = set()
@@ -303,41 +327,48 @@ def mentioned(names: set[bytes], text: bytes) -> set[bytes]:
     return found
 
 
+def widened(old: bytes, new: bytes, span: list[int]) -> bool:
+    """Grow `span` by whole lines on both sides until each text's part is whole declarations; False when it cannot."""
+    for _ in range(80):
+        if complete(old[span[0] : span[1]]) and complete(new[span[2] : span[3]]):
+            return True
+        if span[0] > 0 and span[2] > 0:
+            back = span[0] - (old.rfind(b"\n", 0, span[0] - 1) + 1)
+            span[0], span[2] = span[0] - back, span[2] - back
+        if span[1] < len(old) and span[3] < len(new):
+            stop = old.find(b"\n", span[1])
+            step = len(old) - span[1] if stop < 0 else stop + 1 - span[1]
+            span[1], span[3] = span[1] + step, span[3] + step
+    return False
+
+
 def types_only_differ(old: bytes, new: bytes) -> bool:
     """True when `old` and `new` differ only in type declarations (typedef, struct, union, enum definitions) and
     static inline functions that nothing else in the text names: no .s byte depends on such a declaration (the
     compile has no debug output), so the same compiler writes the same assembly. Each changed hunk, widened to whole
     declarations, is the only text read closely; everything around them is searched for the names they define."""
     patterns()
-    a, b = old.split(b"\n"), new.split(b"\n")
-    spans: list[list[int]] = [list(h) for h in hunks(old, new)]
+    spans = hunks(old, new)
     at = 0
     while at < len(spans):
-        alo, ahi, blo, bhi = spans[at]
-        for _ in range(80):
-            if complete(b"\n".join(a[alo:ahi])) and complete(b"\n".join(b[blo:bhi])):
-                break
-            if alo and blo:
-                alo, blo = alo - 1, blo - 1
-            if ahi < len(a) and bhi < len(b):
-                ahi, bhi = ahi + 1, bhi + 1
-        else:
+        if not widened(old, new, spans[at]):
             return False
-        spans[at] = [alo, ahi, blo, bhi]
-        if at + 1 < len(spans) and spans[at + 1][0] <= ahi:  # the widened hunk reaches the next: one hunk
-            nxt = spans.pop(at + 1)
-            spans[at] = [alo, max(ahi, nxt[1]), blo, max(bhi, nxt[3])]
+        if at and spans[at - 1][1] >= spans[at][0]:  # the widened hunk reaches the one before: they are one hunk
+            before = spans.pop(at - 1)
+            spans[at - 1] = [before[0], max(before[1], spans[at - 1][1]), before[2], max(before[3], spans[at - 1][3])]
+            at -= 1
+            continue
+        if at + 1 < len(spans) and spans[at + 1][0] <= spans[at][1]:  # or the one after
+            after = spans.pop(at + 1)
+            spans[at] = [spans[at][0], max(spans[at][1], after[1]), spans[at][2], max(spans[at][3], after[3])]
             continue
         at += 1
-    inside_a = [b"\n".join(a[s[0] : s[1]]) for s in spans]
-    inside_b = [b"\n".join(b[s[2] : s[3]]) for s in spans]
-    parts = chunks(b"\n".join(inside_a)), chunks(b"\n".join(inside_b))
+    parts = (chunks(b"".join(old[s[0] : s[1]] for s in spans)), chunks(b"".join(new[s[2] : s[3]] for s in spans)))
     names = {n for side in parts for c in side for n in (defined(c) or ())}
     inrest: set[bytes] = set()
     if names:
-        edges = [0, *(x for s in spans for x in (s[0], s[1])), len(a)]
-        rest = b"\n".join(line for lo, hi in zip(edges[::2], edges[1::2], strict=True) for line in a[lo:hi])
-        inrest = mentioned(names, rest)
+        edges = [0, *(x for s in spans for x in (s[0], s[1])), len(old)]
+        inrest = mentioned(names, b"".join(old[lo:hi] for lo, hi in zip(edges[::2], edges[1::2], strict=True)))
     return kept(parts[0], inrest) == kept(parts[1], inrest)
 
 
