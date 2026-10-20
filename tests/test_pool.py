@@ -1752,7 +1752,7 @@ def _queued_peer(runtime, pid, age):
     folder = _slots_dir(runtime)
     lock = (folder / f"cmd-{pid}.lock").open("a")
     pool.fcntl.flock(lock, pool.fcntl.LOCK_EX)
-    ticket = folder / f"wait-{age:020d}-{pid}"
+    ticket = folder / f"wait-1{age:020d}-{pid}"
     ticket.touch()
     return lock, ticket
 
@@ -1800,7 +1800,7 @@ def test_a_waiter_queues_behind_those_before_it_and_leaves_the_queue_when_served
 
 def test_the_ticket_of_a_dead_command_holds_nobody_back(tmp_path):
     runtime = os.environ["XDG_RUNTIME_DIR"]
-    ghost = _slots_dir(runtime) / f"wait-{1:020d}-999999"
+    ghost = _slots_dir(runtime) / f"wait-1{1:020d}-999999"
     ghost.touch()
     pool._acquire(2)
     assert len(pool._slots) == 2 and not ghost.exists()
@@ -1811,7 +1811,7 @@ def _ticket(runtime, pid):
     """The queue ticket of another live command that waits for a slot (its lock file is held, so it is alive)."""
     held = _commands(runtime, 1)
     os.rename(held[0].name, _slots_dir(runtime) / f"cmd-{pid}.lock")
-    ticket = _slots_dir(runtime) / f"wait-{time.time_ns():020d}-{pid}"
+    ticket = _slots_dir(runtime) / f"wait-1{time.time_ns():020d}-{pid}"
     ticket.touch()
     return held, ticket
 
@@ -1920,3 +1920,48 @@ def test_a_command_that_waits_for_slots_counts_the_seconds_it_blocked_not_the_wh
     monkeypatch.setattr(pool.effort, "waited", lambda seconds, what="lock", detail="": seen.append((what, detail)))
     pool._acquire(2)
     assert seen == [("slots", f"held by pids {peer}")]
+
+
+def test_the_priority_job_is_served_first_and_the_others_split_only_what_it_leaves():
+    a, b, c, me = Path("cmd-1.lock"), Path("cmd-2.lock"), Path("cmd-3.lock"), Path("cmd-4.lock")
+    lanes = {a: 16, b: 16, c: 16}
+    assert pool._ranked(16, {**lanes, me: 16}, {me}, me) == 16  # the ship takes every slot it can use
+    assert pool._ranked(16, {**lanes, me: 16}, {me}, a) == 0  # a lane keeps no minimum share against it
+    assert pool._ranked(16, {**lanes, me: 4}, {me}, a) == 4  # what the ship cannot use is split among the lanes
+    assert pool._ranked(16, {**lanes, me: 16}, set(), me) == 4  # no priority job: max-min fair as before
+
+
+def test_a_priority_command_says_so_in_its_lock_file_and_its_ticket_sorts_first(tmp_path, monkeypatch):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    folder = _slots_dir(runtime)
+    peer = folder / "cmd-424250.lock"
+    peer.write_text("8 16 p")
+    assert pool._declared(peer, 16) == (8, 16, True)
+    peer.write_text("8 16")
+    assert pool._declared(peer, 16) == (8, 16, False)
+    lock, older = _queued_peer(runtime, 424251, 1)  # a lane waiting since long before
+    monkeypatch.setenv(pool.PRIORITY, "1")
+    pool._enter(folder)
+    try:
+        assert pool._queue(folder)[0] == pool._ticket[0] and not pool._queued(folder)  # the ship waits behind nobody
+    finally:
+        pool._leave()
+        lock.close()
+        older.unlink(missing_ok=True)
+
+
+def test_under_contention_a_lane_frees_its_slots_to_the_priority_job(tmp_path, monkeypatch):
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    folder = _slots_dir(runtime)
+    ship = (folder / "cmd-424260.lock").open("a")  # a live priority command that can use all 4 slots
+    pool.fcntl.flock(ship, pool.fcntl.LOCK_EX)
+    (folder / "cmd-424260.lock").write_text("4 4 p")
+    try:
+        mine = pool._register(folder)
+        pool._demand(4, 4)
+        assert pool._divide(folder, mine, 4)[2] == 0  # this lane's share while the ship wants every slot
+        monkeypatch.setenv(pool.PRIORITY, "1")
+        assert pool._divide(folder, mine, 4)[2] == 2  # two priority jobs split the slots between them
+    finally:
+        pool._release()
+        ship.close()

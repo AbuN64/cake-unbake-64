@@ -234,12 +234,21 @@ def _pid(path: Path) -> int:
     return int(path.stem.rsplit("-", 1)[1])
 
 
+PRIORITY = "UNBAKE_PRIORITY"  # "1" in the environment of the job every tree waits on (the ship/land lock holder)
+
+
+def _priority() -> bool:
+    """Whether this command is the job the others wait on: its launcher holds the project's ship or land lock and
+    says so in the environment, which every child inherits."""
+    return os.environ.get(PRIORITY) == "1"
+
+
 def _demand(count: int, budget: int) -> None:
     """Writes the slots this command could use now and its host budget into its lock file: peers leave it no more than
     the first, and the largest budget of any live command is how many slot files there are. A change wakes the
     peers' waiters (a jobserver feeder sheds what its share no longer holds)."""
     if _cmd and not _cmd[0].closed:
-        fd, said = _cmd[0].fileno(), f"{count} {budget}".encode()
+        fd, said = _cmd[0].fileno(), f"{count} {budget}{' p' * _priority()}".encode()
         before = _said.get(fd)
         if before == said:
             return
@@ -250,15 +259,32 @@ def _demand(count: int, budget: int) -> None:
             _signal(_dir[0])
 
 
-def _declared(path: Path, want: int) -> tuple[int, int]:
-    """(the slots a peer said it could use, its budget); a peer that said nothing yet is taken to want all of `want`."""
+def _declared(path: Path, want: int) -> tuple[int, int, bool]:
+    """(the slots a peer said it could use, its budget, whether it is the priority job); a peer that said nothing yet
+    is taken to want all of `want`."""
     try:
         words = path.read_text().split()
     except OSError:
-        return want, want
+        return want, want, False
+    first = words[:1] == ["p"] or words[2:] == ["p"]
+    words = words[:2]
     if len(words) != 2 or not all(w.isdigit() and int(w) > 0 for w in words):
-        return want, want
-    return int(words[0]), int(words[1])
+        return want, want, first
+    return int(words[0]), int(words[1]), first
+
+
+def _ranked(want: int, demands: dict[Path, int], first: set[Path], mine: Path) -> int:
+    """This command's share when some commands are the priority job (`first`): they split `want` among themselves
+    as `_fair` does, and the others split only what they leave, down to no slot at all, so a priority command never
+    waits on slots that commands queued behind it keep by a minimum share."""
+    if not first:
+        return _fair(want, demands, mine)
+    ahead = {p: d for p, d in demands.items() if p in first}
+    if mine in first:
+        return _fair(want, ahead, mine)
+    left = want - min(want, sum(ahead.values()))
+    rest = {p: d for p, d in demands.items() if p not in first}
+    return _fair(left, rest, mine) if left > 0 else 0
 
 
 def _fair(want: int, demands: dict[Path, int], mine: Path) -> int:
@@ -282,9 +308,10 @@ def _divide(pool: Path, mine: Path, want: int, using: int = 0) -> tuple[list[Pat
     many as the largest budget any live command declared, so a command with a small budget takes any free slot of
     them (at most its budget) and never waits on a few low slots while higher ones are free."""
     peers = _peers(pool, mine)
-    declared = {p: (using or want, want) if p == mine else _declared(p, want) for p in peers}
-    size = max(budget for _, budget in declared.values())
-    return peers, size, _fair(size, {p: demand for p, (demand, _) in declared.items()}, mine)
+    declared = {p: (using or want, want, _priority()) if p == mine else _declared(p, want) for p in peers}
+    size = max(budget for _, budget, _ in declared.values())
+    first = {p for p, (_, _, ahead) in declared.items() if ahead}
+    return peers, size, _ranked(size, {p: demand for p, (demand, _, _) in declared.items()}, first, mine)
 
 
 def _signal(pool: Path) -> None:
@@ -346,7 +373,8 @@ def _waiting() -> bool:
 def _enter(pool: Path) -> None:
     """Takes a place in the queue for a free slot (once per wait)."""
     if not _ticket:
-        ticket = pool / f"wait-{time.time_ns():020d}-{os.getpid()}"
+        rank = 0 if _priority() else 1  # the priority job's ticket sorts ahead of every other waiter's
+        ticket = pool / f"wait-{rank}{time.time_ns():020d}-{os.getpid()}"
         os.close(os.open(ticket, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600))
         _ticket.append(ticket)
 
