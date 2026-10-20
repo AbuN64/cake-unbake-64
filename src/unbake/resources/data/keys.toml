@@ -374,6 +374,18 @@ sentence = "a function's literals sit in the ROM after other files' data, apart 
 owner = "repo"
 sentence = "a jump table of a function its file defines in C is held by no file, and the file owns no read-only data, so the link would leave its compiled .rodata out of the ROM; add the literals_<function> row named"
 
+[key."sync.literals-span"]
+owner = "repo"
+sentence = "the piece a literals_<function> row places runs to the next row over another function's jump table, so the file's compiled .rodata would end before it and the ROM come out short; add the row named that splits the table off"
+
+[key."score.non-matching-only"]
+owner = "compare"
+sentence = "the candidate scores exact but sits only inside a NON_MATCHING side of its file, so the build still compiles the stand-in; submit it so land makes it live"
+
+[key."land.inactive"]
+owner = "compare"
+sentence = "an exact body would land only inside a NON_MATCHING side, so the build would keep compiling the stand-in; submit the body on its own"
+
 [key."tree.segments"]
 owner = "tree"
 sentence = "a file owns names of more than one segment, or a symbol lies in no segment"

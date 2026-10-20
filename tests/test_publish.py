@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from unbake import journal, publish, tree
-from unbake.contracts import Refusal, Submission
+from unbake.contracts import Finding, Refusal, Submission
 
 OWNER = (
     '#include "game.h"\n\nint keep(void) { return 1; }\n\nINCLUDE_ASM("main", func_80000010);\n\n'
@@ -559,3 +559,73 @@ def test_a_draft_block_with_another_side_is_refused_by_name():
     with pytest.raises(Refusal) as refused:
         publish.splice(other, "main", "f", CAND_F, fuzzy=False)
     assert "no #else" in refused.value.findings[0].reason
+
+
+# ---------------------------------------------------------------- an exact body's own jump table stand-in
+def test_landing_an_exact_body_drops_the_rodata_stand_in_holding_its_own_table_and_places_literals(
+    monkeypatch, tmp_path
+):
+    # r17x by hand, func_80423F48_de: INCLUDE_RODATA(rodata_func_80423828_de_10_800E1690) held exactly the body's
+    # jump table, so the build kept the old bytes and the body's compiled table both and the ROM was not exact
+    (tmp_path / "versions" / "a").mkdir(parents=True)
+    rows = "f = 0x80400000; // type:func rom:0x1000\njtbl_800DD660 = 0x800DD660; // rom:0xDE260\n"
+    (tmp_path / "versions" / "a" / "symbol_addrs.txt").write_text(rows)
+    facts = {
+        "f": (0x80400000, 0x1000, None, "func"),
+        "jtbl_800DD660": (0x800DD660, 0xDE260, None, "data"),
+        "rodata_f_10": (0x800DD660, None, None, "data"),
+        "rodata_g_20": (0x800DD700, 0xDE300, None, "data"),
+    }
+    monkeypatch.setattr(publish.api, "symbols", lambda config, v: facts)
+    monkeypatch.setattr(publish.repo, "jump_table_of", lambda config, v, rom: {0xDE260: "f", 0xDE300: "g"}.get(rom))
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    text = 'INCLUDE_RODATA("data_800C", rodata_f_10);\nINCLUDE_RODATA("data_800C", rodata_g_20);\nvoid f(void) {}\n'
+    owner = publish.Owner("src/m.c", "main", ("a",))
+    old: dict = {}
+    out, written = publish._pools(config, "f", owner, text, publish.Reads(config, {}), old)
+    assert out == 'INCLUDE_RODATA("data_800C", rodata_g_20);\nvoid f(void) {}\n'  # g's table stays behind its stand-in
+    assert written["versions/a/symbol_addrs.txt"].decode() == (
+        "f = 0x80400000; // type:func rom:0x1000\nliterals_f = 0x800DD660; // rom:0xDE260\n"
+    )
+    assert old["versions/a/symbol_addrs.txt"] == rows.encode()  # the undo puts the rows back
+    facts["literals_f"] = (0x800DD660, 0xDE260, None, "data")  # already placed: nothing to do
+    assert publish._pools(config, "f", owner, text, publish.Reads(config, {}), {}) == (text, {})
+
+
+def test_a_body_only_on_the_non_matching_side_is_inactive_in_the_build():
+    # THINK-802946A4: a lane scored the unit file with its body left in #ifdef NON_MATCHING: exact, and nothing shipped
+    fuzzy = '#ifdef NON_MATCHING\nvoid f(void) {}\n#else\nINCLUDE_ASM("main", f);\n#endif\n'
+    assert publish.non_matching_only(fuzzy, "f")
+    assert publish.non_matching_only('#if defined(NON_MATCHING)\nvoid f(void) {}\n#endif\nINCLUDE_ASM("m", g);\n', "f")
+    assert not publish.non_matching_only("void f(void) {}\n", "f")
+    assert not publish.non_matching_only(
+        '#ifndef NON_MATCHING\nINCLUDE_ASM("main", g);\n#endif\nvoid f(void) {}\n', "f"
+    )
+    assert not publish.non_matching_only("#ifdef VERSION_US\nvoid f(void) {}\n#endif\n", "f")  # a version guard
+    assert not publish.non_matching_only(fuzzy, "g")  # no definition: nothing to say
+
+
+def test_a_landing_that_moves_a_row_rewrites_only_the_split_and_link_files_and_restores_them_on_failure(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "versions" / "a").mkdir(parents=True)
+    (tmp_path / "versions" / "a" / "splat.yaml").write_text("old split\n")
+    (tmp_path / "Makefile").write_text("committed\n")
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    applied = []
+    monkeypatch.setattr(publish.journal, "apply", lambda c, plan, reads: applied.append(dict(plan.writes)) or ())
+    monkeypatch.setattr(publish.tree, "capture", lambda c: None)
+    wanted = {"versions/a/splat.yaml": b"new split\n", "Makefile": b"drifted\n", "R.ld": b"link\n"}
+    monkeypatch.setattr(publish.repo, "generated", lambda c, current: wanted)
+
+    def build(config, versions):
+        raise Refusal(Finding("land.not_exact", "x"))
+
+    monkeypatch.setattr(publish, "build", build)
+    plan = publish.make_plan("publish", "base", {"versions/a/symbol_addrs.txt": b"row\n"}, (), (), "m")
+    landing = publish.Landing(plan, publish.Reads(config, {}), ("a",), "f", (), {"versions/a/symbol_addrs.txt": b""})
+    with pytest.raises(Refusal):
+        publish.apply_checked(config, landing)
+    assert applied[1] == {"versions/a/splat.yaml": b"new split\n", "R.ld": b"link\n"}  # never the Makefile or CI
+    assert applied[2] == {"versions/a/splat.yaml": b"old split\n", "R.ld": None}  # put back, then the landing
+    assert applied[3] == {"versions/a/symbol_addrs.txt": b""}

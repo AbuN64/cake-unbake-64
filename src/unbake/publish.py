@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from unbake import api, effort, journal, native, policy, process, report, tree
+from unbake import api, effort, journal, native, policy, process, repo, report, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Plan, Proof, Receipt, Refusal, Submission, digest, sha1, sha256
 
@@ -106,8 +106,15 @@ def measured_apart(text: str, segment: str, name: str) -> bool:
         return False  # the else side of the draft's own NON_MATCHING block: splice puts the candidate in its place
     if len([i for i in items(text) if i.kind == "function" and i.name == name]) != 1:
         return False
-    stack: list[str | None] = []  # the condition of each side open at the stand-in; None when not judged (#elif)
-    for m in _DIRECTIVE.finditer(text, 0, found.start()):
+    stack = _sides(text, found.start())  # the condition of each side open at the stand-in
+    # off with NON_MATCHING and on without it: its negation opens a NON_MATCHING side (tree.guard)
+    return any(e is not None and tree.guard(f"#if !({e})\n") is not None for e in stack)
+
+
+def _sides(text: str, at: int) -> list[str | None]:
+    """The condition of each conditional side open at offset `at`, innermost last; None when not judged (#elif)."""
+    stack: list[str | None] = []
+    for m in _DIRECTIVE.finditer(text, 0, at):
         kind, rest = m[1], m[0][m.end(1) - m.start() :].strip()
         if kind in ("if", "ifdef", "ifndef"):
             stack.append(rest if kind == "if" else f"{'!' if kind == 'ifndef' else ''}defined({rest})")
@@ -117,8 +124,16 @@ def measured_apart(text: str, segment: str, name: str) -> bool:
             stack[-1] = None
         elif kind == "endif" and stack:
             stack.pop()
-    # off with NON_MATCHING and on without it: its negation opens a NON_MATCHING side (tree.guard)
-    return any(e is not None and tree.guard(f"#if !({e})\n") is not None for e in stack)
+    return stack
+
+
+def non_matching_only(text: str, name: str) -> bool:
+    """Whether every definition of `name` in the text sits on a side only NON_MATCHING turns on: a measure reads it,
+    but the build of the tree compiles the stand-in on the other side, so an exact score of it ships nothing."""
+    heads = [i.start for i in items(text) if i.kind == "function" and i.name == name]
+    return bool(heads) and all(
+        any(e is not None and tree.guard(f"#if {e}\n") is not None for e in _sides(text, at)) for at in heads
+    )
 
 
 def _stand_in(segment: str, name: str) -> str:
@@ -681,6 +696,61 @@ def judged(
     return policy.scope(before, after, set(writes))
 
 
+_RODATA_LINE = re.compile(r'^[ \t]*INCLUDE_RODATA\(\s*"[^"]*"\s*,\s*(\w+)\s*\)\s*;[^\n]*\n?', re.M)
+_ROW = re.compile(r"^(\w+)\s*=\s*0x([0-9A-Fa-f]+);\s*//(.*)$")
+
+
+def _own_pool(config: Config, name: str, stand_in: str, versions: Sequence[str]) -> dict[str, tuple[int, int]]:
+    """(vram, rom) per version of the INCLUDE_RODATA stand-in when, in every version, its bytes are exactly the jump
+    table of `name`: the landed body compiles that table itself, so the stand-in goes and a `literals_<name>` row
+    places the compiled .rodata there instead; {} when any version's bytes are anything else."""
+    found = {}
+    for v in versions:
+        table = api.symbols(config, v)
+        if stand_in not in table or f"{tree.LITERALS}{name}" in table:
+            return {}
+        vram = table[stand_in][0]
+        rom = table[stand_in][1]
+        if rom is None:  # an alias row: the ROM offset is the row that places the same address
+            rom = next((f[1] for f in table.values() if f[0] == vram and f[1] is not None), None)
+        if rom is None or repo.jump_table_of(config, v, rom) != name:
+            return {}
+        found[v] = (vram, rom)
+    return found
+
+
+def _placed_rows(text: str, name: str, vram: int, rom: int) -> str:
+    """symbol_addrs.txt with `literals_<name>` at the table's address: it takes the place of a data row (a jtbl_) that
+    names the same bytes, else it is added at the end."""
+    row = f"{tree.LITERALS}{name} = 0x{vram:08X}; // rom:0x{rom:X}"
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if (m := _ROW.match(line)) and int(m[2], 16) == vram and "type:func" not in m[3] and f"rom:0x{rom:X}" in m[3]:
+            lines[i] = row
+            return "\n".join(lines) + "\n"
+    return "\n".join([*lines, row]) + "\n"
+
+
+def _pools(
+    config: Config, name: str, owner: Owner, text: str, reads: Reads, old: dict[str, bytes | None]
+) -> tuple[str, dict[str, bytes]]:
+    """The landed file without the INCLUDE_RODATA stand-ins that hold only the body's own jump table, and each
+    version's symbol_addrs.txt placing the compiled table there (the hand land of r17x, func_80423F48_de)."""
+    rows: dict[str, bytes] = {}
+    for found in reversed(list(_RODATA_LINE.finditer(text))):
+        placed = _own_pool(config, name, found[1], owner.versions)
+        if not placed:
+            continue
+        text = text[: found.start()] + text[found.end() :]
+        for v, (vram, rom) in placed.items():
+            path = f"versions/{v}/symbol_addrs.txt"
+            if path not in old:
+                old[path] = read_file(reads, path)
+            current = rows.get(path) or old[path] or b""
+            rows[path] = _placed_rows(current.decode(), name, vram, rom).encode()
+    return text, rows
+
+
 def prepare(
     config: Config, request: Json, extras: Mapping[str, bytes], fuzzy: bool, message: str | None = None
 ) -> Landing:
@@ -697,7 +767,22 @@ def prepare(
             current = old[owner.path]
             if current is None:
                 raise Refusal(Finding("land.request", f"{owner.path} is missing.", path=owner.path, unit=name))
-            writes[owner.path] = splice(current.decode(), owner.segment, name, source, fuzzy).encode()
+            text = splice(current.decode(), owner.segment, name, source, fuzzy)
+            if not fuzzy and non_matching_only(text, name):
+                raise Refusal(
+                    Finding(
+                        "land.inactive",
+                        f"{name} would land only inside a NON_MATCHING side of {owner.path}: the build would still "
+                        "compile its stand-in, so the exact body would ship nothing",
+                        path=owner.path,
+                        unit=name,
+                        action="submit the body on its own (a file with just the function) so land makes it live",
+                    )
+                )
+            if not fuzzy:  # an exact body brings its own jump table: the stand-in for it goes
+                text, rows = _pools(config, name, owner, text, reads, old)
+                writes.update(rows)
+            writes[owner.path] = text.encode()
         blocking, debt = judged(config, writes, old)
         refuse_blocking(blocking)
         operation = "fuzzy" if fuzzy else "publish"
@@ -753,9 +838,20 @@ def apply_checked(config: Config, landing: Landing) -> tuple[str, ...]:
     """Writes the plan through the journal, builds the affected versions and, when a build does not match, puts the old
     bytes back through the journal: a refused landing leaves the files as they were."""
     files = journal.apply(config, landing.plan, landing.reads)
+    reads, old = Reads(config, {}), {}
     try:
+        if any(p.endswith("symbol_addrs.txt") for p in landing.plan.writes):  # a new row moves the split and link
+            wanted = repo.generated(config, tree.capture(config))
+            moved = {p: b for p, b in wanted.items() if p.endswith((".ld", "/splat.yaml", "/text_sizes.mk"))}
+            changed = {p: b for p, b in moved.items() if read_file(reads, p) != b}  # only what a row moves
+            old = {p: read_file(reads, p) for p in changed}
+            if changed:
+                plan = make_plan("generated", landing.plan.base, changed, (), (), "generated")
+                files = (*files, *journal.apply(config, plan, reads))
         build(config, landing.versions)
     except BaseException:
+        if old:
+            journal.apply(config, make_plan("restore", landing.plan.base, old, (), (), "restore"), reads)
         undo = make_plan("restore", landing.plan.base, landing.old, (), (), "restore")
         journal.apply(config, undo, landing.reads)
         raise

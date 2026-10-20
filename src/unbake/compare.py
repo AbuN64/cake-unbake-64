@@ -621,6 +621,21 @@ def _score_one(config: Config, params: Json) -> Json:
         "proofs": [asdict(p) for p in proofs],
         "rewritten": [],
     }
+    given = Path(params["file"]).read_text(encoding="utf-8", errors="replace")  # as the lane wrote it, not spliced
+    if result["exact"] and publish.non_matching_only(given, name):
+        result["notes"] = [
+            asdict(
+                Finding(
+                    "score.non-matching-only",
+                    f"exact but inactive: {name} is defined only inside a NON_MATCHING side of {path}, so the build "
+                    "still compiles its stand-in and this match ships nothing until it lands",
+                    path=path,
+                    unit=name,
+                    action=f"unbake submit the candidate: land puts {name} where the build compiles it",
+                    blocking=False,
+                )
+            )
+        ]
     if params.get("alloc") or params.get("keep_dumps"):
         with store.work(config) as work:
             greg, lreg, asm, passes = native.dumps(snapshot, unit, version, recipe, work / "alloc")

@@ -810,3 +810,33 @@ def test_an_extraction_over_damaged_assembly_rebuilds_the_whole_version(tmp_path
     (tmp_path / "asm/us/nonmatchings/b/g.s").write_bytes(b"written through a link\n")
     assert repo.extract_job((config, "us")) is True
     assert (tmp_path / "asm/us/.extracted").stat().st_mtime_ns != old
+
+
+def test_a_literals_row_running_over_another_functions_jump_table_names_the_row_that_splits_it(monkeypatch, tmp_path):
+    # SPEED-1c func_8024D160_de: in us and eu the next row came after func_8024D284_de's 60-byte table, so the piece
+    # literals_ sized swallowed it and the ROM would come out short with no warning
+    own = (0x00400010, 0x00400018, 0x00400020, 0x00400028)
+    other = (0x00400048, 0x00400050, 0x00400058)
+    words = b"".join(w.to_bytes(4, "big") for w in (*own, *other))
+    (tmp_path / "rom").write_bytes(bytes(0x2000) + words + bytes(4))
+    monkeypatch.setattr(repo.configuration, "rom", lambda project, v: tmp_path / "rom")
+    config = SimpleNamespace(project=SimpleNamespace(versions=("a",)))
+    tree_ = _table_tree(monkeypatch, {"literals_f": ".rodata"})
+    tree_.modules = (
+        *tree_.modules,
+        SimpleNamespace(path="src/n.c", owns={"a": ("g",)}, stand_ins={"a": ("g",)}, sections={"a": {"g": ".text"}}),
+    )
+    facts = repo.api.symbols(config, "a")
+    del facts["D_800E1510"]
+    facts["D_800E1520"] = (0x800E1520, 0x2020, None, "data")
+    (found,) = repo._swallowed_tables(config, tree_)
+    assert found.key == "sync.literals-span" and found.unit == "literals_f"
+    assert "3-entry jump table of g" in found.reason and "short by 0x10 bytes" in found.reason
+    assert "jtbl_800E1510 = 0x800E1510; // rom:0x2010" in found.action
+    facts["D_800E1510"] = (0x800E1510, 0x2010, None, "data")  # the row that splits g's table off
+    assert repo._swallowed_tables(config, tree_) == []
+    del facts["D_800E1510"]
+    tree_.modules[0].owns["a"] = (*tree_.modules[0].owns["a"], "g")  # g in C in f's own file: one object's .rodata
+    assert repo._swallowed_tables(config, tree_) == []
+    tree_.modules[0].stand_ins["a"] = ("g",)  # g behind its stand-in there: the object compiles no table for it
+    assert [f.unit for f in repo._swallowed_tables(config, tree_)] == ["literals_f"]

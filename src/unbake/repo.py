@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import itertools
 import json
 import os
 import re
@@ -507,6 +508,32 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
     return wanted
 
 
+def generated(config: Config, current: Any) -> dict[str, bytes]:
+    """The files sync generates from the tree (Makefile, link script, splat.yaml, text sizes, CI), by path."""
+    return _generated(config, current)
+
+
+def jump_table_of(config: Config, version: str, rom: int) -> str | None:
+    """The function whose jump table the read-only piece at `rom` is, word for word up to the next row, else None."""
+    mask = configuration.load_resource("rom.toml").get("text_mask", 0xFFFFFFFF)
+    try:
+        image = configuration.rom(config.project, version).read_bytes()
+    except (OSError, Refusal):
+        return None
+    table = api.symbols(config, version)
+    roms = sorted({f[1] for f in table.values() if f[1] is not None})
+    ends = dict(itertools.pairwise(roms))
+    if rom not in ends or ends[rom] - rom > _TABLE_MAX:
+        return None
+    code = sorted(
+        (f[0] & mask, (f[0] & mask) + size, n)
+        for n, f in table.items()
+        if f[3] == "func" and f[1] is not None and (size := f[2] or (ends.get(f[1], f[1]) - f[1]))
+    )
+    data = image[rom : ends[rom]]
+    return _jump_target([int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data) - 3, 4)], code)
+
+
 def sync(config: Config, params: Json) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
     files that would change. The README block, its image and progress.json follow the check verdict: with none for
@@ -624,6 +651,76 @@ def _unplaced_tables(config: Config, current: Any) -> list[Finding]:
     return findings
 
 
+def _runs(words: Sequence[int], code: Sequence[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """The (first index, count, function) of each run of two or more consecutive words inside one function: a jump
+    table's cases."""
+    found: list[tuple[int, int, str]] = []
+    for i, word in enumerate(words):
+        function = _jump_target([word, word], code)
+        if function is not None and found and found[-1][2] == function and sum(found[-1][:2]) == i:
+            found[-1] = (found[-1][0], found[-1][1] + 1, function)
+        elif function is not None:
+            found.append((i, 1, function))
+    return [r for r in found if r[1] >= 2]
+
+
+def _swallowed_tables(config: Config, current: Any) -> list[Finding]:
+    """A `literals_<function>` row places its file's compiled .rodata, and splat sizes that piece up to the next row:
+    when the bytes before the next row also hold the jump table of a function the same object does not compile (one
+    of another file, or behind a stand-in), the object's .rodata ends before that table and the ROM comes out short.
+    Each finding names the row that splits the table off. Needs the ROMs: without them there is no check."""
+    mask = configuration.load_resource("rom.toml").get("text_mask", 0xFFFFFFFF)
+    findings: list[Finding] = []
+    for v in config.project.versions:
+        try:
+            image = configuration.rom(config.project, v).read_bytes()
+        except (OSError, Refusal):
+            continue
+        table = api.symbols(config, v)
+        files = {n: m.path for m in current.modules for n in m.owns.get(v, ())}  # in C or behind a stand-in
+        compiled = {
+            n: m.path
+            for m in current.modules
+            if not configuration.is_assembly(m.path)
+            for n in m.owns.get(v, ())
+            if m.sections.get(v, {}).get(n, ".text") == ".text" and n not in m.stand_ins.get(v, ())
+        }
+        roms = sorted({f[1] for f in table.values() if f[1] is not None})
+        ends = dict(itertools.pairwise(roms))
+        code = sorted(
+            (f[0] & mask, (f[0] & mask) + size, n)
+            for n, f in table.items()
+            if f[3] == "func" and f[1] is not None and (size := f[2] or (ends.get(f[1], f[1]) - f[1]))
+        )
+        for name, fact in sorted(table.items()):
+            rom = fact[1]
+            if not name.startswith(tree.LITERALS) or rom is None or rom not in ends:
+                continue
+            owner = files.get(name[len(tree.LITERALS) :])  # one object: its functions' tables are its .rodata
+            data = image[rom : ends[rom]]
+            words = [int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data) - 3, 4)]
+            for first, count, function in _runs(words, code):
+                if function == name[len(tree.LITERALS) :] or function not in files or compiled.get(function) == owner:
+                    continue  # its own table, a label no file holds, or a table the same object compiles
+                vram, at = fact[0] + 4 * first, rom + 4 * first
+                findings.append(
+                    Finding(
+                        "sync.literals-span",
+                        f"{v}: {name} at 0x{fact[0]:08X} runs 0x{ends[rom] - rom:X} bytes to the next row, but from "
+                        f"0x{vram:08X} on it holds the {count}-entry jump table of {function}, which "
+                        f"{files.get(function, 'no file')} holds: the piece would end before it and leave the "
+                        f"ROM short by 0x{ends[rom] - at:X} bytes",
+                        path=f"versions/{v}/symbol_addrs.txt",
+                        unit=name,
+                        versions=(v,),
+                        action=f"add `jtbl_{vram:08X} = 0x{vram:08X}; // rom:0x{at:X}` to versions/{v}/symbol_addrs.txt"
+                        f" (or `{tree.LITERALS}{function}` to aliases.txt when its file compiles it)",
+                    )
+                )
+                break  # one finding per row: the split moves the next row
+    return findings
+
+
 def _sync(config: Config, params: Json) -> tuple[Json, Any]:
     """`sync`, and the tree it left (the one capture a setup shares with the report that follows)."""
     with effort.stage("repo.sync"):
@@ -637,7 +734,7 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
             if appended:
                 # This capture sees the proposed stand-ins, a different input from the on-disk tree above.
                 current = tree.capture(config, appended)
-        if unplaced := _unplaced_tables(config, current):
+        if unplaced := [*_unplaced_tables(config, current), *_swallowed_tables(config, current)]:
             raise Refusal(*unplaced)
         changed = {
             path: value
