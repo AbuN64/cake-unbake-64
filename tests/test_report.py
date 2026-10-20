@@ -659,3 +659,24 @@ def test_plain_report_keeps_progress_json_under_the_same_hold(published_case, mo
     result = report.run(config, {})
     assert path.read_text() == "old json"
     assert result["notes"][0]["key"] == "sync.build_failed"
+
+
+def test_platform_bytes_leave_the_credit_rows_and_each_covering_symbol_is_named(monkeypatch):
+    rows = (
+        report.Credit("micro", report.Symbol("data", "src/d.c", "c", 0x100), None, "s", "us", 0, 0x300, 0, True, 1.0),
+        report.Credit(
+            "boot_f", report.Symbol("function", "src/b.c", "c", 0x40), None, "s", "us", 0x80, 0, 0x80, True, 1.0
+        ),
+        report.Credit("game", report.Symbol("data", "src/g.c", "c", 0x1000), None, "s", "us", 0, 0x10, 0, True, 1.0),
+    )
+    spans = {"us": [(0x0, 0x60), (0x200, 0x2000)]}  # boot block, then the microcode under micro's tail and game
+    got = report.off_platform(rows, spans)
+    assert [(r.code, r.data, r.kept, r.platform) for r in got] == [
+        (0, 0x100, 0, 0x200),
+        (0x60, 0, 0x60, 0x20),
+        (0, 0, 0, 0x10),
+    ]
+    monkeypatch.setattr(report, "credits", lambda config, tree: got)
+    found = report.platform_overlaps(None, None)
+    assert [f.unit for f in found] == ["micro", "boot_f", "game"] and not any(f.blocking for f in found)
+    assert "covers 512 identified platform bytes" in found[0].reason

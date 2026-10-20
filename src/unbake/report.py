@@ -145,6 +145,7 @@ class Credit(NamedTuple):
     kept: int
     exact: bool
     score: float
+    platform: int = 0  # bytes of the symbol that are identified platform (boot, SDK microcode): counted there
 
 
 def percent(credit: Credit) -> float:
@@ -249,7 +250,7 @@ def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
 
     def build() -> tuple[Credit, ...]:
         held = facts(config)
-        return build_credits(
+        rows = build_credits(
             list(config.project.version),
             tree,
             held,
@@ -258,8 +259,47 @@ def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
             _broken(config, tree),
             _extents(config, tree),
         )
+        spans = {v: blobs.merge(platform.ranges(config, v)) for v in config.project.version}
+        return off_platform(rows, spans)
 
-    return effort.memo(("credits", tree.digest), build)
+    return effort.memo(("credits", tree.digest, platform.sha(config)), build)
+
+
+def _on_platform(row: Credit, spans: Mapping[str, blobs.Spans]) -> int:
+    size = row.code + row.data
+    if not size:
+        return 0
+    mine = [(row.member.rom, row.member.rom + size)]
+    return size - blobs.length(blobs.subtract(mine, spans.get(row.version, [])))
+
+
+def off_platform(rows: tuple[Credit, ...], spans: Mapping[str, blobs.Spans]) -> tuple[Credit, ...]:
+    """The credit rows with the identified platform bytes (boot, SDK microcode) taken out of each row: those bytes
+    are platform in every version, never our code or data, whichever symbol covers them."""
+    out = []
+    for row in rows:
+        if hit := _on_platform(row, spans):
+            code, data = (row.code - hit, 0) if row.code else (0, row.data - hit)
+            row = row._replace(code=code, data=data, kept=min(row.kept, code), platform=hit)
+        out.append(row)
+    return tuple(out)
+
+
+def platform_overlaps(config: Any, tree: Any) -> list[Finding]:
+    """A non-blocking finding per symbol that covers identified platform bytes (the report counts them as platform)."""
+    return [
+        Finding(
+            "report.platform-overlap",
+            f"{row.version}: {row.name} at rom 0x{row.member.rom:X} covers {row.platform} identified platform bytes "
+            "(boot or SDK microcode): they count as platform, not as matched code or data",
+            unit=row.name,
+            versions=(row.version,),
+            action=f"cut {row.name} where the platform span starts, or drop the row",
+            blocking=False,
+        )
+        for row in credits(config, tree)
+        if row.platform
+    ]
 
 
 def scores(config: Any, tree: Any) -> dict[str, dict[str, float]]:
@@ -575,11 +615,14 @@ def run(config: Any, params: Json) -> Json:
 
         tree = _capture(config)
         result = {**current(config, tree), "inbox": pending}
+        notes = [asdict(f) for f in platform_overlaps(config, tree)]
         if hold := publish_hold(config, tree):
-            result["notes"] = [asdict(hold)]
+            result["notes"] = [asdict(hold), *notes]
         else:
             for path, content in progress_files(config, tree).items():
                 store.write(config.project.root / path, content)
+            if notes:
+                result["notes"] = notes
         if params.get("next"):
             result["next"] = progress.unmatched(config, tree)
         return result

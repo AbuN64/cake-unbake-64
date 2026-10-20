@@ -193,20 +193,23 @@ def sweep(
     identified: Spans,
     rom: bytes | None = None,
 ) -> Json:
-    """Classify every byte of `[0, rom_size)` once, in this precedence: code, data, platform, decoded blobs, identified
-    blobs, proven fill (with the ROM bytes, see `fill`), unknown. Fill counts as matched blob bytes: it is inside
-    `blobs` and `blobs_decoded`, and alone in `blobs_fill`. `overlap` is credited bytes counted twice, `outside` ranges
-    beyond the ROM; both must be 0. `spans` holds the disjoint ranges of each class for drawing."""
+    """Classify every byte of `[0, rom_size)` once, in this precedence: platform, code, data, decoded blobs,
+    identified blobs, proven fill (with the ROM bytes, see `fill`), unknown. Identified platform bytes (boot, SDK
+    microcode) are platform in every version, whatever symbol covers them: a symbol over them is no credit of ours
+    (`platform_overlap` counts those bytes; the report names the symbols). Fill counts as matched blob bytes: it is
+    inside `blobs` and `blobs_decoded`, and alone in `blobs_fill`. `overlap` is credited bytes counted twice,
+    `outside` ranges beyond the ROM; both must be 0. `spans` holds the disjoint ranges of each class for drawing."""
 
     def clamp(spans: Spans) -> Spans:
         return [(max(0, a), min(b, rom_size)) for a, b in spans if min(b, rom_size) > max(0, a)]
 
     raw = code + data
     kept = clamp(raw)
-    code_m = merge(clamp(code))
-    data_m = subtract(merge(clamp(data)), code_m)
+    platform_m = merge(clamp(platform))
+    off = [part for span in kept for part in subtract([span], platform_m)]  # each credited span off the platform
+    code_m = subtract(merge(clamp(code)), platform_m)
+    data_m = subtract(subtract(merge(clamp(data)), code_m), platform_m)
     credit = merge(code_m + data_m)
-    platform_m = subtract(merge(clamp(platform)), credit)
     held = merge(credit + platform_m)
     dec = subtract(merge(clamp(decoded)), held)
     ide = subtract(subtract(merge(clamp(identified)), held), dec)
@@ -225,7 +228,8 @@ def sweep(
     parts["unknown"] = rom_size - parts["code"] - parts["data"] - parts["platform"] - parts["blobs"]
     return {
         **parts,
-        "overlap": length(kept) - length(credit),
+        "overlap": length(off) - length(credit),
+        "platform_overlap": length(merge(kept)) - length(subtract(merge(kept), platform_m)),
         "outside": length(raw) - length(kept),
         "shadowed": length(every) - length(subtract(every, credit)),
         "spans": {

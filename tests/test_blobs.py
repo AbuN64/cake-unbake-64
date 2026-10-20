@@ -91,8 +91,12 @@ def test_a_blob_over_a_credited_symbol_is_shadowed_and_stays_data():
     assert (out["data"], out["blobs_decoded"], out["shadowed"]) == (0x1000, 0x800, 0x800)
 
 
-def test_platform_is_identified_unless_credit_covers_it():
-    assert sweep()["platform"] == 0x1000 and sweep(code=[(0xC00, 0x1400)])["platform"] == 0xC00
+def test_platform_bytes_stay_platform_whatever_symbol_covers_them():
+    assert sweep()["platform"] == 0x1000
+    out = sweep(code=[(0xC00, 0x1400)], data=[(0x800, 0x900)])
+    assert out["platform"] == 0x1000 and out["code"] == 0x400 and out["data"] == 0  # data 0x800.. lies in platform
+    assert out["platform_overlap"] == 0x400 + 0x100  # code 0xC00..0x1000 and all of the data
+    assert out["overlap"] == 0 and sum(out[k] for k in ("code", "data", "platform", "blobs", "unknown")) == ROM
 
 
 def test_ranges_beyond_the_rom_are_reported_and_clamped():
