@@ -46,6 +46,7 @@ def document(config: Any, tree: Any, current: Json) -> Json:
                 "blobs": {
                     "decoded": row["blobs_decoded"],
                     "identified": row["blobs_identified"],
+                    "fill": row["blobs_fill"],
                     "total": row["blobs_total"],
                     "by_type": row["blobs"],
                 },
@@ -76,7 +77,7 @@ def document(config: Any, tree: Any, current: Json) -> Json:
             "rom_size": current["versions"][version]["rom_size"],
             "fns": sorted(fns, key=lambda row: (row[1], row[0])),
             "blobs": sorted(content, key=lambda row: (row[1], row[0])),
-            "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform")},
+            "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform", "fill")},
         },
     }
 

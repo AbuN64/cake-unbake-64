@@ -77,6 +77,10 @@
       "type": "integer",
       "minimum": 0
      },
+     "blobs_fill": {
+      "type": "integer",
+      "minimum": 0
+     },
      "unknown_total": {
       "type": "integer",
       "minimum": 0

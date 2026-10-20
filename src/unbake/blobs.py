@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from unbake import config as configuration
-from unbake import effort, journal, store
+from unbake import effort, journal, rnc, store
 from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha256, sha256_file
 
 FILE = "blobs.toml"
@@ -162,11 +162,41 @@ def length(spans: Iterable[tuple[int, int]]) -> int:
     return sum(end - start for start, end in spans)
 
 
-def sweep(rom_size: int, code: Spans, data: Spans, platform: Spans, decoded: Spans, identified: Spans) -> Json:
+def fill(rom: bytes, gaps: Spans) -> Spans:
+    """The proven padding inside the unknown `gaps` of `rom` (owner decision B1: credited matched, no sixth type).
+    Proof is by layout, never by content guess: a whole gap of one byte value that ends where the next item's alignment
+    puts it (its length is below the largest power of two dividing its end), or the maximal one-value run that reaches
+    the end of the ROM (cart padding) and starts on a 16-byte boundary. The build emits these bytes like any other, so
+    `make check` proves them with the rest of the ROM."""
+    out: Spans = []
+    size = len(rom)
+    for start, end in gaps:
+        value = rom[end - 1]
+        if rom.count(value, start, end) == end - start and (end == size or end - start < (end & -end)):
+            out.append((start, end))
+        elif end == size:
+            low = end - 1
+            while low > start and rom[low - 1] == value:
+                low -= 1
+            low = (low + 15) & ~15
+            if low < end:
+                out.append((low, end))
+    return out
+
+
+def sweep(
+    rom_size: int,
+    code: Spans,
+    data: Spans,
+    platform: Spans,
+    decoded: Spans,
+    identified: Spans,
+    rom: bytes | None = None,
+) -> Json:
     """Classify every byte of `[0, rom_size)` once, in this precedence: code, data, platform, decoded blobs, identified
-    blobs, unknown. `overlap` is credited bytes counted twice, `outside` ranges beyond the ROM; both must be 0. `spans`
-    holds
-    the disjoint ranges of each class for drawing."""
+    blobs, proven fill (with the ROM bytes, see `fill`), unknown. Fill counts as matched blob bytes: it is inside
+    `blobs` and `blobs_decoded`, and alone in `blobs_fill`. `overlap` is credited bytes counted twice, `outside` ranges
+    beyond the ROM; both must be 0. `spans` holds the disjoint ranges of each class for drawing."""
 
     def clamp(spans: Spans) -> Spans:
         return [(max(0, a), min(b, rom_size)) for a, b in spans if min(b, rom_size) > max(0, a)]
@@ -181,13 +211,15 @@ def sweep(rom_size: int, code: Spans, data: Spans, platform: Spans, decoded: Spa
     dec = subtract(merge(clamp(decoded)), held)
     ide = subtract(subtract(merge(clamp(identified)), held), dec)
     every = merge(clamp(decoded) + clamp(identified))
+    pad = fill(rom, subtract([(0, rom_size)], merge(held + dec + ide))) if rom is not None else []
     parts = {
         "rom_size": rom_size,
         "code": length(code_m),
         "data": length(data_m),
         "platform": length(platform_m),
-        "blobs_decoded": length(dec),
+        "blobs_decoded": length(dec) + length(pad),
         "blobs_identified": length(ide),
+        "blobs_fill": length(pad),
     }
     parts["blobs"] = parts["blobs_decoded"] + parts["blobs_identified"]
     parts["unknown"] = rom_size - parts["code"] - parts["data"] - parts["platform"] - parts["blobs"]
@@ -196,7 +228,14 @@ def sweep(rom_size: int, code: Spans, data: Spans, platform: Spans, decoded: Spa
         "overlap": length(kept) - length(credit),
         "outside": length(raw) - length(kept),
         "shadowed": length(every) - length(subtract(every, credit)),
-        "spans": {"code": code_m, "data": data_m, "platform": platform_m, "decoded": dec, "identified": ide},
+        "spans": {
+            "code": code_m,
+            "data": data_m,
+            "platform": platform_m,
+            "decoded": dec,
+            "identified": ide,
+            "fill": pad,
+        },
     }
 
 
@@ -295,6 +334,8 @@ def run(config: Config, params: Json) -> Json:
     """`unbake blobs`: list the blobs and the partition of every version; `import PACKET` merges an evidence packet."""
     with effort.stage("blobs.run"):
         action = list(params.get("action") or ())
+        if action == ["scan"]:
+            return _result(config, {"scanned": scan(config)}, bool(params.get("json")))
         if action == ["migrate"]:
             from unbake import blob_migration
 
@@ -317,15 +358,75 @@ def run(config: Config, params: Json) -> Json:
             done = apply_import(config, plan)
             return _result(config, {"imported": {**counts, **done}}, bool(params.get("json")))
         if action:
-            raise Refusal(Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET or migrate"))
+            raise Refusal(Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET, scan or migrate"))
         return _result(config, {}, bool(params.get("json")))
+
+
+def scan(config: Config) -> Json:
+    """`unbake blobs scan`: per version, decode every catalogued RNC1 stream (both CRCs and `decoded_size` must hold)
+    and list the RNC1 streams that decode whole inside unknown bytes as candidates for typed rows (start, stored and
+    unpacked size, sha256 of the decoded bytes: facts, never bytes). Replaces the lane-side stream scripts."""
+    tree = import_module("unbake.tree").capture(config)
+    parts = import_module("unbake.report").partitions(config, tree)
+    document = load(config)["blob"]
+    out: Json = {}
+    for v, p in parts.items():
+        rom = (Path(config.project.root) / "roms" / f"baserom.{v}.z64").read_bytes()
+        checked, failed = 0, []
+        for name, row in sorted(document.items()):
+            if row.get("codec") != "rnc1" or "parent" in row or v not in row.get("rom", {}):
+                continue
+            start = row["rom"][v][0][0]
+            checked += 1
+            try:
+                size = len(rnc.unpack(rom, start))
+            except rnc.RncError as error:
+                failed.append({"blob": name, "reason": str(error)})
+                continue
+            if "decoded_size" in row and row["decoded_size"] != size:
+                failed.append({"blob": name, "reason": f"decodes to {size} bytes, the row says {row['decoded_size']}"})
+        spans = p["spans"]
+        held = merge([s for k in ("code", "data", "platform", "decoded", "identified", "fill") for s in spans[k]])
+        candidates = []
+        for low, high in subtract([(0, len(rom))], held):
+            for at, head in rnc.find(rom, low, high):
+                try:
+                    body = rnc.unpack(rom, at)
+                except rnc.RncError:
+                    continue
+                candidates.append(
+                    {
+                        "rom": [at, at + head.stored],
+                        "stored_size": head.stored,
+                        "decoded_size": len(body),
+                        "sha256": sha256(body),
+                    }
+                )
+        out[v] = {
+            "rnc1": {"checked": checked, "failed": failed},
+            "candidates": candidates,
+            "candidate_bytes": sum(c["stored_size"] for c in candidates),
+            "fill": p["blobs_fill"],
+        }
+    return out
 
 
 def _result(config: Config, extra: Json, with_rows: bool) -> Json:
     document = load(config)
     tree = import_module("unbake.tree").capture(config)
     report = import_module("unbake.report")
-    keep = ("rom_size", "code", "data", "platform", "blobs", "blobs_decoded", "blobs_identified", "unknown", "shadowed")
+    keep = (
+        "rom_size",
+        "code",
+        "data",
+        "platform",
+        "blobs",
+        "blobs_decoded",
+        "blobs_identified",
+        "blobs_fill",
+        "unknown",
+        "shadowed",
+    )
     parts = report.partitions(config, tree)
     result: dict[str, Any] = {
         "count": len(document["blob"]),

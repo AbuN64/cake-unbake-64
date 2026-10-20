@@ -21,7 +21,7 @@ def document():
                     "format": "microcode: verified fixture",
                     "state": "identified",
                     "rom": {"v": [[0x8000, 0x8100]]},
-                    "sha256": {"v": [sha256(bytes(256))]},
+                    "sha256": {"v": [sha256(bytes(range(256)))]},
                 }
             },
         },

@@ -319,6 +319,7 @@ def test_readme_with_blob_accounting_measures_against_the_rom_and_drops_the_part
     }
     for v, row in held.items():
         row["blobs_identified"] = row["blobs_total"] - row["blobs_decoded"]
+        row["blobs_fill"] = 0
         row["unknown_total"] = row["rom_size"] - current["versions"][v]["code_total"] - 4096 - row["blobs_total"]
         current["versions"][v].update(row)
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
@@ -448,6 +449,7 @@ def published_case(tmp_path, monkeypatch):
                 "blobs_total": 64,
                 "blobs_decoded": 32,
                 "blobs_identified": 32,
+                "blobs_fill": 0,
                 "unknown_total": 4000,
                 "blobs": {"graphics": {"decoded": 1, "identified": 1, "observed": 1}},
             }
@@ -488,7 +490,7 @@ def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_c
         ["fuzzy", 4112, 8, 100.0, "src/a.c", 3],
         ["asm", 4120, 8, 0.0, None, None],
     ]
-    assert document["map"]["spans"] == {"platform": [[0, 4096]], "data": []}
+    assert document["map"]["spans"] == {"platform": [[0, 4096]], "data": [], "fill": []}
     assert [row[0] for row in document["map"]["blobs"]] == ["tex", "other", "observed"]
     assert [(r["name"], r["size"]) for r in result["next"]] == [("asm", 8), ("fuzzy", 8)]
     before = (config.project.root / "progress.json").read_bytes()

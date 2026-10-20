@@ -13,6 +13,11 @@ PLATFORM = [(0, 0x1000)]
 ROM = 0x10000
 
 
+def image(size: int) -> bytes:
+    """ROM bytes with no run of one value, so no gap is proven fill unless a test writes one."""
+    return bytes(i & 0xFF for i in range(size))
+
+
 def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
     rows = segments or [
         ("retained", 0, "bin"),
@@ -22,7 +27,7 @@ def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
     ]
     version = {
         v: N(
-            sha1=sha1(bytes(rom)),
+            sha1=sha1(image(rom)),
             size=rom,
             segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k) for n, r, k in rows),
             meta={},
@@ -31,7 +36,7 @@ def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
     }
     (root / "roms").mkdir(exist_ok=True)
     for v in versions:
-        (root / "roms" / f"baserom.{v}.z64").write_bytes(bytes(rom))
+        (root / "roms" / f"baserom.{v}.z64").write_bytes(image(rom))
     return N(project=N(root=root, name="t", version=version))
 
 
@@ -55,6 +60,30 @@ def test_every_byte_is_counted_once_in_the_order_code_data_platform_blobs_unknow
     parts = ("code", "data", "platform", "blobs", "unknown")
     assert sum(out[k] for k in parts) == ROM == out["rom_size"]
     assert out["overlap"] == 0x800 and out["outside"] == 0 and out["shadowed"] == 0xC00
+
+
+def test_proven_fill_is_matched_blob_bytes_and_unproven_runs_stay_unknown():
+    rom = bytearray(range(256)) * (ROM // 256)
+    rom[0x2010:0x2020] = bytes(0x10)  # gap 0x2010..0x2020 below the alignment of its end: fill
+    rom[0x3004:0x3010] = b"\xaa" * 0xC  # 0xC below the 16-byte alignment of 0x3010: fill
+    rom[0x5000:0x5800] = bytes(0x800)  # whole gap of zeros ending at 0x5800 (align 0x800): not below, unknown
+    rom[ROM - 0x123 :] = b"\xff" * 0x123  # cart padding to the ROM end, counted from the 16-byte boundary
+    decoded = [(0x1000, 0x2010), (0x2020, 0x3004), (0x3010, 0x5000), (0x5800, ROM - 0x200)]
+    out = blobs.sweep(ROM, [], [], list(PLATFORM), decoded, [], bytes(rom))
+    tail = ROM - 0x120
+    assert out["spans"]["fill"] == [(0x2010, 0x2020), (0x3004, 0x3010), (tail, ROM)]
+    assert out["blobs_fill"] == 0x10 + 0xC + 0x120
+    assert out["blobs_decoded"] == blobs.length(decoded) + out["blobs_fill"]
+    assert out["unknown"] == 0x800 + (tail - (ROM - 0x200))
+    assert sum(out[k] for k in ("code", "data", "platform", "blobs", "unknown")) == ROM
+    assert blobs.sweep(ROM, [], [], list(PLATFORM), decoded, [])["blobs_fill"] == 0  # no ROM bytes, no proof
+
+
+def test_a_gap_of_two_values_is_never_fill():
+    rom = bytearray(ROM)
+    rom[0x2008] = 1
+    out = blobs.sweep(ROM, [], [], [], [(0, 0x2000), (0x2010, ROM)], [], bytes(rom))
+    assert out["blobs_fill"] == 0 and out["unknown"] == 0x10
 
 
 def test_a_blob_over_a_credited_symbol_is_shadowed_and_stays_data():
@@ -213,6 +242,44 @@ def _credits(monkeypatch, **rows):
     monkeypatch.setattr(report, "credits", lambda config, tree: tuple(row(n, *r) for n, r in rows.items()))
 
 
+def test_scan_proves_catalogued_streams_and_lists_streams_in_unknown_bytes(tmp_path, monkeypatch):
+    from test_rnc import _abcabc
+
+    from unbake import tree
+
+    config = _config(tmp_path)
+    stream = _abcabc()
+    rom = bytearray(image(ROM))
+    rom[0x2000 : 0x2000 + len(stream)] = stream
+    rom[0x3000 : 0x3000 + len(stream)] = stream
+    rom[0x9000 : 0x9000 + len(stream)] = stream
+    (tmp_path / "roms" / "baserom.v.z64").write_bytes(bytes(rom))
+    config.project.version["v"].sha1 = sha1(bytes(rom))
+    row = {"type": "graphics", "format": "f", "codec": "rnc1", "state": "decoded", "decoded_size": 9}
+    document = {
+        "schema": 1,
+        "blob": {
+            "good": {**row, "rom": {"v": [[0x2000, 0x2000 + len(stream)]]}},
+            "short": {**row, "decoded_size": 8, "rom": {"v": [[0x3000, 0x3000 + len(stream)]]}},
+        },
+    }
+    (tmp_path / "blobs.toml").write_bytes(blobs.emit(document))
+    _credits(monkeypatch)
+    monkeypatch.setattr(tree, "capture", lambda config: _tree("scan"))
+    out = blobs.scan(config)["v"]
+    assert out["rnc1"]["checked"] == 2
+    assert out["rnc1"]["failed"] == [{"blob": "short", "reason": "decodes to 9 bytes, the row says 8"}]
+    assert out["candidates"] == [
+        {
+            "rom": [0x9000, 0x9000 + len(stream)],
+            "stored_size": len(stream),
+            "decoded_size": 9,
+            "sha256": sha256(b"abcabcabc"),
+        }
+    ]
+    assert out["candidate_bytes"] == len(stream) and out["fill"] == 0
+
+
 def test_report_carries_the_blob_fields_per_version(tmp_path, monkeypatch):
     config = _config(tmp_path)
     _credits(monkeypatch, f=(0x1000, 0x100, "func"))
@@ -223,6 +290,7 @@ def test_report_carries_the_blob_fields_per_version(tmp_path, monkeypatch):
         "blobs_total": 0,
         "blobs_decoded": 0,
         "blobs_identified": 0,
+        "blobs_fill": 0,
         "unknown_total": ROM - 0x1100,
         "blobs": {},
     }
@@ -247,7 +315,7 @@ def test_a_rom_that_is_absent_gives_no_partition(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- import
 def _packet(config, **row):
-    rom = sha256(bytes(ROM))
+    rom = sha256(image(ROM))
     artifact = "ab" * 32
     blob = {
         "type": "world",

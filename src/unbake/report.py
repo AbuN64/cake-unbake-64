@@ -309,13 +309,17 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
 
 def partition(config: Any, v: str, table: Mapping[str, Any], rom_size: int) -> Json:
     """Every byte of one version's ROM once: the credit rows of `table` (code, then data), platform spans, then
-    the decoded and identified blobs, then unknown. `overlap` and `outside` (credited bytes counted twice or beyond the
-    ROM) must be 0; `spans` holds the disjoint ranges of each class."""
+    the decoded and identified blobs, then proven fill (`blobs.fill`, read from the ROM), then unknown. `overlap` and
+    `outside` (credited bytes counted twice or beyond the ROM) must be 0; `spans` holds the disjoint ranges of each
+    class."""
     held = [(rom, rom + size, kind) for _vram, rom, size, kind in table.values() if rom is not None and size]
     code = [(a, b) for a, b, kind in held if kind == "func"]
     data = [(a, b) for a, b, kind in held if kind != "func"]
     decoded, identified = blobs.ranges(blobs.load(config), v)
-    return blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified)
+    path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
+    rom = path.read_bytes() if path.is_file() else None
+    rom = rom if rom is not None and len(rom) == rom_size else None
+    return blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom)
 
 
 def _rom_size(config: Any, v: str) -> int | None:
@@ -360,6 +364,7 @@ def accounts(config: Any, tree: Any) -> dict[str, Json]:
             "blobs_total": p["blobs"],
             "blobs_decoded": p["blobs_decoded"],
             "blobs_identified": p["blobs_identified"],
+            "blobs_fill": p["blobs_fill"],
             "unknown_total": p["unknown"],
             "blobs": blobs.census(document, v),
         }
@@ -426,11 +431,20 @@ def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
     return f"{label} [{bar}]  {percent:5.2f}%{suffix}  {matched:,} of {total:,}"
 
 
-_BLOB_KEYS = ("rom_size", "platform_total", "blobs_total", "blobs_decoded", "blobs_identified", "unknown_total")
+_BLOB_KEYS = (
+    "rom_size",
+    "platform_total",
+    "blobs_total",
+    "blobs_decoded",
+    "blobs_identified",
+    "blobs_fill",
+    "unknown_total",
+)
 
 
 def _blobs_line(label: str, held: Json, cells: int) -> str:
-    """Blobs: █ decoded, ▒ identified, ░ the rest, over the ROM bytes outside code, data and platform."""
+    """Blobs: █ decoded (proven fill included), ▒ identified, ░ the rest, over the ROM bytes outside code, data and
+    platform."""
     return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
 
 

@@ -114,6 +114,12 @@
     "readback"
    ],
    "additionalProperties": false
+  },
+  "scanned": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object"
+   }
   }
  },
  "required": [

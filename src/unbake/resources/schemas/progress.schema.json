@@ -101,6 +101,10 @@
         "type": "integer",
         "minimum": 0
        },
+       "fill": {
+        "type": "integer",
+        "minimum": 0
+       },
        "total": {
         "type": "integer",
         "minimum": 0
@@ -267,6 +271,25 @@
        }
       },
       "platform": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "prefixItems": [
+         {
+          "type": "integer",
+          "minimum": 0
+         },
+         {
+          "type": "integer",
+          "minimum": 0
+         }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+       }
+      },
+      "fill": {
        "type": "array",
        "items": {
         "type": "array",

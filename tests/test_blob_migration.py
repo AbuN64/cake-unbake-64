@@ -47,7 +47,7 @@ def legacy():
         "codec": "none",
         "stored_size": 256,
         "rom": {v: [[0x8000, 0x8100]] for v in ("v", "w")},
-        "evidence": [{"artifact": "sdk.bin", "sha256": sha256(bytes(256))}],
+        "evidence": [{"artifact": "sdk.bin", "sha256": sha256(bytes(range(256)))}],
     }
     return {"schema": 1, "blob": rows}
 
@@ -69,7 +69,7 @@ def test_migration_preserves_metadata_and_coverage_with_verified_readback(tmp_pa
     assert b"# keep this review comment" in path.read_bytes()
     sdk = platform.load(config)["platform"]["rsp"]["sdk"]
     assert sdk["name"] == "known SDK" and sdk["evidence"] == old["blob"]["sdk"]["evidence"]
-    assert sdk["format"] == "microcode SDK" and sdk["sha256"] == {v: [sha256(bytes(256))] for v in ("v", "w")}
+    assert sdk["format"] == "microcode SDK" and sdk["sha256"] == {v: [sha256(bytes(range(256)))] for v in ("v", "w")}
     assert "type" not in sdk
     again = blob_migration.run(config)
     assert again["files"] == [] and again["types"] == again["platform"] == 0
