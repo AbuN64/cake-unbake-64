@@ -785,15 +785,153 @@ def _preprocess_lines(text: str) -> set[str]:
     return found
 
 
+_ASSIGN = re.compile(r"^(?:(?:export|override)\s+)*([A-Za-z_][\w.-]*)\s*(?::{1,3}=|\?=|\+=|!=|=)")
+_EXPORT = re.compile(r"^export\s+([A-Za-z_][\w.-]*)\s*$")
+_WORD = re.compile(r"[A-Za-z_][\w]*")
+_COMPUTED = re.compile(r"([A-Za-z_][\w]*)\$[({]")  # VMACRO_$(w): a name made up while make expands
+_DIRECTIVE = ("ifeq", "ifneq", "ifdef", "ifndef", "else", "endif", "include", "-include", "sinclude", "vpath", "$(")
+
+
+class _Block:
+    """One part of a Makefile: a variable's definition ("var", its name), a rule with its recipe ("rule", its
+    targets), a per-file row ("row", its object) or anything else ("other": a conditional, an eval, an include)."""
+
+    def __init__(self, kind: str, name: str, lines: list[str]) -> None:
+        self.kind, self.name, self.lines = kind, name, lines
+        text = "\n".join(lines)
+        self.words = set(_WORD.findall(text))
+        self.prefixes = set(_COMPUTED.findall(text))
+
+    def uses(self, name: str) -> bool:
+        return name in self.words or any(name.startswith(p) for p in self.prefixes)
+
+
+def _make_blocks(text: str) -> list[_Block]:
+    """The Makefile's parts, each with its physical lines (a continued line keeps every piece)."""
+    lines, found, rule, i = text.splitlines(), [], None, 0
+    while i < len(lines):
+        group = [lines[i]]
+        while group[-1].endswith("\\") and i + 1 < len(lines):
+            i += 1
+            group.append(lines[i])
+        i += 1
+        first = group[0]
+        if first.startswith("define "):
+            while group[-1] != "endef" and i < len(lines):
+                group.append(lines[i])
+                i += 1
+            found.append(_Block("var", first.split()[1], group))
+            rule = None
+        elif rule is not None and first.startswith("\t"):
+            rule.lines.extend(group)
+            rule.words.update(_WORD.findall("\n".join(group)))
+            rule.prefixes.update(_COMPUTED.findall("\n".join(group)))
+        elif not first.strip() or first.lstrip().startswith("#"):
+            continue  # neither ends a recipe
+        elif row := _FILE_RULE.match(first):
+            block = _Block("row", row.group(1), group)
+            value = "\n".join(group)[row.end() :].partition("=")[2]  # the row sets its variable; only the value uses
+            block.words, block.prefixes = set(_WORD.findall(value)), set(_COMPUTED.findall(value))
+            found.append(block)
+            rule = None
+        elif (assign := _ASSIGN.match(first)) or (assign := _EXPORT.match(first)):
+            found.append(_Block("var", assign.group(1), group))
+            rule = None
+        elif ":" in first and not first.startswith(_DIRECTIVE):
+            rule = _Block("rule", " ".join(first.split(":", 1)[0].split()), group)
+            found.append(rule)
+        else:
+            found.append(_Block("other", "", group))
+            rule = None
+    return found
+
+
+def _closure(blocks: Sequence[_Block], start: Sequence[_Block]) -> list[_Block]:
+    """`start` and every variable definition it uses, transitively."""
+    seen, todo = list(start), list(start)
+    while todo:
+        block = todo.pop()
+        for other in blocks:
+            if other.kind == "var" and other not in seen and block.uses(other.name):
+                seen.append(other)
+                todo.append(other)
+    return seen
+
+
+def rule_text(text: str, target: str) -> str | None:
+    """The rule making `target` with every variable definition it uses: what that recipe writes depends on nothing
+    else in the Makefile. None when no rule names the target."""
+    blocks = _make_blocks(text)
+    rules = [b for b in blocks if b.kind == "rule" and target in b.name.split()]
+    if not rules:
+        return None
+    return "\n".join(sorted({line for b in _closure(blocks, rules) for line in b.lines}))
+
+
+def _reach(before: str, after: str, moved: set[str]) -> tuple[set[str], set[str]] | None:
+    """What the changed lines reach: (the objects of the per-file rows, the targets of the rules) that use one of
+    them, directly or through the variables they define. None when a line reaches what cannot be named: a
+    conditional, an eval, a variable no rule here uses (make's own rules read CFLAGS), a target make computes."""
+    blocks = _make_blocks(before) + _make_blocks(after)
+    rows, targets, todo, done = set(), set(), [], set()
+
+    def take(block: _Block) -> bool:
+        if block.kind == "row":
+            rows.add(block.name)
+        elif block.kind == "rule":
+            if "$" in block.name:
+                return False
+            targets.update(block.name.split())
+        elif block.kind == "var":
+            if block.name not in done:
+                done.add(block.name)
+                todo.append(block.name)
+        else:
+            return False
+        return True
+
+    for line in moved:
+        owners = [b for b in blocks if line in b.lines]
+        if not owners or not all(take(b) for b in owners):
+            return None
+    while todo:
+        name = todo.pop()
+        users = [b for b in blocks if b.uses(name) and not (b.kind == "var" and b.name == name)]
+        if not users or not all(take(b) for b in users):
+            return None
+    return rows, targets
+
+
+def _pattern(target: str) -> re.Pattern[str]:
+    head, _, tail = target.partition("%")
+    return re.compile(re.escape(head) + ("(.+)" + re.escape(tail) if "%" in target else ""))
+
+
+def _maker(patterns: Mapping[str, re.Pattern[str]], rel: str) -> str | None:
+    """The target of the rule make picks for `rel`: an exact one, else the pattern with the shortest stem."""
+    best, stem = None, None
+    for target, pattern in patterns.items():
+        if m := pattern.fullmatch(rel):
+            size = len(m.group(1)) if m.groups() else -1
+            if stem is None or size < stem:
+                best, stem = target, size
+    return best
+
+
+_LONG_AGO = 1_000_000_000  # ns: older than any input, so make remakes the file and nothing is deleted under a rule
+
+
 def drop_reflagged(config: Config, new: bytes | None = None) -> int:
     """make does not see a rule change, so the Makefile the objects in build/ were made by is kept
     (.unbake/make.Makefile) and compared with the one about to build (`new`, default the tree's Makefile). A changed
     line that decides only the preprocessed text (`_preprocess_lines`) removes the .i stamp (`.i.ok`) of the objects
     it reaches, so their text is made again and only an object whose text changed compiles again; any other changed
-    line removes the objects themselves with their stamps. A per-file row reaches its object in every version, any
-    other line (a global flag, a recipe) every compiled object. Comment lines are ignored. The kept copy becomes the
-    new one. Returns the count of objects removed; nothing is removed when no copy was kept (objects made before this
-    rule)."""
+    line reaches what the rules using it make (`_reach`): a per-file row its object in every version, a recipe or a
+    variable only the files of the rules that use it, the rule make picks for each file deciding. A reached compiled
+    object goes with its stamp; any other reached file in build/ is dated before every input, so make makes it again
+    (a rule that only checks a file splat wrote still finds it). A line whose reach cannot be named removes every
+    compiled object. Comment and blank lines are ignored. The kept copy becomes the new one. Returns the count of
+    objects removed; nothing is removed when no copy was kept (objects made before this rule)."""
     root = config.project.root
     kept, current = root / ".unbake/make.Makefile", root / "Makefile"
     try:
@@ -806,7 +944,8 @@ def drop_reflagged(config: Config, new: bytes | None = None) -> int:
         old = new
     store.write(kept, new)
     before, after = old.decode(), new.decode()
-    moved = {line for line in set(before.splitlines()) ^ set(after.splitlines()) if not line.startswith("#")}
+    changed = set(before.splitlines()) ^ set(after.splitlines())
+    moved = {line for line in changed if line.strip() and not line.startswith("#")}
     if not moved:
         return 0
     text_only = _preprocess_lines(before) | _preprocess_lines(after)
@@ -816,18 +955,42 @@ def drop_reflagged(config: Config, new: bytes | None = None) -> int:
         return None if None in rules else {m.group(1) for m in rules if m}
 
     objects = {line for line in moved if line not in text_only}
-    remade = reached(objects) if objects else set()
+    reach = _reach(before, after, objects) if objects else (set(), set())
+    remade, targets = (None, set()) if reach is None else reach
     stamped = reached(moved - objects) if moved - objects else set()
+    patterns = {
+        t: _pattern(t)
+        for b in (_make_blocks(before) + _make_blocks(after) if targets else [])
+        if b.kind == "rule" and "$" not in b.name
+        for t in b.name.split()
+    }
     dropped = 0
     for version in config.project.versions:
+        base = root / "build" / version
+        gone = set()
         for obj in _objects(config, version):
-            if remade is None or str(obj.relative_to(root / "build" / version)) in remade:
+            name = str(obj.relative_to(base))
+            if remade is None or name in remade or (targets and _maker(patterns, f"build/{version}/{name}") in targets):
                 obj.unlink(missing_ok=True)
+                gone.add(name)
                 dropped += 1
         for stamp in _stamps(config, version):  # an object already gone may still have the stamp of an old text
-            name = str(stamp.relative_to(root / "build" / version))[: -len(".i.ok")] + ".o"
-            if remade is None or stamped is None or name in remade or name in stamped:
+            name = str(stamp.relative_to(base))[: -len(".i.ok")] + ".o"
+            if targets and _maker(patterns, f"build/{version}/{name[:-2]}.i.ok") in targets:
+                if (base / name).exists():
+                    (base / name).unlink()
+                    dropped += 1
+                gone.add(name)
+            if remade is None or stamped is None or name in gone or name in stamped:
                 stamp.unlink(missing_ok=True)
+        if targets:
+            for directory, _, names in os.walk(base):
+                for n in names:
+                    path = Path(directory) / n
+                    if n.endswith(".i.ok") or (n.endswith(".o") and not n.endswith((".s.o", ".bin.o"))):
+                        continue
+                    if _maker(patterns, str(path.relative_to(root))) in targets:
+                        os.utime(path, ns=(_LONG_AGO, _LONG_AGO))
     return dropped
 
 

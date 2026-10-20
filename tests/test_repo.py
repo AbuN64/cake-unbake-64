@@ -308,6 +308,18 @@ def test_extract_cache(world):
     assert sorted(world.extracts) == ["a", "a", "b"]  # only the version whose input changed
 
 
+def test_only_the_extract_recipe_of_the_makefile_keys_the_extraction(world):
+    """A Makefile change outside the extract recipe (a new assembler flag) extracts nothing again; one in the recipe
+    or a variable it uses does."""
+    rule = "SED := -e s/a/b/\nCC := cc\nextract-%:\n\tsplat $*\n\tsed $(SED) asm/$*/x.s\n"
+    _write(world.root, "Makefile", rule)
+    key = repo._extract_key(world.cfg, "a")
+    _write(world.root, "Makefile", rule.replace("CC := cc", "CC := gcc") + "build/%.o:\n\t$(CC) -c $<\n")
+    assert repo._extract_key(world.cfg, "a") == key
+    _write(world.root, "Makefile", rule.replace("s/a/b/", "s/a/c/"))
+    assert repo._extract_key(world.cfg, "a") != key
+
+
 def test_a_yaml_that_sync_rewrote_is_extracted_again(world):
     (world.root / "versions/a/splat.yaml").write_text("stale\n")
     result = world.setup()

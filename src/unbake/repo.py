@@ -917,14 +917,17 @@ def _splat_version(tool: Path, root: Path) -> bytes:
 
 
 def _extract_key(config: Config, v: str) -> str:
-    """splat version, the Makefile (its extract recipe rewrites what splat writes), yaml, symbol_addrs and ROM:
-    nothing else decides what extraction writes."""
+    """splat version, the Makefile's extract recipe with the variables it uses (it rewrites what splat writes; a
+    change anywhere else in the Makefile extracts nothing again), yaml, symbol_addrs and ROM: nothing else decides
+    what extraction writes. A Makefile without that rule counts whole."""
     root = config.project.root
     makefile = root / "Makefile"
+    text = makefile.read_bytes() if makefile.is_file() else None
+    recipe = None if text is None else build.rule_text(text.decode(errors="replace"), "extract-%")
     return digest(
         (
             _splat_version(config.host.tools["splat"], root),
-            sha1(makefile.read_bytes()) if makefile.is_file() else None,
+            (sha1(recipe.encode()) if recipe is not None else sha1(text)) if text is not None else None,
             sha1((root / f"versions/{v}/splat.yaml").read_bytes()),
             sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes()),
             sha1(configuration.rom(config.project, v).read_bytes()),
@@ -982,8 +985,9 @@ def setup(config: Config, params: Json) -> Json:
             extracted = _extract(config, _extractable(config))
         synced, current = _sync(config, {"check": False})
         written = synced["written"]
-        again = [v for v in project.versions if "Makefile" in written or f"versions/{v}/splat.yaml" in written]
-        if again:  # the yaml changed under extraction: its output is the output of the old one
+        # sync moved an extraction input (the yaml, the facts, the extract recipe): that output is the old one's
+        again = [v for v in _extractable(config) if _extract_key(config, v) != _extracted_key(config, v)]
+        if again:
             extracted = sorted({*extracted, *_extract(config, again)})
         make = None  # --no-make: the caller builds and records the verdict itself (decomp land's check gate)
         if build_too:

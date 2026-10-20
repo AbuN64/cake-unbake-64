@@ -1062,6 +1062,46 @@ def test_a_changed_global_rule_drops_every_compiled_object(tmp_path):
     assert (tmp_path / "build/us/asm/d.s.o").exists()  # an assembled file's rule names its one input
 
 
+RULES = (
+    "Q := @\nCFLAGS := -O2\nASFLAGS := -G0\n"
+    "build/%.o: build/%.i.ok\n\t$(Q)cc $(CFLAGS) $< -o $@\n"
+    "build/%.s.o: %.s\n\t$(Q)as $(ASFLAGS) $< -o $@\n"
+)
+
+
+def test_a_changed_assembler_recipe_keeps_every_compiled_object_and_remakes_the_assembled_ones(tmp_path):
+    """A new variable only the .s.o recipe uses (a tool update adding assembler flags) reaches the assembled files,
+    never the compiled objects: the C build stays warm."""
+    config = _reflag_tree(tmp_path, RULES)
+    changed = RULES.replace("ASFLAGS := -G0\n", "ASFLAGS := -G0\nASDEFS = --defsym A=1\n")
+    changed = changed.replace("as $(ASFLAGS) $<", "as $(ASFLAGS) $(ASDEFS) $<")
+    assert build.drop_reflagged(config, changed.encode()) == 0
+    assert all((tmp_path / f"build/{v}/src/{u}.c.o").exists() for v in ("us", "de") for u in ("a", "b"))
+    assert (tmp_path / "build/us/asm/d.s.o").stat().st_mtime_ns == build._LONG_AGO  # make assembles it again
+
+
+def test_a_changed_variable_reaches_the_objects_of_the_rules_using_it(tmp_path):
+    config = _reflag_tree(tmp_path, RULES)
+    made = (tmp_path / "build/us/asm/d.s.o").stat().st_mtime_ns
+    assert build.drop_reflagged(config, RULES.replace("-O2", "-O3").encode()) == 4
+    assert (tmp_path / "build/us/asm/d.s.o").stat().st_mtime_ns == made
+
+
+def test_a_changed_line_nothing_names_drops_every_compiled_object(tmp_path):
+    config = _reflag_tree(tmp_path, RULES + "ifeq ($(X),1)\nY := 1\nendif\n")
+    assert build.drop_reflagged(config, (RULES + "ifeq ($(X),2)\nY := 1\nendif\n").encode()) == 4
+
+
+def test_rule_text_is_the_recipe_and_the_variables_it_uses():
+    text = (
+        "A := 1\nB := $(A) 2\nC := 3\nexport D\ndefine D\nx $(B)\nendef\nrun-%:\n\techo $(B) $$D\nother:\n\techo $(C)\n"
+    )
+    got = build.rule_text(text, "run-%")
+    assert got is not None and "A := 1" in got and "B := $(A) 2" in got and "x $(B)" in got and "export D" in got
+    assert "C := 3" not in got and "echo $(C)" not in got
+    assert build.rule_text(text, "missing") is None
+
+
 def _stamp(tmp_path, v, unit):
     return tmp_path / f"build/{v}/src/{unit}.c.i.ok"
 
