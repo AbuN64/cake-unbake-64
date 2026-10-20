@@ -204,17 +204,76 @@ def _group_text(text: str, parts: Sequence[Item], group: Sequence[int]) -> str:
 
 
 def _held(text: str) -> frozenset[str]:
-    """Every top-level group of `text` (see `_groups`), whitespace-normalized: what a whole-file candidate that
-    carries the rest of its file brings again."""
+    """Every group of `text` (see `_groups`) at every depth, whitespace-normalized: the top-level ones and, inside
+    each conditional, the groups of its branches. What a whole-file candidate that carries the rest of its file brings
+    again, also when the file holds it only behind a guard (a NON_MATCHING block shared by several functions)."""
     parts = items(text)
-    return frozenset(_group_text(text, parts, g) for g in _groups(text, parts, range(len(parts))))
+    found: set[str] = set()
+
+    def walk(indexes: Sequence[int]) -> None:
+        for group in _groups(text, parts, indexes):
+            found.add(_group_text(text, parts, group))
+            if len(group) > 2:
+                walk(group[1:-1])
+
+    walk(range(len(parts)))
+    return frozenset(found)
 
 
-def _pieces(source: str, name: str, known: Collection[str] = ()) -> tuple[list[tuple[str, int]], str, int]:
-    """([(declaration, its first line in `source`)], body, the body's first line): the candidate's definition of
-    `name`, and every other top-level item it brings, each with where `source` has it. A whole group after the
-    definition that the file already holds (`known`, from `_held`) is the file's own later text, not something the
-    candidate brings: a whole-file candidate does not duplicate the functions and stand-ins after it."""
+def _directive(text: str, part: Item) -> str:
+    """The word of a directive item (`if`, `ifdef`, `else`, `endif`, `include`, ...), "" for any other item."""
+    word = re.match(r"#[ \t]*(\w+)", text[part.start : part.end]) if part.kind == "directive" else None
+    return word[1] if word else ""
+
+
+def _visible_groups(before: str) -> frozenset[str]:
+    """Each whole conditional (`#if` to its `#endif`) of `before` that text inserted right after it sees, whitespace-
+    normalized: one that sits at top level or in a branch still open at the end of `before`. A conditional inside a
+    closed one, or in a branch that ended, is not seen there."""
+    parts = [p for p in items(before) if p.kind != "comment"]
+    stack: list[tuple[int, int]] = []  # per open conditional: (index of its `#if`, the branch it sits in)
+    branch = seen = 0
+    closed: list[tuple[int, int, int]] = []  # (the branch it sits in, index of its `#if`, index of its `#endif`)
+    for j, part in enumerate(parts):
+        word = _directive(before, part)
+        if word in ("if", "ifdef", "ifndef"):
+            stack.append((j, branch))
+            seen += 1
+            branch = seen
+        elif word in ("else", "elif") and stack:
+            seen += 1
+            branch = seen
+        elif word == "endif" and stack:
+            opened, branch = stack.pop()
+            closed.append((branch, opened, j))
+    open_ = {branch, *(b for _, b in stack)}
+    return frozenset(
+        _norm("\n".join(before[p.start : p.end] for p in parts[lo : hi + 1])) for b, lo, hi in closed if b in open_
+    )
+
+
+def _wanted(groups: Sequence[Sequence[tuple[str, int]]], before: str) -> list[tuple[str, int]]:
+    """The items of the candidate's groups that text inserted right after `before` still needs: a single item already
+    visible there (same nesting, same branch) or a whole conditional visible there is not brought again. A conditional
+    is kept or dropped whole, never one of its directives alone (an `#endif` the file also has must not go)."""
+    have = {_norm(d) for d in _declarations(_visible(before))}
+    whole = _visible_groups(before)
+    out: list[tuple[str, int]] = []
+    for group in groups:
+        if len(group) == 1 and _norm(group[0][0]) in have:
+            continue
+        if len(group) > 1 and _norm("\n".join(t for t, _ in group)) in whole:
+            continue
+        out += group
+    return out
+
+
+def _pieces(source: str, name: str, known: Collection[str] = ()) -> tuple[list[list[tuple[str, int]]], str, int]:
+    """([[(item, its first line in `source`)] per group], body, the body's first line): the candidate's definition of
+    `name`, and every other top-level item it brings, each with where `source` has it, cut into the groups of
+    `_groups` (a conditional is one group). A whole group after the definition that the file already holds (`known`,
+    from `_held`) is the file's own later text, not something the candidate brings: a whole-file candidate does not
+    duplicate the functions and stand-ins after it."""
     parts = items(source)
     mine = [k for k, p in enumerate(parts) if p.kind == "function" and p.name == name]
     if len(mine) != 1:
@@ -227,13 +286,15 @@ def _pieces(source: str, name: str, known: Collection[str] = ()) -> tuple[list[t
     body = source[parts[first].start : parts[k].end].strip() + "\n"
     after = [j for j in range(k + 1, len(parts)) if j not in dropped]
     again = {j for g in _groups(source, parts, after) if _group_text(source, parts, g) in known for j in g}
-    rest = [p for j, p in enumerate(parts) if not first <= j <= k and j not in dropped | again and p.kind != "comment"]
-    texts = [(source[p.start : p.end].strip(), source.count("\n", 0, p.start) + 1) for p in rest]
+    rest = [j for j, p in enumerate(parts) if not first <= j <= k and j not in dropped | again and p.kind != "comment"]
+    texts = [(source[parts[j].start : parts[j].end].strip(), source.count("\n", 0, parts[j].start) + 1) for j in rest]
     opened = sum(bool(re.match(r"#\s*if", t)) for t, _ in texts)
     closed = sum(bool(re.match(r"#\s*endif", t)) for t, _ in texts)
     if opened != closed:
         raise Refusal(Finding("land.request", f"The candidate wraps {name} in a conditional.", unit=name))
-    return texts, body, source.count("\n", 0, parts[first].start) + 1
+    line = dict(zip(rest, texts, strict=True))
+    groups = [[line[j] for j in group] for group in _groups(source, parts, rest)]
+    return groups, body, source.count("\n", 0, parts[first].start) + 1
 
 
 def candidate(source: str, name: str | None) -> tuple[str, str]:
@@ -241,8 +302,8 @@ def candidate(source: str, name: str | None) -> tuple[str, str]:
     candidate (no `name`) is all body."""
     if name is None:
         return "", source.strip() + "\n"
-    texts, body, _ = _pieces(source, name)
-    return "\n".join(t for t, _ in texts), body
+    groups, body, _ = _pieces(source, name)
+    return "\n".join(t for group in groups for t, _ in group), body
 
 
 Origin = tuple[str, int]  # ("disk" | "candidate", the line of that text the output line came from)
@@ -286,11 +347,11 @@ def splice_traced(
     text: str, segment: str, name: str, source: str, fuzzy: bool, kind: str = "function"
 ) -> tuple[str, list[Origin]]:
     """`splice`, and per line of the new text where it came from: a line of `text` (the file as it is on disk) or a
-    line of the candidate `source`, so a diagnostic naming a line of the new text names a place a reader can open."""
+    line of the candidate `source`, so a diagnostic naming a line of the new text names a place a reader can open.
+    The candidate's other items come along only where the text before the insertion point does not already give them,
+    each conditional whole; what the file holds anywhere after the replaced text is not brought again."""
     if kind == "function":
-        texts, body, body_line = _pieces(source, name, _held(text))
-    else:
-        texts, body, body_line = [], source.strip() + "\n", 1
+        _pieces(source, name)  # a candidate that does not define `name` once is refused before anything else
     found = re.compile(_stand_in(segment, name), re.M).search(text)
     if found is None and kind == "function":
         raise Refusal(
@@ -309,28 +370,35 @@ def splice_traced(
 
     head: list[Piece]
     tail: list[Piece]
+    enclosing = None
     if found is None:
         # data already defined in C: its definition is the text the candidate replaces; the build proves the bytes
         item = _definition(text, name)
         start, end = item.start, item.end
-        head, tail = [cand(body.rstrip("\n"), body_line)], []
+    elif enclosing := _block(text, found.start()):
+        start, end = enclosing[0], enclosing[3]
     else:
         start, end = found.start(), found.end()
+    if kind == "function":
+        groups, body, body_line = _pieces(source, name, _held(text[:start] + text[end:]))
+    else:
+        groups, body, body_line = [], source.strip() + "\n", 1
+    if found is None:
+        head, tail = [cand(body.rstrip("\n"), body_line)], []
+    else:
         head, tail = [cand(body, body_line)], []
         if fuzzy:
             head = [cand("#ifdef NON_MATCHING\n" + body.rstrip() + "\n#else\n", body_line)]
             tail = [cand("INCLUDE_ASM(" + f'"{segment}", {name});\n#endif\n', body_line)]
-        if enclosing := _block(text, found.start()):
+        if enclosing:
             # the NON_MATCHING body is the old candidate: the new one takes its place, and the else side (its nested
             # version guards and the other stand-ins) stays; the stand-in itself goes unless the candidate is only fuzzy
-            top, other, close, finish = enclosing
-            start, end = top, finish
+            _, other, close, _ = enclosing
             if fuzzy:
                 tail = [disk(other, close), cand("#endif\n", body_line)]
             else:
                 head, tail = [cand(body, body_line)], [disk(other, found.start()), disk(found.end(), close)]
-    have = {_norm(d) for d in _declarations(_visible(text[:start]))}
-    wanted = [(d, line) for d, line in texts if _norm(d) not in have]
+    wanted = _wanted(groups, text[:start])
     pieces = [disk(0, start)]
     pieces += [cand(d + "\n", line) for d, line in wanted]
     pieces += [cand("\n", wanted[0][1])] if wanted else []
@@ -340,15 +408,23 @@ def splice_traced(
 
 def replace_traced(current: str, name: str, source: str) -> tuple[str, list[Origin]]:
     """`current` with the definition of `name` it already holds replaced by the candidate's (a landed function), and
-    per line of the new text where it came from."""
-    texts, body, body_line = _pieces(source, name)
-    parts = [p for p in items(current) if p.kind == "function" and p.name == name]
-    if len(parts) != 1:
+    per line of the new text where it came from. The candidate's other items come along as `splice_traced` brings
+    them: a whole-file candidate does not bring its file again. When the candidate's definition carries the comment
+    written above it, that comment replaces the one above the landed definition."""
+    _, lead, _ = _pieces(source, name)  # a candidate that does not define `name` once is refused first
+    found = items(current)
+    mine = [k for k, p in enumerate(found) if p.kind == "function" and p.name == name]
+    if len(mine) != 1:
         raise Refusal(Finding("land.request", f"{name} has no single definition to replace.", unit=name))
-    first, last = parts[0].start, parts[0].end
+    top = mine[0]
+    if lead.startswith(("/*", "//")):  # the body starts with the comment written above the candidate's definition
+        while top > 0 and found[top - 1].kind == "comment":
+            top -= 1
+    first, last = found[top].start, found[mine[0]].end
+    groups, body, body_line = _pieces(source, name, _held(current[:first] + current[last:]))
+    wanted = _wanted(groups, current[:first])
     pieces: list[Piece] = [("disk", current[:first], 1)]
-    if texts and "\n".join(t for t, _ in texts) not in current:
-        pieces += [("candidate", t + ("\n" if k < len(texts) - 1 else "\n\n"), n) for k, (t, n) in enumerate(texts)]
+    pieces += [("candidate", t + ("\n" if k < len(wanted) - 1 else "\n\n"), n) for k, (t, n) in enumerate(wanted)]
     pieces += [("candidate", body.strip(), body_line), ("disk", current[last:], current.count("\n", 0, last) + 1)]
     return _traced([p for p in pieces if p[1]])
 

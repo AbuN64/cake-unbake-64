@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -419,3 +420,71 @@ def test_a_helper_after_the_function_that_the_file_lacks_still_comes_along():
     source = CANDIDATE + "static int helper(void) {\n    return 6;\n}\n"
     text = publish.splice(OWNER, "main", "func_80000010", source, fuzzy=False)
     assert text.count("static int helper(void)") == 1
+
+
+# ---------------------------------------------------------------- what a candidate brings, each conditional whole
+LANDED = (
+    '#include "game.h"\n#if !defined(NON_MATCHING) || defined(VERSION_EU)\nINCLUDE_ASM("main", before);\n#endif\n'
+    "extern int count;\n/* sets the count */\nint landed(void) {\n    count = 1;\n    return 0;\n}\n"
+    '#ifndef NON_MATCHING\nINCLUDE_ASM("main", later);\n#endif\n'
+    "#ifdef NON_MATCHING\nint later(void) {\n    return 2;\n}\n#if !defined(VERSION_EU)\nint tail(void) {\n"
+    "    return 3;\n}\n#endif\n#endif\n"
+)
+
+
+def test_a_whole_file_candidate_of_a_landed_function_replaces_only_its_definition():
+    source = LANDED.replace("count = 1;", "count = 2;")
+    text, origins = publish.replace_traced(LANDED, "landed", source)
+    assert text == source and len(origins) == len(source.splitlines())
+    assert origins[source.splitlines().index("int landed(void) {")] == ("candidate", 7)
+
+
+def test_a_landed_function_without_its_file_still_brings_what_the_file_lacks():
+    source = "extern int count;\nextern int other;\nint landed(void) {\n    return other;\n}\n"
+    text, _ = publish.replace_traced(LANDED, "landed", source)
+    assert text.count("extern int count;") == 1 and text.count("extern int other;") == 1
+    assert text.index("extern int other;") < text.index("int landed(void)") and "count = 1;" not in text
+    assert "/* sets the count */" in text  # a candidate without its own comment keeps the file's
+
+
+SHARED = (
+    '#include "game.h"\n#if !defined(NON_MATCHING) || defined(VERSION_EU)\nINCLUDE_ASM("main", before);\n#endif\n'
+    '#ifndef NON_MATCHING\nINCLUDE_ASM("main", func_80000010);\n#endif\n'
+    '#ifndef NON_MATCHING\nINCLUDE_ASM("main", later);\n#endif\n'
+    '#ifdef NON_MATCHING\n#include "types.h"\nint func_80000010(void) {\n    return 1;\n}\n'
+    "int later(void) {\n    return 2;\n}\n"
+    "#if !defined(VERSION_EU)\nint tail(void) {\n    return 3;\n}\n#endif\n#endif\n"
+)
+SHARED_SEED = (  # a resume seed: the file's includes and the whole NON_MATCHING block the function shares
+    '#include "game.h"\n#include "types.h"\n#if defined(VERSION_US)\nextern int us_only;\n#endif\n'
+    "int func_80000010(void) {\n    return 5;\n}\n"
+    "int later(void) {\n    return 2;\n}\n#if !defined(VERSION_EU)\nint tail(void) {\n    return 3;\n}\n#endif\n"
+)
+
+
+def test_a_candidate_conditional_comes_whole_though_the_file_already_has_an_endif():
+    text = publish.splice(SHARED, "main", "func_80000010", SHARED_SEED, fuzzy=False)
+    assert len(re.findall(r"^#\s*if", text, re.M)) == len(re.findall(r"^#\s*endif", text, re.M))
+    stand_in = text.index("return 5;")
+    assert text.rindex("#if defined(VERSION_US)\nextern int us_only;\n#endif\n", 0, stand_in) > 0
+    assert text.count('#include "types.h"') == 2  # the file's own sits in the NON_MATCHING block, not seen there
+    # the functions after it that the file holds behind its NON_MATCHING guard are the file's, not brought again
+    assert text.count("int later(void)") == 1 and text.count("int tail(void)") == 1
+
+
+def test_a_whole_conditional_already_visible_before_the_stand_in_is_not_brought_again():
+    source = '#if !defined(NON_MATCHING) || defined(VERSION_EU)\nINCLUDE_ASM("main", before);\n#endif\n' + (
+        "int func_80000010(void) {\n    return 5;\n}\n"
+    )
+    text = publish.splice(SHARED, "main", "func_80000010", source, fuzzy=False)
+    assert text.count('INCLUDE_ASM("main", before);') == 1
+    assert len(re.findall(r"^#\s*if", text, re.M)) == len(re.findall(r"^#\s*endif", text, re.M))
+
+
+def test_only_the_conditionals_in_a_branch_still_open_are_visible():
+    before = (
+        "#if A\nint a;\n#endif\n#ifdef NON_MATCHING\n#if B\nint b;\n#endif\n#else\n#if C\nint c;\n#endif\n"
+        "#if D\n#if E\nint e;\n#endif\n"  # D is still open: E sits in its open branch
+    )
+    seen = publish._visible_groups(before)
+    assert seen == {"#if A int a; #endif", "#if C int c; #endif", "#if E int e; #endif"}  # B sits in a closed branch

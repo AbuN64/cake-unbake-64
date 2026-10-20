@@ -1,6 +1,7 @@
 """Native execution with per-child accounting and process-group timeouts."""
 
 import ctypes
+import hashlib
 import os
 import selectors
 import signal
@@ -179,7 +180,40 @@ def run(
             raise Refusal(Finding("native.exit", reason=str(error))) from error
 
 
+@cache
+def _pin(name: str) -> tuple[str, str] | None:
+    """(binary, sha256) of the host tool `name` when the project build fetches a pinned release of it (repo.toml
+    make.tools with pins), else None."""
+    from unbake import config as configuration
+
+    for row in configuration.load_resource("repo.toml")["make"]["tools"].values():
+        binary = row.get("binary", name)
+        if row.get("host") == name and binary in (row.get("pins") or {}):
+            return binary, row["pins"][binary]
+    return None
+
+
+@cache
+def _digest(path: Path, size: int, mtime: int) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _matches(path: Path | None, sha256: str) -> bool:
+    if path is None or not path.is_file():
+        return False
+    stat = path.stat()
+    return _digest(path, stat.st_size, stat.st_mtime_ns) == sha256
+
+
 def tool(config: Config, name: str, *, kind: str | None = None) -> Path:
+    """The host tool `name`. For a tool the project build fetches as a pinned release (n64link) the tree's own
+    fetched copy (tools/<name>/) comes first when it is the pinned file: a measure assembles with the rules the build
+    uses, not with another build of the tool that happens to sit at the host path."""
+    if pin := _pin(name):
+        binary, sha256 = pin
+        own = config.project.root / "tools" / name / binary
+        if _matches(own, sha256):
+            return own
     try:
         return config.host.tools[name]
     except KeyError:

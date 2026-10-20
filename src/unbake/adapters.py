@@ -133,7 +133,7 @@ class TemplateToolchain:
             else [str(config.host.tools[row["as_host"]])]
             if row["as_host"] in config.host.tools
             else [],
-            **{k: [str(config.host.tools[k])] for k in ("cpp", "n64link") if k in config.host.tools},
+            **{k: [str(process.tool(config, k))] for k in ("cpp", "n64link") if k in config.host.tools},
         }
 
     def tool_files(self) -> list[Path]:
@@ -147,7 +147,7 @@ class TemplateToolchain:
             elif name == "as":
                 files.append(process.tool(self.config, self.row.get("as_host", "mips_as")))
             elif name in self.config.host.tools:
-                files.append(self.config.host.tools[name])
+                files.append(process.tool(self.config, name))
         if self.row.get("rdata_alloc"):
             files.append(process.tool(self.config, "mips_objcopy"))
         return files

@@ -511,22 +511,28 @@ def _inactive(
 ) -> str:
     """Why the candidate's definition of `name` is not compiled in `version` (the reason; "" when it is). A stand-in
     can sit in a version guard of its module (`#if VERSION_EU`) while another version defines the function in an
-    `#else` side: the measure then reads that other definition, not the candidate."""
-    lines = placed.text.splitlines()
-    head = re.compile(rf"\b{re.escape(name)}\s*\([^;{{]*\)\s*\{{")
-    for number, (kind, _) in enumerate(placed.origins, 1):
-        if kind != "candidate" or number > len(lines) or not head.search(" ".join(lines[number - 1 : number + 4])):
-            continue
-        snapshot, unit, recipe, _ = native.candidate(
-            config, version, placed.owner.path, placed.text, overrides, extras, [name]
-        )
-        if number in view.active_lines(view.get(snapshot, unit, version, recipe), placed.owner.path):
-            return ""
-        return (
-            f"version {version}: the candidate's {name} (line {number} of {placed.owner.path} as measured) sits in an "
-            "inactive #if region there, so the module's own definition is what a measure would read"
-        )
-    return ""
+    `#else` side: the measure then reads that other definition, not the candidate. The line judged is the one that
+    names the function in each top-level definition the candidate brings (a comment or directive above it is no part
+    of it); one active definition is enough, as when the candidate defines it once per version guard."""
+    text, called = placed.text, re.compile(rf"\b{re.escape(name)}\s*\(")
+    heads = []
+    for item in publish.items(text):
+        if item.kind == "function" and item.name == name and (at := called.search(text, item.start, item.end)):
+            number = text.count("\n", 0, at.start()) + 1
+            if number <= len(placed.origins) and placed.origins[number - 1][0] == "candidate":
+                heads.append(number)
+    if not heads:
+        return ""
+    snapshot, unit, recipe, _ = native.candidate(
+        config, version, placed.owner.path, placed.text, overrides, extras, [name]
+    )
+    active = view.active_lines(view.get(snapshot, unit, version, recipe), placed.owner.path)
+    if any(number in active for number in heads):
+        return ""
+    return (
+        f"version {version}: the candidate's {name} (line {heads[0]} of {placed.owner.path} as measured) sits in an "
+        "inactive #if region there, so the module's own definition is what a measure would read"
+    )
 
 
 def _score_one(config: Config, params: Json) -> Json:

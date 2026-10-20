@@ -1,6 +1,7 @@
 """Process contract tests: tiny shell children, exact wait4 accounting, and mocked git."""
 
 import ast
+import hashlib
 import os
 import signal
 from dataclasses import replace
@@ -335,3 +336,31 @@ def test_make_runs_only_with_a_j_or_a_jobserver(tmp_path, monkeypatch, argv, env
         with pytest.raises(Refusal):
             process.run("make", [make, *argv], tmp_path, tmp=tmp_path / "t", env=env)
         assert ran == []
+
+
+def _tool_config(tmp_path, own: bytes | None):
+    host = tmp_path / "host-n64link"
+    host.write_bytes(b"an older build")
+    if own is not None:
+        (tmp_path / "tools/n64link").mkdir(parents=True)
+        (tmp_path / "tools/n64link/n64link").write_bytes(own)
+    return SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(tools={"n64link": host}))
+
+
+def test_a_pinned_build_tool_is_the_trees_own_fetched_copy_not_another_build_on_the_host(tmp_path, monkeypatch):
+    pinned = b"the pinned release"
+    monkeypatch.setattr(process, "_pin", lambda name: ("n64link", hashlib.sha256(pinned).hexdigest()))
+    config = _tool_config(tmp_path, pinned)
+    assert process.tool(config, "n64link") == tmp_path / "tools/n64link/n64link"
+
+
+def test_a_tree_copy_that_is_not_the_pin_leaves_the_host_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "_pin", lambda name: ("n64link", hashlib.sha256(b"the pinned release").hexdigest()))
+    for k, own in enumerate((None, b"a hand-built copy")):
+        (tmp_path / str(k)).mkdir()
+        assert process.tool(_tool_config(tmp_path / str(k), own), "n64link") == tmp_path / str(k) / "host-n64link"
+
+
+def test_the_repo_pins_name_the_assembler_the_build_fetches():
+    binary, sha256 = process._pin("n64link")
+    assert binary == "n64link" and len(sha256) == 64 and process._pin("cpp") is None

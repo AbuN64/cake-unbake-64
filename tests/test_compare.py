@@ -489,3 +489,26 @@ def test_another_version_without_the_candidate_is_a_gap_not_a_refusal(world, mon
     by_version = {p["version"]: p for p in result["proofs"]}
     assert result["exact"] is False and by_version["a"]["exact"] is True
     assert by_version["b"]["exact"] is False and by_version["b"]["missing"] == ("version b: off",)
+
+
+def test_the_line_judged_is_the_one_naming_the_function_not_a_directive_above_it(world, monkeypatch):
+    text = "#if V\n#endif\n/* sets */\nint f(void) {\n  return 1;\n}\n"
+    placed = _placed(text, [("candidate", n) for n in range(1, 7)])
+    _preprocessed(monkeypatch, active=[4, 5, 6])  # the directives and the comment above are no output lines
+    assert _INACTIVE(world.cfg, "a", "f", placed, {}, {}) == ""
+    _preprocessed(monkeypatch, active=[1, 2, 3])
+    assert "line 4 of src/m.c" in _INACTIVE(world.cfg, "a", "f", placed, {}, {})
+
+
+def test_a_candidate_that_defines_the_function_once_per_version_guard_is_active_where_one_is(world, monkeypatch):
+    text = "#if V\nint f(void) {\n  return 1;\n}\n#else\nint f(void) {\n  return 2;\n}\n#endif\n"
+    placed = _placed(text, [("candidate", n) for n in range(1, 10)])
+    _preprocessed(monkeypatch, active=[6, 7, 8])
+    assert _INACTIVE(world.cfg, "a", "f", placed, {}, {}) == ""
+
+
+def test_a_definition_the_file_already_had_is_not_the_candidates(world, monkeypatch):
+    text = "int f(void) {\n  return 1;\n}\n"
+    placed = _placed(text, [("disk", 1), ("disk", 2), ("disk", 3)])
+    _preprocessed(monkeypatch, active=[])
+    assert _INACTIVE(world.cfg, "a", "f", placed, {}, {}) == ""
