@@ -876,3 +876,102 @@ def test_a_literals_row_running_over_another_functions_jump_table_names_the_row_
     assert repo._swallowed_tables(config, tree_) == []
     tree_.modules[0].stand_ins["a"] = ("g",)  # g behind its stand-in there: the object compiles no table for it
     assert [f.unit for f in repo._swallowed_tables(config, tree_)] == ["literals_f"]
+
+
+# ---------------------------------------------------------------- extraction again after a rename: no splat
+RENAME_FACTS = "func_8021A2D4_de = 0x8021A2D4; // type:func rom:0x1AED4\nD_80100000_de = 0x80100000; // type:data\n"
+
+
+def test_rename_delta_accepts_only_names_of_symbols_that_keep_address_and_attributes():
+    new = RENAME_FACTS.replace("func_8021A2D4_de", "Render_Draw")
+    assert repo._rename_delta(RENAME_FACTS, new) == {"func_8021A2D4_de": "Render_Draw"}
+    assert (
+        repo._rename_delta(RENAME_FACTS, "".join(reversed(RENAME_FACTS.splitlines(keepends=True)))) == {}
+    )  # only the order moved
+    moved = RENAME_FACTS.replace("0x8021A2D4;", "0x8021A2D8;").replace("func_8021A2D4_de", "Render_Draw")
+    assert repo._rename_delta(RENAME_FACTS, moved) is None  # a new address
+    assert repo._rename_delta(RENAME_FACTS, new.replace("rom:0x1AED4", "rom:0x1AED4 size:0x40")) is None  # an attribute
+    assert repo._rename_delta(RENAME_FACTS, RENAME_FACTS + "extra_de = 0x80100010;\n") is None  # an added fact
+    assert repo._rename_delta(RENAME_FACTS, RENAME_FACTS.splitlines()[0] + "\n") is None  # a removed fact
+    assert (
+        repo._rename_delta(RENAME_FACTS, RENAME_FACTS.replace("func_8021A2D4_de", "func_8021A2D4")) is None
+    )  # a splat default name
+    assert repo._rename_delta(RENAME_FACTS, RENAME_FACTS.replace("func_8021A2D4_de", "bad-name")) is None
+    assert repo._rename_delta(RENAME_FACTS, RENAME_FACTS + "// a comment\n") is None  # a line that is not a fact moved
+
+
+def test_a_rename_of_facts_renames_the_last_extraction_and_runs_no_splat(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    monkeypatch.setattr(
+        repo,
+        "_extract_key",
+        lambda c, v, facts=None: "K" + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode(),
+    )
+    monkeypatch.setattr(repo, "_checked", lambda *a: None)
+    ran = []
+
+    def splat(c, v):
+        ran.append(v)
+        _write(tmp_path, "asm/us/nonmatchings/func_8021A2D4_de.s", "glabel func_8021A2D4_de\njr $ra\n")
+        _write(tmp_path, "asm/us/nonmatchings/caller.s", "jal func_8021A2D4_de\nnop\n")
+        _write(tmp_path, "asm/us/nonmatchings/other.s", "jal func_80000000_de\n")
+        _write(tmp_path, "asm/us/data/d.s", "dlabel D_80100000_de\n")
+        _write(tmp_path, "asm/us/.extracted", "")
+        _write(tmp_path, "build/us/undefined_syms_auto.txt", "func_8021A2D4_de_x = 0;\nD_1 = 1;\n")
+        _write(tmp_path, "build/us/splat.ld", "x = func_8021A2D4_de;\n")
+
+    monkeypatch.setattr(repo.build, "extract", splat)
+    assert repo.extract_job((config, "us")) is True and ran == ["us"]
+    _write(tmp_path, "build/us/src/c.c.s", '.include "nonmatchings/caller.s"\n')
+    _write(tmp_path, "build/us/src/c.c.o", "obj")
+    _write(tmp_path, "build/us/src/o.c.s", '.include "nonmatchings/other.s"\n')
+    _write(tmp_path, "build/us/src/o.c.o", "obj")
+    old = 1_000_000_000_000_000_000
+    for path in (tmp_path / "asm/us").rglob("*"):
+        if path.is_file():
+            os.utime(path, ns=(old, old))
+    repo._write_asm_manifest(config, "us")
+    other_inode = (tmp_path / "asm/us/nonmatchings/other.s").stat().st_ino
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS.replace("func_8021A2D4_de", "Render_Draw"))
+    assert repo.extract_job((config, "us")) is True
+    assert ran == ["us"]  # splat did not run again
+    asm = tmp_path / "asm/us"
+    assert not (asm / "nonmatchings/func_8021A2D4_de.s").exists()
+    assert (asm / "nonmatchings/Render_Draw.s").read_text() == "glabel Render_Draw\njr $ra\n"
+    assert (asm / "nonmatchings/caller.s").read_text() == "jal Render_Draw\nnop\n"
+    assert (asm / "nonmatchings/other.s").stat().st_mtime_ns == old
+    assert (asm / "nonmatchings/other.s").stat().st_ino == other_inode
+    assert (tmp_path / "build/us/splat.ld").read_text() == "x = Render_Draw;\n"
+    assert (tmp_path / "build/us/undefined_syms_auto.txt").read_text() == "func_8021A2D4_de_x = 0;\nD_1 = 1;\n"
+    assert not (tmp_path / "build/us/src/c.c.o").exists() and (tmp_path / "build/us/src/o.c.o").exists()
+    assert repo._asm_damaged(config, "us") == []
+    assert repo._facts_snapshot(config, "us").read_text() == RENAME_FACTS.replace("func_8021A2D4_de", "Render_Draw")
+    assert repo.extract_job((config, "us")) is False
+
+
+def test_a_name_already_in_the_text_makes_the_rename_extraction_run_splat(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    monkeypatch.setattr(
+        repo,
+        "_extract_key",
+        lambda c, v, facts=None: "K" + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode(),
+    )
+    monkeypatch.setattr(repo, "_checked", lambda *a: None)
+    ran = []
+
+    def splat(c, v):
+        ran.append(v)
+        _write(tmp_path, "asm/us/a.s", "jal func_8021A2D4_de\njal Render_Draw\n")
+        _write(tmp_path, "asm/us/.extracted", "")
+
+    monkeypatch.setattr(repo.build, "extract", splat)
+    repo.extract_job((config, "us"))
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS.replace("func_8021A2D4_de", "Render_Draw"))
+    assert repo.extract_job((config, "us")) is True
+    assert ran == ["us", "us"]

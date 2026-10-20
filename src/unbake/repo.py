@@ -830,6 +830,119 @@ def _asm_damaged(config: Config, v: str) -> list[str]:
     return damaged
 
 
+_FACT_ROW = re.compile(r"^(\S+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;(.*)$")
+_AUTO_NAME = re.compile(r"^[A-Za-z]+_?[0-9A-Fa-f]{8}$")  # what splat names an address no fact names
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_TEXT = (".s", ".inc", ".h", ".txt", ".ld")
+
+
+def _facts_snapshot(config: Config, v: str) -> Path:
+    return config.project.root / "asm" / v / ".unbake-facts"
+
+
+def _read_facts(text: str) -> tuple[dict[str, tuple[str, str]], list[str]] | None:
+    rows: dict[str, tuple[str, str]] = {}
+    other = []
+    for line in text.splitlines():
+        m = _FACT_ROW.match(line.strip())
+        if m is None:
+            other.append(line)
+        elif m.group(1) in rows:
+            return None
+        else:
+            rows[m.group(1)] = (m.group(2).lower(), m.group(3).strip())
+    return rows, sorted(other)
+
+
+def _rename_delta(old: str, new: str) -> dict[str, str] | None:
+    """Old name -> new name when `new` differs from `old` only by names of symbols that keep their address and every
+    attribute (a rename), {} when only the order of rows moved, None for any other difference: an added, removed or
+    changed fact moves what splat prints beyond a name."""
+    before, after = _read_facts(old), _read_facts(new)
+    if before is None or after is None or before[1] != after[1]:
+        return None
+    gone = {n: f for n, f in before[0].items() if after[0].get(n) != f}
+    came = {n: f for n, f in after[0].items() if before[0].get(n) != f}
+    by_fact = {f: n for n, f in came.items()}
+    if len(by_fact) != len(came) or len(set(gone.values())) != len(gone) or len(gone) != len(came):
+        return None
+    if any(f not in by_fact for f in gone.values()):
+        return None
+    renames = {n: by_fact[f] for n, f in gone.items()}
+    if any(n in after[0] for n in renames):  # a name that stays a fact, or is renamed to one that was there
+        return None
+    for old_name, new_name in renames.items():
+        if not _IDENT.match(new_name) or _AUTO_NAME.match(old_name) or _AUTO_NAME.match(new_name):
+            return None
+    return renames
+
+
+def _renames(config: Config, v: str) -> dict[str, str] | None:
+    """The renames that turn the facts of the extraction asm/<v>/ holds into today's, when that is all that moved: the
+    snapshot, the stamp and every other input (splat, extract recipe, yaml, ROM) must agree, else None."""
+    try:
+        snapshot = _facts_snapshot(config, v).read_bytes()
+        stamp = _extracted_key(config, v)
+        if stamp is None or _extract_key(config, v, snapshot) != stamp:
+            return None
+        return _rename_delta(snapshot.decode(), (config.project.root / f"versions/{v}/symbol_addrs.txt").read_text())
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _rename_extraction(config: Config, v: str, aside: Path, renames: Mapping[str, str]) -> bool:
+    """The extraction of today's facts made from the last one (`aside`, the old asm/<v>/) by renaming symbols in its
+    text and in the files named for them: splat prints a name wherever a symbol is used and nothing else moves when the
+    address and attributes stay (byte for byte against a cold splat of 3e15b80c1's rename, all of asm/de and build/de).
+    False when a new name is already in the text or a file that is not text holds a name: splat runs instead."""
+    root = config.project.root
+    new = root / "asm" / v
+    new.mkdir(parents=True, exist_ok=True)
+    mapping = {n.encode(): m.encode() for n, m in renames.items()}
+    if mapping:
+        old_re = re.compile(rb"\b(" + b"|".join(re.escape(n) for n in mapping) + rb")\b")
+        new_re = re.compile(rb"\b(" + b"|".join(re.escape(n) for n in mapping.values()) + rb")\b")
+    else:
+        old_re = new_re = re.compile(rb"(?!)")
+
+    def rewrite(data: bytes) -> bytes:
+        return old_re.sub(lambda m: mapping[m.group(1)], data)
+
+    for src in sorted(aside.rglob("*")):
+        dst = new / src.relative_to(aside)
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+            continue
+        if src.name.startswith(".unbake") or src.name == ".extracted":
+            continue
+        if src.suffix == ".s" and src.stem in renames:
+            dst = dst.with_name(renames[src.stem] + ".s")
+        data = src.read_bytes()
+        if new_re.search(data):
+            return False
+        if old_re.search(data):
+            if src.suffix not in _TEXT:
+                return False
+            store.write(dst, rewrite(data))
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(src, dst)  # unchanged bytes keep their inode, so their mtime and the objects built on them
+            except OSError:
+                shutil.copy2(src, dst)
+    store.write(new / ".extracted", b"")  # a cold extraction writes a fresh mark
+    for path in [*sorted((root / "build" / v).glob("*_auto.txt")), root / "build" / v / "splat.ld"]:
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        if new_re.search(data):
+            return False
+        if old_re.search(data):
+            store.write(path, rewrite(data))
+    return True
+
+
 def extract_job(job: tuple[Config, str]) -> bool:
     """One splat run unless asm/<v>/ already holds the extraction of this input; true when splat ran.
 
@@ -850,8 +963,10 @@ def extract_job(job: tuple[Config, str]) -> bool:
         return False
     # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
     # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.
+    renames = None if damaged or not asm.is_dir() else _renames(config, v)
     for old in (config.project.root / "build" / v).glob("*.ld"):
-        old.unlink(missing_ok=True)
+        if renames is None or old.name != "splat.ld":  # a rename extraction renames inside splat.ld, splat does not run
+            old.unlink(missing_ok=True)
     before = None if damaged or not asm.is_dir() else _manifest_rows(config, v)
     stamp = _extract_stamp(config, v)
     stamp.unlink(missing_ok=True)  # an extraction that dies half-way is not the one the old stamp named
@@ -860,12 +975,18 @@ def extract_job(job: tuple[Config, str]) -> bool:
     if asm.is_dir():
         asm.rename(aside)
     try:
-        _checked(build.extract(config, v), "setup.splat", f"extract {v}")
+        if renames is None or not _rename_extraction(config, v, aside, renames):
+            shutil.rmtree(asm, ignore_errors=True)  # a refused rename extraction leaves a part-made directory
+            _checked(build.extract(config, v), "setup.splat", f"extract {v}")
     finally:
         shutil.rmtree(aside, ignore_errors=True)
     stamp.parent.mkdir(parents=True, exist_ok=True)
     _keep_unchanged(config, v, before)
     _write_asm_manifest(config, v)
+    try:  # the facts this extraction was made from: the next setup tells what changed in them
+        store.write(_facts_snapshot(config, v), (config.project.root / f"versions/{v}/symbol_addrs.txt").read_bytes())
+    except OSError:
+        _facts_snapshot(config, v).unlink(missing_ok=True)
     store.write(stamp, key.encode())
     return True
 
@@ -916,7 +1037,7 @@ def _splat_version(tool: Path, root: Path) -> bytes:
     return result.stdout
 
 
-def _extract_key(config: Config, v: str) -> str:
+def _extract_key(config: Config, v: str, facts: bytes | None = None) -> str:
     """splat version, the Makefile's extract recipe with the variables it uses (it rewrites what splat writes; a
     change anywhere else in the Makefile extracts nothing again), yaml, symbol_addrs and ROM: nothing else decides
     what extraction writes. A Makefile without that rule counts whole."""
@@ -929,7 +1050,7 @@ def _extract_key(config: Config, v: str) -> str:
             _splat_version(config.host.tools["splat"], root),
             (sha1(recipe.encode()) if recipe is not None else sha1(text)) if text is not None else None,
             sha1((root / f"versions/{v}/splat.yaml").read_bytes()),
-            sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes()),
+            sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes() if facts is None else facts),
             sha1(configuration.rom(config.project, v).read_bytes()),
         )
     )
