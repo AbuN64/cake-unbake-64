@@ -960,6 +960,9 @@ def extract_job(job: tuple[Config, str]) -> bool:
     asm = config.project.root / "asm" / v
     damaged = _asm_damaged(config, v) if asm.is_dir() else []  # what the last extraction wrote, still as written?
     if asm.is_dir() and _extracted_key(config, v) == key and not damaged:
+        facts = config.project.root / f"versions/{v}/symbol_addrs.txt"
+        if not _facts_snapshot(config, v).exists() and facts.is_file():  # the key says these facts made this extraction
+            store.write(_facts_snapshot(config, v), facts.read_bytes())
         return False
     # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
     # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.

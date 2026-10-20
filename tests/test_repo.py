@@ -975,3 +975,16 @@ def test_a_name_already_in_the_text_makes_the_rename_extraction_run_splat(tmp_pa
     _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS.replace("func_8021A2D4_de", "Render_Draw"))
     assert repo.extract_job((config, "us")) is True
     assert ran == ["us", "us"]
+
+
+def test_a_current_extraction_without_a_facts_snapshot_gets_one(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    _write(tmp_path, "asm/us/a.s", "x\n")
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v, facts=None: "K")
+    repo._write_asm_manifest(config, "us")
+    repo.store.write(repo._extract_stamp(config, "us"), b"K")
+    assert repo.extract_job((config, "us")) is False
+    assert repo._facts_snapshot(config, "us").read_text() == RENAME_FACTS
