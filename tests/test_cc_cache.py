@@ -173,25 +173,27 @@ def test_a_rename_run_skips_the_compiler_and_stores_the_entry(tmp_path):
     assert runs(cc) == 2
 
 
-def test_pruned_drops_only_type_declarations_nothing_names():
+def test_only_unnamed_type_declarations_may_differ():
     base = "typedef int s32;\nstruct A { s32 a; };\nstruct A g;\nint f(void) { return 1; }\n"
     extra = "typedef struct Fresh { int q; } FreshT;\nenum E { E1, E2 };\nstruct Fwd;\n"
-    assert cc_cache.pruned((extra + base).encode()) == cc_cache.pruned(base.encode())
-    # a used type, a variable, an extern, a function and a variable with a struct body all stay
-    assert b"struct A" in cc_cache.pruned(base.encode()) and b"int f" in cc_cache.pruned(base.encode())
-    assert cc_cache.pruned(b"struct B { int b; } v;\n") != cc_cache.pruned(b"")
-    assert cc_cache.pruned(b"struct B v;\n") != cc_cache.pruned(b"")
-    assert cc_cache.pruned(b"extern int x;\n") != cc_cache.pruned(b"")
-    # an enumerator used by a kept chunk keeps its enum
+    same = cc_cache.types_only_differ
+    assert same((extra + base).encode(), base.encode())
+    assert same(base.encode(), (base + extra).encode())  # at the end
+    mid = base.replace("struct A g;", extra + "struct A g;")  # in the middle
+    assert same(mid.encode(), base.encode())
+    # a variable, an extern, a function, a used type or a used enumerator changes the object
+    assert not same(b"struct B { int b; } v;\n" + base.encode(), base.encode())
+    assert not same(b"struct B v;\n" + base.encode(), base.encode())
+    assert not same(b"extern int x;\n" + base.encode(), base.encode())
+    assert not same(base.encode(), base.replace("return 1", "return 2").encode())
+    assert not same(base.encode(), base.replace("s32 a;", "s32 a; s32 b;").encode())
     used = "enum E { E1, E2 };\nint g(void) { return E2; }\n"
-    assert cc_cache.pruned(used.encode()) != cc_cache.pruned(b"int g(void) { return E2; }\n")
+    assert not same(used.encode(), b"int g(void) { return E2; }\n")
     # a field change of a type nothing names is invisible; of a named one it is not
-    assert cc_cache.pruned(b"struct U { int a; };\nint h;\n") == cc_cache.pruned(
-        b"struct U { int a; int b; };\nint h;\n"
-    )
-    assert cc_cache.pruned(b"struct U { int a; };\nstruct U h;\n") != cc_cache.pruned(
-        b"struct U { int a; int b; };\nstruct U h;\n"
-    )
+    assert same(b"struct U { int a; };\nint h;\n", b"struct U { int a; int b; };\nint h;\n")
+    assert not same(b"struct U { int a; };\nstruct U h;\n", b"struct U { int a; int b; };\nstruct U h;\n")
+    # two edits far apart, both unnamed types
+    assert same((extra + base + "int z;\n").encode(), (base + "int z;\n" + extra.replace("Fresh", "Other")).encode())
 
 
 def test_a_header_edit_adding_unused_types_skips_the_compiler(tmp_path):

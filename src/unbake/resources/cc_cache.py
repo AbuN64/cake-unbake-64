@@ -8,9 +8,10 @@ assembly instead of compiling it again. A miss runs the compiler and stores the 
 parse (no -o, no input file) runs the compiler as given.
 
 A header edit that only renames (a field, a type, a function) changes the text of every source that includes it yet
-leaves the assembly alone, as does a header edit that only touches type declarations this source never names. A miss whose text is the last one compiled under the same compiler and arguments with
-identifiers renamed one for one, and none of the old names anywhere in that assembly, copies the last assembly. The
-ROM check every build ends with stays the proof: a wrong reuse cannot ship, it fails the SHA-1.
+leaves the assembly alone, as does an edit that only touches type declarations the source never names. A miss whose
+text is the last one compiled under the same compiler and arguments, with identifiers renamed one for one and none of
+the old names anywhere in that assembly, or with only unnamed type declarations added, dropped or changed, copies the
+last assembly. The ROM check every build ends with stays the proof: a wrong reuse cannot ship, it fails the SHA-1.
 """
 
 from __future__ import annotations
@@ -144,25 +145,76 @@ def defined(chunk: list[bytes]) -> set[bytes] | None:
     return names
 
 
-def pruned(text: bytes) -> bytes:
-    """`text` without the type declarations nothing else names: no .s byte depends on a typedef, struct, union or enum
-    that no kept declaration mentions (the compile has no debug output). A chunk is kept when it is not a pure type
-    chunk, or when a kept chunk names something it defines."""
-    parts = chunks(text)
+def complete(text: bytes) -> bool:
+    """True when `text` is whole top-level declarations: brackets balance, never closing more than they opened, and it
+    ends at a `;` or a `}` (or holds no token)."""
+    depth, last = 0, b""
+    for tok in TOKEN.findall(text):
+        if SPACE.fullmatch(tok):
+            continue
+        depth += (tok in (b"(", b"[", b"{")) - (tok in (b")", b"]", b"}"))
+        if depth < 0:
+            return False
+        last = tok
+    return depth == 0 and last in (b"", b";", b"}")
+
+
+def kept(parts: list[list[bytes]], inrest: set[bytes]) -> list[list[bytes]]:
+    """The declarations of one side of the changed region that can reach the object: every chunk that is not a pure
+    type, and every pure type that a surviving chunk, or the unchanged text around the region, names."""
     defs = [defined(c) for c in parts]
-    keep = [d is None for d in defs]
-    used: set[bytes] = set()
-    for c, k in zip(parts, keep, strict=True):
-        if k:
-            used.update(t for t in c if IDENT.fullmatch(t))
-    changed = True
-    while changed:
-        changed = False
+    keep = [d is None or bool(d & inrest) for d in defs]
+    used = {t for c, k in zip(parts, keep, strict=True) if k for t in c if IDENT.fullmatch(t)}
+    grew = True
+    while grew:
+        grew = False
         for i, d in enumerate(defs):
             if not keep[i] and d & used:
-                keep[i], changed = True, True
+                keep[i], grew = True, True
                 used.update(t for t in parts[i] if IDENT.fullmatch(t))
-    return b" ".join(b" ".join(c) for c, k in zip(parts, keep, strict=True) if k)
+    return [c for c, k in zip(parts, keep, strict=True) if k]
+
+
+def common(old: bytes, new: bytes) -> tuple[int, int]:
+    """(length of the common prefix, length of the common suffix not overlapping it), by halving over slice compares."""
+    low, high = 0, min(len(old), len(new))
+    while low < high:
+        mid = (low + high + 1) // 2
+        low, high = (mid, high) if old[:mid] == new[:mid] else (low, mid - 1)
+    prefix = low
+    low, high = 0, min(len(old), len(new)) - prefix
+    while low < high:
+        mid = (low + high + 1) // 2
+        low, high = (mid, high) if old[len(old) - mid :] == new[len(new) - mid :] else (low, mid - 1)
+    return prefix, low
+
+
+def types_only_differ(old: bytes, new: bytes) -> bool:
+    """True when `old` and `new` differ only in type declarations (typedef, struct, union, enum definitions) that
+    nothing else in the text names: no .s byte depends on such a declaration (the compile has no debug output), so
+    the same compiler writes the same assembly. The changed region (first to last differing byte, widened to whole
+    declarations) is the only text read closely; everything around it is searched for the names it defines."""
+    prefix, suffix = common(old, new)
+    start = old.rfind(b"\n", 0, prefix) + 1
+    tail = suffix  # bytes of the common suffix still outside the region
+    for _ in range(80):
+        end_old, end_new = len(old) - tail, len(new) - tail
+        if complete(old[start:end_old]) and complete(new[start:end_new]):
+            break
+        if start:
+            start = old.rfind(b"\n", 0, start - 1) + 1
+        step = old.find(b"\n", end_old) + 1 - end_old if old.find(b"\n", end_old) >= 0 else tail
+        tail = max(tail - max(step, 1), 0)
+    else:
+        return False
+    end_old, end_new = len(old) - tail, len(new) - tail
+    parts = chunks(old[start:end_old]), chunks(new[start:end_new])
+    names = {n for side in parts for c in side for n in (defined(c) or ())}
+    inrest: set[bytes] = set()
+    if names:
+        rx = re.compile(rb"(?<![\w])(?:" + b"|".join(re.escape(n) for n in sorted(names)) + rb")(?![\w])")
+        inrest = set(rx.findall(old[:start])) | set(rx.findall(old[end_old:]))
+    return kept(parts[0], inrest) == kept(parts[1], inrest)
 
 
 def remember(cache: Path, label: str, source: str) -> None:
@@ -191,11 +243,8 @@ def reuse(cache: Path, label: str, compiler: str, args: list[str], text: bytes) 
         return None
     if last == text:
         return None
-    if renamed(last, text, assembly):
-        return assembly
-    # a header edit that only adds, drops or changes type declarations nothing in this source names
-    old, new = pruned(last), pruned(text)
-    return assembly if old == new or renamed(old, new, assembly) else None
+    # the cheap test first: a header edit that only adds, drops or changes type declarations nothing here names
+    return assembly if types_only_differ(last, text) or renamed(last, text, assembly) else None
 
 
 def prune(root: Path, now: float) -> int:
