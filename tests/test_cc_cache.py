@@ -58,7 +58,7 @@ def test_a_second_tree_copies_the_assembly_of_the_same_text(tmp_path):
 def test_a_changed_text_compiles_again(tmp_path):
     cc, cache = fake_cc(tmp_path), tmp_path / "cc"
     compile_in(tree(tmp_path, "a", "int a;"), cache, cc)
-    assert compile_in(tree(tmp_path, "b", "int b;"), cache, cc) == "INT B;"
+    assert compile_in(tree(tmp_path, "b", "int a, b;"), cache, cc) == "INT A, B;"
     assert runs(cc) == 2
 
 
@@ -136,3 +136,38 @@ def test_local_mk_puts_each_compiler_behind_the_front(tmp_path):
     assert "cc_cache.py /home/x/.cache/unbake/content.cc /chains/gcc-2.8.1-sn64/cc1" in line
     assert "python3 -I " in line
     assert importlib.resources.files("unbake.resources").joinpath("cc_cache.py").is_file()
+
+
+def test_renamed_accepts_only_a_consistent_one_for_one_rename():
+    old = b"struct S { int unk10; }; int f(struct S *s) { return s->unk10 + 1; }\n"
+    asm = b"f:\n\tlw\t$2,16($4)\n\tj\t$31\n"
+    new = old.replace(b"unk10", b"fogNear")
+    assert cc_cache.renamed(old, new, asm)
+    assert not cc_cache.renamed(old, new.replace(b"+ 1", b"+ 2"), asm)  # a value moved
+    assert not cc_cache.renamed(old, old.replace(b"unk10", b"fogNear", 1), asm)  # one use renamed, one not
+    assert not cc_cache.renamed(old, old.replace(b"int", b"long", 1), asm)  # a keyword is not a name
+    assert not cc_cache.renamed(old, old.replace(b"unk10", b"S"), asm)  # the new name is already in use
+    assert not cc_cache.renamed(old, old.replace(b" ", b"  ", 1), asm)  # whitespace differs
+    assert not cc_cache.renamed(old, new, asm + b".comm unk10,4\n")  # an old name spelled in the assembly
+    assert not cc_cache.renamed(old, new, b"static.unk10.3:\n")  # as a part of a word
+    assert not cc_cache.renamed(old, old, asm)  # nothing renamed
+
+
+def test_a_rename_run_skips_the_compiler_and_stores_the_entry(tmp_path):
+    cc = tmp_path / "cc1"
+    cc.write_text(
+        '#!/bin/sh\necho run >> "$0.runs"\n'
+        'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; *.i) src=$1;; esac; shift; done\n'
+        'sed -n \'s/.*return \\(.*\\);.*/\\1/p\' "$src" > "$out"\n'
+    )
+    cc.chmod(0o755)
+    cache = tmp_path / "cc"
+    old = "struct S { int unk10; }; int f(struct S *s) { return 7; }\n"
+    assert compile_in(tree(tmp_path, "a", old), cache, cc) == "7\n"
+    new = old.replace("unk10", "fogNear")
+    assert compile_in(tree(tmp_path, "b", new), cache, cc) == "7\n"
+    assert runs(cc) == 1
+    assert compile_in(tree(tmp_path, "c", new), cache, cc) == "7\n"  # now an exact hit
+    assert runs(cc) == 1
+    assert compile_in(tree(tmp_path, "d", new.replace("return 7", "return 8")), cache, cc) == "8\n"
+    assert runs(cc) == 2
