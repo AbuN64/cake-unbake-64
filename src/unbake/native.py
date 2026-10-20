@@ -101,6 +101,9 @@ def _replayed[T](cfg: Config, key: str, produce: Callable[[], T]) -> T:
         raise
 
 
+_VIEW_DIR = re.compile(r"build/views/[0-9a-f]{16}/")
+
+
 def _adopt(cfg: Config, key: str, text: str, steps: Sequence[compile.Step], tools: str) -> str:
     """For a text the cache has neither an object nor a refusal under: the key of its canonical form (the text without
     the type definitions and static inline functions nothing names), and the object or refusal a text of that form
@@ -108,7 +111,8 @@ def _adopt(cfg: Config, key: str, text: str, steps: Sequence[compile.Step], tool
     unit including it and no byte of the compile. "" when `key` is already known, so a warm cache never tokenizes."""
     if store.get(cfg, "unit", key) is not None or store.get(cfg, "refused", key) is not None:
         return ""
-    same = compile.key(cc_cache.canonical(text.encode()), f"{_INPUT}.i", steps, tools)
+    # a view made for overlaid files names its directory in the text (`__FILE__`): a key of the headers it reads
+    same = compile.key(cc_cache.canonical(_VIEW_DIR.sub("build/views/-/", text).encode()), f"{_INPUT}.i", steps, tools)
     if (found := store.get(cfg, "unit.canonical", same, named=True)) is not None:
         store.put(cfg, "unit", key, found)
         if (kept := store.get(cfg, "warnings.canonical", same, named=True)) is not None:

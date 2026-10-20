@@ -536,3 +536,13 @@ def test_an_unnamed_type_added_to_the_text_shares_the_compile(case, monkeypatch,
     native.view.get.return_value = replace(native.view.get.return_value, text="typedef int T;\nT v;\n")
     native.objects(snapshot, unit, "a", recipe, work / "third")
     assert [call[0] for call in calls] == ["compile", "assemble", "compile", "assemble"]  # now the type is named
+
+
+def test_a_view_directory_named_in_the_text_does_not_split_the_shared_compile(case, monkeypatch, toolchains):
+    case, calls, _ = _tools(case, monkeypatch, toolchains, emits_asm=True)
+    snapshot, unit, recipe, _, work, _ = case
+    for name, key in (("first", "6119c08cc36202f4"), ("second", "3648cfc1c10e3962")):
+        text = f'const char *file = "build/views/{key}/src/f.c";\ntypedef int T_{key[:4]};\n'
+        native.view.get.return_value = replace(native.view.get.return_value, text=text)
+        native.objects(snapshot, unit, "a", recipe, work / name)
+    assert [call[0] for call in calls] == ["compile", "assemble"]
