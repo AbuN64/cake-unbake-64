@@ -293,7 +293,44 @@ def cut_head(data: bytes | memoryview, start: int, size: int) -> dict[str, int |
         recs, stop = records(data, back, start + size)
         if stop == start + size and len(recs) >= 2 and recs[-1].at < start:
             return {"at": start, "bytes": size, "record": recs[-1].at, "tag": recs[-1].tag}
+    # A later section write can overwrite the prefix of the record. Require an intact
+    # witness elsewhere: the same suffix followed by a whole record, with a valid
+    # containing record whose canonical encoding agrees with its source bytes.
+    following, _ = records(data, start + size, min(len(data), start + size + 2048))
+    if following:
+        witness = bytes(data[start : following[0].end])
+        raw = bytes(data)
+        at = raw.find(witness)
+        while at >= 0:
+            if at != start:
+                for back in range(at - 1, max(-1, at - 0x800), -1):
+                    try:
+                        rec = record(data, back)
+                    except SymError:
+                        continue
+                    if rec.end == at + size and encode(rec) == raw[back : rec.end]:
+                        return {
+                            "at": start,
+                            "bytes": size,
+                            "record": back,
+                            "tag": rec.tag,
+                            "source": at,
+                            "witness_end": at + len(witness),
+                        }
+            at = raw.find(witness, at + 1)
     raise SymError(f"head at {start:#x} is no record's end")
+
+
+def stream_start(data: bytes | memoryview, first: int, floor: int) -> int:
+    """Include a cut leading record only when the boundary has a checked suffix witness."""
+    if 0 <= floor < first and first - floor <= 255:
+        try:
+            cut_head(data, floor, first - floor)
+        except SymError:
+            pass
+        else:
+            return floor
+    return first
 
 
 def stream_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, object]:

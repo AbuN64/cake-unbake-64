@@ -365,6 +365,10 @@ def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> l
                 )
             )
             continue
+        # Retired unclassified observations carry no credit or semantic ownership.
+        # Explicit removal leaves uncovered bytes unknown; it must not force a fake type.
+        if row.get("type") == "unclassified":
+            continue
         for v, spans in sorted(row.get("rom", {}).items()):
             loose = length(subtract(merge([tuple(s) for s in spans]), covers[v]))
             if loose:
@@ -573,7 +577,7 @@ def scan(config: Config) -> Json:
     tree = import_module("unbake.tree").capture(config)
     parts = import_module("unbake.report").partitions(config, tree)
     document = load(config)["blob"]
-    out: Json = {}
+    out: dict[str, Any] = {}
     for v, p in parts.items():
         rom = (Path(config.project.root) / "roms" / f"baserom.{v}.z64").read_bytes()
         checked, failed = 0, []
@@ -591,7 +595,7 @@ def scan(config: Config) -> Json:
                 failed.append({"blob": name, "reason": f"decodes to {size} bytes, the row says {row['decoded_size']}"})
         spans = p["spans"]
         held = merge([s for k in ("code", "data", "platform", "decoded", "identified", "fill") for s in spans[k]])
-        candidates = []
+        candidates: list[Json] = []
         for low, high in subtract([(0, len(rom))], held):
             for at, head in rnc.find(rom, low, high):
                 try:

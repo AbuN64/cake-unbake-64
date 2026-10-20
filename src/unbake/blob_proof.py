@@ -11,8 +11,9 @@ import json
 import time
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
-from unbake import blob_decode, blobs, rnc
+from unbake import blob_decode, blob_formats, blobs, rnc
 from unbake.contracts import Config, Finding, Json, Refusal, sha256
 
 
@@ -53,7 +54,7 @@ def fill_spans(config: Config, version: str, rom: bytes, document: Json) -> list
 
 def observe(rom: bytes, start: int, end: int) -> Json:
     data = rom[start:end]
-    result: Json = {
+    result: dict[str, Any] = {
         "bytes": len(data),
         "sha256": sha256(data),
         "prefix_hex": data[:64].hex(),
@@ -87,7 +88,7 @@ def prove_one(config: Config, row: Json, rom: bytes, document: Json, fills: list
         raise ValueError("region must be a nonempty interval inside its ROM")
     reader = row["reader"]
     data = rom[start:end]
-    result: Json = {
+    result: dict[str, Any] = {
         "id": row["id"],
         "version": row["version"],
         "rom": [start, end],
@@ -110,7 +111,9 @@ def prove_one(config: Config, row: Json, rom: bytes, document: Json, fills: list
     if not row.get("evidence"):
         raise ValueError("a typed reader needs project evidence")
     result["evidence"] = row["evidence"]
-    if reader == "graph":
+    if reader in blob_formats.READERS:
+        result["decoded"] = blob_formats.prove(config, row, rom, document)
+    elif reader == "graph":
         layout_path = Path(row["layout_file"])
         raw = layout_path.read_bytes()
         if sha256(raw) != row["layout_sha256"]:
