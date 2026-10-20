@@ -474,6 +474,28 @@ def test_a_jump_table_is_read_whole_and_a_string_to_its_nul(monkeypatch):
     assert native._pool(b"", {}, (".text", 0, 8), 0, _word(0x3C01800C, 0x24216E44), 8).reads == ((4, 0),)
 
 
+_SECTIONS = {"text": {"inputs": [".text"]}, "rodata": {"inputs": [".rodata", ".rdata"]}}
+_JTBL = {"f": (".text", 0, 0x100), "jtbl_800DD4D0": (".rdata", 0, 0)}  # a stand-in's jump table at the object's start
+_FACTS = {"f": (0x8041D550, 0x18B550, None, "func"), "jtbl_800DD4D0": (0x800E1500, None, None, "data")}
+
+
+def test_a_rodata_stand_in_the_c_body_replaces_does_not_hold_its_pool_off():
+    # SPEED-4 func_8041D4E0_de: the stand-in's old 0x38-byte table first, the body's own table after it; the ROM's
+    # code reads the table where the stand-in lies, so the pool links there and not 0x38 later
+    pool = native._Pool(0x800E1500 - 0x38, ((0x38, 0x38),))
+    assert native._superseded(pool, _JTBL, _FACTS, _SECTIONS, {"f", "s32"}, "f")
+
+
+def test_c_data_and_a_stand_in_the_body_reads_keep_the_rodata_anchor():
+    pool = native._Pool(0x800E1500 - 0x38, ((0x38, 0x38),))
+    assert not native._superseded(pool, _JTBL, _FACTS, _SECTIONS, {"f", "jtbl_800DD4D0"}, "f")  # C defines it
+    read = native._Pool(0x800E1500, ((0, 4), (0x38, 4)))
+    assert not native._superseded(read, _JTBL, _FACTS, _SECTIONS, {"f"}, "f")  # the body reads the stand-in
+    elsewhere = native._Pool(0x800F0000, ((0x38, 0x38),))
+    assert not native._superseded(elsewhere, _JTBL, _FACTS, _SECTIONS, {"f"}, "f")  # its pool is not where it lies
+    assert not native._superseded(native._Pool(), _JTBL, _FACTS, _SECTIONS, {"f"}, "f")
+
+
 def test_a_candidate_with_no_pool_references_has_no_base(monkeypatch):
     monkeypatch.setattr(native, "_pool_refs", lambda blob, table: (b"", [], set()))
     assert native._pool(b"", {}, (".text", 0, 8), 0, bytes(8), 8) == native._Pool()

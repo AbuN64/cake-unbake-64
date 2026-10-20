@@ -401,9 +401,13 @@ def measure_names(
                     )
                 return proofs
             facts = symbol_facts(config_, version, snapshot.overlays)
+            spelled = frozenset(_WORD_RE.findall(text))
             for name in wanted:
-                proofs[name] = _link(snapshot, unit, version, name, recipe, source, obj, work, facts)
+                proofs[name] = _link(snapshot, unit, version, name, recipe, source, obj, work, facts, spelled)
         return proofs
+
+
+_WORD_RE = re.compile(r"\b[A-Za-z_]\w*")
 
 
 @dataclass(frozen=True)
@@ -502,6 +506,40 @@ def _pool(blob: bytes, table: Any, row: tuple[str, int, int], start: int, target
     return _Pool(votes.most_common(1)[0][0] if votes else None, tuple(sorted(reads)))
 
 
+def _superseded(
+    pool: _Pool,
+    defined: Mapping[str, tuple[str, int, int]],
+    facts: Mapping[str, symbols.Symbol],
+    table: Any,
+    spelled: Collection[str],
+    name: str,
+) -> bool:
+    """Whether the read-only bytes that anchor the object's .rodata are a stand-in the C body of `name` replaces: every
+    named read-only symbol of the object comes from an included assembly file (the module's C never spells it), the
+    body reads none of their bytes, and the ROM's code reads the body's own pool (a jump table, literals) where those
+    bytes lie. The old pool of a function now in C stays behind its `INCLUDE_RODATA` stand-in until it lands (a
+    `literals_<name>` row then places the compiled pool there), so anchoring on the stand-in would put the body's pool
+    after it and every read of it off by the stand-in's size. C data of the module keeps its anchor."""
+    named = sorted(
+        (value, fact[0], n)
+        for n, (section, value, _) in defined.items()
+        if n != name and _output(table, section) == ".rodata" and (fact := facts.get(n)) is not None
+    )
+    if not named or pool.base is None or not pool.reads or any(n in spelled for _, _, n in named):
+        return False
+    first = min(offset for offset, _ in pool.reads)
+    if first < named[0][0]:
+        return False  # the body's pool is not after the stand-in's bytes in the object
+    regions = []  # (object offset, vram) runs of the stand-in bytes, each up to the next name or the body's pool
+    for k, (value, vram, _) in enumerate(named):
+        end = named[k + 1][0] if k + 1 < len(named) else first
+        if first <= value or first < end:
+            return False  # the body reads a stand-in's bytes: they are the pool's anchor
+        regions.append((vram, vram + end - value))
+    reads = [(pool.base + offset, pool.base + offset + max(size, 1)) for offset, size in pool.reads]
+    return any(lo < stop and start < hi for start, stop in reads for lo, hi in regions)
+
+
 def _rom_at(cfg: Config, version: str, address: int) -> int | None:
     """The ROM offset a vram address of the version is stored at, by the segment that holds it."""
     for _, rom, end, vram in versions.segments(cfg, version):
@@ -541,6 +579,7 @@ def _link(
     obj: Path,
     work: Path,
     facts: dict[str, symbols.Symbol],
+    spelled: Collection[str] = (),
 ) -> Proof:
     cfg = snapshot.config
     blob = obj.read_bytes()
@@ -563,8 +602,8 @@ def _link(
     record = snapshot.versions[version]
     target = versions.rom_bytes(record, fact[1], fact[1] + size)
     pool = _pool(blob, table, defined[name], (fact[0] & mask) - starts[".text"], target, max(size, defined[name][2]))
-    if (
-        ".rodata" not in starts and pool.base is not None
+    if pool.base is not None and (
+        ".rodata" not in starts or _superseded(pool, defined, facts, table, spelled, name)
     ):  # the unit's own literal pool sits where the ROM's code reads it
         starts[".rodata"] = pool.base
     for out in totals:  # a section no named symbol places follows the code (the per-object shape)
@@ -587,7 +626,8 @@ def _link(
             sha256(target),
             abucache.__version__,
             adapters.tool_identity(cfg, recipe.toolchain),
-            code_identity(_link, _pool, _pool_gaps),
+            code_identity(_link, _pool, _pool_gaps, _superseded),
+            sorted(n for n in defined if n in spelled),
             asdict(pool),
         )
     )
