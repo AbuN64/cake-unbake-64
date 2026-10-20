@@ -186,7 +186,9 @@ def test_pruned_drops_only_type_declarations_nothing_names():
     used = "enum E { E1, E2 };\nint g(void) { return E2; }\n"
     assert cc_cache.pruned(used.encode()) != cc_cache.pruned(b"int g(void) { return E2; }\n")
     # a field change of a type nothing names is invisible; of a named one it is not
-    assert cc_cache.pruned(b"struct U { int a; };\nint h;\n") == cc_cache.pruned(b"struct U { int a; int b; };\nint h;\n")
+    assert cc_cache.pruned(b"struct U { int a; };\nint h;\n") == cc_cache.pruned(
+        b"struct U { int a; int b; };\nint h;\n"
+    )
     assert cc_cache.pruned(b"struct U { int a; };\nstruct U h;\n") != cc_cache.pruned(
         b"struct U { int a; int b; };\nstruct U h;\n"
     )
