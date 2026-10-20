@@ -6,7 +6,7 @@ from types import SimpleNamespace as N
 
 import pytest
 
-from unbake import blobs, report
+from unbake import blobs, human, report
 from unbake.contracts import Refusal, sha1, sha256
 
 PLATFORM = [(0, 0x1000)]
@@ -399,10 +399,12 @@ def test_land_imports_a_packet_and_reports_the_credit_it_gains(tmp_path, monkeyp
     _clean_project(config, monkeypatch, tmp_path)
     out = blobs.land(config, _packet(config))
     assert (out["added"], out["unchanged"], out["files"]) == (1, 0, ["blobs.toml"])
+    assert out["message"] == "Add 1 blobs to blobs.toml" and "landed" not in out
     assert out["delta"]["v"] == {"blobs_decoded": 0x1000, "blobs_identified": 0, "unknown": -0x1000}
     assert [r["id"] for r in blobs.rows(config)] == ["level.0"]
     again = blobs.land(config, _packet(config))  # idempotent: nothing written, no credit moves
     assert (again["added"], again["unchanged"], again["files"]) == (0, 1, [])
+    assert human._written("blobs", out)[-1].startswith("  git commit -m ") and human._written("blobs", again) == []
     assert again["delta"]["v"] == {"blobs_decoded": 0, "blobs_identified": 0, "unknown": 0}
 
 
@@ -504,3 +506,13 @@ def test_a_leftover_row_is_sn_debug_or_earlier_link_only(tmp_path):
         assert not blobs.import_plan(config, _packet(config, type="leftover", format=fmt)).blocking
     plan = blobs.import_plan(config, _packet(config, type="leftover", format="stale copy"))
     assert {f.key for f in plan.blocking} == {"blobs.schema"}
+
+
+def test_the_land_command_returns_the_land_record_not_nested(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    packet = tmp_path / "packet.json"
+    packet.write_text(json.dumps(_packet(config)))
+    out = blobs.run(config, {"action": ["land", str(packet)]})
+    assert out["files"] == ["blobs.toml"] and out["message"] and "landed" not in out
+    assert human._written("blobs", out)[0] == "Written, not committed. To commit:"

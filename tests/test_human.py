@@ -160,6 +160,10 @@ def test_written_files_print_the_exact_add_and_one_line_commit() -> None:
         "  git commit -m 'publish f (it'\"'\"'s)'",
     ]
     assert human._written("setup", {"files": ["x"], "message": "setup: a"})[-1] == "  git commit -m 'setup: a'"
+    assert human._written("blobs", {"files": ["blobs.toml"], "message": "Add 1 blobs to blobs.toml"})[-1] == (
+        "  git commit -m 'Add 1 blobs to blobs.toml'"
+    )
+    assert human._written("blobs", {"files": [], "message": "m"}) == []  # nothing written, nothing named
     assert human._written("check", {"files": ["x"]}) == [] and human._written("land", None) == []
 
 

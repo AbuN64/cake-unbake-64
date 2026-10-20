@@ -415,7 +415,12 @@ def apply_import(config: Config, plan: Plan) -> Json:
     reads = _Reads(config, {FILE: sha256(old) if old is not None else None})
     with store.exclusive(config, "structure", wait=True):
         files = journal.apply(config, plan, reads)
-    return {"files": list(files), "add": "git add " + " ".join(files), "commit": f'git commit -m "{plan.message}"'}
+    return {
+        "files": list(files),
+        "message": plan.message,
+        "add": "git add " + " ".join(files),
+        "commit": f'git commit -m "{plan.message}"',
+    }
 
 
 # ---------------------------------------------------------------- land
@@ -451,7 +456,11 @@ def land(config: Config, packet: Json) -> Json:
         counts = _counts(have, packet)
         text = plan.writes[FILE]
         assert text is not None
-        done = apply_import(config, plan) if text != old else {"files": [], "add": "", "commit": ""}
+        done = (
+            apply_import(config, plan)
+            if text != old
+            else {"files": [], "message": plan.message, "add": "", "commit": ""}
+        )
         try:
             with effort.stage("blobs.land.readback"):
                 if _read(config) != text:
@@ -533,7 +542,7 @@ def run(config: Config, params: Json) -> Json:
         if action[:1] == ["land"]:
             if len(action) != 2:
                 raise Refusal(Finding("blobs.packet", "land takes exactly one packet file"))
-            return _result(config, {"landed": land(config, _packet(action[1]))}, bool(params.get("json")))
+            return _result(config, land(config, _packet(action[1])), bool(params.get("json")))
         if action:
             raise Refusal(
                 Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET, land PACKET, scan or migrate")

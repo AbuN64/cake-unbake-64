@@ -135,8 +135,8 @@ def _written(command: str, result: Json | None) -> list[str]:
     result = result or {}
     drain = result.get("drain") or result
     groups = [(row["files"], row["message"]) for row in drain.get("landed", ())]
-    if command == "setup" and "files" in result:
-        groups.append((result["files"], result.get("message", "setup")))
+    if "files" in result and "message" in result:  # any command that wrote files names them and its commit message
+        groups.append((result["files"], result["message"]))
     lines = []
     for files, message in groups:
         if files:

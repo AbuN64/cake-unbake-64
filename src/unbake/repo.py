@@ -1098,7 +1098,7 @@ def setup(config: Config, params: Json) -> Json:
         build_too = not params.get("no_make")
         if kept and kept["state"] == _state(config) and (kept["result"].get("make") or not build_too):
             effort.count("setup", True)
-            return {**kept["result"], "extracted": [], "files": []}
+            return {**kept["result"], "extracted": [], "files": [], "message": "setup"}
         effort.count("setup", False)
         with effort.stage("repo.setup.toolchains"):
             toolchains = sorted(
@@ -1118,6 +1118,12 @@ def setup(config: Config, params: Json) -> Json:
             with effort.stage("repo.setup.make"):
                 make = build.make_check(config, current)
             report.progress(config, current)
-        result = {"toolchains": toolchains, "extracted": sorted(extracted), "files": written, "make": make}
+        result = {
+            "toolchains": toolchains,
+            "extracted": sorted(extracted),
+            "files": written,
+            "message": "setup",
+            "make": make,
+        }
         store.write(done, json.dumps({"state": _state(config), "result": result}).encode())
         return result
