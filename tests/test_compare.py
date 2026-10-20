@@ -642,3 +642,27 @@ def test_probe_dumps_keep_every_pass_and_the_whole_diff(world, monkeypatch, tmp_
         ["unit.i", "unit.i.rtl", "unit.i.greg", "unit.s", "stand_in.diff"]
     )
     assert (kept / "stand_in.diff").read_text().startswith("---")
+
+
+def _owners(table: dict[str, str]) -> SimpleNamespace:
+    return SimpleNamespace(owner=lambda version, name: table.get(name))
+
+
+FILE = "s32 a(void) {\n    return 1;\n}\n\ns32 b(void) {\n    return 2;\n}\n"
+
+
+def test_a_whole_file_candidate_scores_the_one_function_it_changes() -> None:
+    owners, read = _owners({"a": "src/x.c", "b": "src/x.c"}), {"src/x.c": FILE}.get
+    edited = FILE.replace("return 2", "return 3")
+    assert compare._member(owners, ["us"], edited, None, read) == "b"  # not the first function, a
+    assert compare._member(owners, ["us"], FILE.replace("return 1;", "return  1;"), None, read) == "a"
+    assert compare._member(owners, ["us"], FILE, None, read) == "a"  # nothing changed: the first
+
+
+def test_a_whole_file_candidate_changing_two_functions_is_refused_not_guessed() -> None:
+    owners, read = _owners({"a": "src/x.c", "b": "src/x.c"}), {"src/x.c": FILE}.get
+    with pytest.raises(Refusal) as refused:
+        compare._member(
+            owners, ["us"], FILE.replace("return 1", "return 4").replace("return 2", "return 3"), None, read
+        )
+    assert "a, b" in refused.value.findings[0].reason and "--function" in refused.value.findings[0].action

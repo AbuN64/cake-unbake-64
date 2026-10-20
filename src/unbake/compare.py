@@ -6,7 +6,7 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -186,22 +186,51 @@ def _extras(config: Config, specs: Sequence[Path]) -> dict[str, bytes]:
     return out
 
 
-def _member(captured: tree.Tree, versions_: Sequence[str], source: str, function: str | None) -> str:
-    """The function a candidate implements: --function, else the first function it defines that a file owns."""
+def _member(
+    captured: tree.Tree,
+    versions_: Sequence[str],
+    source: str,
+    function: str | None,
+    read: Callable[[str], str | None] = lambda path: None,
+) -> str:
+    """The function a candidate implements: --function, else the one function it defines that a file owns, or of
+    several the one whose text differs from the owning file's (`read` gives a file's current text). A candidate that
+    changes two or more owned functions is refused: one number would hide the others (10-20: the first function
+    scored exact while the edited one was wrong)."""
     if function:
         return function
-    defined = [i.name for i in publish.items(source) if i.kind == "function"]
-    for name in defined:
-        if any(captured.owner(v, name) for v in versions_):
-            return name
-    raise Refusal(
-        Finding(
-            "land.request",
-            reason="the source defines no function a file of the tree owns: it defines "
-            + (", ".join(defined) or "no function"),
-            action="define a function that has a stand-in line or pass --function NAME",
+    defined = [(i.name, source[i.start : i.end]) for i in publish.items(source) if i.kind == "function"]
+    owned = [(name, body) for name, body in defined if any(captured.owner(v, name) for v in versions_)]
+    if not owned:
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason="the source defines no function a file of the tree owns: it defines "
+                + (", ".join(name for name, _ in defined) or "no function"),
+                action="define a function that has a stand-in line or pass --function NAME",
+            )
         )
-    )
+    if len(owned) == 1:
+        return owned[0][0]
+    changed = []
+    for name, body in owned:
+        owners = {captured.owner(v, name) for v in versions_} - {None}
+        held = [read(path) for path in sorted(p for p in owners if p)]
+        bodies = {
+            t[i.start : i.end] for t in held if t for i in publish.items(t) if i.kind == "function" and i.name == name
+        }
+        if " ".join(body.split()) not in {" ".join(b.split()) for b in bodies}:
+            changed.append(name)
+    if len(changed) > 1:
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason=f"the candidate changes {len(changed)} owned functions ({', '.join(changed)}): one score "
+                "would stand for all of them",
+                action="pass --function NAME, once per function",
+            )
+        )
+    return changed[0] if changed else owned[0][0]
 
 
 def _text(current: str, segment: str, name: str, source: str) -> tuple[str, list[publish.Origin]]:
@@ -230,7 +259,17 @@ def _resolve(
     there); a change-set file that replaces an owner is the text the candidate is spliced into."""
     source = _source(file)
     captured = tree.capture(config)
-    name = _member(captured, config.project.versions, source, function)
+
+    def read(path: str) -> str | None:
+        given = (extras or {}).get(path)
+        if given is not None:
+            return given.decode()
+        try:
+            return (config.project.root / path).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    name = _member(captured, config.project.versions, source, function, read)
     placed = []
     for owner in publish.owners(captured, name, version):
         given = (extras or {}).get(owner.path)
