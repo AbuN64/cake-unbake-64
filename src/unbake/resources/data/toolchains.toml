@@ -7,6 +7,7 @@ include_asm = "processor"
 stand_in_as = "{as}"
 data_split = "subsegment"
 title = "IDO 7.1"
+dependency = { name = "IDO 7.1", repository = "https://github.com/decompals/ido-static-recomp" }  # the README link: the source repository, never a download
 family = "ido"
 cc = "cc"
 as = "as1"
@@ -56,6 +57,7 @@ include_asm = "processor"
 stand_in_as = "{as}"
 data_split = "subsegment"
 title = "IDO 5.3"
+dependency = { name = "IDO 5.3", repository = "https://github.com/decompals/ido-static-recomp" }  # the README link: the source repository, never a download
 family = "ido"
 cc = "cc"
 as = "as1"
@@ -114,6 +116,7 @@ include_asm = "inline"
 stand_in_as = "{as}"
 data_split = "subsegment"
 title = "GCC 2.7.2 (KMC)"
+dependency = { name = "GCC 2.7.2", repository = "https://github.com/decompals/mips-gcc-2.7.2" }  # the README link: the source repository, never a download
 family = "gcc"
 cc = "cc1"
 as_host = "mips_as"
@@ -151,6 +154,7 @@ data_split = "subsegment"
 jump_table_base = 0x80000000  # a jump table entry holds its label's address less this (the ROM's tables do)
 rdata_alloc = true  # asn64 leaves .rdata unallocated: the link would drop the object's read-only data
 title = "GCC 2.8.1 (SN64)"
+dependency = { name = "GCC 2.8.1", repository = "https://github.com/pmret/gcc-papermario" }  # the README link: the source repository, never a download
 family = "gcc"
 cc = "cc1"
 as_host = "mips_as"

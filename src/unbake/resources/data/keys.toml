@@ -310,6 +310,10 @@ sentence = "the item is already landed with these bytes"
 owner = "repo"
 sentence = "README.md lacks the progress markers"
 
+[key."repo.dependency"]
+owner = "repo"
+sentence = "a fetched build tool has no dependency row naming its source repository"
+
 [key."setup.busy"]
 owner = "repo"
 sentence = "a landing or another setup holds the project write lock"

@@ -108,6 +108,25 @@
       "type": "string",
       "minLength": 1
      },
+     "dependency": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^()\\[\\]]+$"
+       },
+       "repository": {
+        "type": "string",
+        "pattern": "^https://[^ ]+$"
+       }
+      },
+      "required": [
+       "name",
+       "repository"
+      ],
+      "additionalProperties": false
+     },
      "pins": {
       "type": "object",
       "additionalProperties": {

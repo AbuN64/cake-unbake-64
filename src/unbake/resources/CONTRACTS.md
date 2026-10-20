@@ -211,9 +211,14 @@ config: it checks size/SHA-1 against config.toml and records `exact`, `failing`,
 The report grants that verdict only while all build inputs and outputs retain their identity. Source debt keeps its
 own tree digest in that same document. A failed build clears exact credit; a missing or corrupt ROM cannot pass.
 
-The README block has the same shape. Each version is its ROM bar first (matched code and data, decoded blobs and the
-header block against the ROM size), its parts under it in a thin tree (header bytes, code, data, blobs as decoded of
-total), then its functions. Bars are █ matched and ░ the rest: no fuzzy reach, no unknown row.
+The README block is not progress.json's shape: the `all` and per-version ROM bars (matched code, data, blobs and
+platform, reaching over fuzzy code and identified blobs, `(~x%)` when the reach differs), then per version its
+code, data, functions and blobs rows. Bars are █ matched, ▒ fuzzy reach, ░ the rest.
+The README blobs bar uses `blobs_total + unknown_total` as its denominator: the ROM bytes outside code, data and
+platform. Decoded bytes fill the solid part, identified bytes fill the shaded part, and unknown bytes stay empty.
+The README dependencies block is one bullet per build tool the Makefile fetches: `- [name](repository)` from the
+tool's `dependency` row (toolchains.toml, repo.toml make.tools), its short name and source repository, never a
+download or binary link and no bracket text; a fetched tool without that row refuses as `repo.dependency`.
 
 
 ## Blob types and platform cutover

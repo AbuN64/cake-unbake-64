@@ -447,36 +447,45 @@ def current(config: Any, tree: Any) -> Json:
 
 def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     parts = ("code", "data") if kind == "bytes" else (kind,)
-    return _bar(label, sum(bucket[p + "_matched"] for p in parts), sum(bucket[p + "_total"] for p in parts), cells)
+    matched = sum(bucket[p + "_matched"] for p in parts)
+    total = sum(bucket[p + "_total"] for p in parts)
+    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells)
 
 
 def _rom_line(label: str, bucket: Json, cells: int) -> str:
-    """The whole ROM: matched code and data, decoded blobs and the header block (cartridge header and boot code),
-    against the exact ROM size. What no part covers is the empty rest of the bar."""
+    """The whole ROM: matched code, data and blobs plus the platform bytes, reaching over fuzzy code and identified
+    blobs, against the exact ROM size."""
     sure = bucket["code_matched"] + bucket["data_matched"] + bucket["blobs_decoded"] + bucket["platform_total"]
-    return _bar(label, sure, bucket["rom_size"], cells)
+    reach = sure + bucket["code_fuzzy"] + bucket["data_fuzzy"] + bucket["blobs_identified"]
+    return _bar(label, sure, reach, bucket["rom_size"], cells)
 
 
-def _bar(label: str, matched: int, total: int, cells: int) -> str:
-    """One art bar: █ for `matched` bytes, ░ for the rest of `total`."""
+def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
+    """One art bar: █ for `matched` bytes, ▒ for those up to `reach`, ░ for the rest of `total`."""
     percent = _pct(matched, total)
+    fuzzy = _pct(reach, total)
     solid = int(percent // (100 / cells))
-    return f"{label} [{'█' * solid}{'░' * (cells - solid)}]  {percent:5.2f}%  {matched:,} of {total:,}"
+    partial = max(0, min(cells - solid, int(fuzzy // (100 / cells)) - solid))
+    bar = "█" * solid + "▒" * partial + "░" * (cells - solid - partial)
+    suffix = f" (~{fuzzy:.2f}%)" if fuzzy != percent else ""
+    return f"{label} [{bar}]  {percent:5.2f}%{suffix}  {matched:,} of {total:,}"
 
 
-_BLOB_KEYS = ("rom_size", "platform_total", "blobs_total", "blobs_decoded")
+_BLOB_KEYS = (
+    "rom_size",
+    "platform_total",
+    "blobs_total",
+    "blobs_decoded",
+    "blobs_identified",
+    "blobs_fill",
+    "unknown_total",
+)
 
 
-def _tree(bucket: Json, cells: int) -> list[str]:
-    """One version's ROM first, its parts under it (header block, code, data, blobs), then its functions."""
-    return [
-        _rom_line("rom".ljust(11), bucket, cells) + " bytes",
-        f"├ header    {bucket['platform_total']:,}",
-        _line("├ code".ljust(11), bucket, cells, "code"),
-        _line("├ data".ljust(11), bucket, cells, "data"),
-        _bar("└ blobs".ljust(11), bucket["blobs_decoded"], bucket["blobs_total"], cells),
-        _line("functions".ljust(11), bucket, cells, "functions"),
-    ]
+def _blobs_line(label: str, held: Json, cells: int) -> str:
+    """Blobs: █ decoded (proven fill included), ▒ identified, ░ the rest, over the ROM bytes outside code, data and
+    platform."""
+    return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
 
 
 def _rom_sha256(config: Any, version: str) -> str:
@@ -497,7 +506,17 @@ def readme(text: str, config: Any, report: Json) -> str:
         project, versions = config.project, report["versions"]
         total = {
             k: sum(versions[v][k] for v in project.version)
-            for k in ("code_total", "code_matched", "data_total", "data_matched")
+            for k in (
+                "code_total",
+                "code_matched",
+                "data_total",
+                "data_matched",
+                "functions_total",
+                "functions_matched",
+                "functions_fuzzy",
+                "code_fuzzy",
+                "data_fuzzy",
+            )
         }
         counted = all("rom_size" in versions[v] for v in project.version)  # every ROM was present for the partition
         width = max(map(len, ("all", *project.version))) + 1
@@ -523,10 +542,9 @@ def readme(text: str, config: Any, report: Json) -> str:
             header = f"| {v}" + (f" ({details})" if details else "") + "."
             header += f" {meta['description']}" if meta.get("description") else ""
             header += f" SHA256 `{_rom_sha256(config, v)}` |"
+            rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
             if "rom_size" in versions[v]:
-                rows = _tree(versions[v], cells)
-            else:
-                rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
+                rows.append(_blobs_line("blobs".ljust(9), versions[v], cells))
             blocks.append(header + "\n|---|\n| <pre><code>" + "</code><br><code>".join(rows) + "</code></pre> |")
         text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
         first, last = settings["dependencies_begin"], settings["dependencies_end"]
@@ -537,20 +555,33 @@ def readme(text: str, config: Any, report: Json) -> str:
 
 
 def _dependencies(config: Any) -> list[str]:
-    """The README list of the build tools the generated Makefile fetches: one link per tool, named by its own
-    identity and pointing at its archive."""
+    """The README list of the build tools the generated Makefile fetches: one bullet per tool, its short name linked
+    to its source repository. Both come from the tool's `dependency` row, never from its download: the README links
+    no archive or binary. A fetched tool without that row, or with a download for its repository: `repo.dependency`."""
     project = config.project
     rows = configuration.toolchains()
     rules = getattr(project, "file", {})
     used = sorted({project.toolchain, *(r["toolchain"] for r in rules.values() if r.get("toolchain"))})
-    lines = []
-    for id in used:
-        for download in rows.get(id, {}).get("downloads", [])[:1]:
-            lines.append(f"- [{rows[id].get('title', id)}]({download['url']})")
+    fetched = [(id, rows[id]) for id in used if rows.get(id, {}).get("downloads")]
     for row in configuration.load_resource("repo.toml")["make"]["tools"].values():
         if "download" in row and any(f"{{{row['host']}}}" in str(rows.get(id)) for id in used):
-            lines.append(f"- [{row.get('title', row['host'])}]({row['download']['url']})")
-    return lines
+            fetched.append((row["host"], row))
+    return [_dependency(id, row) for id, row in fetched]
+
+
+def _dependency(id: str, row: Mapping[str, Any]) -> str:
+    dependency = row.get("dependency")
+    repository = str((dependency or {}).get("repository", ""))
+    if not dependency or "/releases/" in repository or repository.endswith((".gz", ".zip", ".xz", ".bz2", ".tar")):
+        raise Refusal(
+            Finding(
+                "repo.dependency",
+                f"{id}: the README dependency needs a `dependency` row with a short name and its source repository "
+                f"URL (not a release download), got {dependency!r}",
+                path="README.md",
+            )
+        )
+    return f"- [{dependency['name']}]({repository})"
 
 
 def publish_hold(config: Any, tree: Any) -> Finding | None:

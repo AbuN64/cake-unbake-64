@@ -154,12 +154,20 @@ def test_percent_and_bar_floor():
     assert "█" * 20 not in line
 
 
-def test_bars_show_matched_and_the_rest_with_no_fuzzy_reach():
-    bucket = _bucket(code_total=1000, code_matched=500, code_fuzzy=74, functions_total=10, functions_matched=5)
-    assert report._line("code", bucket, 20, "code") == "code [" + "█" * 10 + "░" * 10 + "]  50.00%  500 of 1,000"
-    bucket["functions_fuzzy"] = 2
-    assert report._line("functions", bucket, 20, "functions") == (
-        "functions [" + "█" * 10 + "░" * 10 + "]  50.00%  5 of 10"
+def test_partial_cell_floors_and_suffix_only_when_different():
+    bucket = _bucket(code_total=1000, code_matched=500, code_fuzzy=74)
+    assert report._line("code", bucket, 20, "code").startswith(
+        "code [" + "█" * 10 + "▒" + "░" * 9 + "]  50.00% (~57.40%)"
+    )
+    same = report._line("code", _bucket(code_total=1000, code_matched=500), 20, "code")
+    assert same == "code [" + "█" * 10 + "░" * 10 + "]  50.00%  500 of 1,000"
+
+
+def test_functions_row_has_fuzzy_gradient():
+    bucket = _bucket(functions_total=10, functions_matched=5, functions_fuzzy=2)
+    assert (
+        report._line("functions", bucket, 20, "functions")
+        == "functions [" + "█" * 10 + "▒" * 4 + "░" * 6 + "]  50.00% (~70.00%)  5 of 10"
     )
 
 
@@ -190,16 +198,16 @@ def test_readme_block_exact(tmp_path):
     sha = {v: sha256(f"rom-{v}".encode()) for v in ("us", "eu")}
     expected = (
         f"{begin}\n"
-        "<pre><code>all  [██████████████░░░░░░]  72.64%  4,035,952 of 5,555,804 bytes</code>"
-        "<br><code>us   [██████████████░░░░░░]  74.97%  816,136 of 1,088,548 bytes</code>"
-        "<br><code>eu   [██████████████░░░░░░]  72.07%  3,219,816 of 4,467,256 bytes</code></pre>\n\n"
+        "<pre><code>all  [██████████████▒░░░░░]  72.64% (~75.94%)  4,035,952 of 5,555,804 bytes</code>"
+        "<br><code>us   [██████████████▒░░░░░]  74.97% (~76.63%)  816,136 of 1,088,548 bytes</code>"
+        "<br><code>eu   [██████████████▒░░░░░]  72.07% (~75.77%)  3,219,816 of 4,467,256 bytes</code></pre>\n\n"
         f"| us (NUS-NRWE-0, North America). First NTSC release. SHA256 `{sha['us']}` |\n"
         "|---|\n"
-        "| <pre><code>code      [██████████████░░░░░░]  74.97%  816,136 of 1,088,548</code>"
+        "| <pre><code>code      [██████████████▒░░░░░]  74.97% (~76.63%)  816,136 of 1,088,548</code>"
         "<br><code>data      [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 0</code>"
-        "<br><code>functions [█████████████████░░░]  89.82%  3,769 of 4,196</code></pre> |\n\n"
+        "<br><code>functions [█████████████████▒░░]  89.82% (~92.20%)  3,769 of 4,196</code></pre> |\n\n"
         f"| eu. SHA256 `{sha['eu']}` |\n|---|\n"
-        "| <pre><code>code      [██████████████░░░░░░]  72.07%  3,219,816 of 4,467,256</code>"
+        "| <pre><code>code      [██████████████▒░░░░░]  72.07% (~75.77%)  3,219,816 of 4,467,256</code>"
         "<br><code>data      [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 0</code>"
         "<br><code>functions [░░░░░░░░░░░░░░░░░░░░]   0.00%  0 of 0</code></pre> |\n"
         f"{end}"
@@ -315,23 +323,13 @@ def test_readme_with_blob_accounting_measures_against_the_rom_and_drops_the_part
         row["unknown_total"] = row["rom_size"] - current["versions"][v]["code_total"] - 4096 - row["blobs_total"]
         current["versions"][v].update(row)
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
-    assert "code      [" in plain and "rom" not in plain  # without a ROM partition: the flat rows
-    us = out.split("| us (")[1].split("| eu")[0]
-    rows = us.split("<pre><code>")[1].split("</code></pre>")[0].split("</code><br><code>")
-    assert [row.split("[")[0].split("  ")[0].rstrip() for row in rows] == [
-        "rom",
-        "├ header",
-        "├ code",
-        "├ data",
-        "└ blobs",
-        "functions",
-    ]
-    assert rows[1] == "├ header    4,096"
-    assert rows[4].endswith("  400 of 1,000")  # blobs: decoded of total, like every other part
-    for gone in ("platform", "unknown", "~", "▒", "fuzzy"):
+    for row in ("code      [", "data      [", "functions ["):  # values of the old rows are the same
+        assert row.strip() in plain and row.strip() in out
+    assert "blobs     [░░░░░░░░░░░░░░░░░░░░]   0.00% (~0.01%)  400 of 7,295,964</code>" in out
+    for gone in ("platform  [", "unknown   [", "rom       ", "data = C globals"):
         assert gone not in out
-    # the ROM bars are measured against the exact ROM size: matched code+data, decoded blobs and the header block
-    assert " of 16,777,216 bytes</code>" in out
+    # the top bars are measured against the exact ROM size: matched code+data+blobs plus platform, reaching fuzzy
+    assert "us   [" in out and " of 8,388,608 bytes</code>" in out and " of 16,777,216 bytes</code>" in out
     sure = sum(current["versions"]["us"][k] for k in ("code_matched", "data_matched")) + 400 + 4096
     assert f"{sure:,} of 8,388,608 bytes" in out
     assert report.readme(out, config, current) == out
@@ -544,42 +542,56 @@ def test_missing_rom_partition_refuses_without_replacing_published_progress(publ
     assert path.read_bytes() == b"previous"
 
 
-def test_version_tree_puts_the_rom_first_with_its_parts_under_it_and_no_unknown_or_fuzzy():
+def test_blobs_bar_leaves_the_rest_empty_and_excludes_code_data_platform():
     held = {
-        **_bucket(
-            code_total=600, code_matched=300, code_fuzzy=50, data_total=200, data_matched=100, functions_total=10
-        ),
-        "functions_matched": 4,
-        "functions_fuzzy": 3,
         "rom_size": 2000,
+        "code_total": 600,
+        "data_total": 200,
         "platform_total": 200,
         "blobs_decoded": 200,
         "blobs_total": 500,
         "unknown_total": 500,
     }
-    assert report._tree(held, 20) == [
-        "rom         [" + "█" * 8 + "░" * 12 + "]  40.00%  800 of 2,000 bytes",
-        "├ header    200",
-        "├ code      [" + "█" * 10 + "░" * 10 + "]  50.00%  300 of 600",
-        "├ data      [" + "█" * 10 + "░" * 10 + "]  50.00%  100 of 200",
-        "└ blobs     [" + "█" * 8 + "░" * 12 + "]  40.00%  200 of 500",
-        "functions   [" + "█" * 8 + "░" * 12 + "]  40.00%  4 of 10",
-    ]
+    assert report._blobs_line("blobs", held, 20) == (
+        "blobs [" + "█" * 4 + "▒" * 6 + "░" * 10 + "]  20.00% (~50.00%)  200 of 1,000"
+    )
+    assert report._blobs_line("blobs", {"blobs_decoded": 0, "blobs_total": 0, "unknown_total": 1000}, 20) == (
+        "blobs [" + "░" * 20 + "]   0.00%  0 of 1,000"
+    )
 
 
-def test_dependencies_are_one_plain_link_per_tool(tmp_path, monkeypatch):
+def test_dependencies_are_short_names_linked_to_their_repositories(tmp_path, monkeypatch):
     config, current = _readme_case(tmp_path)
     monkeypatch.setattr(config.project, "toolchain", "cc", raising=False)
-    monkeypatch.setattr(
-        configuration,
-        "toolchains",
-        lambda: {"cc": {"title": "GCC 2.8.1 (SN64)", "downloads": [{"url": "https://x.test/gcc.tgz", "sha256": "ab"}]}},
-    )
+    row = {
+        "title": "GCC 2.8.1 (SN64)",
+        "dependency": {"name": "GCC 2.8.1", "repository": "https://github.com/pmret/gcc-papermario"},
+        "downloads": [{"url": "https://x.test/releases/download/master/linux.tar.gz", "sha256": "ab"}],
+        "assemble": ["{n64link}"],
+    }
+    monkeypatch.setattr(configuration, "toolchains", lambda: {"cc": row})
     text = "<!-- progress -->\n<!-- /progress -->\n<!-- dependencies -->\nold\n<!-- /dependencies -->\n"
     out = report.readme(text, config, current)
     block = out.split("<!-- dependencies -->\n")[1].split("<!-- /dependencies -->")[0]
-    assert block == "- [GCC 2.8.1 (SN64)](https://x.test/gcc.tgz)\n"
-    assert "pin" not in block.lower() and "|" not in block
+    assert block == (
+        "- [GCC 2.8.1](https://github.com/pmret/gcc-papermario)\n- [n64link](https://github.com/AbuN64/mas-n64)\n"
+    )
+    for bad in ({}, {"name": "GCC 2.8.1", "repository": "https://x.test/releases/download/master/linux.tar.gz"}):
+        monkeypatch.setitem(row, "dependency", bad)
+        with pytest.raises(Refusal) as refused:
+            report.readme(text, config, current)
+        assert refused.value.findings[0].key == "repo.dependency"
+
+
+def test_every_fetched_tool_names_its_repository_without_bracket_text():
+    rows = [*configuration.toolchains().values(), *configuration.load_resource("repo.toml")["make"]["tools"].values()]
+    fetched = [row for row in rows if row.get("downloads") or row.get("download")]
+    assert fetched
+    for row in fetched:
+        name, repository = row["dependency"]["name"], row["dependency"]["repository"]
+        assert not set("()[]") & set(name)
+        assert repository.startswith("https://") and "/releases/" not in repository
+        assert not repository.endswith((".gz", ".zip", ".xz", ".bz2", ".tar"))
 
 
 @pytest.mark.parametrize("score,broken", [(None, False), (0.0, False), (0.25, False), (1.0, False), (0.5, True)])
