@@ -1,3 +1,3 @@
 """unbake: derive, prove and publish a decompilation project."""
 
-__version__ = "0.5.23"  # the release: a v* tag must name exactly this, and generated CI installs its wheel
+__version__ = "0.5.24"  # the release: a v* tag must name exactly this, and generated CI installs its wheel
