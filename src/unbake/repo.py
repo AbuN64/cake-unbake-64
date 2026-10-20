@@ -9,7 +9,7 @@ import os
 import re
 import shutil
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict
 from functools import cache
 from pathlib import Path
@@ -840,6 +840,20 @@ def _facts_snapshot(config: Config, v: str) -> Path:
     return config.project.root / "asm" / v / ".unbake-facts"
 
 
+def _yaml_snapshot(config: Config, v: str) -> Path:
+    return config.project.root / "asm" / v / ".unbake-yaml"
+
+
+def _snapshot_inputs(config: Config, v: str) -> None:
+    """The facts and piece list this extraction was made from: the next setup tells what changed in them."""
+    root = config.project.root
+    for snap, source in ((_facts_snapshot(config, v), "symbol_addrs.txt"), (_yaml_snapshot(config, v), "splat.yaml")):
+        try:
+            store.write(snap, (root / f"versions/{v}/{source}").read_bytes())
+        except OSError:
+            snap.unlink(missing_ok=True)
+
+
 def _read_facts(text: str) -> tuple[dict[str, tuple[str, str]], list[str]] | None:
     rows: dict[str, tuple[str, str]] = {}
     other = []
@@ -854,47 +868,101 @@ def _read_facts(text: str) -> tuple[dict[str, tuple[str, str]], list[str]] | Non
     return rows, sorted(other)
 
 
-def _rename_delta(old: str, new: str) -> dict[str, str] | None:
-    """Old name -> new name when `new` differs from `old` only by names of symbols that keep their address and every
-    attribute (a rename), {} when only the order of rows moved, None for any other difference: an added, removed or
-    changed fact moves what splat prints beyond a name."""
+def _fact_delta(old: str, new: str) -> tuple[dict[str, str], set[str]] | None:
+    """What turned the facts `old` into `new` when that is only names and unused rows: (renames, drops). A rename is an
+    old name that keeps its address and every attribute under a new name, {} when only the order of rows moved; a drop
+    is a row `new` no longer has (the caller proves its name never reached the extraction's text). None for any other
+    difference: an added fact, a changed address or attribute moves what splat prints beyond a name."""
     before, after = _read_facts(old), _read_facts(new)
     if before is None or after is None or before[1] != after[1]:
         return None
     gone = {n: f for n, f in before[0].items() if after[0].get(n) != f}
     came = {n: f for n, f in after[0].items() if before[0].get(n) != f}
     by_fact = {f: n for n, f in came.items()}
-    if len(by_fact) != len(came) or len(set(gone.values())) != len(gone) or len(gone) != len(came):
+    if len(by_fact) != len(came) or len(set(gone.values())) != len(gone):
         return None
-    if any(f not in by_fact for f in gone.values()):
+    if any(n in after[0] for n in gone):  # a name that stays a fact with other attributes
         return None
-    renames = {n: by_fact[f] for n, f in gone.items()}
-    if any(n in after[0] for n in renames):  # a name that stays a fact, or is renamed to one that was there
+    renames = {n: by_fact[f] for n, f in gone.items() if f in by_fact}
+    if len(renames) != len(came):  # a fact with no old row is an added fact
         return None
     for old_name, new_name in renames.items():
-        if not _IDENT.match(new_name) or _AUTO_NAME.match(old_name) or _AUTO_NAME.match(new_name):
+        if not _IDENT.match(new_name) or _AUTO_NAME.match(new_name):
             return None
+        # An old name that looks like splat's own name for another address cannot be told from that symbol's text.
+        if _AUTO_NAME.match(old_name) and old_name[-8:].upper() != before[0][old_name][0][2:].upper().zfill(8):
+            return None
+    return renames, {n for n in gone if n not in renames}
+
+
+def _rename_delta(old: str, new: str) -> dict[str, str] | None:
+    """The renames of `_fact_delta`, None when it has a drop or is not one."""
+    delta = _fact_delta(old, new)
+    return None if delta is None or delta[1] else delta[0]
+
+
+_YAML_ROW = re.compile(r"^(\s+- \[0x[0-9A-Fa-f]+, \w+, )(\S+?)(\]\s*)$")
+
+
+def _yaml_delta(old: str, new: str) -> dict[str, str] | None:
+    """Old file name -> new file name when `new` differs from `old` only by the names of pieces (the part of a row after
+    its folder), {} when it does not differ; None for any other difference (a row added, removed or moved)."""
+    a, b = old.splitlines(), new.splitlines()
+    if len(a) != len(b):
+        return None
+    renames: dict[str, str] = {}
+    kept = set()
+    for x, y in zip(a, b, strict=True):
+        mx, my = _YAML_ROW.match(x), _YAML_ROW.match(y)
+        if x == y:
+            if mx:
+                kept.add(mx.group(2).rpartition("/")[2])
+            continue
+        if not mx or not my or mx.group(1) != my.group(1) or mx.group(3) != my.group(3):
+            return None
+        (folder, _, was), (other, _, now) = (m.group(2).rpartition("/") for m in (mx, my))
+        if folder != other or not _IDENT.match(now) or renames.setdefault(was, now) != now:
+            return None
+    if kept & (renames.keys() | set(renames.values())):  # a name another row still has
+        return None
     return renames
 
 
-def _renames(config: Config, v: str) -> dict[str, str] | None:
-    """The renames that turn the facts of the extraction asm/<v>/ holds into today's, when that is all that moved: the
-    snapshot, the stamp and every other input (splat, extract recipe, yaml, ROM) must agree, else None."""
+def _renames(config: Config, v: str) -> tuple[dict[str, str], set[str]] | None:
+    """The renames and dropped fact names that turn the facts and piece names of the extraction asm/<v>/ holds into
+    today's, when that is all that moved: the snapshots, the stamp and every other input (splat, extract recipe, ROM)
+    must agree, else None. An extraction made before the yaml was snapshotted counts the yaml as unmoved."""
+    root = config.project.root
     try:
         snapshot = _facts_snapshot(config, v).read_bytes()
+        pieces = _yaml_snapshot(config, v)
+        was_yaml = pieces.read_bytes() if pieces.is_file() else None
         stamp = _extracted_key(config, v)
-        if stamp is None or _extract_key(config, v, snapshot) != stamp:
+        if stamp is None or _extract_key(config, v, snapshot, was_yaml) != stamp:
             return None
-        return _rename_delta(snapshot.decode(), (config.project.root / f"versions/{v}/symbol_addrs.txt").read_text())
+        delta = _fact_delta(snapshot.decode(), (root / f"versions/{v}/symbol_addrs.txt").read_text())
+        names = (
+            {} if was_yaml is None else _yaml_delta(was_yaml.decode(), (root / f"versions/{v}/splat.yaml").read_text())
+        )
+        if delta is None or names is None:
+            return None
+        renames, drops = delta
+        if any(renames.setdefault(n, m) != m for n, m in names.items()) or drops & (renames.keys() | names.keys()):
+            return None
+        return renames, drops
     except (OSError, UnicodeDecodeError):
         return None
 
 
-def _rename_extraction(config: Config, v: str, aside: Path, renames: Mapping[str, str]) -> bool:
+def _rename_extraction(
+    config: Config, v: str, aside: Path, renames: Mapping[str, str], drops: Collection[str] = ()
+) -> bool:
     """The extraction of today's facts made from the last one (`aside`, the old asm/<v>/) by renaming symbols in its
     text and in the files named for them: splat prints a name wherever a symbol is used and nothing else moves when the
     address and attributes stay (byte for byte against a cold splat of 3e15b80c1's rename, all of asm/de and build/de).
-    False when a new name is already in the text or a file that is not text holds a name: splat runs instead."""
+    A dropped fact (`drops`) whose name no text and no file name holds changed nothing splat printed but its row in the
+    undefined-symbol lists, so the row goes. False when a new name is already in the text, a file that is not text holds
+    a name, or a dropped name is used: splat runs instead."""
     root = config.project.root
     new = root / "asm" / v
     new.mkdir(parents=True, exist_ok=True)
@@ -904,6 +972,10 @@ def _rename_extraction(config: Config, v: str, aside: Path, renames: Mapping[str
         new_re = re.compile(rb"\b(" + b"|".join(re.escape(n) for n in mapping.values()) + rb")\b")
     else:
         old_re = new_re = re.compile(rb"(?!)")
+    dropped = {n.encode() for n in drops}
+    drop_re = (
+        re.compile(rb"\b(" + b"|".join(re.escape(n) for n in dropped) + rb")\b") if dropped else re.compile(rb"(?!)")
+    )
 
     def rewrite(data: bytes) -> bytes:
         return old_re.sub(lambda m: mapping[m.group(1)], data)
@@ -918,7 +990,7 @@ def _rename_extraction(config: Config, v: str, aside: Path, renames: Mapping[str
         if src.suffix == ".s" and src.stem in renames:
             dst = dst.with_name(renames[src.stem] + ".s")
         data = src.read_bytes()
-        if new_re.search(data):
+        if new_re.search(data) or drop_re.search(data) or drop_re.fullmatch(src.stem.encode()):
             return False
         if old_re.search(data):
             if src.suffix not in _TEXT:
@@ -938,9 +1010,20 @@ def _rename_extraction(config: Config, v: str, aside: Path, renames: Mapping[str
             continue
         if new_re.search(data):
             return False
-        if old_re.search(data):
-            store.write(path, rewrite(data))
+        text = rewrite(data)
+        if dropped and path.name.endswith("_auto.txt"):
+            text = b"".join(ln for ln in text.splitlines(keepends=True) if not _is_drop_row(dropped, ln))
+        if drop_re.search(text):
+            return False
+        if text != data:
+            store.write(path, text)
     return True
+
+
+def _is_drop_row(names: Collection[bytes], line: bytes) -> bool:
+    """Whether `line` is a splat undefined-symbol row `name = 0xADDR;` of one of `names`."""
+    head, eq, _ = line.partition(b"=")
+    return bool(eq) and head.strip() in names
 
 
 def extract_job(job: tuple[Config, str]) -> bool:
@@ -960,9 +1043,8 @@ def extract_job(job: tuple[Config, str]) -> bool:
     asm = config.project.root / "asm" / v
     damaged = _asm_damaged(config, v) if asm.is_dir() else []  # what the last extraction wrote, still as written?
     if asm.is_dir() and _extracted_key(config, v) == key and not damaged:
-        facts = config.project.root / f"versions/{v}/symbol_addrs.txt"
-        if not _facts_snapshot(config, v).exists() and facts.is_file():  # the key says these facts made this extraction
-            store.write(_facts_snapshot(config, v), facts.read_bytes())
+        if not (_facts_snapshot(config, v).exists() and _yaml_snapshot(config, v).exists()):
+            _snapshot_inputs(config, v)  # the key says these facts and pieces made this extraction
         return False
     # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
     # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.
@@ -978,7 +1060,7 @@ def extract_job(job: tuple[Config, str]) -> bool:
     if asm.is_dir():
         asm.rename(aside)
     try:
-        if renames is None or not _rename_extraction(config, v, aside, renames):
+        if renames is None or not _rename_extraction(config, v, aside, *renames):
             shutil.rmtree(asm, ignore_errors=True)  # a refused rename extraction leaves a part-made directory
             _checked(build.extract(config, v), "setup.splat", f"extract {v}")
     finally:
@@ -986,10 +1068,7 @@ def extract_job(job: tuple[Config, str]) -> bool:
     stamp.parent.mkdir(parents=True, exist_ok=True)
     _keep_unchanged(config, v, before)
     _write_asm_manifest(config, v)
-    try:  # the facts this extraction was made from: the next setup tells what changed in them
-        store.write(_facts_snapshot(config, v), (config.project.root / f"versions/{v}/symbol_addrs.txt").read_bytes())
-    except OSError:
-        _facts_snapshot(config, v).unlink(missing_ok=True)
+    _snapshot_inputs(config, v)
     store.write(stamp, key.encode())
     return True
 
@@ -1040,7 +1119,7 @@ def _splat_version(tool: Path, root: Path) -> bytes:
     return result.stdout
 
 
-def _extract_key(config: Config, v: str, facts: bytes | None = None) -> str:
+def _extract_key(config: Config, v: str, facts: bytes | None = None, yaml: bytes | None = None) -> str:
     """splat version, the Makefile's extract recipe with the variables it uses (it rewrites what splat writes; a
     change anywhere else in the Makefile extracts nothing again), yaml, symbol_addrs and ROM: nothing else decides
     what extraction writes. A Makefile without that rule counts whole."""
@@ -1052,7 +1131,7 @@ def _extract_key(config: Config, v: str, facts: bytes | None = None) -> str:
         (
             _splat_version(config.host.tools["splat"], root),
             (sha1(recipe.encode()) if recipe is not None else sha1(text)) if text is not None else None,
-            sha1((root / f"versions/{v}/splat.yaml").read_bytes()),
+            sha1((root / f"versions/{v}/splat.yaml").read_bytes() if yaml is None else yaml),
             sha1((root / f"versions/{v}/symbol_addrs.txt").read_bytes() if facts is None else facts),
             sha1(configuration.rom(config.project, v).read_bytes()),
         )

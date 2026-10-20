@@ -667,7 +667,7 @@ def test_a_tree_whose_facts_went_back_to_an_earlier_input_is_extracted_again(wor
     """The extraction in asm/<v>/ is the one of the last facts, whatever other trees or earlier runs extracted."""
     original = (world.root / "versions/a/symbol_addrs.txt").read_text()
     world.setup()
-    _write(world.root, "versions/a/symbol_addrs.txt", original + "f_new = 0x80000500; // type:func rom:0x1100\n")
+    _write(world.root, "versions/a/symbol_addrs.txt", original.replace("rom:0x1000", "rom:0x1000 size:0x40"))
     world.setup()
     _write(world.root, "versions/a/symbol_addrs.txt", original)  # the first input again: a "seen" key, other assembly
     result = world.setup()
@@ -914,7 +914,9 @@ def test_a_rename_of_facts_renames_the_last_extraction_and_runs_no_splat(tmp_pat
     monkeypatch.setattr(
         repo,
         "_extract_key",
-        lambda c, v, facts=None: "K" + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode(),
+        lambda c, v, facts=None, yaml=None: (
+            "K" + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode()
+        ),
     )
     monkeypatch.setattr(repo, "_checked", lambda *a: None)
     ran = []
@@ -966,7 +968,9 @@ def test_a_name_already_in_the_text_makes_the_rename_extraction_run_splat(tmp_pa
     monkeypatch.setattr(
         repo,
         "_extract_key",
-        lambda c, v, facts=None: "K" + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode(),
+        lambda c, v, facts=None, yaml=None: (
+            "K" + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode()
+        ),
     )
     monkeypatch.setattr(repo, "_checked", lambda *a: None)
     ran = []
@@ -983,13 +987,86 @@ def test_a_name_already_in_the_text_makes_the_rename_extraction_run_splat(tmp_pa
     assert ran == ["us", "us"]
 
 
+DROP_FACTS = RENAME_FACTS + "D_80100004_de = 0x80100004; // rom:0x1AED8\n"
+YAML_OLD = "segments:\n  - [0x1000, rodata, data_800C/D_old]\n  - [0x1100, c, span_1000]\n"
+
+
+def test_fact_delta_reports_a_dropped_row_beside_the_renames():
+    new = DROP_FACTS.replace("func_8021A2D4_de", "Render_Draw").replace(
+        "D_80100004_de = 0x80100004; // rom:0x1AED8\n", ""
+    )
+    assert repo._fact_delta(DROP_FACTS, new) == ({"func_8021A2D4_de": "Render_Draw"}, {"D_80100004_de"})
+    assert repo._fact_delta(RENAME_FACTS, RENAME_FACTS) == ({}, set())
+    assert repo._rename_delta(DROP_FACTS, RENAME_FACTS) is None  # a drop is not a pure rename
+    assert repo._fact_delta(RENAME_FACTS, DROP_FACTS) is None  # an added fact
+    assert repo._fact_delta(DROP_FACTS, RENAME_FACTS.replace("type:data", "type:data size:0x4")) is None  # an attribute
+
+
+def test_yaml_delta_accepts_only_new_names_of_the_same_pieces():
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD.replace("D_old", "literals_f")) == {"D_old": "literals_f"}
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD) == {}
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD.replace("0x1000", "0x1004")) is None  # a piece moved
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD.replace("rodata", "data")) is None  # a piece changed kind
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD + "  - [0x1200, c, span_1000]\n") is None  # a piece added
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD.replace("D_old", "bad-name")) is None
+    assert repo._yaml_delta(YAML_OLD, YAML_OLD.replace("D_old", "span_1000")) is None  # a name another piece has
+
+
+def _drop_job(tmp_path, monkeypatch, text):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    _write(tmp_path, "versions/us/symbol_addrs.txt", DROP_FACTS)
+    _write(tmp_path, "versions/us/splat.yaml", YAML_OLD)
+    monkeypatch.setattr(
+        repo,
+        "_extract_key",
+        lambda c, v, facts=None, yaml=None: (
+            "K"
+            + (facts or (tmp_path / "versions/us/symbol_addrs.txt").read_bytes()).decode()
+            + (yaml or (tmp_path / "versions/us/splat.yaml").read_bytes()).decode()
+        ),
+    )
+    monkeypatch.setattr(repo, "_checked", lambda *a: None)
+    ran = []
+
+    def splat(c, v):
+        ran.append(v)
+        _write(tmp_path, "asm/us/data/D_old.s", "dlabel D_80100000_de\n")
+        _write(tmp_path, "asm/us/nonmatchings/f.s", text)
+        _write(tmp_path, "asm/us/.extracted", "")
+        _write(tmp_path, "build/us/undefined_syms_auto.txt", "D_80100004_de = 0x80100004;\nD_1 = 0x1;\n")
+        _write(tmp_path, "build/us/splat.ld", "build/us/asm/us/data/D_old.s.o(.rodata);\n")
+
+    monkeypatch.setattr(repo.build, "extract", splat)
+    assert repo.extract_job((config, "us")) is True and ran == ["us"]
+    assert repo._yaml_snapshot(config, "us").read_text() == YAML_OLD
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    _write(tmp_path, "versions/us/splat.yaml", YAML_OLD.replace("D_old", "literals_f"))
+    assert repo.extract_job((config, "us")) is True
+    return ran
+
+
+def test_a_dropped_fact_no_text_names_and_a_renamed_piece_run_no_splat(tmp_path, monkeypatch):
+    ran = _drop_job(tmp_path, monkeypatch, "jal func_8021A2D4_de\n")
+    assert ran == ["us"]  # splat did not run again
+    assert not (tmp_path / "asm/us/data/D_old.s").exists()
+    assert (tmp_path / "asm/us/data/literals_f.s").read_text() == "dlabel D_80100000_de\n"
+    assert (tmp_path / "build/us/undefined_syms_auto.txt").read_text() == "D_1 = 0x1;\n"  # the dropped row went
+    assert (tmp_path / "build/us/splat.ld").read_text() == "build/us/asm/us/data/literals_f.s.o(.rodata);\n"
+
+
+def test_a_dropped_fact_the_text_uses_runs_splat(tmp_path, monkeypatch):
+    assert _drop_job(tmp_path, monkeypatch, "lw $a0, %lo(D_80100004_de)($a1)\n") == ["us", "us"]
+
+
 def test_a_current_extraction_without_a_facts_snapshot_gets_one(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
     _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
     _write(tmp_path, "asm/us/a.s", "x\n")
-    monkeypatch.setattr(repo, "_extract_key", lambda c, v, facts=None: "K")
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v, facts=None, yaml=None: "K")
     repo._write_asm_manifest(config, "us")
     repo.store.write(repo._extract_stamp(config, "us"), b"K")
     assert repo.extract_job((config, "us")) is False
