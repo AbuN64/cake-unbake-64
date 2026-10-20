@@ -120,6 +120,28 @@
    "additionalProperties": {
     "type": "object"
    }
+  },
+  "proved": {
+   "type": "object",
+   "properties": {
+    "receipt": {
+     "type": "string"
+    },
+    "sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "rows": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "required": [
+    "receipt",
+    "sha256",
+    "rows"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [

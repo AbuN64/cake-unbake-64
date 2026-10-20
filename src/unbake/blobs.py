@@ -529,6 +529,12 @@ def run(config: Config, params: Json) -> Json:
     `land PACKET` imports it as a checked, all-or-nothing facts-only landing."""
     with effort.stage("blobs.run"):
         action = list(params.get("action") or ())
+        if action[:1] == ["prove"]:
+            if len(action) != 3:
+                raise Refusal(Finding("blobs.proof", "prove takes REQUEST RECEIPT"))
+            from unbake import blob_proof
+
+            return blob_proof.run(config, action[1], action[2])
         if action == ["scan"]:
             return _result(config, {"scanned": scan(config)}, bool(params.get("json")))
         if action == ["migrate"]:
@@ -552,7 +558,10 @@ def run(config: Config, params: Json) -> Json:
             return _result(config, land(config, _packet(action[1])), bool(params.get("json")))
         if action:
             raise Refusal(
-                Finding("blobs.packet", f"unknown action {action[0]}; use import PACKET, land PACKET, scan or migrate")
+                Finding(
+                    "blobs.packet",
+                    f"unknown {action[0]}; use prove REQUEST RECEIPT, import PACKET, land PACKET, scan or migrate",
+                )
             )
         return _result(config, {}, bool(params.get("json")))
 

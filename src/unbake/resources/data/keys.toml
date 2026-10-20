@@ -516,3 +516,7 @@ sentence = "types has no extracted assembly or no readable requests file to read
 [key."renameproof.not_rename"]
 owner = "renameproof"
 sentence = "the change is not a pure identifier rename, so only a build proves it"
+
+[key."blobs.proof"]
+owner = "blobs"
+sentence = "a pinned blob proof input or typed byte coverage failed; no decoded credit was granted"
