@@ -263,7 +263,6 @@ def test_the_command_set_is_the_C9_set() -> None:
         "sync",
         "check",
         "audit",
-        "host",
         "compare",
         "score",
         "submit",

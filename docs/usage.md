@@ -111,24 +111,30 @@ See [compiler ownership](compiler-families.md) and
 ## Build without unbake
 
 ```sh
-make extract
 make check
 ```
+
+A clone builds with make, the pinned compilers the Makefile fetches, the MIPS binutils, python3 and splat (the generated
+CONTRIBUTING names the pins); a version with no `asm/<version>/` is extracted with splat first (`make extract`
+does it on demand). The repository never installs or calls unbake: unbake operates on it from outside. After a
+hand-run build, `unbake verify STATUS` (make's exit) records the verdict the report and sync read.
 
 On a host that several commands share, build through the host's worker slots instead of a raw `make -jN`, which the
 slots cannot see or limit: `unbake-run make -j{j} check` (the same for `extract` and `CHECK=tree`). The build takes its
 fair share as a make jobserver, grows into slots other commands free and gives them back to commands that wait. The
-host file comes from `UNBAKE_HOST`; without one the command runs alone on one job. `unbake setup`, `check`, `score`
-and `verify` already build this way; only a hand-run `make` needs `unbake-run`.
+host file comes from `UNBAKE_HOST`; without one the command runs alone on one job. `unbake setup`, `check` and `score`
+already build this way; only a hand-run `make` needs `unbake-run`.
 
-`make check CHECK=tree` checks only that the committed generated files are present and current, with no ROM.
+`make check CHECK=tree` checks only that the committed generated files are present, with no ROM;
+`unbake sync --check` is the currency check, run from outside (a landing runs it every round).
 
 ## CI
 
-Setup writes the CI of a project. `ci/run` is the only place CI logic lives and it is forge-neutral POSIX sh:
-stage `check` runs `make check CHECK=tree`, stage `audit` installs the pinned wheel and runs
-`unbake audit --against BASE`. The GitHub workflow and the GitLab pipeline are thin wrappers that only call
-`sh ci/run STAGE`.
+Setup writes the CI of a project. `ci/run` is the only place CI logic lives and it is forge-neutral POSIX sh with one
+stage, `check`: `make check CHECK=tree`. It installs nothing: a game repository does not depend on unbake, so no unbake
+release ever changes it. `unbake sync --check` and `unbake audit --against BASE` run where unbake operates on the tree
+(a landing runs both every round). The GitHub workflow and the GitLab pipeline are thin wrappers that only call
+`sh ci/run check`.
 ## Development
 
 ## Development

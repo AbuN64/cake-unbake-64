@@ -208,7 +208,8 @@ def init(params: Json) -> Json:
             _render("README.md.in", title=params["title"], begin=rules["readme"]["begin"], end=rules["readme"]["end"]),
         )
         roms_list = "\n".join(f"- `roms/baserom.{v}.z64`" for v in sorted(roms))
-        write("CONTRIBUTING.md", _render("CONTRIBUTING.md.in", title=params["title"], roms=roms_list))
+        splat = " ".join(f'"{pin}"' for pin in rules["splat_pip"])
+        write("CONTRIBUTING.md", _render("CONTRIBUTING.md.in", title=params["title"], roms=roms_list, splat=splat))
         _checked(
             process.run("git init repository", [str(host.tools["git"]), "init"], root, tmp=process.scratch(root)),
             "native.exit",

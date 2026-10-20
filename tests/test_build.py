@@ -825,9 +825,16 @@ def test_a_function_a_file_owns_starts_a_c_piece(tmp_path):
     assert "      - [0x1000, c, main]\n      - [0x1010, c, main]\n" in out
 
 
-def test_make_check_always_delivers_build_exit_to_the_verdict_writer(tmp_path):
+def test_the_makefile_builds_and_verifies_standalone_without_our_tools(tmp_path):
+    """make check is the ROMs, each checked by SHA-1; nothing calls unbake (the verdict is recorded from outside), and
+    a version not yet extracted is extracted by the build itself."""
     text = build.makefile(make_config(tmp_path)).decode()
-    assert "$(MAKE) $(VERSIONS:%=build/%/$(NAME).z64); status=$$?; $(UNBAKE) verify $$status" in text
+    assert "unbake" not in text.lower().replace("__unbake_stdarg", "")
+    assert "else ifeq ($(CHECK),rom)\ncheck: $(VERSIONS:%=build/%/$(NAME).z64)\n" in text
+    assert "asm/%/.extracted: | roms/baserom.%.z64\n\t+$(Q)$(MAKE) --no-print-directory extract-$*\n" in text
+    assert "build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt: | asm/%/.extracted\n" in text
+    assert "asm/%.bin: | asm/$$(call ver,$$*)/.extracted\n" in text
+    assert '|| { echo "$@: SHA-1 is not $(SHA1_$*)" >&2; exit 1; }' in text
 
 
 def test_verify_records_real_rom_hashes_without_host_and_rejects_corruption(tmp_path, monkeypatch):

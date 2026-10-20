@@ -99,14 +99,6 @@ params = [
   { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the working tree is compared with" },
 ]
 
-[command.host]
-configured = false
-help = "Write a host config for a CI runner (cores and workers auto, cache beside the file, tools found on PATH)."
-handler = "ci.host"
-params = [
-  { name = "write", kind = "option", type = "path", required = true, multiple = false, help = "path of the host.toml to write" },
-]
-
 [command.map]
 help = "Write the layout map with its objective evidence to .unbake/map.json; writes nothing tracked."
 handler = "report.map_command"

@@ -1,11 +1,12 @@
 # Contributing to ${title}
 
-You need GNU Make, curl, tar, sha256sum, the MIPS binutils and, only for toolchains that assemble with it, armips.
-Tool commands default to conventional names. Put other paths in `local.mk`.
+You need GNU Make, curl, tar, sha256sum, python3, cpp, the MIPS binutils, splat (`pip install ${splat}`) and,
+only for toolchains that assemble with it, armips. Tool commands default to conventional names. Put other paths in
+`local.mk`.
 
 Place your own big-endian cartridge dumps at these paths:
 
 ${roms}
 
-`make check` builds every version and verifies each ROM's SHA-1.
+`make` extracts each dump with splat, builds every version and verifies each ROM's SHA-1.
 The compilers and the other pinned tools are downloaded into `tools/` and checked against their pinned hashes.

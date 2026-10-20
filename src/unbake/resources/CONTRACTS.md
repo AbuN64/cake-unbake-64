@@ -29,8 +29,8 @@ one `[version.<id>]` table per ROM, optional `[file."path or dir/"]` rows). Ther
 types.toml or version_differences. A file owns the names it defines or keeps behind `INCLUDE_ASM(SEG, NAME)`,
 `INCLUDE_DATA`, `INCLUDE_RODATA` and `INCLUDE_BSS(SEG, NAME, SIZE)`; `tree.capture(config, overlay)` reads it and
 `Tree.owner(version, name)` answers who owns a name. Fuzzy C sits in `#ifdef NON_MATCHING`; a per-version difference sits
-in `#if VERSION_X`. The commands are `init`, `setup`, `sync [--check]`, `check`, `audit`, `host`, `compare`, `score`, `submit`,
-`land`, `report`, `map`, `symbols` and `names`. CI is `ci/run` (forge-neutral) with thin GitHub and GitLab wrappers. Policy keeps
+in `#if VERSION_X`. The commands are `init`, `setup`, `sync [--check]`, `check`, `audit`, `compare`, `score`, `submit`,
+`land`, `report`, `map`, `symbols` and `names`. CI is `ci/run` (forge-neutral, the repository's own `make check CHECK=tree` only: a game repository never installs or calls unbake) with thin GitHub and GitLab wrappers. Policy keeps
 the source rules and the `unclean` pool, and adds a header lint: each `extern` is declared at most once across `include/`
 and a name has the same declaration everywhere (cached in the `header.names` kind by header text).
 
@@ -47,7 +47,7 @@ and a name has the same declaration everywhere (cached in the `header.names` kin
 | blobs | `FILE: constant`; `sha(config: Config) -> str`; `parse(config: Config, data: bytes, file: str=FILE) -> Json`; `load(config: Config) -> Json`; `check(config: Config, document: Json, file: str=FILE) -> tuple[Finding, ...]`; `ranges(document: Json, version: str) -> tuple[Spans, Spans]`; `census(document: Json, version: str \| None=None) -> Json`; `rows(config: Config) -> list[Json]`; `merge(spans: Iterable[tuple[int, int]]) -> Spans`; `subtract(whole: Spans, cut: Spans) -> Spans`; `length(spans: Iterable[tuple[int, int]]) -> int`; `fill(rom: bytes, gaps: Spans) -> Spans`; `sweep(rom_size: int, code: Spans, data: Spans, platform: Spans, decoded: Spans, identified: Spans, rom: bytes \| None=None) -> Json`; `emit(document: Json) -> bytes`; `scan(config: Config) -> Json`; `import_plan(config: Config, packet: Json) -> Plan`; `apply_import(config: Config, plan: Plan) -> Json`; `run(config: Config, params: Json) -> Json`; `shadows(config: Config, version: str, credit: Spans) -> tuple[Finding, ...]`; `Spans: alias` |
 | rnc | `HEADER: constant`; `MAGIC: constant`; `RncError(...)`; `Header(...)`; `crc16(data: bytes \| memoryview) -> int`; `header(data: bytes \| memoryview, at: int=0) -> Header`; `unpack(data: bytes \| memoryview, at: int=0, check: bool=True) -> bytes`; `find(data: bytes \| memoryview, start: int=0, end: int \| None=None) -> list[tuple[int, Header]]` |
 | build | `install_toolchains(config: Config, ids: Sequence[str]) -> list[Path]`; `install_toolchain(config: Config, id: str) -> Path`; `makefile(config: Config) -> bytes`; `linker(config: Config, held: Tree) -> bytes`; `splat_yaml(config: Config, v: str, held: Tree) -> bytes`; `make(config: Config, targets: Sequence[str]) -> NativeResult`; `text_sizes(config: Config, held: Tree, v: str) -> bytes`; `local_mk(config: Config) -> bytes`; `extract(config: Config, version: str \| None=None) -> NativeResult`; `inputs(config: Config) -> str`; `make_check(config: Config, held: Tree \| None=None) -> Json`; `project_inputs(project: Project) -> str`; `verify(params: Json) -> Json` |
-| ci | `RUN: constant`; `wheel(version: str \| None=None) -> str`; `files() -> dict[str, bytes]`; `host(params: Json) -> Json` |
+| ci | `RUN: constant`; `files() -> dict[str, bytes]` |
 | cli | `main(argv: Sequence[str] \| None=None) -> int` |
 | compare | `score_functions(config: Config, path: str, names: Sequence[str], version: str) -> dict[str, float]`; `gaps(name: str, held: Sequence[str], proofs: Sequence[Proof]) -> tuple[Finding, ...]`; `run(config: Config, params: Json) -> Json`; `submit_command(config: Config, params: Json) -> Json`; `score_command(config: Config, params: Json) -> Json` |
 | config | `SCHEMA_OF: constant`; `toml(schema: str, data: bytes, file: str, key: str='config.schema', cache: Cached \| None=None) -> Json`; `validate(schema: str, value: Json, file: str) -> None`; `load_resource(name: str) -> Json`; `kinds() -> Json`; `library(project: Project, path: str) -> bool`; `is_assembly(path: str) -> bool`; `is_source(path: str) -> bool`; `is_header(path: str) -> bool`; `is_text(path: str) -> bool`; `source_stem(path: str) -> str`; `kind(name: str) -> Json`; `sections() -> Json`; `toolchains() -> Json`; `toolchain(name: str) -> Json`; `fuzzy() -> Json`; `template(name: str) -> str`; `sentence(key: str) -> str`; `load_host(path: Path) -> Host`; `load_project(root: Path, reader: Callable[[str], bytes] \| None=None, tracked: Callable[[], Iterable[str]] \| None=None) -> Project`; `load(root: Path, host: Path) -> Config`; `rom(project: Project, vid: str) -> Path`; `rom_meta(project: Project, vid: str) -> Json`; `Cached: alias` |
@@ -125,10 +125,10 @@ Tracked generated files (`unbake sync`): `Makefile`, `<name>.ld`, `versions/<v>/
 | host.toml | every host value | humans |
 | config.toml | name title names_from toolchain version_blocks | repo.init |
 | include_asm.h.in | none (copied verbatim) | repo.init, repo.sync (absent only) |
-| run.in | wheel versions | ci.files |
-| ci.yml.in | checkout python | ci.files |
+| run.in | none | ci.files |
+| ci.yml.in | checkout | ci.files |
 | gitlab-ci.yml.in | image packages | ci.files |
-| CONTRIBUTING.md.in | title roms | repo.init |
+| CONTRIBUTING.md.in | title roms splat | repo.init |
 | README.md.in | title begin end | repo.init |
 
 ## Source budgets (physical lines; allocations are planning numbers; lint enforces only the total: a non-blocking warning above the soft cap of 6,000 and a failure above the hard cap of 7,200)
@@ -193,7 +193,9 @@ predicate as `functions_fuzzy`. It does not describe source form: a NON_MATCHING
 unmatched. Source-body state stays internal for map links, including zero-scoring C bodies.
 A NON_MATCHING body remains unmatched even at 100 percent until landed. No schema-1 reader or alternate metric is kept.
 
-`make check` builds every ROM and calls `unbake verify STATUS`, including on build failure. Verify needs no host
+`make check` builds every ROM and checks each SHA-1; it never calls unbake. Whoever runs it for credit calls
+`unbake verify STATUS` after it with make's exit, including on build failure (`unbake setup`/`check` record the verdict
+themselves; `decomp land` calls verify after its check build). Verify needs no host
 config: it checks size/SHA-1 against config.toml and records `exact`, `failing`, `build_inputs` in `.unbake/check.json`.
 The report grants that verdict only while all build inputs and outputs retain their identity. Source debt keeps its
 own tree digest in that same document. A failed build clears exact credit; a missing or corrupt ROM cannot pass.

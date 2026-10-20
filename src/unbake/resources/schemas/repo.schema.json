@@ -186,10 +186,6 @@
    ],
    "additionalProperties": false
   },
-  "wheel": {
-   "type": "string",
-   "minLength": 1
-  },
   "forge": {
    "type": "array",
    "minItems": 1,
@@ -219,50 +215,6 @@
     "additionalProperties": false
    }
   },
-  "ci_host": {
-   "type": "object",
-   "additionalProperties": false,
-   "required": [
-    "memory_parent_bytes",
-    "memory_worker_bytes",
-    "cache_max_bytes",
-    "serial_seconds",
-    "serial_cores",
-    "pool_fill",
-    "pool_fanout",
-    "author_name",
-    "author_email"
-   ],
-   "properties": {
-    "memory_parent_bytes": {
-     "type": "integer"
-    },
-    "memory_worker_bytes": {
-     "type": "integer"
-    },
-    "cache_max_bytes": {
-     "type": "integer"
-    },
-    "serial_seconds": {
-     "type": "number"
-    },
-    "serial_cores": {
-     "type": "number"
-    },
-    "pool_fill": {
-     "type": "number"
-    },
-    "pool_fanout": {
-     "type": "number"
-    },
-    "author_name": {
-     "type": "string"
-    },
-    "author_email": {
-     "type": "string"
-    }
-   }
-  },
   "splat_pip": {
    "type": "array",
    "minItems": 1,
@@ -274,14 +226,12 @@
  },
  "required": [
   "schema",
-  "wheel",
   "forge",
   "make",
   "readme",
   "ignore",
   "splat",
   "layout",
-  "ci_host",
   "splat_pip"
  ],
  "additionalProperties": false

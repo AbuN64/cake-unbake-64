@@ -92,8 +92,8 @@ publication transition; the report validator refuses a missing record and never
 manufactures eligibility from history. Prior receipt evidence is preserved by the
 owning offline migration, with unavailable dependency proof kept explicit.
 
-The generated CI workflow runs `sh ci/run check` (the project's `make check`) and
-`sh ci/run audit`. The publication gate is `make check CHECK=rom`: every version
+The generated CI workflow runs `sh ci/run check` (the project's `make check CHECK=tree`);
+`unbake audit` runs where unbake operates on the tree (each landing). The publication gate is `make check CHECK=rom`: every version
 builds byte for byte. There is no separate report verifier command.
 
 Publication requires a complete current strict proof for every required or already

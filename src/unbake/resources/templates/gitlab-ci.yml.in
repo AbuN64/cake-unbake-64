@@ -8,15 +8,3 @@ check:
     - apt-get install -y --no-install-recommends ${packages}
   script:
     - sh ci/run check
-
-audit:
-  image: ${image}
-  rules:
-    - if: $$CI_PIPELINE_SOURCE != "schedule"
-  variables:
-    GIT_DEPTH: "0"
-  before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends git
-  script:
-    - CI_BASE="$${CI_MERGE_REQUEST_DIFF_BASE_SHA:-$$CI_COMMIT_BEFORE_SHA}" sh ci/run audit

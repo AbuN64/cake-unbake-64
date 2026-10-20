@@ -1,7 +1,8 @@
 # ${title}: matching build.
 # make check             builds every version ROM from the committed sources and verifies its SHA-1.
-# make check CHECK=tree  verifies only that the committed generated files are present and current (no ROMs needed).
+# make check CHECK=tree  verifies only that the committed generated files are present (no ROMs needed).
 # make extract           splits every baserom into asm/<version>/ with splat; a data file's section is its stand-in's.
+#                        A build extracts a version that has no asm/<version>/ yet on its own.
 # Tool commands default to conventional names; put local paths in local.mk.
 SHELL := /bin/sh
 .SUFFIXES:
@@ -20,7 +21,6 @@ MAKEFLAGS += -j$$(JOBS)
 endif
 endif
 ${tool_defaults}
-UNBAKE ?= unbake
 ${version_vars}
 STAMPS := ${stamps}
 
@@ -54,10 +54,8 @@ all: check
 ifeq ($$(CHECK),tree)
 check:
 	$$(Q)for f in Makefile $$(NAME).ld include/include_asm.h $$(VERSIONS:%=versions/%/splat.yaml); do test -s $$$$f || { echo "$$$$f is missing" >&2; exit 1; }; done
-	$$(Q)$$(UNBAKE) sync --check
 else ifeq ($$(CHECK),rom)
-check:
-	+$$(Q)$$(MAKE) $$(VERSIONS:%=build/%/$$(NAME).z64); status=$$$$?; $$(UNBAKE) verify $$$$status
+check: $$(VERSIONS:%=build/%/$$(NAME).z64)
 else
 $$(error CHECK must be rom or tree)
 endif
@@ -145,8 +143,8 @@ extract-%:
 	$$(Q)find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
 	$$(Q)touch asm/$$*/.extracted
 # An object assembles extracted files its source only names through a macro: every object follows the extraction.
-asm/%/.extracted:
-	$$(error asm/$$*/ is not extracted: run make extract)
+asm/%/.extracted: | roms/baserom.%.z64
+	+$$(Q)$$(MAKE) --no-print-directory extract-$$*
 
 # The link script names every object, so no rule here lists a file.
 $$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
@@ -165,6 +163,9 @@ build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 build/%.bin.o: asm/%.bin
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(OBJCOPY) -I binary -O elf32-tradbigmips -B mips $$< $$@
+# splat writes a binary piece while it extracts the version.
+asm/%.bin: | asm/$$$$(call ver,$$$$*)/.extracted
+	$$(Q)test -f $$@ || { echo "$$@ is missing: run make extract-$$(call ver,$$*)" >&2; exit 1; }
 
 # The whole ROM links once per version, from build/<version>/, so object paths in the script stay short.
 build/%/link.ld: $$(NAME).ld
@@ -176,8 +177,9 @@ build/%/link.ld: $$(NAME).ld
 build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(wildcard versions/$$$$*/aliases.txt)
 	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$^ > $$@
 	$$(Q)grep -rhoE --include='*.s' '${label}[0-9A-F]{8}\b' asm/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
-build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt:
-	$$(error $$@ is missing: run make extract)
+# splat writes these while it extracts the version.
+build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt: | asm/%/.extracted
+	$$(Q)test -f $$@ || { echo "$$@ is missing: run make extract-$$*" >&2; exit 1; }
 build/%/$$(NAME).elf: $$$$(OBJS_$$$$*) build/%/link.ld build/%/undefined_syms.ld
 	$$(Q)cd build/$$* && $$(LD) -T link.ld -o $$(NAME).elf
 build/%/$$(NAME).bin: build/%/$$(NAME).elf
@@ -185,6 +187,6 @@ build/%/$$(NAME).bin: build/%/$$(NAME).elf
 build/%/$$(NAME).z64: build/%/$$(NAME).bin roms/baserom.%.z64
 	$$(Q){ head -c $$(ROM0_$$*) roms/baserom.$$*.z64; cat $$<; } > $$@
 	$$(Q)truncate -s $$$$(wc -c < roms/baserom.$$*.z64) $$@
-	$$(Q)test "$$$$(sha1sum < $$@ | cut -d' ' -f1)" = $$(SHA1_$$*)
+	$$(Q)test "$$$$(sha1sum < $$@ | cut -d' ' -f1)" = $$(SHA1_$$*) || { echo "$$@: SHA-1 is not $$(SHA1_$$*)" >&2; exit 1; }
 
 ${toolchain_rules}
