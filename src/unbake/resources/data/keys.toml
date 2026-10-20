@@ -33,6 +33,10 @@ sentence = "the project has rule debt"
 owner = "adapters"
 sentence = "the compiler reported an error"
 
+[key."score.inactive"]
+owner = "compare"
+sentence = "the candidate is not compiled in this version, so a score would measure the module's own definition"
+
 [key."score.compile"]
 owner = "compare"
 sentence = "the candidate did not build, so there is nothing to score"

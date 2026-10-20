@@ -39,7 +39,7 @@ params = [
 ]
 
 [command.compare]
-help = "Measure a source against every version that holds its item; exact submits it for landing."
+help = "Measure a source against every version that holds its item and report the gaps; writes nothing (submit puts an exact source in the landing inbox)."
 handler = "compare.run"
 params = [
   { name = "file", kind = "argument", type = "path", required = true, multiple = false, help = "C source" },

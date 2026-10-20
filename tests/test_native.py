@@ -443,3 +443,61 @@ def test_a_measured_module_compiles_only_the_non_matching_bodies_of_the_names_me
     assert snapshot.overlays["src/main/c_func.c"].decode().splitlines()[3] == "#ifdef NON_MATCHING"
     whole, *_ = native.candidate(world.cfg, "a", "src/main/c_func.c", text)
     assert whole.overlays["src/main/c_func.c"].decode() == text  # no names: the module as it is
+
+
+# ---------------------------------------------------------------- the unit's own constant pool
+LUI_AT, LWC1 = 0x3C010000, 0xC4200000  # lui at,0 and lwc1 f0,0(at): the candidate's object, relocated later
+
+
+def _word(*words):
+    return b"".join(w.to_bytes(4, "big") for w in words)
+
+
+def test_the_pool_starts_where_the_roms_code_forms_the_address_less_the_offset_it_reads(monkeypatch):
+    monkeypatch.setattr(native, "_pool_refs", lambda blob, table: (_word(LUI_AT, LWC1), [(4, 8)], set()))
+    target = _word(0x3C01800C, 0xC4206E44)  # lui at,0x800C; lwc1 f0,0x6E44(at)
+    pool = native._pool(b"", {}, (".text", 0, 8), 0, target, 8)
+    assert pool == native._Pool(0x800C6E44 - 8, ((8, 4),))
+
+
+def test_a_reference_the_roms_code_has_a_few_words_off_still_votes(monkeypatch):
+    monkeypatch.setattr(native, "_pool_refs", lambda blob, table: (_word(LUI_AT, LWC1), [(4, 0)], set()))
+    target = _word(0x3C01800C, 0, 0, 0xC4206E44)  # three words more between the lui and the load
+    assert native._pool(b"", {}, (".text", 0, 8), 0, target, 16).base == 0x800C6E44
+
+
+def test_a_jump_table_is_read_whole_and_a_string_to_its_nul(monkeypatch):
+    monkeypatch.setattr(native, "_pool_refs", lambda blob, table: (_word(LUI_AT, 0x24210000), [(4, 4)], {4, 8, 12}))
+    pool = native._pool(b"", {}, (".text", 0, 8), 0, _word(0x3C01800C, 0x24216E44), 8)
+    assert pool.reads == ((4, 12),)
+    monkeypatch.setattr(native, "_pool_refs", lambda blob, table: (_word(LUI_AT, 0x24210000), [(4, 4)], set()))
+    assert native._pool(b"", {}, (".text", 0, 8), 0, _word(0x3C01800C, 0x24216E44), 8).reads == ((4, 0),)
+
+
+def test_a_candidate_with_no_pool_references_has_no_base(monkeypatch):
+    monkeypatch.setattr(native, "_pool_refs", lambda blob, table: (b"", [], set()))
+    assert native._pool(b"", {}, (".text", 0, 8), 0, bytes(8), 8) == native._Pool()
+    assert native._pool_refs(b"object", {}) == (b"", [], set())  # not an ELF object
+
+
+def test_the_unit_rodata_links_at_the_pool_base_and_its_bytes_are_the_roms(world, monkeypatch):
+    world.sizes = {".text": 32, ".rodata": 8}
+    monkeypatch.setattr(native, "_pool", lambda *a: native._Pool(0x800C6E00, ((0, 4),)))
+    monkeypatch.setattr(native, "_rom_at", lambda cfg, version, address: 0)
+    _outputs((None, None, None, None, None, world.linker), {".text": bytes(32), ".rodata": bytes(8)})
+    proof = native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg))
+    assert proof.exact, proof.missing
+    (placed,) = world.linker.placements
+    assert {p.section: p.vram for p in placed}[".rodata"] == 0x800C6E00
+    _outputs((None, None, None, None, None, world.linker), {".text": bytes(32), ".rodata": b"\x01" + bytes(7)})
+    monkeypatch.setattr(native, "_pool", lambda *a: native._Pool(0x800C6E00, ((0, 4), (4, 4))))
+    other = native.measure(world.cfg, "a", "c_func", "src/main/c_func.c", _text(world.cfg))
+    assert not other.exact and "1 of 2 reads of the unit's .rodata differ" in other.missing[0]
+    assert other.score < 1.0
+
+
+def test_a_pool_the_rom_has_nowhere_is_a_difference(monkeypatch):
+    snapshot = SimpleNamespace(config=None, versions={"a": object()})
+    monkeypatch.setattr(native, "_rom_at", lambda cfg, version, address: None)
+    gaps = native._pool_gaps(snapshot, "a", native._Pool(0x800C0000, ((0, 4),)), bytes(4))
+    assert gaps and "0x800C0000+0x0" in gaps[0]

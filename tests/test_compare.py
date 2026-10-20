@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import compare, effort, store
+from unbake import compare, effort, store, view
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Proof, Refusal, sha256
 
@@ -23,6 +23,7 @@ SOURCES = {
         'INCLUDE_ASM("ovl", fuzzy);\n#endif\n'
     ),
 }
+_INACTIVE = compare._inactive
 CANDIDATE = "s32 stand_in(void) {\n    return 2;\n}\n"
 
 
@@ -55,6 +56,7 @@ class World:
         monkeypatch.setattr(compare.land, "submit", self.submit)
         monkeypatch.setattr(compare.land, "submit_many", self.submit_many)
         monkeypatch.setattr(compare.land, "drain", self.drain)
+        monkeypatch.setattr(compare, "_inactive", lambda *a: "")  # the preprocessor view is tested on its own
 
     def measure(self, config, version, name, path, text, overrides=None, overlays=None) -> Proof:
         self.measured.append((version, name, path, text))
@@ -147,10 +149,20 @@ def test_a_fuzzy_block_is_replaced_by_the_new_body_over_the_same_stand_in(world)
 
 
 # ---------------------------------------------------------------- compare
-def test_an_exact_candidate_is_submitted_and_the_inbox_drained(world):
+def test_compare_measures_and_writes_nothing_even_when_exact(world):
     result = compare.run(world.cfg, _params(world, note="why"))
-    assert result["exact"] and result["gaps"] == [] and result["submitted"]
-    assert result["score"] == {"a": 1.0, "b": 1.0} and result["drain"]["running"] is False
+    assert result["exact"] and result["gaps"] == [] and result["submitted"] is None and result["drain"] is None
+    assert result["score"] == {"a": 1.0, "b": 1.0}
+    assert world.submitted == [] and world.drains == 0
+    configuration.validate("result.compare", json.loads(json.dumps(result, default=str)), "compare")
+
+
+def test_submit_enters_an_exact_candidate_and_drains_the_inbox(world):
+    result = compare.submit_command(
+        world.cfg, {"files": [str(world.tmp / "stand_in.c")], "note": "why", "bulk": False, "function": None}
+    )
+    (row,) = result["submissions"]
+    assert row["exact"] and row["id"] and result["drain"]["running"] is False
     (call,) = world.submitted
     assert call["request"] == {
         "file": str(world.tmp / "stand_in.c"),
@@ -158,31 +170,38 @@ def test_an_exact_candidate_is_submitted_and_the_inbox_drained(world):
         "overrides": {"add": [], "omit": []},
         "note": "why",
     }
-    assert call["source"] == CANDIDATE.encode() and call["origin"] == "compare" and call["extras"] == {}
+    assert call["source"] == CANDIDATE.encode() and call["origin"] == "submit" and call["extras"] == {}
     assert world.drains == 1
-    configuration.validate("result.compare", json.loads(json.dumps(result, default=str)), "compare")
 
 
-def test_an_inexact_candidate_reports_the_gap_and_still_offers_the_fuzzy_gain(world):
+def test_an_inexact_candidate_reports_the_gap_and_submit_still_offers_the_fuzzy_gain(world):
     world.exact["b"] = False
     result = compare.run(world.cfg, _params(world))
     assert not result["exact"] and result["submitted"] is None and world.drains == 0
     (gap,) = result["gaps"]
     assert gap["key"] == "land.not_exact" and gap["versions"] == ("b",)
+    assert world.submitted == []
+    compare.submit_command(
+        world.cfg, {"files": [str(world.tmp / "stand_in.c")], "bulk": False, "function": None, "note": None}
+    )
     assert len(world.submitted) == 1  # land decides whether a fuzzy gain is worth entering
 
 
-def test_a_refusal_of_the_entry_is_a_finding_of_the_result(world):
+def test_a_refusal_of_the_entry_is_a_finding_of_the_submission(world):
     world.refuse = Refusal(Finding("source.unclean", "bad", path="src/main/stand_in.c"))
-    result = compare.run(world.cfg, _params(world))
-    assert not result["exact"] and [g["key"] for g in result["gaps"]] == ["source.unclean"]
+    result = compare.submit_command(
+        world.cfg, {"files": [str(world.tmp / "stand_in.c")], "bulk": False, "function": None, "note": None}
+    )
+    (row,) = result["submissions"]
+    assert not row["exact"] or [g["key"] for g in row["findings"]] == ["source.unclean"]
+    assert [g["key"] for g in row["findings"]] == ["source.unclean"]
 
 
 def test_change_set_files_travel_as_extras(world):
     header = world.tmp / "new.h"
     header.write_text("typedef int T;\n")
     files = [world.tmp / "stand_in.c", Path(f"include/new.h={header}")]
-    compare._attempt(world.cfg, files, _params(world), "submit")
+    compare._attempt(world.cfg, files, _params(world), "submit", True)
     assert world.submitted[0]["extras"] == {"include/new.h": b"typedef int T;\n"}
     assert world.measured and world.submitted[0]["origin"] == "submit"
 
@@ -413,3 +432,60 @@ def test_a_line_after_the_candidate_is_the_files_line_before_it_was_shifted(worl
     )
     result = compare.run(world.cfg, _params(world, function="stand_in"))
     assert "src/main/stand_in.c:4: conflicting types for `after'" in result["gaps"][0]["missing"][0]
+
+
+# ---------------------------------------------------------------- the candidate is what is measured
+def _placed(text, origins):
+    return compare.Placed(SimpleNamespace(path="src/m.c"), text, tuple(origins))
+
+
+def _preprocessed(monkeypatch, active):
+    monkeypatch.setattr(compare.native, "candidate", lambda *a, **k: (Mock(), Mock(), Mock(), []))
+    monkeypatch.setattr(view, "get", lambda *a, **k: Mock())
+    monkeypatch.setattr(view, "active_lines", lambda sv, path: dict.fromkeys(active, ""))
+
+
+def test_a_candidate_in_an_inactive_version_region_is_named_with_its_line(world, monkeypatch):
+    text = "#if V\nint f(void) {\n  return 1;\n}\n#endif\n"
+    placed = _placed(text, [("disk", 1), ("candidate", 1), ("candidate", 2), ("candidate", 3), ("disk", 5)])
+    _preprocessed(monkeypatch, active=[])
+    why = _INACTIVE(world.cfg, "a", "f", placed, {}, {})
+    assert "version a" in why and "line 2 of src/m.c" in why and "inactive #if region" in why
+    _preprocessed(monkeypatch, active=[2, 3, 4])
+    assert _INACTIVE(world.cfg, "a", "f", placed, {}, {}) == ""
+
+
+def test_a_name_that_is_only_called_is_no_definition(world, monkeypatch):
+    placed = _placed("int g(void) { return f(1); }\n", [("candidate", 1)])
+    _preprocessed(monkeypatch, active=[])
+    assert _INACTIVE(world.cfg, "a", "f", placed, {}, {}) == ""
+
+
+def test_score_refuses_when_the_candidate_is_not_compiled_in_the_scored_version(world, monkeypatch):
+    monkeypatch.setattr(compare, "_inactive", lambda config, v, *a: f"version {v}: off" if v == "a" else "")
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "lines": None, "short": False}
+    with pytest.raises(Refusal) as refused:
+        compare._score_one(world.cfg, params)
+    found = refused.value.findings[0]
+    assert found.key == "score.inactive" and found.reason == "version a: off" and found.versions == ("a",)
+
+
+def test_another_version_without_the_candidate_is_a_gap_not_a_refusal(world, monkeypatch):
+    built = bytes(0x10)
+    _built(world, built)
+    monkeypatch.setattr(compare, "_inactive", lambda config, v, *a: "version b: off" if v == "b" else "")
+    monkeypatch.setattr(compare.versions, "rom_bytes", lambda record, start, end: bytes(end - start))
+    monkeypatch.setattr(compare.native, "candidate", lambda *a, **k: (Mock(), Mock(), Mock(), []))
+    monkeypatch.setattr(compare.policy, "evaluate", lambda *a: ())
+    monkeypatch.setattr(
+        compare.native,
+        "measure",
+        lambda config, v, name, path, text, *a, **k: replace(
+            fixture.proof(path, name, v, True), built_sha256=sha256(built)
+        ),
+    )
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "lines": None, "short": False}
+    result = compare._score_one(world.cfg, params)
+    by_version = {p["version"]: p for p in result["proofs"]}
+    assert result["exact"] is False and by_version["a"]["exact"] is True
+    assert by_version["b"]["exact"] is False and by_version["b"]["missing"] == ("version b: off",)

@@ -4,16 +4,23 @@ facts give and compared with the ROM bytes of the function."""
 from __future__ import annotations
 
 import fnmatch
+import io
 import json
 import re
+import struct
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import abucache
 from abucache import compile
+from elftools.common.exceptions import ELFError
+from elftools.elf.elffile import ELFFile
+from elftools.elf.relocation import RelocationSection
+from elftools.elf.sections import SymbolTableSection
 
 from unbake import adapters, config, effort, process, recipes, store, symbols, symptoms, tree, versions, view
 from unbake.contracts import (
@@ -399,6 +406,131 @@ def measure_names(
         return proofs
 
 
+@dataclass(frozen=True)
+class _Pool:
+    """Where the ROM's code reads the candidate's own constant pool: `base`, the vram its object .rodata starts at,
+    and `reads`, each (offset in that .rodata, bytes the code takes there; 0 is a string) the function's code names."""
+
+    base: int | None = None
+    reads: tuple[tuple[int, int], ...] = ()
+
+
+_LOAD_SIZE = {
+    0x20: 1,
+    0x24: 1,
+    0x21: 2,
+    0x25: 2,
+    0x23: 4,
+    0x31: 4,
+    0x35: 8,
+    0x09: 0,
+}  # lb lbu lh lhu lw lwc1 ldc1 addiu
+_NEAR = 16  # words from the same index the ROM's own %lo of a reference may sit (instructions inserted or dropped)
+_LUI, _LO16, _WORD32 = 0x0F, 6, 2  # the lui opcode, R_MIPS_LO16 and R_MIPS_32
+
+
+def _signed(half: int) -> int:
+    return (half & 0xFFFF) - ((half & 0x8000) << 1)
+
+
+def _formed(code: bytes, at: int) -> int | None:
+    """The address the code forms at the %lo instruction at `at`: its low half joined to the lui that feeds its base."""
+    word = int.from_bytes(code[at : at + 4], "big")
+    for earlier in range(at - 4, max(at - 132, -4), -4):
+        before = int.from_bytes(code[earlier : earlier + 4], "big")
+        if before >> 26 == _LUI and (before >> 16) & 31 == (word >> 21) & 31:
+            return (((before & 0xFFFF) << 16) + _signed(word)) & _WORD
+    return None
+
+
+def _pool_refs(blob: bytes, table: Any) -> tuple[bytes, list[tuple[int, int]], set[int]]:
+    """(the object's .text, its (text offset, .rodata offset) per %lo of an address in .rodata, the .rodata offsets
+    that hold a relocated word - a jump table's entries); empty for anything but an object with one .rodata."""
+    try:
+        elf = ELFFile(io.BytesIO(blob))
+        names = {i: s.name for i, s in enumerate(elf.iter_sections())}
+        pools = [i for i, n in names.items() if _output(table, n) == ".rodata"]
+        text = elf.get_section_by_name(".text")
+        if len(pools) != 1 or text is None:
+            return b"", [], set()
+        code, refs, words = text.data(), [], set()
+        for section in elf.iter_sections():
+            if not isinstance(section, RelocationSection) or section.is_RELA():
+                continue
+            symbols_ = cast(SymbolTableSection, elf.get_section(section["sh_link"]))
+            for r in section.iter_relocations():
+                if section["sh_info"] == pools[0] and r["r_info_type"] == _WORD32:
+                    words.add(r["r_offset"])
+                    continue
+                symbol = symbols_.get_symbol(r["r_info_sym"])
+                if (
+                    names[section["sh_info"]] == ".text"
+                    and r["r_info_type"] == _LO16
+                    and symbol["st_shndx"] == pools[0]
+                ):
+                    word = int.from_bytes(code[r["r_offset"] : r["r_offset"] + 4], "big")
+                    refs.append((r["r_offset"], symbol["st_value"] + _signed(word)))
+        return code, refs, words
+    except (ELFError, KeyError, IndexError, ValueError, TypeError, AttributeError, struct.error):
+        return b"", [], set()
+
+
+def _pool(blob: bytes, table: Any, row: tuple[str, int, int], start: int, target: bytes, span: int) -> _Pool:
+    """The candidate's .rodata placed where the target's code reads its pool: every %lo of the candidate that the ROM's
+    code has at (nearly) the same place forms an address, which less the offset the candidate reads in its .rodata is
+    the .rodata start; the most common start is the pool's. The unit then links the way the real build does, with its
+    literals and jump tables at the ROM's, so the code reads the same addresses when it is the ROM's code."""
+    code, refs, words = _pool_refs(blob, table)
+    votes: Counter[int] = Counter()
+    reads: set[tuple[int, int]] = set()
+    for at, offset in refs:
+        if not start <= at < start + span:
+            continue
+        mine = int.from_bytes(code[at : at + 4], "big")
+        for step in sorted(range(-_NEAR, _NEAR + 1), key=abs):
+            there = at - start + 4 * step
+            same = (
+                0 <= there <= len(target) - 4 and int.from_bytes(target[there : there + 4], "big") >> 21 == mine >> 21
+            )
+            if same and (address := _formed(target, there)) is not None:
+                votes[(address - offset) & _WORD] += 1
+                break
+        run = 0
+        while offset in words and offset + 4 * run in words:
+            run += 1
+        reads.add((offset, 4 * run if run else _LOAD_SIZE.get(mine >> 26, 4)))
+    return _Pool(votes.most_common(1)[0][0] if votes else None, tuple(sorted(reads)))
+
+
+def _rom_at(cfg: Config, version: str, address: int) -> int | None:
+    """The ROM offset a vram address of the version is stored at, by the segment that holds it."""
+    for _, rom, end, vram in versions.segments(cfg, version):
+        if vram and vram <= address < vram + end - rom:
+            return rom + address - vram
+    return None
+
+
+def _pool_gaps(snapshot: Snapshot, version: str, pool: _Pool, built: bytes) -> list[str]:
+    """The reads of the function's code whose bytes in the linked pool are not the ROM's at the address it forms."""
+    wrong = []
+    for offset, size in pool.reads:
+        if size == 0:  # an address taken: a string runs to its NUL
+            end = built.find(b"\0", offset)
+            size = (end if end >= 0 else len(built)) - offset + 1
+        rom = _rom_at(snapshot.config, version, (pool.base or 0) + offset)
+        if (
+            rom is None
+            or versions.rom_bytes(snapshot.versions[version], rom, rom + size) != built[offset : offset + size]
+        ):
+            wrong.append(offset)
+    if not wrong:
+        return []
+    return [
+        f"version {version}: {len(wrong)} of {len(pool.reads)} reads of the unit's .rodata differ from the ROM's "
+        f"at 0x{pool.base:X}+0x{wrong[0]:X}"
+    ]
+
+
 def _link(
     snapshot: Snapshot,
     unit: UnitSpec,
@@ -427,17 +559,21 @@ def _link(
     if ".text" not in starts:
         return _gap(unit, name, version, recipe, source, object_sha, "unproved .text: no anchor")
     end = starts[".text"] + totals.get(".text", 0)
+    size = extent(facts, name) or defined[name][2]  # the target's own extent; the object's only when facts have none
+    record = snapshot.versions[version]
+    target = versions.rom_bytes(record, fact[1], fact[1] + size)
+    pool = _pool(blob, table, defined[name], (fact[0] & mask) - starts[".text"], target, max(size, defined[name][2]))
+    if (
+        ".rodata" not in starts and pool.base is not None
+    ):  # the unit's own literal pool sits where the ROM's code reads it
+        starts[".rodata"] = pool.base
     for out in totals:  # a section no named symbol places follows the code (the per-object shape)
         starts.setdefault(out, (end + 15) & ~15)
     placed = tuple(
-        Placement(version, out, 0, size, starts[out], size if out == ".bss" else 0)
-        for out, size in sorted(totals.items())
-        if size
+        Placement(version, out, 0, size_, starts[out], size_ if out == ".bss" else 0)
+        for out, size_ in sorted(totals.items())
+        if size_
     )
-    size = extent(facts, name) or defined[name][2]  # the target's own extent; the object's only when facts have none
-    rom_view = versions.rom_bytes
-    record = snapshot.versions[version]
-    target = rom_view(record, fact[1], fact[1] + size)
     section = _output(table, defined[name][0]) or ".text"
     symbols_data = versions.symbols_ld(cfg, version, snapshot.overlays)
     row = config.toolchain(recipe.toolchain)
@@ -451,7 +587,8 @@ def _link(
             sha256(target),
             abucache.__version__,
             adapters.tool_identity(cfg, recipe.toolchain),
-            code_identity(_link),
+            code_identity(_link, _pool, _pool_gaps),
+            asdict(pool),
         )
     )
 
@@ -470,9 +607,11 @@ def _link(
         differences = [i for i, (x, y) in enumerate(zip(have, target, strict=False)) if x != y]
         if differences:
             missing.append(f"version {version}: {len(differences)} bytes differ at +0x{differences[0]:X} {section}")
+        if pool.base is not None and starts[".rodata"] == pool.base:
+            missing += _pool_gaps(snapshot, version, pool, built.get(".rodata", b""))
         exact = not missing
         store.put(cfg, "bytes", sha256(have), have)
-        reads = _literal_reads(snapshot, version, starts.get(".rodata"), built.get(".rodata", b""), facts)
+        reads = _literal_reads(snapshot, version, starts.get(".rodata"), built.get(".rodata", b""))
         shown = symptoms.literals(have, target, *reads) if section == ".text" and not exact else have
         score = 1.0 if exact else min(symptoms.score(shown, target), 1.0 - 2**-53)
         extra = (
@@ -514,23 +653,16 @@ def extent(facts: Mapping[str, symbols.Symbol], name: str) -> int | None:
 
 
 def _literal_reads(
-    snapshot: Snapshot, version: str, start: int | None, built: bytes, facts: Any
+    snapshot: Snapshot, version: str, start: int | None, built: bytes
 ) -> tuple[Callable[[int, int], bytes], Callable[[int, int], bytes]]:
-    """Readers of `size` bytes at a vram in the built rodata and in the target's, empty outside them. The target's
-    rodata is read at the ROM offset of the nearest named rodata symbol at or below the address."""
-    rows = sorted((f[0], f[1]) for f in facts.values() if f[1] is not None)
+    """Readers of `size` bytes at a vram in the built rodata and in the target's, empty where there is none. The
+    target's is the ROM's at any address a segment holds, whatever the built rodata's own extent."""
 
     def ours(address: int, size: int) -> bytes:
         return built[address - start : address - start + size] if start is not None and address >= start else b""
 
     def theirs(address: int, size: int) -> bytes:
-        if start is None or not start <= address < start + len(built):
-            return b""
-        below = [r for r in rows if r[0] <= address]
-        if not below:
-            return b""
-        vram, rom = below[-1]
-        at = rom + address - vram
-        return versions.rom_bytes(snapshot.versions[version], at, at + size)
+        rom = _rom_at(snapshot.config, version, address)
+        return b"" if rom is None else versions.rom_bytes(snapshot.versions[version], rom, rom + size)
 
     return ours, theirs

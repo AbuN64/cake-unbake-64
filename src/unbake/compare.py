@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from unbake import alloc, effort, land, native, policy, pool, publish, sched, store, symptoms, tree, versions
+from unbake import alloc, effort, land, native, policy, pool, publish, sched, store, symptoms, tree, versions, view
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Proof, Refusal
 
@@ -226,21 +226,23 @@ def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- compare and submit
-def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, out: bool = True) -> dict[str, Any]:
-    """Measure one candidate in every holding version and enter it in the inbox when it is exact (or a fuzzy gain)."""
+def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, enter: bool) -> dict[str, Any]:
+    """Measure one candidate in every holding version; with `enter`, put it in the inbox when it is exact (or a fuzzy
+    gain) and land the inbox. Without it nothing is submitted, journalled or written."""
     extras = _extras(config, files[1:])
     resolved = _resolve(config, files[0], params.get("function"), None, extras)
     name, source, held = resolved.name, resolved.source, resolved.held
     proofs = _measure(config, resolved, None, extras)
     found = list(gaps(name, held, proofs))
     entry = None
-    try:
-        entry = land.submit(
-            config, _request(name, files[0], params.get("note")), proofs, source.encode(), origin, extras
-        )
-    except Refusal as refusal:
-        found.extend(refusal.findings)
-    drain = land.drain(config) if entry and out else None
+    if enter:
+        try:
+            entry = land.submit(
+                config, _request(name, files[0], params.get("note")), proofs, source.encode(), origin, extras
+            )
+        except Refusal as refusal:
+            found.extend(refusal.findings)
+    drain = land.drain(config) if entry else None
     return {
         "unit": ", ".join(p.owner.path for p in resolved.placed),
         "member": name,
@@ -255,7 +257,7 @@ def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, o
 
 def run(config: Config, params: Json) -> Json:
     with effort.stage("compare.run"):
-        done = _attempt(config, [Path(params["file"])], params, "compare")
+        done = _attempt(config, [Path(params["file"])], params, "compare", False)
         proofs, found, entry = done["proofs"], done["found"], done["submission"]
         score = {v: min(p.score for p in proofs if p.version == v) for v in sorted({p.version for p in proofs})}
         return {
@@ -298,7 +300,7 @@ def submit_command(config: Config, params: Json) -> Json:
         files = [Path(f) for f in params["files"]]
         if params["bulk"]:
             return _bulk(config, files, params)
-        done = _attempt(config, files, params, "submit")
+        done = _attempt(config, files, params, "submit", True)
         return {"submissions": [_row(files, done)], "drain": done["drain"]}
 
 
@@ -504,6 +506,29 @@ def _score_variants(config: Config, params: Json) -> Json:
     return {"variants": pool.map(config, "compare.variants", _variant_job, [(config, v) for v in variants])}
 
 
+def _inactive(
+    config: Config, version: str, name: str, placed: Placed, overrides: Json, extras: Mapping[str, bytes]
+) -> str:
+    """Why the candidate's definition of `name` is not compiled in `version` (the reason; "" when it is). A stand-in
+    can sit in a version guard of its module (`#if VERSION_EU`) while another version defines the function in an
+    `#else` side: the measure then reads that other definition, not the candidate."""
+    lines = placed.text.splitlines()
+    head = re.compile(rf"\b{re.escape(name)}\s*\([^;{{]*\)\s*\{{")
+    for number, (kind, _) in enumerate(placed.origins, 1):
+        if kind != "candidate" or number > len(lines) or not head.search(" ".join(lines[number - 1 : number + 4])):
+            continue
+        snapshot, unit, recipe, _ = native.candidate(
+            config, version, placed.owner.path, placed.text, overrides, extras, [name]
+        )
+        if number in view.active_lines(view.get(snapshot, unit, version, recipe), placed.owner.path):
+            return ""
+        return (
+            f"version {version}: the candidate's {name} (line {number} of {placed.owner.path} as measured) sits in an "
+            "inactive #if region there, so the module's own definition is what a measure would read"
+        )
+    return ""
+
+
 def _score_one(config: Config, params: Json) -> Json:
     extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
     resolved = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"), extras)
@@ -523,7 +548,20 @@ def _score_one(config: Config, params: Json) -> Json:
 
     def measured(v: str) -> Proof:
         placed = resolved.at(v)
-        return _sited(native.measure(config, v, name, placed.owner.path, placed.text, overrides, extras), resolved)
+        proof = _sited(native.measure(config, v, name, placed.owner.path, placed.text, overrides, extras), resolved)
+        if not (why := _inactive(config, v, name, placed, overrides, extras)):
+            return proof
+        if v == version:  # the score asked for is of something else than the candidate: no number is better than that
+            raise Refusal(
+                Finding(
+                    "score.inactive",
+                    reason=why,
+                    unit=placed.owner.path,
+                    versions=(v,),
+                    action="put the candidate where this version compiles it, or score another version",
+                )
+            )
+        return replace(proof, exact=False, score=0.0, missing=(why,), symptoms=symptoms.from_missing((why,)))
 
     path, text = resolved.at(version).owner.path, resolved.at(version).text
     proof = measured(version)
