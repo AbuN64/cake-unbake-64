@@ -111,7 +111,10 @@ def document(config: Any, tree: Any, current: Json) -> Json:
                 "version": version,
                 "rom_size": row["rom_size"],
                 **{
-                    kind: {part: row[f"{kind}_{part}"] for part in ("matched", "total")}
+                    kind: {
+                        **{part: row[f"{kind}_{part}"] for part in ("matched", "total")},
+                        **({"asm": row[f"{kind}_asm"]} if row.get(f"{kind}_asm") else {}),  # matched library asm
+                    }
                     for kind in ("code", "data", "functions")
                 },
                 "blobs": {"decoded": row["blobs_decoded"], "total": row["blobs_total"]},

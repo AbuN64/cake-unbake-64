@@ -30,6 +30,9 @@ src = $$(patsubst $$(call ver,$$1)/%,%,$$1)
 DEFINES = -D$$(VMACRO_$$(call ver,$$*))
 INCLUDES = -Iinclude -I$$(dir $$<)
 ASINC = -Iasm/$$(call ver,$$*)
+# Every version macro for the assembler, 1 for the version built and 0 for the others: library assembly keeps the
+# lines its versions disagree on in `.if VERSION_A || VERSION_B` blocks
+ASDEFS = $$(foreach w,$$(VERSIONS),--defsym $$(VMACRO_$$(w))=$$(if $$(filter $$(w),$$(call ver,$$*)),1,0))
 TC := ${toolchain}
 CPPFLAGS := ${cppflags}
 CFLAGS := ${cflags}
@@ -166,7 +169,7 @@ build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_chang
 	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi
 build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
-	$$(Q)$$(AS) $$(ASFLAGS) $$(ASINC) -Iinclude $$< -o $$@
+	$$(Q)$$(AS) $$(ASFLAGS) $$(ASDEFS) $$(ASINC) -Iinclude $$< -o $$@
 	$$(Q)$$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE))
 	$$(Q)printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize
 build/%.bin.o: asm/%.bin

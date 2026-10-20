@@ -22,7 +22,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
-from unbake import adapters, config, effort, process, recipes, store, symbols, symptoms, tree, versions, view
+from unbake import adapters, config, effort, libasm, process, recipes, store, symbols, symptoms, tree, versions, view
 from unbake.contracts import (
     Config,
     Finding,
@@ -135,7 +135,8 @@ def objects(
         if config.is_assembly(unit.path):
             source, obj = work / "unit.s", work / "unit.o"
             source.write_bytes(snapshot.read(unit.path))
-            result = adapters.GnuAssembler(cfg).assemble(source, recipe, _include(snapshot, version), obj)
+            versioned = replace(recipe, asflags=(*recipe.asflags, *libasm.defsyms(list(cfg.project.versions), version)))
+            result = adapters.GnuAssembler(cfg).assemble(source, versioned, _include(snapshot, version), obj)
             return obj, (result,)
         text, steps, tools, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
         source, obj = (

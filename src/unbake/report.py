@@ -320,6 +320,8 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
             "functions_fuzzy",
             "code_fuzzy",
             "data_fuzzy",
+            "code_asm",
+            "functions_asm",
         ),
         0,
     )
@@ -341,6 +343,9 @@ def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[
             ):
                 bucket[prefix + "total"] += size
                 bucket[prefix + "matched"] += earned
+            assembly = row.unit is not None and configuration.is_assembly(row.unit.path)  # library assembly
+            bucket["code_asm"] += row.kept if assembly else 0
+            bucket["functions_asm"] += int(assembly and row.exact and function)
             bucket["functions_fuzzy"] += int(function and fuzzy(row))
             bucket["code_fuzzy"] += round(row.score * (row.code - row.kept))
             bucket["data_fuzzy"] += round(row.score * row.data)
@@ -449,7 +454,9 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     parts = ("code", "data") if kind == "bytes" else (kind,)
     matched = sum(bucket[p + "_matched"] for p in parts)
     total = sum(bucket[p + "_total"] for p in parts)
-    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells)
+    asm = bucket.get(kind + "_asm", 0)  # matched library assembly, shown apart from matched C
+    suffix = f" ({asm:,} asm)" if asm else ""
+    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells) + suffix
 
 
 def _rom_line(label: str, bucket: Json, cells: int) -> str:
@@ -505,7 +512,7 @@ def readme(text: str, config: Any, report: Json) -> str:
             )
         project, versions = config.project, report["versions"]
         total = {
-            k: sum(versions[v][k] for v in project.version)
+            k: sum(versions[v].get(k, 0) for v in project.version)
             for k in (
                 "code_total",
                 "code_matched",
@@ -516,6 +523,8 @@ def readme(text: str, config: Any, report: Json) -> str:
                 "functions_fuzzy",
                 "code_fuzzy",
                 "data_fuzzy",
+                "code_asm",
+                "functions_asm",
             )
         }
         counted = all("rom_size" in versions[v] for v in project.version)  # every ROM was present for the partition

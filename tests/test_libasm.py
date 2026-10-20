@@ -60,14 +60,26 @@ def test_nonlibrary_source_stays_policy_debt_and_gets_no_matched_credit(library)
     assert policy.text_findings(path, "", False)[0].key == "source.library-asm"
 
 
-def test_normal_c_instructions_are_not_extracted_and_version_split_is_left_alone(library):
-    assert not libasm.foreign([0x24020001, 0x03E00008, 0], 0, adapters.row("gcc-test"))
-    path = library.project.root / "roms/baserom.b.z64"
+def _patch(cfg, version, at, words):
+    path = cfg.project.root / f"roms/baserom.{version}.z64"
     data = bytearray(path.read_bytes())
-    data[0x1000:0x1004] = (0x40026800).to_bytes(4, "big")
+    data[at : at + 4 * len(words)] = b"".join(w.to_bytes(4, "big") for w in words)
     path.write_bytes(data)
-    library.project.version["b"].sha1 = sha1(data)
+    cfg.project.version[version].sha1 = sha1(data)
+
+
+def test_normal_c_instructions_are_not_extracted(library):
+    assert not libasm.foreign([0x24020001, 0x03E00008, 0], 0, adapters.row("gcc-test"))
+    _patch(library, "b", 0x1000, [0x24020001])  # version b holds compiler code there: not foreign in every version
     assert libasm.plan(library, tree.capture(library)) == {}
+
+
+def test_version_split_is_one_source_with_version_conditionals(library):
+    _patch(library, "b", 0x1000, [0x40026800])  # mfc0 $v0, $13 in b where a reads $12
+    text = libasm.plan(library, tree.capture(library))["src/sdk/f.s"].decode()
+    assert ".if VERSION_B\n    mfc0 $v0, $13\n.else\n    mfc0 $v0, $12\n.endif\n" in text
+    renders = {v: libasm.render("f", w, 0x80000400, {}) for v, w in (("a", WORDS), ("b", (0x40026800, *WORDS[1:])))}
+    assert {v: libasm.select(text, v, ["a", "b"]) for v in "ab"} == renders
 
 
 def test_existing_source_is_not_overwritten(library):
@@ -87,14 +99,18 @@ def test_assembly_objects_use_the_assembler_not_the_c_compiler(library, monkeypa
     snapshot = N(config=library, read=lambda path: (library.project.root / path).read_bytes())
     calls = []
 
+    flags = []
+
     def assemble(source, recipe, includes, out):
         calls.append(source.read_text())
+        flags.append(recipe.asflags)
         out.write_bytes(b"object")
         return fixture.native_result(outputs={"object": out})
 
     monkeypatch.setattr(adapters, "GnuAssembler", lambda cfg: N(assemble=assemble))
     obj, results = native.objects(snapshot, unit, "a", recipe, tmp_path / "work")
     assert obj.read_bytes() == b"object" and len(results) == 1 and "mfc0" in calls[0]
+    assert flags[0][-4:] == ("--defsym", "VERSION_A=1", "--defsym", "VERSION_B=0")  # what the Makefile's ASDEFS passes
     assert view.get(snapshot, unit, "a", recipe).text == calls[0]
     assert native.warnings(snapshot, unit, "a", recipe, tmp_path / "work") == ()
     assert native.recorded(snapshot, unit, "a", recipe) == ()
@@ -104,6 +120,29 @@ def test_renderer_uses_local_branch_labels_and_preserves_wide_registers():
     text = libasm.render("f", [0x1000FFFF, 0], 0x80001000, {})
     assert ".Lf_000" in text and libasm.scan(text) == {"f": ".text"}
     assert ".set gp=64" in libasm.render("f", [0xDFBF0000, 0x03E00008, 0], 0x80001000, {})
+
+
+def test_renderer_reads_a_target_inside_another_routine_as_an_offset_from_it():
+    jump, branch = 0x08000106, 0x0741FFFE  # j 0x80000418; bgez $k0 back to 0x800003FC (before every function)
+    functions = {0x80000410: "g"}
+    assert "j g+0x8" in libasm.render("f", [jump, 0], 0x80001000, {}, functions)
+    assert libasm.render("f", [jump, 0], 0x80001000, {}) is None  # no function to name it from
+    assert libasm.render("f", [branch, 0], 0x80000400, {}, functions) is None
+
+
+def test_renderer_pairs_hi_and_lo_through_an_index_add():
+    words = [0x3C01800C, 0x00280821, 0x94227A70, 0x03E00008, 0]  # lui $at; addu $at, $at, $t0; lhu $v0, lo($at)
+    text = libasm.render("f", words, 0x80001000, {0x800C7A70: "table"})
+    assert "%hi(table)" in text and "%lo(table)($at)" in text
+
+
+def test_merge_keeps_shared_lines_once_and_gives_every_version_its_render():
+    a = "x\ny\nz\n"
+    texts = {"a": a, "b": "x\nY\nz\n", "c": "x\nz\n", "d": a}
+    text = libasm.merge(texts)
+    assert text == "x\n.if VERSION_A || VERSION_D\ny\n.elseif VERSION_B\nY\n.endif\nz\n"
+    assert all(libasm.select(text, v, list(texts)) == t for v, t in texts.items())
+    assert libasm.merge({"a": a, "b": a}) == a
 
 
 def test_assembly_unit_yields_a_version_whose_bytes_at_its_address_another_source_owns(tmp_path):
@@ -122,7 +161,7 @@ def test_assembly_unit_yields_a_version_whose_bytes_at_its_address_another_sourc
     assert held.owned("b", "f") is None and held.owner("b", "d") == "src/x.c"
 
 
-def test_versions_whose_stand_in_lives_in_another_file_must_render_the_same_assembly(library):
+def test_versions_whose_stand_in_lives_in_another_file_share_one_source(library):
     other = (0x40026000, 0x03E00008, 0x24020001, 0)  # the same routine name with other bytes in version b
     path = library.project.root / "roms/baserom.b.z64"
     data = bytearray(path.read_bytes())
@@ -133,7 +172,8 @@ def test_versions_whose_stand_in_lives_in_another_file_must_render_the_same_asse
     (sdk / "f.c").write_text('#if defined(VERSION_A)\nINCLUDE_ASM("main", f);\n#endif\n')
     (sdk / "g.c").write_text('#if defined(VERSION_B)\nINCLUDE_ASM("main", f);\n#endif\n')
     library.project.digest = "split-owners"
-    assert libasm.plan(library, tree.capture(library)) == {}
+    text = libasm.plan(library, tree.capture(library))["src/sdk/f.s"].decode()
+    assert ".if VERSION_B\n    addiu $v0, $zero, 0x1\n.else\n    nop\n.endif\n" in text
 
 
 @pytest.fixture
@@ -167,12 +207,8 @@ def test_lost_library_routine_is_rendered_again_and_never_placed_in_a_game_file(
     assert '("main", f)' not in (root / "src/game.c").read_text()
 
 
-def test_lost_library_routine_that_renders_differently_keeps_its_stand_in_in_the_library(lost):
-    path = lost.project.root / "roms/baserom.b.z64"
-    data = bytearray(path.read_bytes())
-    data[0x1010:0x1014] = (0x40026800).to_bytes(4, "big")
-    path.write_bytes(data)
-    lost.project.version["b"].sha1 = sha1(data)
+def test_lost_library_routine_that_cannot_render_keeps_its_stand_in_in_the_library(lost):
+    _patch(lost, "b", 0x1014, [0x08000000])  # b jumps below every symbol: nothing names the target
     repo.sync(lost, {})
     root = lost.project.root
     assert '("main", f)' not in (root / "src/game.c").read_text()
@@ -200,3 +236,41 @@ def test_lost_library_routine_without_roms_refuses_naming_it(lost):
     with pytest.raises(Refusal, match=r"library-asm\.rom") as raised:
         libasm.homes(lost, tree.capture(lost))
     assert "`f`" in raised.value.findings[0].reason
+
+
+def test_report_shows_matched_library_assembly_apart(library, monkeypatch):
+    repo.sync(library, {})
+    held = tree.capture(library)
+    rows = report.build_credits(
+        list(library.project.versions), held, held.symbols, frozenset({"a", "b"}), {}, frozenset()
+    )
+    monkeypatch.setattr(report, "credits", lambda config, tree: rows)
+    totals = report._tallies(library, held)[0]
+    assert totals["a"]["code_asm"] == totals["a"]["code_matched"] == 16 and totals["a"]["functions_asm"] == 1
+    assert report._line("code", totals["a"], 20, "code").endswith("16 of 16 (16 asm)")
+    assert not report._line("data", totals["a"], 20, "data").endswith("asm)")
+
+
+@pytest.mark.parametrize("toolchain", ["gcc-2.7.2-kmc", "gcc-2.8.1-sn64"])
+def test_gcc_never_emits_trapping_arithmetic(toolchain):
+    import tomllib
+    from pathlib import Path
+
+    real = (Path(libasm.__file__).parent / "resources/data/toolchains.toml").read_text()  # the fixture fakes the rows
+    row = tomllib.loads(real)["toolchain"][toolchain]
+    assert libasm.foreign([0x23BDFFD8, 0x03E00008, 0], 0, row)  # addi $sp, $sp, -0x28: hand-written frame
+    assert libasm.foreign([0x01E97822, 0x03E00008, 0], 0, row)  # sub $t7, $t7, $t1
+    assert not libasm.foreign([0x27BDFFD8, 0x03E00008, 0], 0, row)  # addiu: what GCC writes
+
+
+def test_filled_load_delay_slot_is_foreign_only_where_loads_interlock():
+    row = adapters.row("gcc-test")  # isa [3]
+    pop = [0x8C820000, 0, 0x8C590000, 0xAC400000, 0x03E00008, 0xAC990000]  # lw v0; nop; lw t9,0(v0): MIPS I slot
+    assert libasm.foreign(pop, 0x80001000, row)
+    assert not libasm.foreign(pop, 0x80001000, {**row, "isa": [1, 2]})  # a MIPS I compiler fills it too
+    interlocked = [0x8C820000, 0x8C430000, 0xAC400000, 0x03E00008, 0xAC830000]  # what GCC writes for the same pop
+    assert not libasm.foreign(interlocked, 0x80001000, row)
+    unrelated = [0x8C820000, 0, 0x8C830004, 0x03E00008, 0]  # the instruction after the nop does not read v0
+    assert not libasm.foreign(unrelated, 0x80001000, row)
+    hilo = [0x00001012, 0x806500C7, 0, 0x00A50018, 0x03E00008, 0]  # mflo v0; lb a1; nop; mult a1,a1: HI/LO hazard
+    assert not libasm.foreign(hilo, 0x80001000, row)

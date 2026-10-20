@@ -10,7 +10,7 @@ from typing import Any
 import rabbitizer
 
 from unbake import adapters, config, recipes
-from unbake.contracts import Config, Finding, Refusal
+from unbake.contracts import Config, Finding, Refusal, macro
 
 _LOW_USERS = frozenset({0x08, 0x09, 0x0C, 0x0D, 0x20, 0x21, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2B, 0x31, 0x39})
 _CONTROL = frozenset({"cfc1", "ctc1"})
@@ -20,12 +20,38 @@ def _signed(value: int) -> int:
     return (value & 0xFFFF) - ((value & 0x8000) << 1)
 
 
+_LOADS = frozenset({"lb", "lbu", "lh", "lhu", "lw", "lwl", "lwr", "lwu", "ld", "ldl", "ldr"})
+_HILO_USERS = frozenset({"mult", "multu", "div", "divu", "dmult", "dmultu", "ddiv", "ddivu", "mthi", "mtlo"})
+
+
+def _load_delay(words: Sequence[int], vram: int) -> bool:
+    """A nop between a GPR load and the next instruction, which reads the loaded register: MIPS I's load-delay slot,
+    filled the way an assembler in MIPS I mode fills it. A nop a HI/LO hazard explains (mfhi/mflo just before, a
+    multiply, divide or HI/LO move just after) is not one."""
+    ins = [rabbitizer.Instruction(w, vram + 4 * i) for i, w in enumerate(words)]
+    for i in range(len(ins) - 2):
+        if ins[i].getOpcodeName() not in _LOADS or words[i + 1] != 0:
+            continue
+        if i and (ins[i - 1].isBranch() or ins[i - 1].isJump()):
+            continue
+        loaded, use, word = words[i] >> 16 & 31, ins[i + 2], words[i + 2]
+        fields = {"Rs": word >> 21 & 31, "Rt": word >> 16 & 31, "Rd": word >> 11 & 31}
+        if loaded and any(getattr(use, "reads" + f)() and r == loaded for f, r in fields.items()):
+            hilo = use.getOpcodeName() in _HILO_USERS and ins[i - 1].getOpcodeName() in ("mfhi", "mflo")
+            if not (i and hilo):
+                return True
+    return False
+
+
 def foreign(words: Sequence[int], vram: int, toolchain: Mapping[str, Any]) -> bool:
-    """Whether the code is not compiler output: it holds an instruction the toolchain never emits, or FPU control moves
-    without one of the conversions the toolchain pairs them with."""
+    """Whether the code is not compiler output: it holds an instruction the toolchain never emits, FPU control moves
+    without one of the conversions the toolchain pairs them with, or a filled load-delay slot when every ISA the
+    toolchain targets interlocks loads (MIPS II and later: compiler and assembler leave the slot to the hardware)."""
     names = {rabbitizer.Instruction(w, vram + 4 * i).getOpcodeName() for i, w in enumerate(words)}
-    return bool(names & set(toolchain["never_emits"])) or (
-        bool(names & _CONTROL) and not names & set(toolchain["fpu_control_with"])
+    return (
+        bool(names & set(toolchain["never_emits"]))
+        or (bool(names & _CONTROL) and not names & set(toolchain["fpu_control_with"]))
+        or (min(toolchain.get("isa") or [1]) >= 2 and _load_delay(words, vram))
     )
 
 
@@ -43,14 +69,19 @@ def _target(ins: rabbitizer.Instruction, at: int) -> int | None:
     return int(ins.getInstrIndexAsVram()) if ins.getOpcodeName() in ("j", "jal") else None
 
 
-def render(name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str]) -> str | None:
+def render(
+    name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str], functions: Mapping[int, str] = {}
+) -> str | None:
     """Readable assembly of the words, one instruction per line, or None when a target outside the routine has no
-    symbol. Internal targets get labels, external ones read as their symbol; a `lui` and the low-half instruction that
-    completes a symbol's address read `%hi(symbol)` and `%lo(symbol)`."""
+    symbol. Internal targets get labels, external ones read as their symbol, or as `function+0xOFF` of the nearest
+    of `functions` below it when it lands inside another routine (hand code shares tails between entry points);
+    a `lui` and the low-half instruction that completes a symbol's address read `%hi(symbol)` and `%lo(symbol)`,
+    also through an index add on the same base (`addu $at, $at, $t0`, a table access)."""
     code = [rabbitizer.Instruction(w, vram + 4 * i) for i, w in enumerate(words)]
     end = vram + 4 * len(words)
     targets = {i: t for i, ins in enumerate(code) if (t := _target(ins, vram + 4 * i)) is not None}
-    if any(not vram <= t < end and t not in symbols for t in targets.values()):
+    outside = {t: symbols.get(t) or _inside(functions, t) for t in targets.values() if not vram <= t < end}
+    if not all(outside.values()):
         return None
     labels = {(t - vram) // 4 for t in targets.values() if vram <= t < end}
     override: dict[int, str] = {}
@@ -65,7 +96,7 @@ def render(name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str
                 if address in symbols:
                     override[i], override[j] = f"%hi({symbols[address]})", f"%lo({symbols[address]})"
                 break
-            if _writes(words[j], register) or (words[j] >> 26 in (2, 3)):
+            if (_writes(words[j], register) and not _indexes(words[j], register)) or (words[j] >> 26 in (2, 3)):
                 break
     # o32 assembles a doubleword move as two words and an odd double FP register as a pair: code the ROM holds
     # as 64-bit instructions (an exception handler saving the whole context) is assembled with 64-bit registers
@@ -78,11 +109,31 @@ def render(name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str
             text = ins.disassemble(immOverride=override[i])
         elif i in targets:
             t = targets[i]
-            text = ins.disassemble(immOverride=f".L{name}_{t - vram:03X}" if vram <= t < end else symbols[t])
+            text = ins.disassemble(immOverride=f".L{name}_{t - vram:03X}" if vram <= t < end else outside[t])
         else:
             text = _operands(ins, words[i])
         lines.append("    " + " ".join(text.split()))
     return "\n".join(lines) + "\n"
+
+
+def _inside(functions: Mapping[int, str], target: int) -> str | None:
+    """`function+0xOFF` for a target inside the nearest function at or below it, or None when no function is."""
+    below = [a for a in functions if a <= target]
+    if not below:
+        return None
+    start = max(below)
+    return functions[start] if start == target else f"{functions[start]}+0x{target - start:X}"
+
+
+def _indexes(word: int, register: int) -> bool:
+    """Whether the word is `addu register, register, x` (either operand order): an index added to a `%hi` base,
+    which leaves the symbol's `%lo` still completing the address."""
+    return (
+        word >> 26 == 0
+        and word & 0x3F == 0x21
+        and word >> 11 & 31 == register
+        and register in (word >> 21 & 31, word >> 16 & 31)
+    )
 
 
 _DOUBLE_OPS = frozenset(
@@ -214,8 +265,9 @@ def homes(cfg: Config, held: Any) -> dict[str, Any]:
 
 def plan(cfg: Config, held: Any) -> dict[str, bytes]:
     """Extract foreign library routines as source, one function per file; existing source is never overwritten. A
-    routine is a library stand-in or has lost it (no file owns it); it is rendered only when every version holding it
-    renders the same assembly, otherwise it keeps (or gets back) its stand-in in a library file."""
+    routine is a library stand-in or has lost it (no file owns it); it is rendered when every version holding it is
+    foreign and renders, the lines the versions disagree on kept in version conditionals (`merge`); otherwise it keeps
+    (or gets back) its stand-in in a library file."""
     if not getattr(cfg.project, "libraries", ()):
         return {}
     writes: dict[str, bytes] = {}
@@ -239,25 +291,116 @@ def plan(cfg: Config, held: Any) -> dict[str, bytes]:
             continue
         done.add(name)
         toolchain = adapters.row(recipes.of(cfg, module.path).toolchain)
-        texts: set[str] = set()
+        texts: dict[str, str] = {}
         for version in (v for v in cfg.project.versions if name in held.symbols[v]):
             found = _rom_words(cfg, held, roms, version, name) if free(version, name) else None
             if found is None or not foreign(found[0], found[1], toolchain):
                 break
-            names = {r[0]: n for n, r in sorted(held.symbols[version].items(), reverse=True)}
-            text = render(name, found[0], found[1], names)
+            table = sorted(held.symbols[version].items(), reverse=True)
+            names = {r[0]: n for n, r in table}
+            functions = {r[0]: n for n, r in table if r[3] == "func"}
+            text = render(name, found[0], found[1], names, functions)
             if text is None:
                 break
-            texts.add(text)
+            texts[version] = text
         else:
-            if len(texts) == 1:
+            if texts:
                 path = str(Path(module.path).with_name(name + ".s"))
-                raw = texts.pop().encode()
+                raw = merge(texts).encode()
                 existing = cfg.project.root / path
                 if existing.exists() and existing.read_bytes() != raw:
                     raise Refusal(Finding("library-asm.source", "would overwrite existing assembly source", path=path))
                 writes[path] = raw
     return writes
+
+
+def merge(texts: Mapping[str, str]) -> str:
+    """One assembly source for the renders of a routine by version (project order): the lines every version shares
+    as they are, each run the versions disagree on as `.if VERSION_A || VERSION_B` / `.elseif ...` / `.else` /
+    `.endif` (the generated Makefile defines every version macro for the assembler as 1 or 0), the run most versions
+    share under `.else`. `select` of the result gives every version its own render back, or this refuses."""
+    if len(set(texts.values())) == 1:
+        return next(iter(texts.values()))
+    from difflib import SequenceMatcher
+
+    lines = {v: t.splitlines() for v, t in texts.items()}
+    groups: dict[str, list[str]] = {}
+    for v, t in texts.items():
+        groups.setdefault(t, []).append(v)
+    base = lines[max(groups.values(), key=len)[0]]
+    # the lines every version starts and ends with anchor first, so a difference reads as the lines it replaces
+    # rather than as a line moved past an equal neighbour
+    shortest = min(len(t) for t in lines.values())
+    head = next((k for k in range(shortest) if len({t[k] for t in lines.values()}) > 1), shortest)
+    tail = next((k for k in range(shortest - head) if len({t[-1 - k] for t in lines.values()}) > 1), shortest - head)
+    maps: dict[str, dict[int, int]] = {}
+    for v, other in lines.items():
+        found = {k: k for k in range(head)} | {len(base) - 1 - k: len(other) - 1 - k for k in range(tail)}
+        middle = SequenceMatcher(None, base[head : len(base) - tail], other[head : len(other) - tail], autojunk=False)
+        for a, b, size in middle.get_matching_blocks():
+            found.update((head + a + k, head + b + k) for k in range(size))
+        maps[v] = found
+    anchors = [i for i in range(len(base)) if all(i in m for m in maps.values())]
+    order = list(lines)
+    out: list[str] = []
+    previous = {v: -1 for v in lines}
+    for anchor in [*anchors, None]:
+        runs = {
+            v: lines[v][previous[v] + 1 : (maps[v][anchor] if anchor is not None else len(lines[v]))] for v in lines
+        }
+        if len({tuple(r) for r in runs.values()}) > 1:
+            by_run: dict[tuple[str, ...], list[str]] = {}
+            for v, own in runs.items():
+                by_run.setdefault(tuple(own), []).append(v)
+            # the versions with no lines here take the `.else` (none is written), else the run most versions share
+            rest = by_run.get(()) or max(by_run.values(), key=len)
+            rest_run = next(run for run, held in by_run.items() if held is rest)
+            branches = sorted(
+                ((run, held) for run, held in by_run.items() if held is not rest), key=lambda i: order.index(i[1][0])
+            )
+            for k, (run, held) in enumerate(branches):
+                out.append((".if " if k == 0 else ".elseif ") + " || ".join(macro(v) for v in held))
+                out.extend(run)
+            if rest_run:
+                out.append(".else")
+                out.extend(rest_run)
+            out.append(".endif")
+        else:
+            out.extend(next(iter(runs.values())))
+        if anchor is not None:
+            out.append(base[anchor])
+            previous = {v: maps[v][anchor] for v in lines}
+    text = "\n".join(out) + "\n"
+    for v, wanted in texts.items():
+        if select(text, v, list(texts)) != wanted:
+            raise Refusal(Finding("library-asm.merge", f"{config.sentence('library-asm.merge')}: {v}"))
+    return text
+
+
+def defsyms(versions: Sequence[str], version: str) -> tuple[str, ...]:
+    """The assembler flags defining every version macro, 1 for the version and 0 for the others (what the generated
+    Makefile's ASDEFS passes), so `merge` conditionals assemble outside make too."""
+    return tuple(arg for v in versions for arg in ("--defsym", f"{macro(v)}={int(v == version)}"))
+
+
+def select(text: str, version: str, versions: Sequence[str]) -> str:
+    """The lines the assembler reads for one version of a `merge` result: its version macros 1 for the version, 0
+    for the others; one level of `.if` / `.elseif` / `.else` / `.endif` over `||` of macros."""
+    value = {macro(v): v == version for v in versions}
+    out: list[str] = []
+    taking, taken, inside = True, False, False
+    for line in text.splitlines():
+        word = line.split(" ", 1)
+        if word[0] in (".if", ".elseif"):
+            hit = not taken and any(value[m.strip()] for m in word[1].split("||"))
+            inside, taking, taken = True, hit, taken or hit
+        elif word[0] == ".else" and inside:
+            taking, taken = not taken, True
+        elif word[0] == ".endif" and inside:
+            inside, taking, taken = False, True, False
+        elif taking:
+            out.append(line)
+    return "\n".join(out) + "\n"
 
 
 def _stand_ins(module: Any) -> list[str]:

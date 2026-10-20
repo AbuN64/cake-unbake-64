@@ -31,6 +31,10 @@
        "total": {
         "type": "integer",
         "minimum": 0
+       },
+       "asm": {
+        "type": "integer",
+        "minimum": 0
        }
       },
       "required": [
@@ -65,6 +69,10 @@
         "minimum": 0
        },
        "total": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "asm": {
         "type": "integer",
         "minimum": 0
        }

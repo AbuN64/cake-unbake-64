@@ -44,6 +44,14 @@
       "type": "integer",
       "minimum": 0
      },
+     "code_asm": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "functions_asm": {
+      "type": "integer",
+      "minimum": 0
+     },
      "data_fuzzy": {
       "type": "integer",
       "minimum": 0
@@ -157,6 +165,14 @@
        "type": "integer",
        "minimum": 0
       },
+      "code_asm": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_asm": {
+       "type": "integer",
+       "minimum": 0
+      },
       "data_fuzzy": {
        "type": "integer",
        "minimum": 0
@@ -230,6 +246,14 @@
        "minimum": 0
       },
       "code_fuzzy": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "code_asm": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "functions_asm": {
        "type": "integer",
        "minimum": 0
       },

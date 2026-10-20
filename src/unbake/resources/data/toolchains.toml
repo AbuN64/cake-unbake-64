@@ -125,7 +125,11 @@ supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensiv
 splat = "KMC"
 emits_asm = true
 preserves_padding = true
-never_emits = ["mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr"]
+# GCC adds with addu/addiu/subu: the trapping forms come only from hand-written assembly
+never_emits = [
+    "mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr",
+    "add", "addi", "sub", "dadd", "daddi", "dsub",
+]
 fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
 refused_warnings = ["makes pointer from integer without a cast", "makes integer from pointer without a cast", "from incompatible pointer type"]
 paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
@@ -163,7 +167,11 @@ supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensiv
 splat = "KMC"  # the gas syntax: stand-ins assemble extracted asm with GNU as; splat's SN64 mode writes asn64's (two-operand div, .globl and .end macros)
 emits_asm = true
 preserves_padding = true
-never_emits = ["mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr"]
+# GCC adds with addu/addiu/subu: the trapping forms come only from hand-written assembly
+never_emits = [
+    "mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr",
+    "add", "addi", "sub", "dadd", "daddi", "dsub",
+]
 fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
 refused_warnings = ["makes pointer from integer without a cast", "makes integer from pointer without a cast", "from incompatible pointer type"]
 paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]

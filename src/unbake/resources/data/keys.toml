@@ -482,6 +482,10 @@ sentence = "the reviewed blob migration cannot preserve byte coverage or needs c
 owner = "libasm"
 sentence = "library extraction would overwrite existing source"
 
+[key."library-asm.merge"]
+owner = "libasm"
+sentence = "the version conditionals of a library routine do not give a version its own assembly back"
+
 [key."library-asm.rom"]
 owner = "libasm"
 sentence = "an unowned library routine cannot be placed without the ROM that shows its code"
