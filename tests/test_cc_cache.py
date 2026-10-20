@@ -212,3 +212,21 @@ def test_a_header_edit_adding_unused_types_skips_the_compiler(tmp_path):
     assert runs(cc) == 1
     assert compile_in(tree(tmp_path, "c", old.replace("return 7", "return 8")), cache, cc) == "8\n"
     assert runs(cc) == 2
+
+
+def test_a_static_inline_function_nothing_calls_may_differ():
+    same = cc_cache.types_only_differ
+    base = "typedef int s32;\nint f(void) { return 1; }\nint g;\n"
+    old = "static __inline__ s32 pick(s32 *p) { return *p; }\n"
+    new = "static __inline__ s32 pick(const s32 *p) { return p[0]; }\nstatic __inline__ s32 other(void) { return 2; }\n"
+    assert same((old + base).encode(), (new + base).encode())
+    assert same((base + old).encode(), base.encode())
+    # one a surviving chunk calls, a plain static (the compiler writes it) and a static local are not droppable
+    called = base + "int h(s32 *p) { return pick(p); }\n"
+    assert not same((old + called).encode(), (new + called).encode())
+    assert not same(b"static s32 pick(s32 *p) { return *p; }\n" + base.encode(), base.encode())
+    counted = "static __inline__ s32 pick(void) { static s32 n; return n; }\n"
+    assert not same((counted + base).encode(), base.encode())
+    # a type the dropped function names is dropped with it
+    typed = "typedef struct P { s32 a; } P;\nstatic __inline__ s32 pick(P *p) { return p->a; }\n"
+    assert same((typed + base).encode(), base.encode())
