@@ -396,9 +396,13 @@ def header_lint(snapshot: Snapshot, only: Collection[str] | None = None) -> tupl
 
 
 # Type-debt checks over code text with comments and strings blanked: each returns {line: subject} per row.
-_SYMBOL = r"func_[0-9A-Fa-f]+"  # the project's function symbol: no record type may be named after one
-_NAMED = re.compile(rf"\b\w+?_{_SYMBOL}\w*")  # a name carrying a function symbol (Actor_func_802A274C_de)
-_VIEW = re.compile(rf"\b{_SYMBOL}(?:_\w+?)?_S\d+\b")  # a per-function view numbered _S<n>
+# the project's function symbol, in either case (a rename capitalizes it: Func_802A274C): no record type may be named
+# after one
+_SYMBOL = r"[Ff]unc_[0-9A-Fa-f]{8}"
+# a name carrying a function symbol (Actor_func_802A274C_de, Func_802A274C_Record_SharedActor)
+_NAMED = re.compile(rf"\b(?:\w+?_)?{_SYMBOL}\w*")
+# a per-function view numbered _S<n> or _View<n>, whatever follows it (func_X_S1_SharedActor)
+_VIEW = re.compile(rf"\b{_SYMBOL}(?:_\w+?)?_(?:S|View)\d+(?:_\w+)?\b")
 _TAG = re.compile(rf"\b(?:struct|union)\s+(\w*{_SYMBOL}\w*)")  # a tag that carries a function symbol
 _SIZES = {1: "u8 s8 char bool", 2: "u16 s16 short", 4: "u32 s32 int long float f32 void", 8: "u64 s64 double f64"}
 _BYTES = {name: size for size, names in _SIZES.items() for name in names.split()}

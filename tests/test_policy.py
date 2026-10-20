@@ -913,3 +913,16 @@ def test_audit_names_the_path_that_added_the_rows_not_an_unchanged_includer(tmp_
     assert {f.path for f in refused.value.findings} == {"include/a.h"}
     assert all("union-view 1 -> 3" in f.reason for f in refused.value.findings)
     assert json  # the repo helper's module
+
+
+@pytest.mark.parametrize(
+    "name", ["func_80123456_S1_SharedActor", "Func_80123456_View2_SharedActor", "Func_80123456_Record_SharedActor"]
+)
+def test_fake_type_names_a_per_function_view_whatever_its_case_or_suffix(name):
+    code = f"typedef struct {name} {{\n    s32 x;\n}} {name};\nvoid f({name} *a) {{\n    a->x = 1;\n}}\n"
+    assert name in policy._fake_type(code).values()
+
+
+def test_fake_type_spares_a_function_named_by_its_symbol():
+    code = "extern void func_80123456_de(void);\nvoid f(void) {\n    func_80123456_de();\n}\n"
+    assert policy._fake_type(code) == {}
