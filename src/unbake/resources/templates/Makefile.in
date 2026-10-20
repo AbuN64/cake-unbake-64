@@ -165,8 +165,8 @@ build/%.i.ok: $$$$(call src,$$$$*) | $$(STAMPS)
 build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
 	[ $$(@:.o=.i) -ot $$@ ]; then touch $$@; \
-	else $$(COMPILE_$$(TC)) && $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \
-	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi
+	else $$(COMPILE_$$(TC)) && if [ -f $$@.same ]; then rm -f $$@.same; else $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \
+	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi; fi
 build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASDEFS) $$(ASINC) -Iinclude $$< -o $$@

@@ -809,7 +809,7 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     sed = next(i for i, line in enumerate(lines) if "\\.L[0-9]+" in line)
     asm = next(i for i, line in enumerate(lines) if "asn64" in line)
     assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
-    assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
+    assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@; fi"
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")
 
 
@@ -1151,3 +1151,77 @@ def test_drop_including_rebuilds_objects_whose_output_includes_a_name(tmp_path):
     (tmp_path / "build/us/c.c.o").write_bytes(b"o")  # no compiler output to read: rebuilt to be safe
     assert build.drop_including(config, "us", {"nonmatchings/x/f.s"}) == 2
     assert sorted(p.name for p in (tmp_path / "build/us").glob("*.o")) == ["b.c.o"]
+
+
+def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_last_ones(tmp_path):
+    """The generated recipe of the real toolchain with stub tools: a preprocessed text that changed but compiles to the
+    assembly already beside the object keeps the object (no assembler, no trim); other assembly assembles again."""
+    import subprocess
+    import sys
+
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "asm/us").mkdir(parents=True)
+    (tmp_path / "asm/us/.extracted").touch()
+    (tmp_path / "versions/us/text_sizes.mk").write_text("")
+    cc = tmp_path / "cc.py"
+    cc.write_text(
+        "from pathlib import Path\nimport sys\n"
+        "text = Path(sys.argv[-3]).read_text().splitlines(keepends=True)\n"
+        "Path(sys.argv[-1]).write_text(''.join(t for t in text if not t.startswith('//')))\n"
+        "with Path('compiled').open('a') as log: log.write(sys.argv[-1] + '\\n')\n"
+    )
+    asm = tmp_path / "asm.py"
+    asm.write_text(
+        "from pathlib import Path\nimport sys\n"
+        "Path(sys.argv[-1]).write_bytes(Path(sys.argv[-3]).read_bytes())\n"
+        "with Path('assembled').open('a') as log: log.write(sys.argv[-1] + '\\n')\n"
+    )
+    trim = tmp_path / "trim.py"
+    trim.write_text("from pathlib import Path\nwith Path('trimmed').open('a') as log: log.write('x\\n')\n")
+    targets = ["build/us/src/a.c.o"]
+
+    def make():
+        for log in ("compiled", "assembled", "trimmed"):
+            (tmp_path / log).write_text("")
+        result = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "-j1",
+                *targets,
+                "STAMPS=",
+                "TC=gcc_2_8_1_sn64",
+                "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+                f"CC_gcc_2_8_1_sn64={sys.executable} {cc}",
+                f"N64LINK={sys.executable} {asm}",
+                "OBJCOPY=true",
+                f"TRIM_TEXT={sys.executable} {trim}",
+                "TEXTSIZE=0x10",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return [len((tmp_path / log).read_text().splitlines()) for log in ("compiled", "assembled", "trimmed")]
+
+    def edit(text):  # everything built ages first, so the edit is newer than every output
+        now = time.time_ns()
+        for path in tmp_path.rglob("*"):
+            age = 10**10 if "build" in path.relative_to(tmp_path).parts else 2 * 10**10
+            age += 10**9 if path.suffix == ".i" else 0
+            os.utime(path, ns=(now - age, now - age))
+        (tmp_path / "src/a.c").write_text(text)
+        os.utime(tmp_path / "src/a.c", ns=(now - 5 * 10**9, now - 5 * 10**9))
+
+    (tmp_path / "src/a.c").write_text("// note\nint a;\n")
+    assert make() == [1, 1, 1]
+    assert make() == [0, 0, 0]
+    edit("// another note\nint a;\n")  # a new .i, the same assembly
+    assert make() == [1, 0, 0]
+    assert not (tmp_path / "build/us/src/a.c.o.same").exists() and not (tmp_path / "build/us/src/a.c.s.prev").exists()
+    edit("// another note\nint a2;\n")
+    assert make() == [1, 1, 1]
+    assert make() == [0, 0, 0]

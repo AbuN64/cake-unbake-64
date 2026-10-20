@@ -164,14 +164,25 @@ def _recipe(id: str) -> str:
     preprocess = _shell(adapters.render(row["preprocess"], {**values, "source": ["$<"]})) + " > $(@:.ok=.new)"
     lines = [_shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]}))]
     if row["emits_asm"]:
+        keep = "$(@:.o=.s.prev)"
+        lines.insert(0, f"{{ [ ! -f $(@:.o=.s) ] || mv -f $(@:.o=.s) {keep}; }}")  # the last assembly, to compare
         lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s),true)')  # data packed at the byte
         if row.get("jump_table_base"):
             entry = r"^([ \t]*\.word[ \t]+\.L[0-9]+)[ \t]*$$"
             lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
         template, _ = adapters.assemble_template(row)
-        lines.append(_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]})))
+        assemble = [_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]}))]
         if row.get("rdata_alloc"):
-            lines.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
+            assemble.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
+        # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
+        # with the same text size: the object stands, and `.same` tells the rule to skip the trim it already holds.
+        same = (
+            '[ -z "$(filter-out %.i.ok,$?)" ] && [ -f $@ ] && [ -f ' + keep + " ] && "
+            '[ "x$(file <$@.textsize)" = "x$(TEXTSIZE)" ] && cmp -s $(@:.o=.s) ' + keep
+        )
+        lines.append(
+            f"if {same}; then rm -f {keep} && touch $@ && : > $@.same; else rm -f {keep} && {' && '.join(assemble)}; fi"
+        )
     body = " && ".join(lines)
     return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
