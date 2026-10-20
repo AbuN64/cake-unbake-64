@@ -689,3 +689,58 @@ def test_missing_auto_symbols_file_makes_extract_job_extract_again(tmp_path, mon
     auto.unlink()
     assert repo.extract_job((config, "us")) is True
     assert not stale.exists()
+
+
+# ---------------------------------------------------------------- jump tables of C functions the link would drop
+def _table_tree(monkeypatch, sections):
+    module = SimpleNamespace(
+        path="src/m.c", owns={"a": ("f", *sections)}, stand_ins={"a": ()}, sections={"a": {"f": ".text", **sections}}
+    )
+    facts = {
+        "f": (0x80400000, 0x1000, 0x40, "func"),
+        "g": (0x80400040, 0x1040, None, "func"),
+        "jtbl_800E1500": (0x800E1500, 0x2000, None, "data"),
+        "D_800E1510": (0x800E1510, 0x2010, None, "data"),
+        "literals_f": (0x800E1500, 0x2000, None, "data"),
+    }
+    if not sections:
+        del facts["literals_f"]
+    owned = {"f": "src/m.c", **{n: "src/m.c" for n in sections}}
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: facts)
+    return SimpleNamespace(
+        modules=(module,),
+        owner=lambda v, n: owned.get(n) or (owned.get("literals_f") if facts[n][0] == 0x800E1500 else None),
+    )
+
+
+def _rom_with_table(monkeypatch, tmp_path):
+    words = b"".join(w.to_bytes(4, "big") for w in (0x00400010, 0x00400018, 0x00400020, 0x00400028))
+    (tmp_path / "rom").write_bytes(bytes(0x2000) + words)
+    monkeypatch.setattr(repo.configuration, "rom", lambda project, v: tmp_path / "rom")
+
+
+def test_a_c_functions_jump_table_no_file_holds_names_the_literals_row(monkeypatch, tmp_path):
+    # SPEED-4 func_8041D4E0_de: its INCLUDE_RODATA stand-in went, no literals_ row came; sync dropped the object's
+    # .rodata from the link (ROM 0x38 short) instead of saying what places it
+    _rom_with_table(monkeypatch, tmp_path)
+    config = SimpleNamespace(project=SimpleNamespace(versions=("a",)))
+    (found,) = repo._unplaced_tables(config, _table_tree(monkeypatch, {}))
+    assert found.key == "sync.literals" and found.unit == "f" and found.versions == ("a",)
+    assert "literals_f = 0x800E1500; // rom:0x2000" in found.action and "versions/a/aliases.txt" in found.action
+
+
+def test_a_jump_table_the_files_own_rodata_holds_or_no_rom_is_no_finding(monkeypatch, tmp_path):
+    _rom_with_table(monkeypatch, tmp_path)
+    config = SimpleNamespace(project=SimpleNamespace(versions=("a",)))
+    assert repo._unplaced_tables(config, _table_tree(monkeypatch, {"literals_f": ".rodata"})) == []
+
+    monkeypatch.setattr(repo.configuration, "rom", lambda project, v: tmp_path / "absent")
+    assert repo._unplaced_tables(config, _table_tree(monkeypatch, {})) == []
+
+
+def test_words_inside_two_functions_or_off_code_are_no_jump_table():
+    code = [(0x400000, 0x400040, "f"), (0x400040, 0x400080, "g")]
+    assert repo._jump_target([0x400010, 0x400020], code) == "f"
+    assert repo._jump_target([0x400010, 0x400050], code) is None
+    assert repo._jump_target([0x400010, 0x500000], code) is None
+    assert repo._jump_target([0x400010], code) is None

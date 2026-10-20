@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 import shutil
@@ -536,6 +537,91 @@ def _read(path: Path) -> bytes | None:
     return path.read_bytes() if path.is_file() else None
 
 
+_TABLE_MAX = 0x400  # bytes: longer runs are no jump table
+
+
+def _jump_target(words: Sequence[int], code: Sequence[tuple[int, int, str]]) -> str | None:
+    """The function every word of `words` points into (a jump table's cases are addresses inside its own function),
+    by the (vram start, vram end, name) runs of `code` (as the ROM's `text_mask` spells code addresses); None when the
+    words are not all inside one."""
+    if len(words) < 2:
+        return None
+    found = set()
+    for word in words:
+        if word % 4:
+            return None
+        at = bisect.bisect_right(code, (word, 1 << 40, "")) - 1
+        if at < 0 or not code[at][0] <= word < code[at][1]:
+            return None
+        found.add(code[at][2])
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _unplaced_tables(config: Config, current: Any) -> list[Finding]:
+    """The jump tables of C functions whose file links no read-only data. A function's table is its file's compiled
+    .rodata once its body is C, and only a name the file owns in .rodata places that (a `literals_<function>` fact,
+    `tree.LITERALS`); when the table's old stand-in goes and no such row comes, the table's name is owned by no file,
+    so the link script and splat.yaml leave the object's .rodata out and the ROM comes out short by the table. Each
+    finding names the row that places it. Needs the ROMs: without them there is no check."""
+    mask = configuration.load_resource("rom.toml").get("text_mask", 0xFFFFFFFF)
+    findings: list[Finding] = []
+    seen: set[tuple[str, int]] = set()
+    for v in config.project.versions:
+        try:
+            image = configuration.rom(config.project, v).read_bytes()
+        except (OSError, Refusal):
+            continue  # no ROM (a CI check): nothing to read the tables from
+        table = api.symbols(config, v)
+        c_code: dict[str, str] = {}
+        with_rodata: set[str] = set()
+        for m in current.modules:
+            if configuration.is_assembly(m.path):
+                continue
+            for n in m.owns.get(v, ()):
+                section = m.sections.get(v, {}).get(n, ".text")
+                if section.startswith(".rodata"):
+                    with_rodata.add(m.path)
+                elif section == ".text" and n not in m.stand_ins.get(v, ()):
+                    c_code[n] = m.path
+        roms = sorted({f[1] for f in table.values() if f[1] is not None})
+
+        def after(rom: int, roms: Sequence[int] = roms) -> int | None:
+            at = bisect.bisect_right(roms, rom)
+            return roms[at] if at < len(roms) else None
+
+        spans = sorted(
+            (f[0] & mask, (f[0] & mask) + size, n)  # code addresses as the ROM spells them (text_mask)
+            for n, f in table.items()
+            if f[3] == "func" and f[1] is not None and (size := f[2] or ((after(f[1]) or f[1]) - f[1]))
+        )
+        for n, fact in sorted(table.items(), key=lambda kv: (kv[1][1] or 0, kv[0])):
+            rom = fact[1]
+            if rom is None or fact[3] in ("func", "label") or n.startswith(tree.LITERALS):
+                continue
+            end = after(rom)
+            if end is None or not 8 <= end - rom <= _TABLE_MAX or (end - rom) % 4 or current.owner(v, n) is not None:
+                continue
+            data = image[rom:end]
+            function = _jump_target([int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data), 4)], spans)
+            path = c_code.get(function or "")
+            if function is None or path is None or path in with_rodata or (v, rom) in seen:
+                continue  # a file that links read-only data places the table with it; one finding per table
+            seen.add((v, rom))
+            findings.append(
+                Finding(
+                    "sync.literals",
+                    f"{v}: {n} at 0x{fact[0]:08X} is the jump table of {function}, which {path} defines in C, but "
+                    f"{path} owns no read-only data: the link would leave its compiled .rodata out of the ROM",
+                    path=f"versions/{v}/aliases.txt",
+                    unit=function,
+                    versions=(v,),
+                    action=f"add `{tree.LITERALS}{function} = 0x{fact[0]:08X}; // rom:0x{rom:X}` to "
+                    f"versions/{v}/aliases.txt",
+                )
+            )
+    return findings
+
+
 def _sync(config: Config, params: Json) -> tuple[Json, Any]:
     """`sync`, and the tree it left (the one capture a setup shares with the report that follows)."""
     with effort.stage("repo.sync"):
@@ -549,6 +635,8 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
             if appended:
                 # This capture sees the proposed stand-ins, a different input from the on-disk tree above.
                 current = tree.capture(config, appended)
+        if unplaced := _unplaced_tables(config, current):
+            raise Refusal(*unplaced)
         changed = {
             path: value
             for path, value in {**appended, **_generated(config, current)}.items()
