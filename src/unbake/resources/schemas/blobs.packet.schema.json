@@ -23,6 +23,14 @@
   "scope": {
    "type": "string"
   },
+  "supersedes": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   },
+   "uniqueItems": true
+  },
   "tools": {
    "type": "object"
   },
@@ -67,7 +75,8 @@
        "stale-data",
        "fill",
        "metadata",
-       "unclassified"
+       "unclassified",
+       "leftover"
       ]
      },
      "format": {

@@ -37,6 +37,7 @@ _CURRENT = frozenset(
         "fill",
         "metadata",
         "unclassified",
+        "leftover",
     }
 )
 

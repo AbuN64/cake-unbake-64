@@ -447,3 +447,60 @@ def test_blobs_toml_is_no_build_or_score_input():
             for alias in node.names
         }
         assert "blobs" not in imported, name
+
+
+# ---------------------------------------------------------------- supersedes
+def _observed(config, spans=((0x2400, 0x2800),), state="observed"):
+    row = {"type": "sn-debug", "state": state, "format": "accounting", "rom": {"v": [list(s) for s in spans]}}
+    (config.project.root / "blobs.toml").write_bytes(blobs.emit({"schema": 1, "blob": {"accounting.sn-debug.v": row}}))
+
+
+def test_a_packet_supersedes_the_observed_rows_its_decoded_rows_cover(tmp_path):
+    config = _config(tmp_path)
+    _observed(config)
+    packet = _packet(config, type="leftover", format="sn-debug")
+    packet["supersedes"] = ["accounting.sn-debug.v", "accounting.gone.v"]  # an id already gone is no error
+    plan = blobs.import_plan(config, packet)
+    assert not plan.blocking and plan.message == "Add 1 blobs to blobs.toml, superseding 1 observed rows"
+    blobs.apply_import(config, plan)
+    assert [r["id"] for r in blobs.rows(config)] == ["level.0"]
+    again = blobs.import_plan(config, packet)  # re-import: nothing left to supersede, same file
+    assert not again.blocking and again.writes == plan.writes
+
+
+@pytest.mark.parametrize(
+    "spans, state, extra, why",
+    [
+        (((0x2400, 0x3400),), "observed", {}, "bytes are not covered"),  # past the packet's row
+        (((0x2400, 0x2800),), "decoded", {}, "only an observed row"),
+        (((0x2400, 0x2800),), "observed", {"supersedes": ["level.0"]}, "both superseded and written"),
+    ],
+)
+def test_supersede_refuses_a_loose_decoded_or_self_written_row(tmp_path, spans, state, extra, why):
+    config = _config(tmp_path)
+    _observed(config, spans, state)
+    packet = _packet(config)
+    packet["supersedes"] = extra.get("supersedes", ["accounting.sn-debug.v"])
+    plan = blobs.import_plan(config, packet)
+    assert plan.blocking and {f.key for f in plan.blocking} == {"blobs.supersede"}
+    assert any(why in f.reason for f in plan.blocking)
+
+
+def test_land_supersedes_and_reports_the_count(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    _observed(config)
+    packet = _packet(config, type="leftover", format="sn-debug")
+    packet["supersedes"] = ["accounting.sn-debug.v"]
+    out = blobs.land(config, packet)
+    assert (out["added"], out["superseded"]) == (1, 1)
+    assert [r["id"] for r in blobs.rows(config)] == ["level.0"]
+    assert blobs.land(config, packet)["superseded"] == 0
+
+
+def test_a_leftover_row_is_sn_debug_or_earlier_link_only(tmp_path):
+    config = _config(tmp_path)
+    for fmt in ("sn-debug", "earlier-link"):
+        assert not blobs.import_plan(config, _packet(config, type="leftover", format=fmt)).blocking
+    plan = blobs.import_plan(config, _packet(config, type="leftover", format="stale copy"))
+    assert {f.key for f in plan.blocking} == {"blobs.schema"}

@@ -142,3 +142,72 @@ def test_object_dialect_reads_code_patches_functions_and_definitions() -> None:
 def _spans(stream: bytes) -> list[tuple[int, int]]:
     recs, _ = snsym.records(stream)
     return [(r.at, r.end) for r in recs]
+
+
+# ---------------------------------------------------------------- the inverse: emit, cut_head, cut_tail
+def _everything() -> bytes:
+    return (
+        STRUCT
+        + ENUM
+        + d96(8, 8, 0x3F, 1024, (128, 4), "", "Stack")
+        + func(0x80204668, "main")
+        + struct.pack("<IBB", 0x80204668, 0x82, 3)
+        + struct.pack("<IBH", 5, 0x84, 9)
+        + struct.pack("<IBI", 6, 0x86, 10)
+        + struct.pack("<IB", 7, 0x80)
+        + struct.pack("<IB", 7, 0x8A)
+        + struct.pack("<IBI", 8, 0x8E, 20)
+        + struct.pack("<IBII", 9, 0x98, 100, 3)
+        + struct.pack("<IB", 9, 0x9A)
+        + struct.pack("<IB", 3, 1)
+        + _name("lbl")
+        + struct.pack("<IBI", 0, 0x88, 360)
+        + _name("B.CPP")
+        + struct.pack("<IBHIHIiIiI", 1, 0x9C, 29, 24, 31, 0x80000000, -4, 0x1000, -8, 7)
+        + _name("A.CPP")
+        + _name("fn")
+    )
+
+
+def test_emit_is_the_exact_inverse_of_records_for_every_layout() -> None:
+    data = _everything()
+    recs, stop = snsym.records(data)
+    assert stop == len(data) and {r.tag for r in recs} >= {1, 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E, 0x94,
+                                                            0x96, 0x98, 0x9A, 0x9C}  # fmt: skip
+    assert snsym.emit(recs) == data
+    with pytest.raises(snsym.SymError):
+        snsym.encode(snsym.object_record(b"\x4c" + struct.pack("<HII", 2, 0x10, 5), 0))  # object dialect: refused
+
+
+def test_cut_tail_accepts_only_a_strict_prefix_of_one_record() -> None:
+    whole = d96(0, 102, 0, 4, (), "Modes", ".eos")
+    for n in (5, 6, 12, len(whole) - 1):
+        got = snsym.cut_tail(whole, 0, n)
+        assert got["bytes"] == n and got["tag"] == 0x96 and got["needs"] >= 1 and got["hex"] == whole[:n].hex()
+    for bad in (whole, b"", whole[:4], struct.pack("<IB", 0, 0x77), struct.pack("<IBHHI", 0, 0x94, 200, 8, 4)):
+        with pytest.raises(snsym.SymError):
+            snsym.cut_tail(bad, 0, len(bad))
+
+
+def test_cut_head_names_the_record_that_straddles_the_start() -> None:
+    stream = (STRUCT + ENUM) * 3
+    start = len(STRUCT) - 5
+    got = snsym.cut_head(stream, start, 5 + 0)
+    assert got["bytes"] == 5 and got["record"] == len(STRUCT) - 5 - (len(d96(0, 13, 8, 12, (), "CNode_t", "CNode")) - 5)
+    with pytest.raises(snsym.SymError):
+        snsym.cut_head(b"\xff" * 64, 32, 4)
+
+
+def test_stream_receipt_proves_the_round_trip_of_a_cut_stream() -> None:
+    body = (STRUCT + ENUM) * 8
+    cut = body[7:] + d94(0, 8, 4, 0, "m_nTail")[:9]  # front cut mid-record, tail cut mid-record
+    data = ENUM + body[:7] + cut + b"\xff" * 5
+    start = len(ENUM) + 7
+    receipt = snsym.stream_receipt(data, start, start + len(cut))
+    assert receipt["head"]["bytes"] == receipt["records_at"] - start and receipt["tail"]["bytes"] == 9
+    assert (
+        receipt["reemit_sha256"] == receipt["slice_sha256"]
+        and receipt["records_bytes"] == len(cut) - 9 - receipt["head"]["bytes"]
+    )
+    with pytest.raises(snsym.SymError):
+        snsym.stream_receipt(b"\xff" * 64, 0, 64)

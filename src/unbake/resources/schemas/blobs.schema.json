@@ -47,7 +47,8 @@
        "stale-data",
        "fill",
        "metadata",
-       "unclassified"
+       "unclassified",
+       "leftover"
       ]
      },
      "format": {

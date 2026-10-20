@@ -13,7 +13,9 @@ A definition's type is a COFF type word: base in bits 0-3, then 2-bit derivation
 
 from __future__ import annotations
 
+import hashlib
 import struct
+from collections import Counter
 from dataclasses import dataclass, field
 
 BASES = (
@@ -211,6 +213,117 @@ def find(
         out.append((first, stop))
         at = stop + 1
     return out
+
+
+def _pname(text: str) -> bytes:
+    raw = text.encode("ascii")
+    if len(raw) > 255:
+        raise SymError(f"name {text!r} is longer than 255 characters")
+    return bytes([len(raw)]) + raw
+
+
+def encode(rec: Record) -> bytes:
+    """The bytes of one linked-stream record (`record` inverse): the fields written in the stream's own layout, no
+    alignment. The object dialect is not invertible (its records come back normalised) and is refused."""
+    head = struct.pack("<IB", rec.value, rec.tag)
+    tag = rec.tag
+    if rec.section >= 0 or rec.file >= 0:
+        raise SymError(f"record at {rec.at:#x} is object dialect: not invertible")
+    if tag in (1, 2):
+        return head + _pname(rec.name)
+    if tag in _FIXED:
+        return head + struct.pack("<" + _FIXED[tag], *rec.extra)
+    if tag == 0x88:
+        return head + struct.pack("<I", *rec.extra) + _pname(rec.name)
+    if tag in (0x8C, 0x9C):
+        fmt = "<HIHIiI" if tag == 0x8C else "<HIHIiIiI"
+        return head + struct.pack(fmt, *rec.extra) + _pname(rec.tag_name) + _pname(rec.name)
+    if tag == 0x94:
+        return head + struct.pack("<HHI", rec.cls, rec.type, rec.size) + _pname(rec.name)
+    if tag == 0x96:
+        return (
+            head
+            + struct.pack(f"<HHIH{len(rec.dims)}I", rec.cls, rec.type, rec.size, len(rec.dims), *rec.dims)
+            + _pname(rec.tag_name)
+            + _pname(rec.name)
+        )
+    raise SymError(f"unknown tag {tag:#x} at {rec.at:#x}")
+
+
+def emit(recs: list[Record]) -> bytes:
+    """The stream of `recs` (`records` inverse). `emit(records(data, at, end)[0]) == data[at:stop]` for any stream the
+    reader parses: every byte of a record is a field, so the round trip is exact or `encode` raises."""
+    return b"".join(encode(rec) for rec in recs)
+
+
+def cut_tail(data: bytes | memoryview, at: int, end: int) -> dict[str, int | str]:
+    """Prove `data[at:end]`, the bytes after the last whole record of a stream, is a strict prefix of one valid record:
+    the reader refuses it for running past the end, yet appending filler (zeros for numeric fields, then printable
+    text) completes a record whose encoding reproduces every byte of the tail. Returns the tag, how many bytes the
+    record still needs and the tail's hex; SymError when the tail is no prefix of any record (a cut before the tag
+    byte proves nothing, so it is refused)."""
+    tail = bytes(data[at:end])
+    if not tail:
+        raise SymError(f"no tail at {at:#x}")
+    try:
+        record(tail, 0)
+    except SymError:
+        pass
+    else:
+        raise SymError(f"tail at {at:#x} is a whole record")
+    for zeros in range(40):  # zeros finish the numeric fields, printable text finishes the names
+        for text in range(300):
+            padded = tail + bytes(zeros) + b"A" * text
+            if zeros + text == 0:
+                continue
+            try:
+                rec = record(padded, 0)
+            except SymError:
+                continue
+            if rec.end > len(tail) and encode(rec) == padded[: rec.end]:
+                return {"at": at, "bytes": len(tail), "tag": rec.tag, "needs": rec.end - len(tail), "hex": tail.hex()}
+    raise SymError(f"tail at {at:#x} is not the start of any record")
+
+
+def cut_head(data: bytes | memoryview, start: int, size: int) -> dict[str, int | str]:
+    """Prove `data[start:start+size]`, the first bytes of a stream that a 4 KiB write cut from the previous page, is the
+    end of the record that straddles `start`: some earlier record start (at most 2 KiB back) chains whole records
+    onto exactly `start + size`, and the last of them begins before `start`. Returns where that record begins."""
+    for back in range(start - 1, max(0, start - 0x800) - 1, -1):
+        recs, stop = records(data, back, start + size)
+        if stop == start + size and len(recs) >= 2 and recs[-1].at < start:
+            return {"at": start, "bytes": size, "record": recs[-1].at, "tag": recs[-1].tag}
+    raise SymError(f"head at {start:#x} is no record's end")
+
+
+def stream_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, object]:
+    """The round-trip proof of the stream in `data[start:end]`: the whole records, the head bytes of a record a 4 KiB
+    write cut at the front (`cut_head`), the tail of a record cut at the back (`cut_tail`), and the sha256 of the
+    slice against the sha256 of head + `emit(records)` + tail. Raises SymError when the re-emit differs, a head or tail
+    is no record prefix/suffix, or no record parses. The head is the offset (0..15) whose records reach furthest."""
+    best = max(range(16), key=lambda d: records(data, start + d, end)[1] if start + d < end else -1)
+    recs, stop = records(data, start + best, end)
+    if not recs:
+        raise SymError(f"no record parses in {start:#x}..{end:#x}")
+    raw = bytes(data[start:end])
+    body = emit(recs)
+    if body != raw[best : stop - start]:
+        raise SymError(f"re-emit of {start:#x}..{end:#x} differs from the stream")
+    receipt: dict[str, object] = {
+        "start": start, "end": end, "bytes": end - start, "records": len(recs), "records_at": start + best,
+        "records_end": stop, "records_bytes": len(body), "records_sha256": hashlib.sha256(body).hexdigest(),
+        "slice_sha256": hashlib.sha256(raw).hexdigest(),
+        "tags": {f"{tag:#04x}": n for tag, n in sorted(Counter(r.tag for r in recs).items())},
+    }  # fmt: skip
+    if best:
+        receipt["head"] = {**cut_head(data, start, best), "hex": raw[:best].hex()}
+    if stop < end:
+        receipt["tail"] = cut_tail(data, stop, end)
+    again = raw[:best] + body + raw[stop - start :]
+    receipt["reemit_sha256"] = hashlib.sha256(again).hexdigest()
+    if again != raw:
+        raise SymError(f"head + re-emit + tail of {start:#x}..{end:#x} differs from the stream")
+    return receipt
 
 
 def type_text(code: int, tag: str = "", dims: tuple[int, ...] = ()) -> str:

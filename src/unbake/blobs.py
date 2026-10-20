@@ -21,6 +21,7 @@ from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha25
 
 FILE = "blobs.toml"
 Spans = list[tuple[int, int]]
+LEFTOVER_FORMATS = ("sn-debug", "earlier-link")  # what a `leftover` row (build residue read by a native reader) may be
 RUN_MIN = 16  # the shortest one-value run that proves padding inside a gap of other bytes
 _ORDER = ("name", "aliases", "type", "format", "codec", "state", "stored_size", "decoded_size", "parent", "decoded")
 
@@ -79,6 +80,10 @@ def check(config: Config, document: Json, file: str = FILE) -> tuple[Finding, ..
                 found.append(
                     Finding("blobs.schema", f"blob {name} lives in its parent: it needs decoded, no rom", path=file)
                 )
+        if row.get("type") == "leftover" and row.get("format") not in LEFTOVER_FORMATS:
+            found.append(
+                Finding("blobs.schema", f"leftover blob {name} needs format sn-debug or earlier-link", path=file)
+            )
         for v, spans in row.get("rom", {}).items():
             size = _rom_size(config, v) if v in config.project.version else None
             if v not in config.project.version:
@@ -314,6 +319,59 @@ def _rom_sha(config: Config, version: str) -> str:
     return effort.memo(("rom-sha256", str(path)), lambda: sha256_file(path))
 
 
+def superseded_ids(document: Json, packet: Json) -> list[str]:
+    """The rows of `document` that the packet's `supersedes` removes: only ids still present (a re-landed packet finds
+    them gone already, so landing stays idempotent)."""
+    return [n for n in packet.get("supersedes", ()) if n in document["blob"]]
+
+
+def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> list[Finding]:
+    """Blocking findings for a packet's `supersedes`. Only an observed row (an accounting claim that a span has a row,
+    D8) can be replaced; the packet must not also write that id; and in every version the packet's own credited rows
+    (decoded or identified, not children) must cover every byte of the row, so no byte loses its row and none is both
+    observed and decoded."""
+    found: list[Finding] = []
+    for name in packet.get("supersedes", ()):
+        if name in packet["blob"]:
+            found.append(
+                Finding("blobs.supersede", f"blob {name} is both superseded and written by the packet", path=FILE)
+            )
+    covers = {
+        v: merge(
+            [
+                span
+                for row in packet["blob"].values()
+                if row["state"] != "observed"
+                for span in row.get("rom", {}).get(v, ())
+            ]
+        )
+        for v in {v for n in superseded for v in document["blob"][n].get("rom", {})}
+    }
+    for name in superseded:
+        row = document["blob"][name]
+        if row["state"] != "observed":
+            found.append(
+                Finding(
+                    "blobs.supersede",
+                    f"blob {name} is {row['state']}, only an observed row can be superseded",
+                    path=FILE,
+                )
+            )
+            continue
+        for v, spans in sorted(row.get("rom", {}).items()):
+            loose = length(subtract(merge([tuple(s) for s in spans]), covers[v]))
+            if loose:
+                found.append(
+                    Finding(
+                        "blobs.supersede",
+                        f"blob {name} in {v}: {loose} bytes are not covered by the packet's decoded or identified rows",
+                        path=FILE,
+                        versions=(v,),
+                    )
+                )
+    return found
+
+
 def import_plan(config: Config, packet: Json) -> Plan:
     """The reviewed plan that merges an evidence packet into blobs.toml: the packet's ROM and artifact sha256 must match
     what the project holds and what each row cites; a row already present is replaced by the packet's."""
@@ -337,11 +395,16 @@ def import_plan(config: Config, packet: Json) -> Plan:
                         path=FILE,
                     )
                 )
-    merged = {"schema": 1, "blob": {**document["blob"], **packet["blob"]}}
+    superseded = superseded_ids(document, packet)
+    blocking += supersede_findings(document, packet, superseded)
+    kept = {n: row for n, row in document["blob"].items() if n not in superseded}
+    merged = {"schema": 1, "blob": {**kept, **packet["blob"]}}
     blocking += check(config, merged)
     writes = {FILE: emit(merged)}
     added = sum(n not in document["blob"] for n in packet["blob"])
     message = f"Add {added} blobs to blobs.toml" if added else "Update blobs.toml"
+    if superseded:
+        message += f", superseding {len(superseded)} observed rows"
     body = ("blobs", sha256(old) if old is not None else "", writes, (), tuple(blocking), (), message)
     return Plan(*body, digest(body))
 
@@ -365,6 +428,14 @@ def _partitions(config: Config) -> Json:
     return {v: {k: p[k] for k in (*_KEPT, "overlap", "outside")} for v, p in parts.items()}
 
 
+def _counts(have: Json, packet: Json) -> Json:
+    return {
+        "added": sum(n not in have for n in packet["blob"]),
+        "unchanged": sum(have.get(n) == r for n, r in packet["blob"].items()),
+        "superseded": len(superseded_ids({"blob": have}, packet)),
+    }
+
+
 def land(config: Config, packet: Json) -> Json:
     """Land a facts-only packet on the current tree: import it, read the file back, audit the source rules against
     HEAD and check the partition of every version, no ROM build (blobs.toml is no build input: the build key reads
@@ -377,10 +448,7 @@ def land(config: Config, packet: Json) -> Json:
         if plan.blocking:
             raise Refusal(*plan.blocking)
         have = load(config)["blob"]
-        counts = {
-            "added": sum(n not in have for n in packet["blob"]),
-            "unchanged": sum(have.get(n) == r for n, r in packet["blob"].items()),
-        }
+        counts = _counts(have, packet)
         text = plan.writes[FILE]
         assert text is not None
         done = apply_import(config, plan) if text != old else {"files": [], "add": "", "commit": ""}
@@ -396,6 +464,9 @@ def land(config: Config, packet: Json) -> Json:
                             "blobs.land", f"rows read back differ from the packet: {', '.join(wrong[:5])}", path=FILE
                         )
                     )
+                gone = sorted(n for n in packet.get("supersedes", ()) if n in document["blob"])
+                if gone:
+                    raise Refusal(Finding("blobs.land", f"superseded rows read back: {', '.join(gone[:5])}", path=FILE))
             with effort.stage("blobs.land.audit"):
                 audit = import_module("unbake.policy").audit_command(
                     {"project": str(config.project.root), "against": "HEAD"}
@@ -456,10 +527,7 @@ def run(config: Config, params: Json) -> Json:
             if plan.blocking:
                 raise Refusal(*plan.blocking)
             have = load(config)["blob"]
-            counts = {
-                "added": sum(n not in have for n in packet["blob"]),
-                "unchanged": sum(have.get(n) == r for n, r in packet["blob"].items()),
-            }
+            counts = _counts(have, packet)
             done = apply_import(config, plan)
             return _result(config, {"imported": {**counts, **done}}, bool(params.get("json")))
         if action[:1] == ["land"]:
