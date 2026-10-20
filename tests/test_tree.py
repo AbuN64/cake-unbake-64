@@ -403,6 +403,47 @@ def test_parse_keys_are_one_function_for_a_header_read_off_disk(
     assert fixture.cpp_runs(tmp_path) > runs  # the header is an input of the parse
 
 
+def test_a_comment_edit_of_a_shared_header_parses_nothing_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A header's comment (a field note naming a function) changes no preprocessed token: every file that includes it
+    keeps its parse key, so no file is preprocessed again. A code edit of the same header reparses its includers."""
+    config = fixture.config(tmp_path)
+    root = config.project.root
+    (root / "include").mkdir(exist_ok=True)
+    (root / "include/shared.h").write_text("typedef struct S {\n    int arena; /* +0x0: func_1 */\n} S;\n")
+    edit(config, "src/main/c_func.c", '#include "shared.h"\ns32 c_func(void) { return 1; }\n')
+    tree.capture(config)
+    runs = fixture.cpp_runs(tmp_path)
+    (root / "include/shared.h").write_text("typedef struct S {\n    int arena; /* +0x0: Render_StartRound */\n} S;\n")
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) == runs
+    (root / "include/shared.h").write_text("typedef struct S {\n    int arena;\n    int round;\n} S;\n")
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) > runs
+
+
+@pytest.mark.parametrize(
+    "before,after,same",
+    [
+        (b"int a; /* x */\n", b"int a; /* longer note */\n", True),
+        (b"int a; // x\n", b"int a; // y\n", True),
+        (b"/* one\n   two */\nint a;\n", b"/* three\n   four */\nint a;\n", True),
+        (b"/* one */\nint a;\n", b"/* one\n */\nint a;\n", False),  # a line more: __LINE__ moves
+        (b"#define X 1 /* a\n b */ + 2\n", b"#define X 1 /* c\n d */ + 2\n", False),  # inside a directive
+        (b"/* a\n */ int x;\n", b"/* b\n */ int x;\n", False),  # the comment's last line goes on
+        (b"int a; // x \\\nint b;\n", b"int a; // y \\\nint b;\n", False),  # the backslash continues the comment
+        (b'char *s = "/* x */";\n', b'char *s = "/* y */";\n', False),  # a string is no comment
+        (b"char c = '\"'; /* x */\n", b"char c = '\"'; /* y */\n", True),
+        (b"int a;\n", b"int b;\n", False),
+    ],
+)
+def test_meaning_is_the_text_less_its_comments(before: bytes, after: bytes, same: bool) -> None:
+    assert (tree._meaning(before) == tree._meaning(after)) is same
+
+
 def test_the_tool_does_not_lower_its_own_priority() -> None:
     import inspect
 
@@ -549,9 +590,9 @@ def _fuzzy_runs(config: Config, monkeypatch: pytest.MonkeyPatch, opened: list[st
     real = tree._expand
     seconds, scans = [], []
     monkeypatch.setattr(tree, "_expand", lambda *a, **k: (real(*a, **k)[0], opened))
-    real_pre, real_scan = tree._preprocess, tree._scan
+    real_pre, real_scan = tree._preprocess, tree._scan_expanded
     monkeypatch.setattr(tree, "_preprocess", lambda *a, **k: seconds.append(1) or real_pre(*a, **k))
-    monkeypatch.setattr(tree, "_scan", lambda *a, **k: scans.append(1) or real_scan(*a, **k))
+    monkeypatch.setattr(tree, "_scan_expanded", lambda *a, **k: scans.append(1) or real_scan(*a, **k))
     tree._parsed(config, path, (config.project.root / path).read_bytes(), "a", key=f"k-{path}-{opened}")
     return len(seconds), len(scans)
 
@@ -588,3 +629,26 @@ def test_a_compound_guard_is_a_block_but_its_sibling_body_stays_on():
     assert tree.non_matching_blocks(text.splitlines(keepends=True)) == [(0, 2, 4)]
     assert tree.fuzzy_only(text, ["wanted"]) == text
     assert tree.fuzzy_only(text.replace("defined(A) && ", ""), ["wanted"]).startswith("#if 0\n")
+
+
+def test_the_expanded_scan_reads_runs_once_and_gives_the_whole_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preprocessed text read in runs of lines with the runs remembered gives `_scan` exactly, also where a run ends
+    inside a statement or a body; the same header text met again is not folded again."""
+    header = "".join(f"extern s32 h{i}(s32 a,\n    s32 b);\nstruct S{i} {{\n    s32 x;\n}} s{i};\n" for i in range(200))
+    unit = (
+        header + "s32 f(void) {\n    return 0;\n}\nconst s32 table[] = {\n 1, 2 };\nstatic s32 g(void) { return 1; }\n"
+    )
+    unit += 'asm(".include \\"nonmatchings/main/h.s\\"");\n'
+    monkeypatch.setattr(tree, "_CHUNKS", {})
+    folds = []
+    real = tree._fold
+    monkeypatch.setattr(tree, "_fold", lambda *a: folds.append(1) or real(*a))
+    whole_kinds: dict[str, str] = {}
+    whole = tree._scan(unit, whole_kinds)
+    folds.clear()
+    kinds: dict[str, str] = {}
+    assert tree._scan_expanded(unit, kinds) == whole and kinds == whole_kinds
+    first = len(folds)
+    other: dict[str, str] = {}
+    assert tree._scan_expanded(header + "s32 k(void) { return 2; }\n", other)[0][-1] == "k"
+    assert len(folds) - first < first / 4  # the header's runs were read before

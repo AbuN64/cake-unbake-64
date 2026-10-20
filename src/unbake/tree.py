@@ -3,7 +3,7 @@
 A file owns the names it defines in C (functions and non-extern data at brace depth 0) and the names its stand-ins
 (`.include "nonmatchings/<seg>/<name>.s"`, `.include "data/<seg>/<name>.s"`) assemble. The preprocessor decides which
 of them a version sees; the preprocessed text is scanned, never compiled. The result of one file is cached by content
-alone, so an edit reparses the edited file and a rename reparses nothing."""
+alone (a comment is no content: `_meaning`), so an edit reparses the edited file and a rename reparses nothing."""
 
 from __future__ import annotations
 
@@ -160,15 +160,64 @@ def _argv(
 LOCAL_TEXT = ".text.local"
 
 
+_DIRECTIVE = re.compile(r"(?m)^[ \t]*#.*$")
+_State = tuple[int, int, tuple[str, ...]]  # (brace depth, parenthesis depth, the open top-level statement's tokens)
+_Fold = tuple[tuple[str, ...], tuple[str, ...], tuple[tuple[str, str], ...], _State]
+
+
 def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
     """(names defined at depth 0, names whose stand-in the text assembles), each in text order. With `kinds`, also the
     linker section of each name: `.text` for a function, a stand-in's own `.section`, `.rodata` for a const, `.data`
     for an initialised variable, `.bss` for the rest."""
-    text = re.sub(r"(?m)^[ \t]*#.*$", "", text)
+    defined, stand_ins, found, _ = _fold(_DIRECTIVE.sub("", text), (0, 0, ()))
+    if kinds is not None:
+        kinds.update(found)
+    return list(defined), list(stand_ins)
+
+
+_CHUNKS: dict[tuple[str, _State], _Fold] = {}
+_CHUNKS_HELD = 1 << 18  # chunk entries one process keeps before it starts over
+
+
+def _scan_expanded(text: str, kinds: dict[str, str]) -> tuple[list[str], list[str]]:
+    """`_scan` of a preprocessor's output, read in runs of lines: a run of the same text met in the same state (the
+    same header expanded the same way, ahead of thousands of files) is read once per process. A run ends after a line
+    whose hash says so, so a run's bounds follow its own text, wherever the file puts it. No token of preprocessed
+    text spans a line (no comment is left), so the runs give `_scan` exactly; text that still holds a comment is read
+    whole."""
+    if "/*" in text:
+        return _scan(text, kinds)
     defined: list[str] = []
     stand_ins: list[str] = []
-    stmt: list[str] = []  # tokens of the current top-level statement; a braced body is one "{}" token
-    depth = parens = 0
+    state: _State = (0, 0, ())
+    lines = text.split("\n")
+    begin = 0
+    for at, line in enumerate(lines):
+        if hash(line) & 31 and at + 1 < len(lines):
+            continue
+        run = "\n".join(lines[begin : at + 1])
+        begin = at + 1
+        key = (run, state)
+        folded = _CHUNKS.get(key)
+        if folded is None:
+            if len(_CHUNKS) >= _CHUNKS_HELD:
+                _CHUNKS.clear()
+            folded = _CHUNKS[key] = _fold(_DIRECTIVE.sub("", run), state)
+        defined += folded[0]
+        stand_ins += folded[1]
+        kinds.update(folded[2])
+        state = folded[3]
+    return defined, stand_ins
+
+
+def _fold(text: str, state: _State) -> _Fold:
+    """The scan of `text` from `state`: the names it defines, the stand-ins it assembles and their sections, in text
+    order, and the state it leaves."""
+    defined: list[str] = []
+    stand_ins: list[str] = []
+    kinds: dict[str, str] = {}
+    depth, parens, held = state
+    stmt: list[str] = list(held)  # tokens of the current top-level statement; a braced body is one "{}" token
     for match in _TOKEN.finditer(text):
         token = match[0]
         if match["str"] is None and match["id"] is None and match["p"] is None:
@@ -186,10 +235,9 @@ def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], li
                 name = _function_name(stmt)
                 if name and not _inlined(stmt):
                     defined.append(name)
-                    if kinds is not None:
-                        # code, though a version knows the name only from an untyped alias; a static one is the file's
-                        # own helper, which no symbol of any version is ever meant to name
-                        kinds[name] = LOCAL_TEXT if "static" in stmt[: stmt.index("(")] else ".text"
+                    # code, though a version knows the name only from an untyped alias; a static one is the file's
+                    # own helper, which no symbol of any version is ever meant to name
+                    kinds[name] = LOCAL_TEXT if "static" in stmt[: stmt.index("(")] else ".text"
                 stmt = [*stmt, "{}"]
                 stmt.append("<body>")
             elif depth == 0:
@@ -205,11 +253,11 @@ def _scan(text: str, kinds: dict[str, str] | None = None) -> tuple[list[str], li
             elif token == ")":
                 parens = max(0, parens - 1)
             if token == ";" and parens == 0:
-                _statement(stmt, defined, stand_ins, {} if kinds is None else kinds)
+                _statement(stmt, defined, stand_ins, kinds)
                 stmt = []
             else:
                 stmt.append(token)
-    return defined, stand_ins
+    return tuple(defined), tuple(stand_ins), tuple(kinds.items()), (depth, parens, tuple(stmt))
 
 
 def _is_function(stmt: Sequence[str]) -> bool:
@@ -304,6 +352,33 @@ def _data_name(piece: Sequence[str], first: bool) -> str:
     return idents[-1] if len(idents) >= needed else ""
 
 
+_LEXEME = re.compile(rb'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*.*?\*/|//[^\n]*', re.S)
+
+
+def _meaning(data: bytes) -> bytes:
+    """`data` as far as the preprocessor's output can depend on it: each comment one space (cpp's own rule), so an edit
+    of a comment alone (a renamed function in a field note) changes nothing a parse or a build reads. A comment over
+    several lines keeps its line breaks (`__LINE__` and every later directive stay on their lines) and stays as written
+    when a directive holds it or its last line goes on with more text; so does a line comment a backslash continues
+    and anything inside a string or character literal."""
+
+    def plain(m: re.Match[bytes]) -> bytes:
+        lexeme = m[0]
+        if lexeme[:1] in b"\"'" or lexeme.endswith(b"\\"):
+            return lexeme
+        breaks = lexeme.count(b"\n")
+        if breaks:
+            start = data.rfind(b"\n", 0, m.start()) + 1
+            spliced = data[max(0, start - 3) : start].rstrip(b"\r\n").endswith(b"\\")  # the line goes on from above
+            end = data.find(b"\n", m.end())
+            after = data[m.end() : len(data) if end < 0 else end].strip()  # what the comment's last line goes on with
+            if spliced or after or data[start : m.start()].lstrip(b" \t").startswith(b"#"):
+                return lexeme
+        return b" " + b"\n" * breaks
+
+    return _LEXEME.sub(plain, data)
+
+
 class _Headers:
     """What the include walk learns about a header, kept per reader: its sha, where each name resolves from a folder
     and its whole closure. A tree of thousands of files reaches the same few hundred headers, so each is hashed and
@@ -326,7 +401,7 @@ class _Headers:
         if blob is None:
             return ""
         if path not in self._sha:
-            self._sha[path] = sha256(blob)
+            self._sha[path] = sha256(_meaning(blob))
         return self._sha[path]
 
     def resolve(self, here: str, name: str, directory: str, version: str, extra: tuple[str, ...]) -> str:
@@ -404,10 +479,11 @@ def _code() -> str:
 
 def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None] | _Headers) -> str:
     """A file's parse key names every input of the parse: the text, the version, the preprocessor and its flags, the
-    headers it reaches, and this module's code (never the rest of the tool, so another tool edit keeps it)."""
+    headers it reaches, and this module's code (never the rest of the tool, so another tool edit keeps it). The text and
+    every header count by `_meaning`: an edit of their comments alone keeps the key."""
     directory = path.rpartition("/")[0]
     argv = _argv(config, path, version, "-")
-    basis = ["sections", _code(), sha256(text), argv, _closure(read, directory, version, text, argv)]
+    basis = ["sections", _code(), sha256(_meaning(text)), argv, _closure(read, directory, version, text, argv)]
     return sha256(json.dumps(basis, sort_keys=True).encode())
 
 
@@ -662,12 +738,12 @@ def _parsed(
             if _UNEXPANDED.search(expanded):  # no header yet: read the file as sync will write it
                 source = b'#include "include_asm.h"\n' + text
                 expanded, opened = _expand(config, path, source, version, ("-P", *ahead))
-            plain = _scan(expanded, kinds)
+            plain = _scan_expanded(expanded, kinds)
             fuzzy_kinds: dict[str, str] = {}
             root = config.project.root
             if _FUZZY_WORD in source or any(_mentions(root, h) for h in opened):
                 other = _preprocess(config, path, source, version, ("-P", "-DNON_MATCHING", *ahead))
-                fuzzy = plain if other == expanded else _scan(other, fuzzy_kinds)
+                fuzzy = plain if other == expanded else _scan_expanded(other, fuzzy_kinds)
             else:  # nothing the preprocessor read can tell the macro: the second expansion is the first
                 fuzzy = plain
         for name in fuzzy[0]:  # a NON_MATCHING body's kind too, so a body of nothing can be told from a data row
