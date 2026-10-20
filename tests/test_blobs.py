@@ -295,6 +295,7 @@ def test_report_carries_the_blob_fields_per_version(tmp_path, monkeypatch):
         "blobs_decoded": 0,
         "blobs_identified": 0,
         "blobs_fill": 0,
+        "blobs_no_row": ROM - 0x1100,
         "unknown_total": ROM - 0x1100,
         "blobs": {},
     }

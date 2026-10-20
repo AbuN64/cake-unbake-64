@@ -106,7 +106,6 @@ def ranges(document: Json, version: str) -> tuple[Spans, Spans]:
     return out["decoded"], out["identified"]
 
 
-
 def no_row(partition: Json, document: Json, version: str) -> int:
     """Physical bytes without a row, separate from undecoded or unidentified bytes.
 

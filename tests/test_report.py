@@ -320,6 +320,7 @@ def test_readme_with_blob_accounting_measures_against_the_rom_and_drops_the_part
     for v, row in held.items():
         row["blobs_identified"] = row["blobs_total"] - row["blobs_decoded"]
         row["blobs_fill"] = 0
+        row["blobs_no_row"] = 0
         row["unknown_total"] = row["rom_size"] - current["versions"][v]["code_total"] - 4096 - row["blobs_total"]
         current["versions"][v].update(row)
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
