@@ -926,3 +926,22 @@ def test_fake_type_names_a_per_function_view_whatever_its_case_or_suffix(name):
 def test_fake_type_spares_a_function_named_by_its_symbol():
     code = "extern void func_80123456_de(void);\nvoid f(void) {\n    func_80123456_de();\n}\n"
     assert policy._fake_type(code) == {}
+
+
+def test_a_source_view_still_reads_the_scalar_its_included_headers_declare(snapshot, monkeypatch):
+    # BT: `return D_801257D0 + 0xD8;` with `extern void * D_801257D0;` in an included header, the unit seen as a view
+    _placed_snapshot(snapshot, monkeypatch)
+    monkeypatch.setattr(snapshot, "peek", {"include/ticks.h": b"extern void * D_800D7000;\n"}.get, raising=False)
+    code = '#include "ticks.h"\nvoid *f(void) { return D_800D7000 + 0x5A; }\n'
+    view = SimpleNamespace(text="void *f(void) { return D_800D7000 + 0x5A; }\n")
+    assert policy._address_literals(snapshot, PATH, code, view) == {}
+
+
+def test_a_name_that_is_the_right_operand_of_another_operator_starts_no_sum(snapshot, monkeypatch):
+    _placed_snapshot(snapshot, monkeypatch)
+    for code in (
+        "x = t * 1000000 / D_800D7000 + 0x5A;\n",
+        "x = p[0] + D_800D7000 + 0x5A;\n",
+        "x = a - D_800D7000 + 0x5A;\n",
+    ):
+        assert policy._address_literals(snapshot, PATH, code, SimpleNamespace(text="")) == {}, code

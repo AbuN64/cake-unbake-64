@@ -308,7 +308,8 @@ def _address_literals(snapshot: Snapshot, path: str, code: str, view: SourceView
     """Lines that spell a ROM address as a number: a literal in the mapped address space (from _KSEG0) inside a symbol's
     range in a version holding the module, or `NAME + K` that reaches past the data symbol NAME in every holder, unless
     NAME is a scalar the unit declares (an int, u64 or pointer global: the sum is of its value) and no `&` takes its
-    address."""
+    address, or NAME is the right operand of another operator. The unit's declarations are its source view and the
+    headers it includes."""
     module = _module(snapshot, path)
     if module is None:
         return {}
@@ -334,8 +335,12 @@ def _address_literals(snapshot: Snapshot, path: str, code: str, view: SourceView
         ]
         if sizes and (reach := _integer(match[2])) is not None and all(reach >= size for size in sizes):
             if "&" not in match[0]:
-                if unit is None:
-                    unit = view.text if view is not None else _included(snapshot, path, code)
+                if re.search(r"[-+*/%]\s*$", code[max(0, match.start() - 8) : match.start()]):
+                    continue  # NAME is the right operand of an operator (a * b / NAME + K): the sum is not NAME + K
+                if unit is None:  # a source view is the unit's own text; the headers it includes declare the rest
+                    own = snapshot.peek(path)  # its #include lines: the checked code and a view hold no directives
+                    seen = _included(snapshot, path, own.decode(errors="replace") if own is not None else code)
+                    unit = "\n".join([*([view.text] if view is not None else []), seen])
                 if _scalar(unit, match[1]):
                     continue
             hits.setdefault(line(match.start()), " ".join(match[0].split()))
