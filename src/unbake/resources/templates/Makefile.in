@@ -150,11 +150,20 @@ asm/%/.extracted: | roms/baserom.%.z64
 $$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
 -include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
 
-build/%.o: $$$$(call src,$$$$*) asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) | $$(STAMPS)
+# An object follows the text its source preprocesses to, not the time its headers were written: the .i is replaced only
+# when its bytes change, so a header edit that leaves a source's text alone (a comment, a part another version reads)
+# preprocesses that source again and compiles nothing. The stamp (.i.ok) carries the header times; the object compiles
+# when its .i is newer than it or another input (the extraction, the text size) changed, else it is only touched.
+build/%.i.ok: $$$$(call src,$$$$*) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
-	$$(COMPILE_$$(TC))
-	$$(Q)$$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE))
-	$$(Q)printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize
+	$$(PREPROCESS_$$(TC))
+	$$(Q)if cmp -s $$(@:.ok=.new) $$(@:.ok=); then rm -f $$(@:.ok=.new); else mv -f $$(@:.ok=.new) $$(@:.ok=); fi
+	$$(Q)touch $$@
+build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) | $$(STAMPS)
+	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
+	[ $$(@:.o=.i) -ot $$@ ]; then touch $$@; \
+	else $$(COMPILE_$$(TC)) && $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \
+	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi
 build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASINC) -Iinclude $$< -o $$@

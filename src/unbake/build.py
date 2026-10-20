@@ -144,7 +144,10 @@ def _flags(row: Json, config: Config, added: Sequence[str] = (), omit: Sequence[
 
 
 def _recipe(id: str) -> str:
-    """The commands that turn one source into an object with a toolchain, spelled in make variables."""
+    """The commands that turn one source into an object with a toolchain, spelled in make variables: PREPROCESS_<id>
+    writes the preprocessed text next to the object's .i (the rule keeps the .i when the bytes are the same), and
+    COMPILE_<id> turns that .i into the object, as one shell command (the object rule runs it only when the .i or
+    another input changed)."""
     row, key = configuration.toolchain(id), _key(id)
     out = "$(@:.o=.s)" if row["emits_asm"] else "$@"
     values = {
@@ -152,18 +155,16 @@ def _recipe(id: str) -> str:
         "cc": [f"$(CC_{key})"],
         "as": [f"$(AS_{key})"],
         # -MP: a phony rule per header, so a header a later commit deletes never stops an incremental build
-        "cppflags": ["$(CPPFLAGS) -MMD -MP -MF $(@:.o=.d) -MT $@"],
+        "cppflags": ["$(CPPFLAGS) -MMD -MP -MF $(@:.i.ok=.d) -MT $@"],
         "codegen": ["$(CFLAGS)"],
         "asflags": ["$(ASFLAGS) $(ASINC)"],
         "defines": ["$(DEFINES)"],
         "includes": ["$(INCLUDES)"],
     }
-    lines = [
-        _shell(adapters.render(row["preprocess"], {**values, "source": ["$<"]})) + " > $(@:.o=.i)",
-        _shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]})),
-    ]
+    preprocess = _shell(adapters.render(row["preprocess"], {**values, "source": ["$<"]})) + " > $(@:.ok=.new)"
+    lines = [_shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]}))]
     if row["emits_asm"]:
-        lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s))')  # data packed at the byte
+        lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s),true)')  # data packed at the byte
         if row.get("jump_table_base"):
             entry = r"^([ \t]*\.word[ \t]+\.L[0-9]+)[ \t]*$$"
             lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
@@ -171,8 +172,8 @@ def _recipe(id: str) -> str:
         lines.append(_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]})))
         if row.get("rdata_alloc"):
             lines.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
-    body = "\n".join(f"$(Q){line}" for line in lines)
-    return f"define COMPILE_{key}\n{body}\nendef"
+    body = " && ".join(lines)
+    return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
 
 def _file_blocks(config: Config) -> list[str]:
@@ -741,6 +742,14 @@ def _objects(config: Config, version: str) -> list[Path]:
     return found
 
 
+def _stamps(config: Config, version: str) -> list[Path]:
+    """The .i stamps of one version: build/<v>/<source>.i.ok, one per source the .i rule preprocessed."""
+    found = []
+    for directory, _, names in os.walk(config.project.root / "build" / version):
+        found += [Path(directory) / n for n in names if n.endswith(".i.ok")]
+    return found
+
+
 def drop_including(config: Config, version: str, names: set[str]) -> int:
     """Remove the objects of `version` whose compiler output includes one of `names` (paths under asm/<v>/, as
     INCLUDE_ASM spells them) or has no compiler output to read, so make rebuilds exactly those. Returns the count."""
@@ -757,12 +766,34 @@ def drop_including(config: Config, version: str, names: set[str]) -> int:
     return dropped
 
 
+_PREPROCESS_LINE = re.compile(r"^(?:\S.*?: )?(?:CPPFLAGS|DEFINES|INCLUDES) :?= ")
+
+
+def _preprocess_lines(text: str) -> set[str]:
+    """The lines of a Makefile that decide only the preprocessed text: the preprocessor's flags and the bodies of the
+    PREPROCESS_ recipes. The .i rule compares the text it makes, so such a line changing needs the .i made again,
+    never the object removed."""
+    found: set[str] = set()
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("define PREPROCESS_"):
+            inside = True
+        elif inside and line == "endef":
+            inside = False
+        elif inside or _PREPROCESS_LINE.match(line):
+            found.add(line)
+    return found
+
+
 def drop_reflagged(config: Config, new: bytes | None = None) -> int:
     """make does not see a rule change, so the Makefile the objects in build/ were made by is kept
-    (.unbake/make.Makefile) and compared with the one about to build (`new`, default the tree's Makefile): an object
-    whose per-file row changed is removed in every version, and any other changed line (a global flag, a recipe)
-    removes every compiled object. Comment lines are ignored. The kept copy becomes the new one. Returns the count
-    removed; nothing is removed when no copy was kept (objects made before this rule)."""
+    (.unbake/make.Makefile) and compared with the one about to build (`new`, default the tree's Makefile). A changed
+    line that decides only the preprocessed text (`_preprocess_lines`) removes the .i stamp (`.i.ok`) of the objects
+    it reaches, so their text is made again and only an object whose text changed compiles again; any other changed
+    line removes the objects themselves with their stamps. A per-file row reaches its object in every version, any
+    other line (a global flag, a recipe) every compiled object. Comment lines are ignored. The kept copy becomes the
+    new one. Returns the count of objects removed; nothing is removed when no copy was kept (objects made before this
+    rule)."""
     root = config.project.root
     kept, current = root / ".unbake/make.Makefile", root / "Makefile"
     try:
@@ -774,19 +805,29 @@ def drop_reflagged(config: Config, new: bytes | None = None) -> int:
     except FileNotFoundError:
         old = new
     store.write(kept, new)
-    moved = {
-        line for line in set(old.decode().splitlines()) ^ set(new.decode().splitlines()) if not line.startswith("#")
-    }
+    before, after = old.decode(), new.decode()
+    moved = {line for line in set(before.splitlines()) ^ set(after.splitlines()) if not line.startswith("#")}
     if not moved:
         return 0
-    rules = {_FILE_RULE.match(line) for line in moved}
-    targets = None if None in rules else {m.group(1) for m in rules if m}
+    text_only = _preprocess_lines(before) | _preprocess_lines(after)
+
+    def reached(lines: set[str]) -> set[str] | None:
+        rules = {_FILE_RULE.match(line) for line in lines}
+        return None if None in rules else {m.group(1) for m in rules if m}
+
+    objects = {line for line in moved if line not in text_only}
+    remade = reached(objects) if objects else set()
+    stamped = reached(moved - objects) if moved - objects else set()
     dropped = 0
     for version in config.project.versions:
         for obj in _objects(config, version):
-            if targets is None or str(obj.relative_to(root / "build" / version)) in targets:
+            if remade is None or str(obj.relative_to(root / "build" / version)) in remade:
                 obj.unlink(missing_ok=True)
                 dropped += 1
+        for stamp in _stamps(config, version):  # an object already gone may still have the stamp of an old text
+            name = str(stamp.relative_to(root / "build" / version))[: -len(".i.ok")] + ".o"
+            if remade is None or stamped is None or name in remade or name in stamped:
+                stamp.unlink(missing_ok=True)
     return dropped
 
 

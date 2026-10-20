@@ -1,6 +1,8 @@
 """The generated whole-ROM build files: Makefile, link script and splat yaml. Mocked: no ROM, compiler or make."""
 
 import json
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -488,7 +490,8 @@ def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_pat
 def test_the_makefile_cuts_a_zero_tail_of_text_and_spells_what_the_assembler_would_change(tmp_path):
     text = build.makefile(make_config(tmp_path)).decode()
     assert "-include $(VERSIONS:%=versions/%/text_sizes.mk)" in text
-    assert text.count("$(Q)$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE))") == 2  # compiled and assembled objects
+    assert text.count("$(Q)$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE))") == 1  # assembled objects
+    assert text.count("$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE),true)") == 1  # compiled ones, when they compile
     assert "(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)" in text and "1000[0-9A-F]{4}" in text
 
 
@@ -574,9 +577,9 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
                 *targets,
                 "STAMPS=",
                 "TC=stub",
-                "CPP=true",
                 f"AS={sys.executable} {compiler}",
-                "COMPILE_stub=@$(AS) $< -o $@",
+                "PREPROCESS_stub=@cp $< $(@:.ok=.new)",
+                "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
             ],
             cwd=tmp_path,
@@ -594,6 +597,82 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
     assert make() == []
     sizes(before)
     assert make() == targets[:1]  # restoring an older value must rebuild too
+
+
+def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_path):
+    """The generated rules with a stub preprocessor that drops comment lines: a comment edit preprocesses the source
+    again and compiles nothing; a code edit compiles that one object; nothing changed runs nothing."""
+    import subprocess
+    import sys
+
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "asm/us").mkdir(parents=True)
+    (tmp_path / "asm/us/.extracted").touch()
+    (tmp_path / "versions/us/text_sizes.mk").write_text("")
+    pre = tmp_path / "pre.py"
+    pre.write_text(
+        "from pathlib import Path\nimport sys\n"
+        "text = Path(sys.argv[1]).read_text().splitlines(keepends=True)\n"
+        "Path(sys.argv[2]).write_text(''.join(t for t in text if not t.startswith('//')))\n"
+        "with Path('preprocessed').open('a') as log: log.write(sys.argv[1] + '\\n')\n"
+    )
+    compiler = tmp_path / "compiler.py"
+    compiler.write_text(
+        "from pathlib import Path\nimport sys\n"
+        "Path(sys.argv[-1]).write_bytes(Path(sys.argv[-3]).read_bytes())\n"
+        "with Path('compiled').open('a') as log: log.write(sys.argv[-1] + '\\n')\n"
+    )
+    targets = ["build/us/src/a.c.o", "build/us/src/b.c.o"]
+
+    def make():
+        for log in ("compiled", "preprocessed"):
+            (tmp_path / log).write_text("")
+        result = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "-j1",
+                *targets,
+                "STAMPS=",
+                "TC=stub",
+                f"AS={sys.executable} {compiler}",
+                f"PREPROCESS_stub=@{sys.executable} {pre} $< $(@:.ok=.new)",
+                "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
+                "TRIM_TEXT=true",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return (
+            sorted((tmp_path / "preprocessed").read_text().splitlines()),
+            sorted((tmp_path / "compiled").read_text().splitlines()),
+        )
+
+    for name in ("a", "b"):
+        (tmp_path / f"src/{name}.c").write_text(f"// note\nint {name};\n")
+    assert make() == (["src/a.c", "src/b.c"], targets)
+    assert make() == ([], [])
+
+    def edit(text):  # everything built ages first, so the edit is newer than every output and older than the next
+        now = time.time_ns()
+        for path in tmp_path.rglob("*"):
+            age = 10**10 if "build" in path.relative_to(tmp_path).parts else 2 * 10**10
+            age += 10**9 if path.suffix == ".i" else 0  # each text older than the object made from it
+            os.utime(path, ns=(now - age, now - age))
+        (tmp_path / "src/a.c").write_text(text)
+        os.utime(tmp_path / "src/a.c", ns=(now - 5 * 10**9, now - 5 * 10**9))
+
+    edit("// another note\nint a;\n")
+    assert make() == (["src/a.c"], [])  # the text is the same: nothing compiles
+    assert make() == ([], [])
+    edit("// another note\nint a2;\n")
+    assert make() == (["src/a.c"], targets[:1])
+    (tmp_path / "build/us/src/b.c.i.ok").unlink()  # objects built before the stamps: nothing newer, nothing to do
+    assert make() == ([], [])
 
 
 @pytest.mark.parametrize("mode", ["symbol", "subsegment"])
@@ -716,7 +795,7 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
     rows = build.text_sizes(config, held, "us").decode().splitlines()
     assert "build/us/src/b.c.o: NOALIGN := 1" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
     text = build.makefile(config).decode()
-    assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s))' in text
+    assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s),true)' in text
     code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
     source.write_text(".text\n.align 2\nf:\n.section .rodata\n.align 3\n.word 1\n.half 2\n.text\n.align 2\n")
@@ -726,11 +805,11 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
 
 def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     """jump_table_base and rdata_alloc of a toolchain row become recipe lines around its assembler."""
-    lines = build._recipe("gcc-2.8.1-sn64").splitlines()
+    lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
     sed = next(i for i, line in enumerate(lines) if "\\.L[0-9]+" in line)
     asm = next(i for i, line in enumerate(lines) if "asn64" in line)
     assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
-    assert lines[asm + 1] == "$(Q)$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
+    assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")
 
 
@@ -981,6 +1060,44 @@ def test_a_changed_global_rule_drops_every_compiled_object(tmp_path):
     (tmp_path / "Makefile").write_text("CFLAGS := -O3\n" + ROW)
     assert build.drop_reflagged(config) == 4
     assert (tmp_path / "build/us/asm/d.s.o").exists()  # an assembled file's rule names its one input
+
+
+def _stamp(tmp_path, v, unit):
+    return tmp_path / f"build/{v}/src/{unit}.c.i.ok"
+
+
+def _stamped(tmp_path):
+    for v in ("us", "de"):
+        for unit in ("a", "b"):
+            _stamp(tmp_path, v, unit).write_bytes(b"")
+
+
+CPPROW = "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): CPPFLAGS := -DA\n"
+
+
+def test_a_changed_preprocessor_row_remakes_that_text_and_keeps_every_object(tmp_path):
+    """A per-file CPPFLAGS row decides only the text: its stamps go (the .i is made again and compared), no object."""
+    config = _reflag_tree(tmp_path, "CFLAGS := -O2\n" + CPPROW)
+    _stamped(tmp_path)
+    assert build.drop_reflagged(config, ("CFLAGS := -O2\n" + CPPROW.replace("-DA", "-DB")).encode()) == 0
+    assert not _stamp(tmp_path, "us", "a").exists() and not _stamp(tmp_path, "de", "a").exists()
+    assert _stamp(tmp_path, "us", "b").exists() and (tmp_path / "build/us/src/a.c.o").exists()
+
+
+def test_a_changed_preprocess_recipe_remakes_every_text_and_keeps_every_object(tmp_path):
+    recipe = "define PREPROCESS_x\n$(Q)cpp $(CPPFLAGS) $< > $(@:.ok=.new)\nendef\nCPPFLAGS := -P\n"
+    config = _reflag_tree(tmp_path, recipe + ROW)
+    _stamped(tmp_path)
+    changed = recipe.replace("cpp ", "cpp -undef ").replace("-P", "-P -DX")
+    assert build.drop_reflagged(config, (changed + ROW).encode()) == 0
+    assert not any(_stamp(tmp_path, v, u).exists() for v in ("us", "de") for u in ("a", "b"))
+
+
+def test_a_dropped_object_takes_its_stamp_with_it(tmp_path):
+    config = _reflag_tree(tmp_path, "CFLAGS := -O2\n" + ROW)
+    _stamped(tmp_path)
+    assert build.drop_reflagged(config, ("CFLAGS := -O2\n" + ROW.replace("-O1", "-O3")).encode()) == 2
+    assert not _stamp(tmp_path, "us", "a").exists() and _stamp(tmp_path, "us", "b").exists()
 
 
 def test_drop_including_rebuilds_objects_whose_output_includes_a_name(tmp_path):
