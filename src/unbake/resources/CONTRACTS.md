@@ -146,6 +146,8 @@ Tracked generated files (`unbake sync`; each starts with the stamp `generated fr
 - batch_data: 90
 - blob_migration: 150
 - blobs: 400
+- blob_decode: 210
+- blob_proof: 200
 - rnc: 190
 - snsym: 320
 - build: 492
