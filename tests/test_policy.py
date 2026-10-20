@@ -557,6 +557,20 @@ def test_address_literal_hits_a_symbol_range(snapshot, monkeypatch):
     assert found == {1: "0x800D7010"}
 
 
+def test_subword_view_hits_a_word_with_a_symbol_inside(snapshot, monkeypatch):
+    version = SimpleNamespace(
+        symbols={"D_800D7000": 0x800D7000, "D_800D7002": 0x800D7002, "D_800D7010": 0x800D7010},
+        code=frozenset(),
+        segments=(("data", 0x2000, 0x2020, 0x800D7000),),
+    )
+    snapshot.versions = {"us": version}
+    snapshot.digest = "subword"
+    module = tree.Module(PATH, "data", {"us": ("D_800D7000", "D_800D7002", "D_800D7010")}, (), {})
+    monkeypatch.setattr(policy, "_tree", lambda snap: tree.Tree("t", (module,)))
+    code = "extern u32 D_800D7000;\nextern u16 D_800D7002;\nextern u32 D_800D7010;\nextern u32 D_800D9999;\n"
+    assert policy._subword_views(snapshot, PATH, code) == {1: "D_800D7000"}
+
+
 def test_cross_global_offset_hits(snapshot, monkeypatch):
     _placed_snapshot(snapshot, monkeypatch)
     code = "char *p = (char *)&D_800D7000 + 0x20;\nchar *q = (char *)&D_800D7000 + 0x1C;\n"

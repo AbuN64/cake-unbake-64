@@ -64,6 +64,7 @@
        "address-int",
        "raw-gfx",
        "address-literal",
+       "subword-view",
        "stand-in-body",
        "duplicate-record"
       ]

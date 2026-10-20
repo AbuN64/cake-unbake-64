@@ -170,6 +170,10 @@ sentence = "a declaration that a header already provides is repeated in the sour
 owner = "policy"
 sentence = "a ROM address is spelled as a number; name the symbol"
 
+[key."source.subword-view"]
+owner = "policy"
+sentence = "a 4-byte scalar has another symbol pinned inside it (a sub-word view reads the wrong half on a little-endian host)"
+
 [key."source.fake-type"]
 owner = "policy"
 sentence = "a per-function invented record type is named; use the real shared type"

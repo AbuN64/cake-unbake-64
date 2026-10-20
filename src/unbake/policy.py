@@ -304,6 +304,39 @@ _DECLARES = re.compile(
 )  # a type before the name, no statement keyword
 
 
+_WORD_EXTERN = re.compile(
+    r"^[ \t]*extern[ \t]+(?:volatile[ \t]+)?(?:u32|s32|f32|int|unsigned int|signed int|long|unsigned long|float|OSTime)"
+    r"[ \t]+(\w+)[ \t]*;",
+    re.M,
+)
+
+
+def _subword_views(snapshot: Snapshot, path: str, code: str) -> dict[int, str]:
+    """Lines that declare a symbol as a 4-byte scalar while the pinned symbols place another data symbol inside its four
+    bytes. The other symbol is a 1- or 2-byte view of the word: on the big-endian original the view at +2 is the word's
+    low half, on a little-endian host it is the high half, so a port that runs this C reads the wrong half (the audio
+    frame-size u16 at +2 of a u32 read 0 and the audio thread spun). Make the pair one record or an explicit pair of
+    halves in the declaration."""
+    module = _module(snapshot, path)
+    if module is None:
+        return {}
+    held = _held(module)
+    line = _numbered(code)
+    hits: dict[int, str] = {}
+    for match in _WORD_EXTERN.finditer(code):
+        for version in held:
+            ver = snapshot.versions[version]
+            address = ver.symbols.get(match[1])
+            if address is None or match[1] in ver.code:
+                continue
+            starts = _extents(snapshot, version)[0]
+            at = bisect_right(starts, address)
+            if at < len(starts) and starts[at] < address + 4:
+                hits.setdefault(line(match.start()), match[1])
+                break
+    return hits
+
+
 def _address_literals(snapshot: Snapshot, path: str, code: str, view: SourceView | None = None) -> dict[int, str]:
     """Lines that spell a ROM address as a number: a literal in the mapped address space (from _KSEG0) inside a symbol's
     range in a version holding the module, or `NAME + K` that reaches past the data symbol NAME in every holder, unless
@@ -765,6 +798,8 @@ def _hits(
         lines = _shared(code, view, path, snapshot) if view else set()
     elif check == "address-literal":
         return _address_literals(snapshot, path, code, view) if snapshot else {}
+    elif check == "subword-view":
+        return _subword_views(snapshot, path, code) if snapshot else {}
     else:
         lines = _raw_gfx(code)
     return dict.fromkeys(lines, "")

@@ -155,6 +155,14 @@ sentence = "a ROM address is spelled as a number; name the symbol"
 check = "address-literal"
 needs = "snapshot"
 
+[[rule]]
+id = "subword-view"
+scope = "code"
+waivable = false
+sentence = "a 4-byte scalar has another symbol pinned inside it (a sub-word view reads the wrong half on a little-endian host)"
+check = "subword-view"
+needs = "snapshot"
+
 # Hardware access permitted by rule volatile-storage outside SDK units: a cast to a volatile pointer type whose
 # operand expression contains a constant inside one of these ranges (physical RCP/PI/SI registers and their KSEG1
 # mirrors). macros/types are the spellings reported in human sentences; the check itself runs on preprocessed text.
