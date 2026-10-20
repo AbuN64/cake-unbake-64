@@ -25,8 +25,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef UNBAKE_GBI_H
-#define UNBAKE_GBI_H
+#ifndef GBI_H
+#define GBI_H
 
 /* use fast3d by default */
 #if !defined(F3D_GBI) && !defined(F3DEX_GBI) && !defined(F3DEX_GBI_2)
@@ -1612,4 +1612,4 @@
 #define gDPSetDepthSource(pkt, data) gSPSetOtherMode(pkt, G_SETOTHERMODE_L, G_MDSFT_ZSRCSEL, 1, data)
 #define gsDPSetDepthSource(data) gsSPSetOtherMode(G_SETOTHERMODE_L, G_MDSFT_ZSRCSEL, 1, data)
 
-#endif /* UNBAKE_GBI_H */
+#endif /* GBI_H */

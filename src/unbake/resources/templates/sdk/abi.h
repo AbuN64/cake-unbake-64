@@ -16,8 +16,8 @@
  * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE SOFTWARE.
  * Include the project's canonical Acmd type before expanding these builders.
  */
-#ifndef UNBAKE_ABI_H
-#define UNBAKE_ABI_H
+#ifndef ABI_H
+#define ABI_H
 #ifndef _SHIFTL
 #define _SHIFTL(v, s, w) (((unsigned int)(v) & (0xFFFFFFFFU >> (32 - (w)))) << (s))
 #endif

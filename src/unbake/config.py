@@ -7,6 +7,7 @@ import math
 import os
 import tomllib
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from functools import cache, partial
 from importlib import resources
 from pathlib import Path
@@ -445,4 +446,6 @@ def load_project(
 
 def load(root: Path, host: Path) -> Config:
     project_config, host_config = load_project(root), load_host(host)
+    with suppress(OSError):  # a read-only tree: commands that only read still run
+        process.state(root)  # every tool writes under it; it ignores itself before the first write
     return Config(project_config, host_config, digest((project_config.digest, host_config.digest)))

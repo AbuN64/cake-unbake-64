@@ -1,5 +1,5 @@
-#ifndef UNBAKE_SHARED_GFX_H
-#define UNBAKE_SHARED_GFX_H
+#ifndef SHARED_GFX_H
+#define SHARED_GFX_H
 #include "types.h"
 
 typedef union Gfx {

@@ -1,6 +1,7 @@
-# Generated game-repository files (repo.py). Action and image pins are full digests.
+# Generated game-repository files (repo.py). Action and image pins are full digests. The tool state directory
+# ignores itself (process.state), so the project's .gitignore never names it.
 schema = 1
-ignore = ["/.env", "/asm/", "/build/", "/roms/", "/tools/", "/.unbake/", "/local.mk", "*.z64", "*.n64", "*.v64"]
+ignore = ["/.env", "/asm/", "/build/", "/roms/", "/tools/", "/local.mk", "*.z64", "*.n64", "*.v64"]
 
 # The splat pins a build extracts with (`make extract`): CONTRIBUTING names them.
 splat_pip = ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"]

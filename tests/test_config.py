@@ -454,7 +454,7 @@ def test_load_resource_carries_platform_and_family_rows() -> None:
         "-nostdinc",
         "-D_LANGUAGE_C",
         "-D__GNUC__=2",
-        "-D__UNBAKE_STDARG_GCC",
+        "-D__STDARG_GCC",
     ]
     assert {r["include_asm"] for id, r in rows.items() if id.startswith("ido")} == {"processor"}
     assert {(r["stand_in_as"], r["data_split"]) for r in rows.values()} == {

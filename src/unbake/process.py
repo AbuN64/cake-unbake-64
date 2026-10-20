@@ -44,9 +44,23 @@ def _reap(group: int) -> float:
         cpu += usage.ru_utime + usage.ru_stime
 
 
+STATE = ".unbake"
+
+
+def state(root: Path) -> Path:
+    """The tool state directory of a project, created ignoring itself: its own `.gitignore` holds `*`, so neither it
+    nor anything a tool writes in it shows in git, and the project's .gitignore never has to name a tool."""
+    path = root / STATE
+    ignore = path / ".gitignore"
+    if not ignore.is_file():
+        path.mkdir(parents=True, exist_ok=True)
+        ignore.write_text("*\n")
+    return path
+
+
 def scratch(root: Path) -> Path:
     """The temporary directory every child of a project gets (TMPDIR), created when first needed."""
-    path = root / ".unbake" / "tmp"
+    path = state(root) / "tmp"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
