@@ -171,3 +171,40 @@ def test_a_rename_run_skips_the_compiler_and_stores_the_entry(tmp_path):
     assert runs(cc) == 1
     assert compile_in(tree(tmp_path, "d", new.replace("return 7", "return 8")), cache, cc) == "8\n"
     assert runs(cc) == 2
+
+
+def test_pruned_drops_only_type_declarations_nothing_names():
+    base = "typedef int s32;\nstruct A { s32 a; };\nstruct A g;\nint f(void) { return 1; }\n"
+    extra = "typedef struct Fresh { int q; } FreshT;\nenum E { E1, E2 };\nstruct Fwd;\n"
+    assert cc_cache.pruned((extra + base).encode()) == cc_cache.pruned(base.encode())
+    # a used type, a variable, an extern, a function and a variable with a struct body all stay
+    assert b"struct A" in cc_cache.pruned(base.encode()) and b"int f" in cc_cache.pruned(base.encode())
+    assert cc_cache.pruned(b"struct B { int b; } v;\n") != cc_cache.pruned(b"")
+    assert cc_cache.pruned(b"struct B v;\n") != cc_cache.pruned(b"")
+    assert cc_cache.pruned(b"extern int x;\n") != cc_cache.pruned(b"")
+    # an enumerator used by a kept chunk keeps its enum
+    used = "enum E { E1, E2 };\nint g(void) { return E2; }\n"
+    assert cc_cache.pruned(used.encode()) != cc_cache.pruned(b"int g(void) { return E2; }\n")
+    # a field change of a type nothing names is invisible; of a named one it is not
+    assert cc_cache.pruned(b"struct U { int a; };\nint h;\n") == cc_cache.pruned(b"struct U { int a; int b; };\nint h;\n")
+    assert cc_cache.pruned(b"struct U { int a; };\nstruct U h;\n") != cc_cache.pruned(
+        b"struct U { int a; int b; };\nstruct U h;\n"
+    )
+
+
+def test_a_header_edit_adding_unused_types_skips_the_compiler(tmp_path):
+    cc = tmp_path / "cc1"
+    cc.write_text(
+        '#!/bin/sh\necho run >> "$0.runs"\n'
+        'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; *.i) src=$1;; esac; shift; done\n'
+        'sed -n \'s/.*return \\(.*\\);.*/\\1/p\' "$src" > "$out"\n'
+    )
+    cc.chmod(0o755)
+    cache = tmp_path / "cc"
+    old = "typedef int s32;\nint f(void) { return 7; }\n"
+    assert compile_in(tree(tmp_path, "a", old), cache, cc) == "7\n"
+    grown = "typedef struct Fresh { s32 q; } FreshT;\n" + old
+    assert compile_in(tree(tmp_path, "b", grown), cache, cc) == "7\n"
+    assert runs(cc) == 1
+    assert compile_in(tree(tmp_path, "c", old.replace("return 7", "return 8")), cache, cc) == "8\n"
+    assert runs(cc) == 2

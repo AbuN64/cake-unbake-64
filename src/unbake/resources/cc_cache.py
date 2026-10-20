@@ -8,7 +8,7 @@ assembly instead of compiling it again. A miss runs the compiler and stores the 
 parse (no -o, no input file) runs the compiler as given.
 
 A header edit that only renames (a field, a type, a function) changes the text of every source that includes it yet
-leaves the assembly alone. A miss whose text is the last one compiled under the same compiler and arguments with
+leaves the assembly alone, as does a header edit that only touches type declarations this source never names. A miss whose text is the last one compiled under the same compiler and arguments with
 identifiers renamed one for one, and none of the old names anywhere in that assembly, copies the last assembly. The
 ROM check every build ends with stays the proof: a wrong reuse cannot ship, it fails the SHA-1.
 """
@@ -80,6 +80,91 @@ def renamed(old: bytes, new: bytes, assembly: bytes) -> bool:
     return not set(IDENT.findall(assembly)) & mapping.keys()
 
 
+TYPE_HEAD = frozenset((b"typedef", b"struct", b"union", b"enum"))
+SPACE = re.compile(rb"\s+")
+
+
+def chunks(text: bytes) -> list[list[bytes]]:
+    """The text as top-level declarations, each a list of non-blank tokens: a chunk ends at a `;` outside every bracket,
+    or at the `}` that closes a function body (the first `{` follows a `)`). Blanks between chunks are dropped."""
+    out: list[list[bytes]] = []
+    now: list[bytes] = []
+    depth = 0
+    body = False  # inside a function body: its closing brace ends the chunk
+    for tok in TOKEN.findall(text):
+        if SPACE.fullmatch(tok):
+            continue
+        now.append(tok)
+        if tok in (b"(", b"[", b"{"):
+            if tok == b"{" and depth == 0:
+                body = now[-2:-1] == [b")"] or (len(now) > 1 and b")" in now[:-1] and b"=" not in now)
+            depth += 1
+        elif tok in (b")", b"]", b"}"):
+            depth -= 1
+            if depth == 0 and tok == b"}" and body:
+                out.append(now)
+                now, body = [], False
+        elif tok == b";" and depth == 0:
+            out.append(now)
+            now = []
+    if now:
+        out.append(now)
+    return out
+
+
+def defined(chunk: list[bytes]) -> set[bytes] | None:
+    """The names a pure type chunk introduces, None for any other chunk (a function, a variable or tentative
+    definition, an extern, an asm statement: it can change the object and is never dropped). Pure type chunks are a
+    typedef, a `struct|union|enum [tag] {...};` and a forward `struct tag;`. Names are the tag and declarators outside
+    the braces, plus every enumerator of an enum; a struct's field names are not among them, unless its body defines
+    another type, when everything in it counts (a larger set only keeps more chunks)."""
+    head = chunk[0]
+    if head not in TYPE_HEAD:
+        return None
+    if head != b"typedef":
+        words = [t for t in chunk if t not in (b"{", b"}")]
+        braced = b"{" in chunk
+        shape = (
+            chunk[-1] == b";"
+            and (not braced or (chunk[2 if len(chunk) > 2 and chunk[1] != b"{" else 1] == b"{" and chunk[-2] == b"}"))
+            and (braced or len(chunk) == 3)
+        )
+        if not shape or len(words) < 2:
+            return None
+    names: set[bytes] = set()
+    depth = 0
+    nested = any(t in TYPE_HEAD for t in chunk[2:] if t != b"typedef") and b"{" in chunk
+    for tok in chunk:
+        if tok == b"{":
+            depth += 1
+        elif tok == b"}":
+            depth -= 1
+        elif IDENT.fullmatch(tok) and tok not in KEYWORDS and (depth == 0 or nested or head == b"enum"):
+            names.add(tok)
+    return names
+
+
+def pruned(text: bytes) -> bytes:
+    """`text` without the type declarations nothing else names: no .s byte depends on a typedef, struct, union or enum
+    that no kept declaration mentions (the compile has no debug output). A chunk is kept when it is not a pure type
+    chunk, or when a kept chunk names something it defines."""
+    parts = chunks(text)
+    defs = [defined(c) for c in parts]
+    keep = [d is None for d in defs]
+    used: set[bytes] = set()
+    for c, k in zip(parts, keep, strict=True):
+        if k:
+            used.update(t for t in c if IDENT.fullmatch(t))
+    changed = True
+    while changed:
+        changed = False
+        for i, d in enumerate(defs):
+            if not keep[i] and d & used:
+                keep[i], changed = True, True
+                used.update(t for t in parts[i] if IDENT.fullmatch(t))
+    return b" ".join(b" ".join(c) for c, k in zip(parts, keep, strict=True) if k)
+
+
 def remember(cache: Path, label: str, source: str) -> None:
     """The text last compiled under this compiler and these arguments: a hard link to the .i (make replaces that file
     and never writes it in place), else a copy."""
@@ -104,7 +189,13 @@ def reuse(cache: Path, label: str, compiler: str, args: list[str], text: bytes) 
         assembly = zlib.decompress((cache / (name := key(compiler, args, last))[:2] / name[2:]).read_bytes())
     except (OSError, zlib.error):
         return None
-    return assembly if last != text and renamed(last, text, assembly) else None
+    if last == text:
+        return None
+    if renamed(last, text, assembly):
+        return assembly
+    # a header edit that only adds, drops or changes type declarations nothing in this source names
+    old, new = pruned(last), pruned(text)
+    return assembly if old == new or renamed(old, new, assembly) else None
 
 
 def prune(root: Path, now: float) -> int:
