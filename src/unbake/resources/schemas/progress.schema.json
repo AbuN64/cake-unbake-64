@@ -28,10 +28,6 @@
         "type": "integer",
         "minimum": 0
        },
-       "fuzzy": {
-        "type": "integer",
-        "minimum": 0
-       },
        "total": {
         "type": "integer",
         "minimum": 0
@@ -39,7 +35,6 @@
       },
       "required": [
        "matched",
-       "fuzzy",
        "total"
       ],
       "additionalProperties": false
@@ -51,10 +46,6 @@
         "type": "integer",
         "minimum": 0
        },
-       "fuzzy": {
-        "type": "integer",
-        "minimum": 0
-       },
        "total": {
         "type": "integer",
         "minimum": 0
@@ -62,7 +53,6 @@
       },
       "required": [
        "matched",
-       "fuzzy",
        "total"
       ],
       "additionalProperties": false
@@ -74,10 +64,6 @@
         "type": "integer",
         "minimum": 0
        },
-       "fuzzy": {
-        "type": "integer",
-        "minimum": 0
-       },
        "total": {
         "type": "integer",
         "minimum": 0
@@ -85,7 +71,6 @@
       },
       "required": [
        "matched",
-       "fuzzy",
        "total"
       ],
       "additionalProperties": false
@@ -97,53 +82,108 @@
         "type": "integer",
         "minimum": 0
        },
-       "identified": {
-        "type": "integer",
-        "minimum": 0
-       },
-       "fill": {
-        "type": "integer",
-        "minimum": 0
-       },
        "total": {
         "type": "integer",
         "minimum": 0
-       },
-       "by_type": {
-        "type": "object",
-        "additionalProperties": {
-         "type": "object",
-         "additionalProperties": {
-          "type": "integer",
-          "minimum": 0
-         }
-        },
-        "propertyNames": {
-         "enum": [
-          "graphics",
-          "model",
-          "audio",
-          "world",
-          "text"
-         ]
-        }
        }
       },
       "required": [
        "decoded",
-       "identified",
-       "total",
-       "by_type"
+       "total"
       ],
       "additionalProperties": false
      },
-     "platform": {
-      "type": "integer",
-      "minimum": 0
-     },
-     "unknown": {
-      "type": "integer",
-      "minimum": 0
+     "header": {
+      "type": "object",
+      "properties": {
+       "bytes": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "pi": {
+        "type": "object",
+        "properties": {
+         "release": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+         },
+         "page_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+         },
+         "pulse_width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+         },
+         "latency": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+         }
+        },
+        "required": [
+         "release",
+         "page_size",
+         "pulse_width",
+         "latency"
+        ],
+        "additionalProperties": false
+       },
+       "clock_rate": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+       },
+       "entry_point": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+       },
+       "release": {
+        "type": "string"
+       },
+       "crc1": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+       },
+       "crc2": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+       },
+       "name": {
+        "type": "string"
+       },
+       "game_id": {
+        "type": "string"
+       },
+       "country": {
+        "type": "string"
+       },
+       "version": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+       }
+      },
+      "required": [
+       "bytes",
+       "pi",
+       "clock_rate",
+       "entry_point",
+       "release",
+       "crc1",
+       "crc2",
+       "name",
+       "game_id",
+       "country",
+       "version"
+      ],
+      "additionalProperties": false
      }
     },
     "required": [
@@ -154,182 +194,15 @@
      "data",
      "functions",
      "blobs",
-     "platform",
-     "unknown"
+     "header"
     ],
     "additionalProperties": false
    }
-  },
-  "map": {
-   "type": "object",
-   "properties": {
-    "version": {
-     "type": "string"
-    },
-    "rom_size": {
-     "type": "integer",
-     "minimum": 0
-    },
-    "fns": {
-     "type": "array",
-     "items": {
-      "type": "array",
-      "prefixItems": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "integer",
-        "minimum": 0
-       },
-       {
-        "type": "integer",
-        "minimum": 0
-       },
-       {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 100
-       },
-       {
-        "type": [
-         "string",
-         "null"
-        ]
-       },
-       {
-        "type": [
-         "integer",
-         "null"
-        ],
-        "minimum": 1
-       }
-      ],
-      "items": false,
-      "minItems": 6,
-      "maxItems": 6
-     }
-    },
-    "blobs": {
-     "type": "array",
-     "items": {
-      "type": "array",
-      "prefixItems": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "integer",
-        "minimum": 0
-       },
-       {
-        "type": "integer",
-        "minimum": 0
-       },
-       {
-        "enum": [
-         "decoded",
-         "identified",
-         "observed"
-        ]
-       },
-       {
-        "enum": [
-         "graphics",
-         "model",
-         "audio",
-         "world",
-         "text"
-        ]
-       }
-      ],
-      "items": false,
-      "minItems": 5,
-      "maxItems": 5
-     }
-    },
-    "spans": {
-     "type": "object",
-     "properties": {
-      "data": {
-       "type": "array",
-       "items": {
-        "type": "array",
-        "prefixItems": [
-         {
-          "type": "integer",
-          "minimum": 0
-         },
-         {
-          "type": "integer",
-          "minimum": 0
-         }
-        ],
-        "items": false,
-        "minItems": 2,
-        "maxItems": 2
-       }
-      },
-      "platform": {
-       "type": "array",
-       "items": {
-        "type": "array",
-        "prefixItems": [
-         {
-          "type": "integer",
-          "minimum": 0
-         },
-         {
-          "type": "integer",
-          "minimum": 0
-         }
-        ],
-        "items": false,
-        "minItems": 2,
-        "maxItems": 2
-       }
-      },
-      "fill": {
-       "type": "array",
-       "items": {
-        "type": "array",
-        "prefixItems": [
-         {
-          "type": "integer",
-          "minimum": 0
-         },
-         {
-          "type": "integer",
-          "minimum": 0
-         }
-        ],
-        "items": false,
-        "minItems": 2,
-        "maxItems": 2
-       }
-      }
-     },
-     "required": [
-      "data",
-      "platform"
-     ],
-     "additionalProperties": false
-    }
-   },
-   "required": [
-    "version",
-    "rom_size",
-    "fns",
-    "blobs",
-    "spans"
-   ],
-   "additionalProperties": false
   }
  },
  "required": [
   "schema",
-  "carts",
-  "map"
+  "carts"
  ],
  "additionalProperties": false
 }

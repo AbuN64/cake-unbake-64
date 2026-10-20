@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from unbake import blobs, libasm, publish, report
@@ -28,36 +29,40 @@ def locations(config: Any, tree: Any) -> dict[tuple[str, str], int]:
     return found
 
 
-def document(config: Any, tree: Any, current: Json) -> Json:
-    """One cart per version and one map for names_from; all totals come from the same report."""
-    carts = []
-    for version, row in current["versions"].items():
-        if "rom_size" not in row:
-            raise Refusal(Finding("report.rom", "progress.json requires the ROM byte partition", versions=(version,)))
-        carts.append(
-            {
-                "id": config.project.version[version].meta.get("cartridge_id", ""),
-                "version": version,
-                "rom_size": row["rom_size"],
-                **{
-                    kind: {part: row[f"{kind}_{part}"] for part in ("matched", "fuzzy", "total")}
-                    for kind in ("code", "data", "functions")
-                },
-                "blobs": {
-                    "decoded": row["blobs_decoded"],
-                    "identified": row["blobs_identified"],
-                    "fill": row["blobs_fill"],
-                    "total": row["blobs_total"],
-                    "by_type": row["blobs"],
-                },
-                "platform": row["platform_total"],
-                "unknown": row["unknown_total"],
-            }
-        )
-    version = config.project.names_from
-    lines = locations(config, tree)
+def header(raw: bytes) -> Json:
+    """The parsed fields of a 64-byte cartridge header: PI domain 1 timing (0x00), clock rate (0x04), entry point
+    (0x08), libultra release (0x0C), CRC1/CRC2 (0x10, 0x14), internal name (0x20), game ID and country (0x3B-0x3E)
+    and version (0x3F). Fields only: no raw bytes, and nothing past the header (the boot code is not read)."""
+    if len(raw) < 0x40:
+        raise ValueError("a cartridge header is 64 bytes")
+
+    def word(at: int) -> int:
+        return int.from_bytes(raw[at : at + 4], "big")
+
+    major, letter = raw[0x0E], raw[0x0F]
+    return {
+        "pi": {"release": raw[1] >> 4, "page_size": raw[1] & 0xF, "pulse_width": raw[2], "latency": raw[3]},
+        "clock_rate": word(0x04),
+        "entry_point": word(0x08),
+        "release": f"{major // 10}.{major % 10}{chr(letter)}" if 0x41 <= letter <= 0x5A else "",
+        "crc1": word(0x10),
+        "crc2": word(0x14),
+        "name": raw[0x20:0x34].decode("ascii", "replace").rstrip(" \0"),
+        "game_id": raw[0x3B:0x3F].decode("ascii", "replace"),
+        "country": configuration.load_resource("rom.toml")["country"].get(chr(raw[0x3E]), f"country {chr(raw[0x3E])}"),
+        "version": raw[0x3F],
+    }
+
+
+def _header(config: Any, version: str) -> Json:
+    """The header fields of a version's ROM: the same file the ROM partition measured."""
+    with (Path(config.project.root) / "roms" / f"baserom.{version}.z64").open("rb") as rom:
+        return header(rom.read(0x40))
+
+
+def _map(config: Any, tree: Any, current: Json, version: str, lines: dict[tuple[str, str], int], rows: Any) -> Json:
     fns = []
-    for row in report.credits(config, tree):
+    for row in rows:
         if row.version != version or row.code <= 0:
             continue
         path = row.member.group
@@ -70,16 +75,50 @@ def document(config: Any, tree: Any, current: Json) -> Json:
         for start, end in row.get("rom", {}).get(version, ())
     ]
     return {
-        "schema": 2,
-        "carts": carts,
-        "map": {
-            "version": version,
-            "rom_size": current["versions"][version]["rom_size"],
-            "fns": sorted(fns, key=lambda row: (row[1], row[0])),
-            "blobs": sorted(content, key=lambda row: (row[1], row[0])),
-            "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform", "fill")},
-        },
+        "schema": 1,
+        "version": version,
+        "rom_size": current["versions"][version]["rom_size"],
+        "fns": sorted(fns, key=lambda row: (row[1], row[0])),
+        "blobs": sorted(content, key=lambda row: (row[1], row[0])),
+        "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform", "fill")},
     }
+
+
+def map_path(version: str) -> str:
+    """Where a version's published map lives, beside its overview image."""
+    return f"docs/map-{version}.json"
+
+
+def maps(config: Any, tree: Any, current: Json) -> dict[str, Json]:
+    """One source-linked map per version, by version, from the same credit rows as the carts."""
+    lines = locations(config, tree)
+    rows = report.credits(config, tree)
+    return {version: _map(config, tree, current, version, lines, rows) for version in current["versions"]}
+
+
+def document(config: Any, tree: Any, current: Json) -> Json:
+    """One cart per version: the ROM size, then its parts (code, data, blobs as matched or decoded of total, and the
+    header block: cartridge header and boot code bytes with the header's fields), and the function counts. What the
+    parts do not cover is not stored. All totals come from the same report; the maps are their own files (`maps`,
+    `map_path`), so progress.json stays a small summary."""
+    carts = []
+    for version, row in current["versions"].items():
+        if "rom_size" not in row:
+            raise Refusal(Finding("report.rom", "progress.json requires the ROM byte partition", versions=(version,)))
+        carts.append(
+            {
+                "id": config.project.version[version].meta.get("cartridge_id", ""),
+                "version": version,
+                "rom_size": row["rom_size"],
+                **{
+                    kind: {part: row[f"{kind}_{part}"] for part in ("matched", "total")}
+                    for kind in ("code", "data", "functions")
+                },
+                "blobs": {"decoded": row["blobs_decoded"], "total": row["blobs_total"]},
+                "header": {"bytes": row["platform_total"], **_header(config, version)},
+            }
+        )
+    return {"schema": 2, "carts": carts}
 
 
 def unmatched(config: Any, tree: Any) -> list[Json]:

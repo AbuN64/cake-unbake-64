@@ -89,6 +89,6 @@ module_cap = 32  # most functions an inferred module holds
 begin = "<!-- progress -->"
 end = "<!-- /progress -->"
 bar = 20
-dependencies_begin = "<!-- dependencies -->"  # the pinned build tools, rendered from the same pins as the Makefile
+dependencies_begin = "<!-- dependencies -->"  # the build tools as links, rendered from the same downloads as the Makefile
 dependencies_end = "<!-- /dependencies -->"
 map_width = 720  # px: the memory map in the README is a thumbnail of the full render

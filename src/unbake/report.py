@@ -407,45 +407,36 @@ def current(config: Any, tree: Any) -> Json:
 
 def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     parts = ("code", "data") if kind == "bytes" else (kind,)
-    matched = sum(bucket[p + "_matched"] for p in parts)
-    total = sum(bucket[p + "_total"] for p in parts)
-    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells)
+    return _bar(label, sum(bucket[p + "_matched"] for p in parts), sum(bucket[p + "_total"] for p in parts), cells)
 
 
 def _rom_line(label: str, bucket: Json, cells: int) -> str:
-    """The whole ROM: matched code, data and blobs plus the platform bytes, reaching over fuzzy code and identified
-    blobs, against the exact ROM size."""
+    """The whole ROM: matched code and data, decoded blobs and the header block (cartridge header and boot code),
+    against the exact ROM size. What no part covers is the empty rest of the bar."""
     sure = bucket["code_matched"] + bucket["data_matched"] + bucket["blobs_decoded"] + bucket["platform_total"]
-    reach = sure + bucket["code_fuzzy"] + bucket["data_fuzzy"] + bucket["blobs_identified"]
-    return _bar(label, sure, reach, bucket["rom_size"], cells)
+    return _bar(label, sure, bucket["rom_size"], cells)
 
 
-def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
-    """One art bar: █ for `matched` bytes, ▒ for those up to `reach`, ░ for the rest of `total`."""
+def _bar(label: str, matched: int, total: int, cells: int) -> str:
+    """One art bar: █ for `matched` bytes, ░ for the rest of `total`."""
     percent = _pct(matched, total)
-    fuzzy = _pct(reach, total)
     solid = int(percent // (100 / cells))
-    partial = max(0, min(cells - solid, int(fuzzy // (100 / cells)) - solid))
-    bar = "█" * solid + "▒" * partial + "░" * (cells - solid - partial)
-    suffix = f" (~{fuzzy:.2f}%)" if fuzzy != percent else ""
-    return f"{label} [{bar}]  {percent:5.2f}%{suffix}  {matched:,} of {total:,}"
+    return f"{label} [{'█' * solid}{'░' * (cells - solid)}]  {percent:5.2f}%  {matched:,} of {total:,}"
 
 
-_BLOB_KEYS = (
-    "rom_size",
-    "platform_total",
-    "blobs_total",
-    "blobs_decoded",
-    "blobs_identified",
-    "blobs_fill",
-    "unknown_total",
-)
+_BLOB_KEYS = ("rom_size", "platform_total", "blobs_total", "blobs_decoded")
 
 
-def _blobs_line(label: str, held: Json, cells: int) -> str:
-    """Blobs: █ decoded (proven fill included), ▒ identified, ░ the rest, over the ROM bytes outside code, data and
-    platform."""
-    return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
+def _tree(bucket: Json, cells: int) -> list[str]:
+    """One version's ROM first, its parts under it (header block, code, data, blobs), then its functions."""
+    return [
+        _rom_line("rom".ljust(11), bucket, cells) + " bytes",
+        f"├ header    {bucket['platform_total']:,}",
+        _line("├ code".ljust(11), bucket, cells, "code"),
+        _line("├ data".ljust(11), bucket, cells, "data"),
+        _bar("└ blobs".ljust(11), bucket["blobs_decoded"], bucket["blobs_total"], cells),
+        _line("functions".ljust(11), bucket, cells, "functions"),
+    ]
 
 
 def _rom_sha256(config: Any, version: str) -> str:
@@ -466,17 +457,7 @@ def readme(text: str, config: Any, report: Json) -> str:
         project, versions = config.project, report["versions"]
         total = {
             k: sum(versions[v][k] for v in project.version)
-            for k in (
-                "code_total",
-                "code_matched",
-                "data_total",
-                "data_matched",
-                "functions_total",
-                "functions_matched",
-                "functions_fuzzy",
-                "code_fuzzy",
-                "data_fuzzy",
-            )
+            for k in ("code_total", "code_matched", "data_total", "data_matched")
         }
         counted = all("rom_size" in versions[v] for v in project.version)  # every ROM was present for the partition
         width = max(map(len, ("all", *project.version))) + 1
@@ -502,41 +483,34 @@ def readme(text: str, config: Any, report: Json) -> str:
             header = f"| {v}" + (f" ({details})" if details else "") + "."
             header += f" {meta['description']}" if meta.get("description") else ""
             header += f" SHA256 `{_rom_sha256(config, v)}` |"
-            rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
             if "rom_size" in versions[v]:
-                rows.append(_blobs_line("blobs".ljust(9), versions[v], cells))
+                rows = _tree(versions[v], cells)
+            else:
+                rows = [_line(k.ljust(9), versions[v], cells, k) for k in ("code", "data", "functions")]
             blocks.append(header + "\n|---|\n| <pre><code>" + "</code><br><code>".join(rows) + "</code></pre> |")
         text = text[: text.index(begin) + len(begin)] + "\n" + "\n\n".join(blocks) + "\n" + text[text.index(end) :]
         first, last = settings["dependencies_begin"], settings["dependencies_end"]
         if text.count(first) == 1 and text.count(last) == 1 and text.index(first) < text.index(last):
-            table = "\n".join(_dependencies(config))
-            text = text[: text.index(first) + len(first)] + "\n" + table + "\n" + text[text.index(last) :]
+            links = "\n".join(_dependencies(config))
+            text = text[: text.index(first) + len(first)] + "\n" + links + "\n" + text[text.index(last) :]
         return text
 
 
 def _dependencies(config: Any) -> list[str]:
-    """The README table of the pinned build tools, from the pins the generated Makefile fetches: each row names the
-    tool by its own identity and links the exact archive by its sha256 (where it is hosted shows only in the URL)."""
+    """The README list of the build tools the generated Makefile fetches: one link per tool, named by its own
+    identity and pointing at its archive."""
     project = config.project
     rows = configuration.toolchains()
     rules = getattr(project, "file", {})
     used = sorted({project.toolchain, *(r["toolchain"] for r in rules.values() if r.get("toolchain"))})
-    lines = ["| Tool | Used for | Pinned archive |", "|---|---|---|"]
+    lines = []
     for id in used:
         for download in rows.get(id, {}).get("downloads", [])[:1]:
-            title = rows[id].get("title", id)
-            lines.append(f"| {title} | compiles C (`{id}`) | {_archive(download)} |")
+            lines.append(f"- [{rows[id].get('title', id)}]({download['url']})")
     for row in configuration.load_resource("repo.toml")["make"]["tools"].values():
         if "download" in row and any(f"{{{row['host']}}}" in str(rows.get(id)) for id in used):
-            lines.append(
-                f"| {row.get('title', row['host'])} | assembles and links every unit | {_archive(row['download'])} |"
-            )
+            lines.append(f"- [{row.get('title', row['host'])}]({row['download']['url']})")
     return lines
-
-
-def _archive(download: Mapping[str, Any]) -> str:
-    name = str(download["url"]).rsplit("/", 1)[-1]
-    return f"[{name}]({download['url']}) sha256 `{str(download['sha256'])[:12]}`"
 
 
 def publish_hold(config: Any, tree: Any) -> Finding | None:
@@ -564,18 +538,24 @@ def publish_hold(config: Any, tree: Any) -> Finding | None:
     return None
 
 
-def progress_bytes(config: Any, tree: Any) -> bytes:
-    """The progress.json text for this tree."""
+def progress_files(config: Any, tree: Any) -> dict[str, bytes]:
+    """progress.json and each version's map file for this tree, by project path."""
     from unbake import progress as published
 
-    document = published.document(config, tree, current(config, tree))
+    now = current(config, tree)
+    document = published.document(config, tree, now)
     configuration.validate("progress", document, "progress.json")
-    return (json.dumps(document, sort_keys=True) + "\n").encode()
+    out = {"progress.json": (json.dumps(document, sort_keys=True) + "\n").encode()}
+    for version, row in published.maps(config, tree, now).items():
+        path = published.map_path(version)
+        configuration.validate("progress.map", row, path)
+        out[path] = (json.dumps(row, sort_keys=True) + "\n").encode()
+    return out
 
 
 def files(config: Any, tree: Any) -> dict[str, bytes]:
-    """README.md with its progress block, the one image it embeds and an existing progress.json; empty when
-    `publish_hold` holds the tree, so the numbers on disk stay as they are."""
+    """README.md with its progress block, the one image it embeds and an existing progress.json with its map files;
+    empty when `publish_hold` holds the tree, so the numbers on disk stay as they are."""
     with effort.stage("report.files"):
         if publish_hold(config, tree):
             return {}
@@ -584,7 +564,7 @@ def files(config: Any, tree: Any) -> dict[str, bytes]:
         out = {"README.md": readme((root / "README.md").read_text(), config, document).encode()}
         out.update(present.files(config, tree))
         if (root / "progress.json").is_file():
-            out["progress.json"] = progress_bytes(config, tree)
+            out.update(progress_files(config, tree))
         return out
 
 
@@ -598,7 +578,8 @@ def run(config: Any, params: Json) -> Json:
         if hold := publish_hold(config, tree):
             result["notes"] = [asdict(hold)]
         else:
-            store.write(config.project.root / "progress.json", progress_bytes(config, tree))
+            for path, content in progress_files(config, tree).items():
+                store.write(config.project.root / path, content)
         if params.get("next"):
             result["next"] = progress.unmatched(config, tree)
         return result
