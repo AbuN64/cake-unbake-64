@@ -505,3 +505,7 @@ sentence = "a NON_MATCHING body is not the body of its function"
 [key."types.input"]
 owner = "layouts"
 sentence = "types has no extracted assembly or no readable requests file to read"
+
+[key."renameproof.not_rename"]
+owner = "renameproof"
+sentence = "the change is not a pure identifier rename, so only a build proves it"

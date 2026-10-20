@@ -119,6 +119,16 @@ params = [
   { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the working tree is compared with" },
 ]
 
+[command.renameproof]
+configured = false
+help = "Prove a change that only renames identifiers by its rename map (no build): the working tree, or PATCHes applied in order, over REV."
+handler = "renameproof.rename_command"
+params = [
+  { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the change is measured from" },
+  { name = "patch", kind = "option", type = "path", required = false, multiple = true, help = "a patch applied in order over REV in a private index; none means the working tree" },
+  { name = "inert", kind = "option", type = "str", required = false, multiple = true, help = "glob of paths no build reads (a catalog of names) that may be added or changed" },
+  { name = "steps", kind = "flag", type = "str", required = false, multiple = false, help = "judge each patch over the state the earlier ones leave and list every verdict" },
+]
 [command.map]
 help = "Write the layout map with its objective evidence to .unbake/map.json; writes nothing tracked."
 handler = "report.map_command"

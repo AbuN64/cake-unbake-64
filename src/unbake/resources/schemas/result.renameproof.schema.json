@@ -1,0 +1,18 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.renameproof",
+ "type": "object",
+ "properties": {
+  "against": {"type": "string", "minLength": 1},
+  "base": {"type": "string", "minLength": 1},
+  "tree": {"type": "string", "minLength": 1},
+  "patches": {"type": "array", "items": {"type": "string"}},
+  "files": {"type": "integer", "minimum": 0},
+  "renames": {"type": "integer", "minimum": 0},
+  "map": {"type": "array", "items": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}},
+  "inert": {"type": "array", "items": {"type": "string"}},
+  "steps": {"type": "array", "items": {"type": "object"}}
+ },
+ "required": ["against", "base", "tree", "patches", "files", "renames", "map", "inert"],
+ "additionalProperties": false
+}
