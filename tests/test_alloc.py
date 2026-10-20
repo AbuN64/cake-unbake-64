@@ -79,3 +79,34 @@ def test_report_names_pseudos_local_alloc_placed_and_flips_only_within_one_alloc
     assert row["flip"] is None  # the target's 140 outranks 141 already: nothing to lift
     (mixed,) = alloc.report("f", greg, lreg, ASM, {"$f0": Counter({"$s4": 2})})  # global winner vs local pseudo
     assert (mixed["candidate"]["allocator"], mixed["target"]["allocator"], mixed["flip"]) == ("global", "local", None)
+
+
+LREG_RTL = (
+    ";; Function f\n"
+    '(note 1 0 2 ("f.c") 10)\n'
+    "(insn 4 2 6 (set (reg/v:SI 81) (const_int 0)) -1 (nil))\n"
+    "(note 5 4 6 0 NOTE_INSN_LOOP_BEG)\n"
+    '(note 6 5 7 ("f.c") 12)\n'
+    "(insn 7 6 8 (set (reg/v:SI 81) (plus:SI (reg/v:SI 81) (reg:SI 93))) -1 (expr_list:REG_DEAD (reg:SI 93) (nil)))\n"
+    "(note 8 7 9 0 NOTE_INSN_LOOP_END)\n"
+    '(note 9 8 10 ("f.c") 14)\n'
+    "(insn 10 9 11 (set (reg:SI 2) (reg/v:SI 81)) -1 (nil))\n"
+    ";; Function g\n(insn 3 2 4 (set (reg/v:SI 81) (const_int 1)) -1 (nil))\n"
+)
+
+
+def test_lines_weigh_each_reference_by_its_loop_depth_per_source_line() -> None:
+    found = alloc.lines(LREG_RTL, "f", {81, 93})
+    assert found[81] == [
+        {"line": 10, "depth": 1, "refs": 1, "weighted": 1},
+        {"line": 12, "depth": 2, "refs": 2, "weighted": 4},  # in the loop: each reference counts twice
+        {"line": 14, "depth": 1, "refs": 1, "weighted": 1},
+    ]
+    assert found[93] == [{"line": 12, "depth": 2, "refs": 1, "weighted": 2}]  # the REG_DEAD note is no reference
+
+
+def test_report_rows_carry_each_pseudos_references_by_line() -> None:
+    votes = {"$s4": Counter({"$s5": 3})}
+    (row,) = alloc.report("f", GREG, LREG + LREG_RTL.split("\n", 1)[1], ASM, votes)
+    assert row["candidate"]["lines"] or row["target"]["lines"]
+    assert all("weighted" in r for r in row["candidate"]["lines"] + row["target"]["lines"])

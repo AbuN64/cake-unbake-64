@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -620,9 +621,13 @@ def _score_one(config: Config, params: Json) -> Json:
         "proofs": [asdict(p) for p in proofs],
         "rewritten": [],
     }
-    if params.get("alloc"):
+    if params.get("alloc") or params.get("keep_dumps"):
         with store.work(config) as work:
             greg, lreg, asm, passes = native.dumps(snapshot, unit, version, recipe, work / "alloc")
+            if params.get("keep_dumps"):  # the scratch goes when the command ends; the lane reads its copy
+                kept = Path(params["keep_dumps"]).resolve()
+                shutil.copytree(work / "alloc", kept, dirs_exist_ok=True)
+                result["dumps"] = sorted(str(kept / f.name) for f in (work / "alloc").iterdir())
         result["alloc"] = alloc.report(name, greg, lreg, asm, symptoms.register_votes(built, target))
         result["sched"] = sched.report(name, passes, symptoms.listing(built, facts[0]), everything)
     return result

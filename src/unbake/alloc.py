@@ -29,6 +29,35 @@ def _part(text: str, name: str) -> str:
     return next((p for p in re.split(r"(?m)^;; Function ", text) if p.startswith(name + "\n")), "")
 
 
+_RTX = re.compile(r"\n(?=\((?:insn|jump_insn|call_insn|note|code_label|barrier)(?:/[a-z]+)? )")
+_LINE = re.compile(r'\(note(?:/[a-z]+)? \d+ \d+ \d+ \("[^"]*"\) (\d+)\)')
+
+
+def lines(lreg: str, function: str, pseudos: set[int]) -> dict[int, list[Json]]:
+    """Per pseudo, its references in each source line of the function's local-alloc dump: {line, depth, refs,
+    weighted}. flow counts a reference once per loop the insn sits in plus one (REG_N_REFS), so weighted is refs times
+    the loop depth and the weighted sum is the dump's "used N times" that priority reads."""
+    depth, line = 1, 0
+    found: dict[int, dict[tuple[int, int], int]] = {p: {} for p in pseudos}
+    for chunk in _RTX.split(_part(lreg, function)):
+        if re.match(r"\(note[ /]", chunk):
+            depth += ("NOTE_INSN_LOOP_BEG" in chunk) - ("NOTE_INSN_LOOP_END" in chunk)
+            if at := _LINE.match(chunk):
+                line = int(at[1])
+            continue
+        if not re.match(r"\((?:insn|jump_insn|call_insn)(?:/[a-z]+)? ", chunk):
+            continue
+        body = chunk.split("(expr_list:REG_", 1)[0]  # the notes repeat registers the insn does not reference
+        for pseudo in pseudos:
+            if count := len(re.findall(rf"\(reg(?:/[a-z]+)*:[A-Z]+ {pseudo}\)", body)):
+                key = (line, depth)
+                found[pseudo][key] = found[pseudo].get(key, 0) + count
+    return {
+        p: [{"line": ln, "depth": d, "refs": n, "weighted": n * d} for (ln, d), n in sorted(rows.items())]
+        for p, rows in found.items()
+    }
+
+
 def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Counter[str]]) -> list[Json]:
     """A row per register the target fills with another pseudo than the candidate's winner; `votes` maps each register
     the candidate uses to the one the target uses in the same operand of the aligned instructions. A pseudo local-alloc
@@ -57,6 +86,8 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
         if pseudo not in order and reg not in winner:
             by_block.setdefault(reg, pseudo)
 
+    by_line = lines(lreg, function, {*winner.values(), *by_block.values()})
+
     def who(reg: int) -> Json:
         pseudo = winner.get(reg, by_block.get(reg))
         if pseudo is None:  # no pseudo of the candidate holds it
@@ -68,6 +99,7 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
                 "name": "free",
                 "priority": 0.0,
                 "allocator": None,
+                "lines": [],
             }
         refs, span = stats.get(pseudo, (0, 1))
         return {
@@ -78,6 +110,7 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
             "name": "/".join(named.get(reg, [f"pseudo {pseudo}"])),
             "priority": round(priority(refs, span), 4),
             "allocator": "global" if reg in winner else "local",
+            "lines": by_line.get(pseudo, []),
         }
 
     # every pair the aligned operands disagree on, the minority too: one swapped site among a hundred agreeing ones

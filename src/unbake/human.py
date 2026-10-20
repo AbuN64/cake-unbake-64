@@ -166,6 +166,13 @@ def _score(result: Json) -> list[str]:
             f"{lost['length']}, priority {lost['priority']})"
             + (f"; flips at +{flip['more_refs']} refs or -{flip['shorter_by']} insns live" if flip else "")
         )
+        for side in (won, lost):  # where each pseudo's weighted references come from: line:refs*depth
+            if side.get("lines"):
+                spread = " ".join(
+                    f"{r['line']}:{r['refs']}" + f"*{r['depth']}" * (r["depth"] > 1) for r in side["lines"]
+                )
+                lines.append(f"  {side['name']} refs by line: {spread}")
+    lines.extend(f"dump {path}" for path in result.get("dumps", ()))
     for row in result.get("sched", ()):
         way = "earlier" if row["words"] > 0 else "later"
         lines.append(f"line {row['line']}: {row['asm']} sits {abs(row['words'])} words {way} than in the target")

@@ -65,6 +65,7 @@ _SHORT = (
     "source",
     "diff",
     "alloc",
+    "dumps",
     "sched",
     "variants",
 )

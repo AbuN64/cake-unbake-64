@@ -63,6 +63,7 @@ params = [
   { name = "short", kind = "flag", type = "str", required = false, multiple = false, help = "print only the verdict, the first difference and the diff lines as JSON: no stage tree or proofs (a few hundred bytes)" },
   { name = "variants", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {file, overlays}: score every candidate in this one process, all cores, stdout JSON per variant" },
   { name = "alloc", kind = "flag", type = "str", required = false, multiple = false, help = "compile once more with the register allocation dumps and name, per register the target fills differently, the pseudo that won it, its priority and what would flip it, and per moved load or store the scheduler's priority, dependencies and tie" },
+  { name = "keep-dumps", kind = "option", type = "path", required = false, multiple = false, help = "with --alloc (implied): copy the compile's gcc dumps (.greg, .lreg, .sched, .sched2, the -g assembly and its .i) into DIR, which outlives the command" },
 ]
 
 [command.submit]
