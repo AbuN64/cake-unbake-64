@@ -784,6 +784,72 @@ def test_audit_allows_a_drop_the_removed_c_explains(tmp_path, monkeypatch):
     assert result["paths"] == ["src/a.c"]
 
 
+_RENAMED = "void *{name}(void *arg0, void *arg1) {{\n    return ((Actor *)arg0)->parent;\n}}\n"
+
+
+def _audit_rename(tmp_path, monkeypatch, new_name, body):
+    """A committed tree placing func_8027D97C_de in two versions, then the working tree naming it new_name."""
+    import subprocess
+
+    json = _audit_repo(tmp_path, monkeypatch)
+    (tmp_path / "config.toml").write_text('[version.de]\nsha1 = "x"\n\n[version.us]\nsha1 = "y"\n')
+
+    def place(name):
+        for version, vram in (("de", 0x8027D97C), ("us", 0x8027D9AC)):
+            (tmp_path / "versions" / version).mkdir(parents=True, exist_ok=True)
+            text = f"{name} = 0x{vram:X}; // type:func\nkeep = 0x80000000;\n"
+            (tmp_path / "versions" / version / "symbol_addrs.txt").write_text(text)
+
+    place("func_8027D97C_de")
+    (tmp_path / "src/p.c").write_text(_RENAMED.format(name="func_8027D97C_de"))
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    for args in (["add", "-A"], ["commit", "-q", "-m", "placed"]):
+        subprocess.run([*git, *args], check=True)
+    place(new_name)
+    (tmp_path / "src/p.c").write_text(body)
+    assert json
+    return policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
+
+
+def test_audit_carries_an_old_row_through_a_function_rename(tmp_path, monkeypatch):
+    new = "Particle_ParentTransform"
+    result = _audit_rename(tmp_path, monkeypatch, new, _RENAMED.format(name=new))
+    assert result["paths"] == ["src/p.c"]
+
+
+def test_audit_refuses_a_new_row_inside_a_renamed_function(tmp_path, monkeypatch):
+    new = "Particle_ParentTransform"
+    body = _RENAMED.format(name=new).replace("    return", "    gAddr = (s32)&((Actor *)arg1)->x;\n    return")
+    with pytest.raises(policy.Refusal) as refused:
+        _audit_rename(tmp_path, monkeypatch, new, body)
+    assert [f.key for f in refused.value.findings] == ["source.address-int"]
+    assert new in refused.value.findings[0].reason
+
+
+def test_audit_unchanged_names_keep_their_rows(tmp_path, monkeypatch):
+    name = "func_8027D97C_de"
+    assert _audit_rename(tmp_path, monkeypatch, name, "/* touched */\n" + _RENAMED.format(name=name))["paths"] == [
+        "src/p.c"
+    ]
+
+
+def test_audit_a_new_function_with_an_old_row_shape_is_new(tmp_path, monkeypatch):
+    name = "func_8027D97C_de"
+    body = _RENAMED.format(name=name) + _RENAMED.format(name="func_other")
+    with pytest.raises(policy.Refusal) as refused:
+        _audit_rename(tmp_path, monkeypatch, name, body)
+    assert [f.key for f in refused.value.findings] == ["source.param-cast"]
+    assert "func_other()" in refused.value.findings[0].reason
+
+
+def test_renames_follow_placement_not_spelling():
+    one, two = frozenset({("de", 1), ("us", 2)}), frozenset({("de", 5)})
+    before = {"a": one, "b": frozenset({("de", 3)}), "c": two}
+    after = {"A": one, "b": frozenset({("de", 3)}), "x": two, "y": two}
+    # c's placement is held by two names: no single identity, so no rename is read
+    assert policy._renames(before, after) == {"a": "A"}
+
+
 def test_scope_blames_only_the_paths_whose_own_count_rose():
     # the wtmain9234 shape: a header gains two rows while an unchanged includer keeps its own
     row = Finding("source.union-view", "a union gives one storage two types: union", path="include/UNUSED.H")

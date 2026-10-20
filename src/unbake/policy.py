@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import config, delta, effort, native, pool, process, recipes, store, tree
+from unbake import config, delta, effort, native, pool, process, recipes, store, tree, versions
 from unbake import view as _view
 from unbake.contracts import Finding, Json, Refusal, Snapshot, SourceView, UnitSpec, code_identity, digest
 
@@ -801,17 +801,59 @@ def evaluate(
         return _findings(snapshot, path, text, view, sdk_group, only)
 
 
+_IDENT = re.compile(r"[A-Za-z_]\w*")
+
+
+def _placements(read: Callable[[str], bytes | None]) -> dict[str, frozenset[tuple[str, int]]]:
+    """name -> {(version, vram)} of every symbol the version symbol files of one tree place, read through `read`
+    (None: no such file). A symbol is where it sits, so its placements are its identity, whatever it is called."""
+    raw = read("config.toml")
+    places: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    for version in tomllib.loads(raw.decode()).get("version", {}) if raw else ():
+        file = versions.symbol_file(version)
+        data = read(file)
+        for row in versions.parse_symbol_addrs(data, file) if data else ():
+            places[row.name].add((version, row.vram))
+    return {name: frozenset(p) for name, p in places.items()}
+
+
+def _renames(
+    before: Mapping[str, frozenset[tuple[str, int]]], after: Mapping[str, frozenset[tuple[str, int]]]
+) -> dict[str, str]:
+    """old name -> new name of every symbol whose old spelling is gone while exactly one name of `after` holds one of
+    its placements: a rename (recipe naming) keeps the symbol, so the rows that name it keep their identity."""
+    held: defaultdict[tuple[str, int], set[str]] = defaultdict(set)
+    for name, places in after.items():
+        for place in places:
+            held[place].add(name)
+    out: dict[str, str] = {}
+    for name, places in before.items():
+        new = {n for place in places for n in held.get(place, ())}
+        if name not in after and len(new) == 1:
+            out[name] = new.pop()
+    return out
+
+
 def scope(
-    before: Sequence[Finding], after: Sequence[Finding], writes: Collection[str]
+    before: Sequence[Finding],
+    after: Sequence[Finding],
+    writes: Collection[str],
+    renamed: Mapping[str, str] | None = None,
 ) -> tuple[tuple[Finding, ...], tuple[Finding, ...]]:
     # A row is its rule and subject, wherever it is: moving text between files is free and a repeated row is new once
     # it outnumbers the old text's, so the repo-wide total of a rule never rises through any path. When a total does
     # rise, the paths blamed are the ones whose own count of that row rose (never one whose count is unchanged), each
-    # reported with its count before and after.
-    def rows(findings: Sequence[Finding]) -> Counter[tuple[tuple[str, str], str]]:
-        return Counter(((f.key, f.reason), f.path) for f in findings)
+    # reported with its count before and after. A subject names symbols by identity, not spelling: an old row that
+    # spells a renamed symbol (`renamed`: old -> new name) is read with its new name, so a rename is as free as a move.
+    names = renamed or {}
 
-    old, new = rows(before), rows(after)
+    def spelled(reason: str) -> str:
+        return _IDENT.sub(lambda m: names.get(m[0], m[0]), reason) if names else reason
+
+    def rows(findings: Sequence[Finding], read: Callable[[str], str]) -> Counter[tuple[tuple[str, str], str]]:
+        return Counter(((f.key, read(f.reason)), f.path) for f in findings)
+
+    old, new = rows(before, spelled), rows(after, str)
     total: Counter[tuple[str, str]] = Counter()
     for (row, _), n in new.items():
         total[row] += n
@@ -1289,16 +1331,21 @@ def audit_command(params: Json) -> Json:
         .split("\0")
     )
     paths = sorted(p for p in names if p and not any(Path(p).is_relative_to(d) for d in library))
+
+    def old_file(path: str) -> bytes | None:
+        result = process.run("git show", [git, "show", f"{against}:{path}"], root, tmp=tmp)
+        return result.stdout if result.exit == 0 else None
+
+    def new_file(path: str) -> bytes | None:
+        return (root / path).read_bytes() if (root / path).is_file() else None
+
     before: list[Finding] = []
     after: list[Finding] = []
     for path in paths:
-        old = process.run("git show", [git, "show", f"{against}:{path}"], root, tmp=tmp)
-        new = root / path
-        if old.exit == 0:
-            before.extend(text_findings(path, old.stdout.decode(errors="replace"), False))
-        if new.is_file():
-            after.extend(text_findings(path, new.read_text(errors="replace"), False))
-    blocking, _ = scope(before, after, paths)
+        for found, data in ((before, old_file(path)), (after, new_file(path))):
+            if data is not None:
+                found.extend(text_findings(path, data.decode(errors="replace"), False))
+    blocking, _ = scope(before, after, paths, _renames(_placements(old_file), _placements(new_file)))
     if blocking:
         held, now = Counter((f.key, f.path) for f in before), Counter((f.key, f.path) for f in after)
         raise Refusal(
