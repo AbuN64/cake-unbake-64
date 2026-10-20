@@ -18,12 +18,11 @@ ship, it fails the SHA-1.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import sys
 import zlib
-from typing import TYPE_CHECKING
 
+TYPE_CHECKING = False  # typing itself is 1 ms of this front's start
 if TYPE_CHECKING:
     import re
 
@@ -359,8 +358,10 @@ def remember(cache: str, label: str, source: str) -> None:
     part = f"{entry}.{os.getpid()}.part"
     try:
         os.makedirs(os.path.dirname(entry), exist_ok=True)
-        with contextlib.suppress(FileNotFoundError):
+        try:  # noqa: SIM105 - contextlib is 1.5 ms of this front's start
             os.unlink(part)
+        except FileNotFoundError:
+            pass
         try:
             os.link(source, part)
         except OSError:

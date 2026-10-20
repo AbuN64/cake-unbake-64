@@ -682,7 +682,7 @@ def _cached_cc(config: Config, compiler: Path) -> str:
     if cache is None:
         return str(compiler)
     front = Path(__file__).parent / "resources" / "cc_cache.py"
-    parts = ("python3", "-I", front, cache.with_name(f"{cache.name}.cc"), compiler)
+    parts = ("python3", "-I", "-S", front, cache.with_name(f"{cache.name}.cc"), compiler)
     return " ".join(shlex.quote(str(p)) for p in parts)
 
 
