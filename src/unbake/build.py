@@ -663,6 +663,18 @@ def _fetch_rule(folder: str, download: Json, pins: Mapping[str, str]) -> str:
     )
 
 
+def _cached_cc(config: Config, compiler: Path) -> str:
+    """The compiler the Makefile runs: behind resources/cc_cache.py, whose results live beside the host content cache,
+    so every tree on the host copies the assembly of a text any tree compiled (a commit that changes a header all
+    sources include changes every .i, yet its proof tree compiled those texts: 1045 s CPU in a seeded tip setup)."""
+    cache = getattr(config.host, "cache_dir", None)
+    if cache is None:
+        return str(compiler)
+    front = Path(__file__).parent / "resources" / "cc_cache.py"
+    parts = ("python3", "-I", front, cache.with_name(f"{cache.name}.cc"), compiler)
+    return " ".join(shlex.quote(str(p)) for p in parts)
+
+
 def local_mk(config: Config) -> bytes:
     with effort.stage("build.local_mk"):
         assignments = [
@@ -675,7 +687,7 @@ def local_mk(config: Config) -> bytes:
         ]
         for id, row in sorted(configuration.toolchains().items()):
             key, base = _key(id), config.host.toolchain_root / id
-            assignments.append(f"CC_{key} := {base / row['cc']}")
+            assignments.append(f"CC_{key} := {_cached_cc(config, base / row['cc'])}")
             assignments.append(f"AS_{key} := {base / row['as']}" if "as" in row else f"AS_{key} := $(AS)")
             assignments.append(f"TOOLCHAIN_{key} :=")
         return Template(configuration.template("local.mk.in")).substitute(assignments="\n".join(assignments)).encode()
