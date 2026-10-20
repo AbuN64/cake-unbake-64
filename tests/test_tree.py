@@ -419,7 +419,7 @@ def test_a_comment_edit_of_a_shared_header_parses_nothing_again(
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) == runs
-    (root / "include/shared.h").write_text("typedef struct S {\n    int arena;\n    int round;\n} S;\n")
+    (root / "include/shared.h").write_text("typedef struct S {\n    int arena;\n} S;\nextern int round;\n")
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) > runs
@@ -652,3 +652,32 @@ def test_the_expanded_scan_reads_runs_once_and_gives_the_whole_scan(monkeypatch:
     other: dict[str, str] = {}
     assert tree._scan_expanded(header + "s32 k(void) { return 2; }\n", other)[0][-1] == "k"
     assert len(folds) - first < first / 4  # the header's runs were read before
+
+
+def test_skeleton_drops_only_declarations_that_cannot_define_a_name() -> None:
+    header = (
+        b"#define M 1\n"
+        b"typedef struct P { int a; } P;\nstruct Q { int b; };\nenum E { E1 };\n"
+        b"static __inline__ int pick(P *p) { return p->a; }\n"
+        b"extern int ext;\nint table[4] = {1, 2};\nint fn(void) { return 1; }\n"
+        b"#if M\nstruct Split {\n#endif\n int c;\n};\n"
+    )
+    kept = tree._skeleton(header)
+    assert b"typedef" not in kept and b"enum" not in kept and b"pick" not in kept
+    assert b"#define M 1" in kept and b"extern int ext ;" in kept and b"table" in kept and b"fn" in kept
+    assert b"struct Split {" in kept  # a run cut by a conditional is kept as written
+    grown = header.replace(b"struct Q { int b; };", b"struct Q { int b; int d; };\ntypedef long L;")
+    assert tree._skeleton(grown) == kept
+
+
+def test_a_header_edit_of_unnamed_types_parses_nothing_again(tmp_path: Path) -> None:
+    sources = {"src/main/c_func.c": '#include "t.h"\ns32 c_func(void) { return 1; }\n'}
+    config = fixture.config(tmp_path, sources=sources, extra={"include/t.h": "typedef int T;\n"})
+    tree.capture(config)
+    before = fixture.cpp_runs(tmp_path)
+    edit(config, "include/t.h", "typedef int T;\nstruct Fresh { int q; };\n")
+    held = tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) == before and held.owner("a", "c_func") == "src/main/c_func.c"
+    edit(config, "include/t.h", "typedef int T;\nstruct Fresh { int q; };\nint g(void) { return 2; }\n")
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) > before  # a function in the header can define a name: the source parses again

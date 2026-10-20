@@ -20,6 +20,7 @@ from typing import Any
 from unbake import adapters, effort, libasm, pool, process, recipes, store, symbols
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Refusal, sha256
+from unbake.resources import cc_cache
 
 KIND = "tree.file"
 TREE = "tree.captured"  # a whole captured tree, keyed by its inputs
@@ -379,13 +380,48 @@ def _meaning(data: bytes) -> bytes:
     return _LEXEME.sub(plain, data)
 
 
+_HEADER_DIRECTIVE = re.compile(rb"[ \t]*#")
+
+
+def _skeleton(data: bytes) -> bytes:
+    """`data` (a header, comments gone) without the declarations that cannot change which names a source defines:
+    every top-level type definition (typedef, struct, union, enum) and static inline function. Directives stay as
+    written, and so does any run of lines that is not whole declarations (a struct body split by a conditional). A
+    header edit that only adds, drops or changes such declarations keeps this text, so a parse keyed on it is reused
+    where the preprocessor would otherwise run again for every source that includes the header."""
+    out: list[bytes] = []
+    run: list[bytes] = []
+    joined = False
+
+    def flush() -> None:
+        if run:
+            text = b"\n".join(run)
+            run.clear()
+            if cc_cache.complete(text):
+                kept = [c for c in cc_cache.chunks(text) if cc_cache.defined(c) is None]
+                out.append(b" ".join(b" ".join(c) for c in kept))
+            else:
+                out.append(text)
+
+    for line in data.split(b"\n"):
+        if joined or _HEADER_DIRECTIVE.match(line):
+            flush()
+            out.append(line)
+            joined = line.rstrip(b"\r").endswith(b"\\")
+        else:
+            run.append(line)
+    flush()
+    return b"\n".join(out)
+
+
 class _Headers:
     """What the include walk learns about a header, kept per reader: its sha, where each name resolves from a folder
     and its whole closure. A tree of thousands of files reaches the same few hundred headers, so each is hashed and
-    walked once, not once per file."""
+    walked once, not once per file. With `skeleton` a header counts by its `_skeleton` (the parse's second key)."""
 
-    def __init__(self, read: Callable[[str], bytes | None]) -> None:
+    def __init__(self, read: Callable[[str], bytes | None], skeleton: bool = False) -> None:
         self._read = read
+        self._skeleton = skeleton
         self._blobs: dict[str, bytes | None] = {}
         self._sha: dict[str, str] = {}
         self._includes: dict[bytes, list[str]] = {}
@@ -401,7 +437,8 @@ class _Headers:
         if blob is None:
             return ""
         if path not in self._sha:
-            self._sha[path] = sha256(_meaning(blob))
+            meaning = _meaning(blob)
+            self._sha[path] = sha256(_skeleton(meaning) if self._skeleton else meaning)
         return self._sha[path]
 
     def resolve(self, here: str, name: str, directory: str, version: str, extra: tuple[str, ...]) -> str:
@@ -806,8 +843,11 @@ def _reader(
 
 
 def _parse_job(item: tuple[Any, ...]) -> tuple[list[str], list[str], list[str], dict[str, str]]:
-    config, path, text, version, key = item
-    return _parsed(config, path, text, version, key=key)
+    config, path, text, version, key, second = item
+    row = _parsed(config, path, text, version, key=key)
+    if second and (stored := store.get(config, KIND, key)) is not None:
+        store.put(config, KIND, second, stored)  # the same row under the skeleton key, for the next header edit
+    return row
 
 
 def _digest(config: Config, blobs: Mapping[str, bytes]) -> str:
@@ -854,7 +894,7 @@ def _build(
         )
         for v in versions
     }
-    parsed = _parse_all(config, blobs, jobs, keys)
+    parsed = _parse_all(config, blobs, jobs, keys, overlay)
     owned: dict[str, dict[str, list[str]]] = defaultdict(dict)
     stand: dict[str, dict[str, list[str]]] = defaultdict(dict)
     fuzzy: dict[str, set[str]] = defaultdict(set)
@@ -973,20 +1013,39 @@ def _absorbed(
 
 
 def _keys(
-    config: Config, blobs: Mapping[str, bytes], jobs: Sequence[tuple[str, str]], overlay: Mapping[str, bytes | None]
+    config: Config,
+    blobs: Mapping[str, bytes],
+    jobs: Sequence[tuple[str, str]],
+    overlay: Mapping[str, bytes | None],
+    skeleton: bool = False,
 ) -> list[str]:
-    """The parse key of each (file, version): the one key function, whichever process parses or looks it up."""
-    read = _Headers(_reader(config, blobs, overlay))
-    return [_key(config, p, blobs[p], v, read) for p, v in jobs]
+    """The parse key of each (file, version): the one key function, whichever process parses or looks it up. With
+    `skeleton` the second key, where each header counts without its type definitions and static inline functions."""
+    read = _Headers(_reader(config, blobs, overlay), skeleton)
+    keys = [_key(config, p, blobs[p], v, read) for p, v in jobs]
+    return [sha256(b"skeleton " + k.encode()) for k in keys] if skeleton else keys
 
 
 def _parse_all(
-    config: Config, blobs: Mapping[str, bytes], jobs: Sequence[tuple[str, str]], keys: Sequence[str]
+    config: Config,
+    blobs: Mapping[str, bytes],
+    jobs: Sequence[tuple[str, str]],
+    keys: Sequence[str],
+    overlay: Mapping[str, bytes | None] = {},
 ) -> list[tuple[list[str], list[str], list[str], dict[str, str]]]:
-    """Every (file, version) result: hits of the cache are read here, only the misses are parsed (in the pool)."""
+    """Every (file, version) result: hits of the cache are read here, only the misses are parsed (in the pool). A miss
+    is looked up again under its skeleton key (the headers without their type definitions and static inline functions):
+    an edit of those leaves every including source's names alone, and the preprocessor does not run for any of them."""
     hits = {k: store.get(config, KIND, k) for k in set(keys)}
     todo = [i for i, k in enumerate(keys) if hits[k] is None]
-    items = [(config, jobs[i][0], blobs[jobs[i][0]], jobs[i][1], keys[i]) for i in todo]
+    seconds = dict(zip(todo, _keys(config, blobs, [jobs[i] for i in todo], overlay, skeleton=True), strict=True))
+    found = {s: store.get(config, KIND, s) for s in set(seconds.values())}
+    for i in todo:
+        if found[seconds[i]] is not None and hits[keys[i]] is None:
+            hits[keys[i]] = found[seconds[i]]
+            store.put(config, KIND, keys[i], found[seconds[i]])  # a later run finds it under the first key
+    todo = [i for i in todo if hits[keys[i]] is None]
+    items = [(config, jobs[i][0], blobs[jobs[i][0]], jobs[i][1], keys[i], seconds[i]) for i in todo]
     done = dict(zip(todo, pool.map(config, "tree.parse", _parse_job, items), strict=True)) if items else {}
     out = []
     for i, k in enumerate(keys):
