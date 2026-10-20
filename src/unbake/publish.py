@@ -97,6 +97,30 @@ def _norm(text: str) -> str:
 
 
 # ---------------------------------------------------------------- splicing
+def measured_apart(text: str, segment: str, name: str) -> bool:
+    """Whether the stand-in of `name` only builds without NON_MATCHING (`#ifndef NON_MATCHING`) while the file holds
+    one definition of it elsewhere, its draft in a NON_MATCHING block of its own: a measure (NON_MATCHING defined)
+    reads the candidate in the draft's place, among the types the draft is written against, not at the stand-in."""
+    found = re.search(_stand_in(segment, name), text, re.M)
+    if found is None or _block(text, found.start()) is not None:
+        return False  # the else side of the draft's own NON_MATCHING block: splice puts the candidate in its place
+    if len([i for i in items(text) if i.kind == "function" and i.name == name]) != 1:
+        return False
+    stack: list[str | None] = []  # the condition of each side open at the stand-in; None when not judged (#elif)
+    for m in _DIRECTIVE.finditer(text, 0, found.start()):
+        kind, rest = m[1], m[0][m.end(1) - m.start() :].strip()
+        if kind in ("if", "ifdef", "ifndef"):
+            stack.append(rest if kind == "if" else f"{'!' if kind == 'ifndef' else ''}defined({rest})")
+        elif kind == "else" and stack:
+            stack[-1] = None if stack[-1] is None else f"!({stack[-1]})"
+        elif kind == "elif" and stack:
+            stack[-1] = None
+        elif kind == "endif" and stack:
+            stack.pop()
+    # off with NON_MATCHING and on without it: its negation opens a NON_MATCHING side (tree.guard)
+    return any(e is not None and tree.guard(f"#if !({e})\n") is not None for e in stack)
+
+
 def _stand_in(segment: str, name: str) -> str:
     return rf'^[ \t]*{_KINDS}\([ \t]*"{re.escape(segment)}"[ \t]*,[ \t]*{re.escape(name)}[ \t]*\)[ \t]*;[ \t]*\n?'
 

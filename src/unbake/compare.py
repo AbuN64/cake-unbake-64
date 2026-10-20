@@ -189,13 +189,18 @@ def _member(captured: tree.Tree, versions_: Sequence[str], source: str, function
 
 def _text(current: str, segment: str, name: str, source: str) -> tuple[str, list[publish.Origin]]:
     """The module with the candidate in place of the stand-in of `name`, or of its landed definition, and where each
-    of its lines came from."""
+    of its lines came from. A stand-in that only builds without NON_MATCHING (`#ifndef NON_MATCHING`), whose draft
+    the file holds in a NON_MATCHING block of its own, is not where a measure reads the candidate: the candidate
+    takes the draft's place, among the types and declarations the draft is written against."""
     try:
-        return publish.splice_traced(current, segment, name, source, False)
+        text, origins = publish.splice_traced(current, segment, name, source, False)
     except Refusal as refusal:
         if any(f.key == "land.duplicate" for f in refusal.findings):
             return publish.replace_traced(current, name, source)
         raise
+    if publish.measured_apart(current, segment, name):
+        return publish.replace_traced(current, name, source)
+    return text, origins
 
 
 def _resolve(

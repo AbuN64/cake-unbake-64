@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import compare, effort, store, view
+from unbake import compare, effort, publish, store, view
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Proof, Refusal, sha256
 
@@ -512,3 +512,34 @@ def test_a_definition_the_file_already_had_is_not_the_candidates(world, monkeypa
     placed = _placed(text, [("disk", 1), ("disk", 2), ("disk", 3)])
     _preprocessed(monkeypatch, active=[])
     assert _INACTIVE(world.cfg, "a", "f", placed, {}, {}) == ""
+
+
+_APART = """#include "include_asm.h"
+
+#ifndef NON_MATCHING
+INCLUDE_ASM("seg", f);
+#endif
+#if defined(NON_MATCHING)
+typedef struct Hud { int x; } Hud;
+void f(Hud *hud) {
+    hud->x = 1;
+}
+#endif
+"""
+
+
+def test_a_measure_reads_the_candidate_in_the_place_of_a_draft_kept_apart_from_its_stand_in():
+    # 8044EBB0.CPP func_8044E060_de: the stand-in only builds without NON_MATCHING and its draft sits in a
+    # NON_MATCHING block of its own; spliced at the stand-in the candidate was off in a measure (score.inactive)
+    candidate = "void f(Hud *hud) {\n    hud->x = 2;\n}\n"
+    text, origins = compare._text(_APART, "seg", "f", candidate)
+    assert "hud->x = 2;" in text and "hud->x = 1;" not in text
+    assert text.index("hud->x = 2;") > text.index("#if defined(NON_MATCHING)") > text.index("INCLUDE_ASM")
+    assert len(origins) == len(text.splitlines())
+
+
+def test_a_stand_in_on_the_else_side_of_its_drafts_block_is_still_spliced_there():
+    standard = '#ifdef NON_MATCHING\nvoid f(void) {\n}\n#else\nINCLUDE_ASM("seg", f);\n#endif\n'
+    assert not publish.measured_apart(standard, "seg", "f")
+    assert publish.measured_apart(_APART, "seg", "f")
+    assert not publish.measured_apart(_APART.replace("#ifndef NON_MATCHING", "#ifdef VERSION_EU"), "seg", "f")
