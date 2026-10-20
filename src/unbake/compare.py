@@ -192,15 +192,14 @@ def _text(current: str, segment: str, name: str, source: str) -> tuple[str, list
     of its lines came from. A stand-in that only builds without NON_MATCHING (`#ifndef NON_MATCHING`), whose draft
     the file holds in a NON_MATCHING block of its own, is not where a measure reads the candidate: the candidate
     takes the draft's place, among the types and declarations the draft is written against."""
+    if publish.measured_apart(current, segment, name):
+        return publish.replace_traced(current, name, source)
     try:
-        text, origins = publish.splice_traced(current, segment, name, source, False)
+        return publish.splice_traced(current, segment, name, source, False)
     except Refusal as refusal:
         if any(f.key == "land.duplicate" for f in refusal.findings):
             return publish.replace_traced(current, name, source)
         raise
-    if publish.measured_apart(current, segment, name):
-        return publish.replace_traced(current, name, source)
-    return text, origins
 
 
 def _resolve(

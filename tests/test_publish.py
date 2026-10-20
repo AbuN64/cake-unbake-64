@@ -467,7 +467,8 @@ def test_a_candidate_conditional_comes_whole_though_the_file_already_has_an_endi
     assert len(re.findall(r"^#\s*if", text, re.M)) == len(re.findall(r"^#\s*endif", text, re.M))
     stand_in = text.index("return 5;")
     assert text.rindex("#if defined(VERSION_US)\nextern int us_only;\n#endif\n", 0, stand_in) > 0
-    assert text.count('#include "types.h"') == 2  # the file's own sits in the NON_MATCHING block, not seen there
+    # the stand-in is kept apart from its draft: the block's include is made live above the body, not brought twice
+    assert text.count('#include "types.h"') == 1 and text.index('#include "types.h"') < stand_in
     # the functions after it that the file holds behind its NON_MATCHING guard are the file's, not brought again
     assert text.count("int later(void)") == 1 and text.count("int tail(void)") == 1
 
@@ -488,3 +489,73 @@ def test_only_the_conditionals_in_a_branch_still_open_are_visible():
     )
     seen = publish._visible_groups(before)
     assert seen == {"#if A int a; #endif", "#if C int c; #endif", "#if E int e; #endif"}  # B sits in a closed branch
+
+
+# ---------------------------------------------------------------- a stand-in kept apart from its draft
+APART = (
+    '#include "game.h"\n'
+    '#ifndef NON_MATCHING\nINCLUDE_ASM("main", f);\n#endif\n\n'
+    '#ifndef NON_MATCHING\nINCLUDE_ASM("main", later);\n#endif\n\n'
+    '#ifdef NON_MATCHING\n#include "hud.h"\ntypedef struct Hud { int x; } Hud;\n\n/* the screen */\nextern Hud *hud;\n'
+    "int helper(int);\n\n/* old draft */\nint f(void) {\n    return hud->x;\n}\n\n"
+    "int later(void) {\n    return 2;\n}\n#endif\n"
+)
+CAND_F = "/* reads the hud */\nint f(void) {\n    return hud->x + 1;\n}\n"
+
+
+def test_landing_a_stand_in_kept_apart_from_its_draft_makes_the_body_and_its_types_live_in_rom_order():
+    text, origins = publish.splice_traced(APART, "main", "f", CAND_F, fuzzy=False)
+    assert len(origins) == len(text.splitlines())
+    assert 'INCLUDE_ASM("main", f);' not in text and "old draft" not in text and "return hud->x;" not in text
+    live = text[: text.index("#ifdef NON_MATCHING")]  # all of it builds without NON_MATCHING
+    assert live.index('#include "hud.h"') < live.index("typedef struct Hud") < live.index("/* the screen */")
+    assert live.index("int helper(int);") < live.index("/* reads the hud */") < live.index('INCLUDE_ASM("main", later)')
+    assert live.count("#ifndef NON_MATCHING") == 1  # the landed stand-in's guard is gone, the later one's stays
+    assert text.count("typedef struct Hud") == 1 and "int later(void) {\n    return 2;\n}\n#endif\n" in text
+    assert origins[text.splitlines().index("    return hud->x + 1;")][0] == "candidate"
+
+
+def test_landing_the_last_draft_of_its_block_drops_the_empty_block():
+    text = publish.splice(APART.replace("int later(void) {\n    return 2;\n}\n", ""), "main", "f", CAND_F, False)
+    assert "#ifdef NON_MATCHING" not in text and "return hud->x + 1;" in text
+
+
+def test_a_stand_in_sharing_its_guard_has_the_guard_closed_around_the_landed_body():
+    one = 'INCLUDE_ASM("main", f);\n#endif\n\n#ifndef NON_MATCHING\nINCLUDE_ASM("main", later);\n'
+    for both, want in (
+        ('INCLUDE_ASM("main", f);\nINCLUDE_ASM("main", later);\n', "f first"),
+        ('INCLUDE_ASM("main", early);\nINCLUDE_ASM("main", f);\nINCLUDE_ASM("main", later);\n', "f between"),
+    ):
+        text = publish.splice(APART.replace(one, both), "main", "f", CAND_F, fuzzy=False)
+        head = text[: text.index("#ifdef NON_MATCHING")]
+        assert "#ifndef NON_MATCHING\n#endif" not in head, want
+        assert head.index("return hud->x + 1;") < head.rindex("#ifndef NON_MATCHING") < head.index('("main", later)')
+        assert head.count("#ifndef NON_MATCHING") == head.count("#endif") == (2 if "early" in both else 1), want
+
+
+def test_a_stand_in_after_its_drafts_block_gets_the_types_before_the_block():
+    after = (
+        '#include "game.h"\n#ifdef NON_MATCHING\ntypedef struct Hud { int x; } Hud;\nextern Hud *hud;\n'
+        "int f(void) {\n    return 0;\n}\nint later(void) {\n    return 2;\n}\n#endif\n"
+        '#ifndef NON_MATCHING\nINCLUDE_ASM("main", later);\nINCLUDE_ASM("main", f);\n#endif\n'
+    )
+    text = publish.splice(after, "main", "f", CAND_F, fuzzy=False)
+    assert text.index("typedef struct Hud") < text.index("#ifdef NON_MATCHING") < text.index("return hud->x + 1;")
+    assert text.index('INCLUDE_ASM("main", later)') < text.index("return hud->x + 1;")
+
+
+def test_types_after_a_draft_that_gives_bytes_stay_in_the_block():
+    held = APART.replace('#include "hud.h"\n', '#include "hud.h"\nint early(void) {\n    return 1;\n}\n')
+    text = publish.splice(held, "main", "f", CAND_F, fuzzy=False)
+    block = text[text.index("#ifdef NON_MATCHING") :]
+    assert "int early(void)" in block and "typedef struct Hud" in block and '#include "hud.h"' not in block
+
+
+def test_a_draft_block_with_another_side_is_refused_by_name():
+    other = APART.replace(
+        "    return 2;\n}\n#endif\n", '    return 2;\n}\n#else\nINCLUDE_ASM("main", later2);\n#endif\n'
+    )
+    assert publish.measured_apart(other, "main", "f")
+    with pytest.raises(Refusal) as refused:
+        publish.splice(other, "main", "f", CAND_F, fuzzy=False)
+    assert "no #else" in refused.value.findings[0].reason

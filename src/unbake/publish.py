@@ -376,6 +376,8 @@ def splice_traced(
     each conditional whole; what the file holds anywhere after the replaced text is not brought again."""
     if kind == "function":
         _pieces(source, name)  # a candidate that does not define `name` once is refused before anything else
+        if not fuzzy and measured_apart(text, segment, name):
+            return _promoted(text, segment, name, source)
     found = re.compile(_stand_in(segment, name), re.M).search(text)
     if found is None and kind == "function":
         raise Refusal(
@@ -451,6 +453,124 @@ def replace_traced(current: str, name: str, source: str) -> tuple[str, list[Orig
     pieces += [("candidate", t + ("\n" if k < len(wanted) - 1 else "\n\n"), n) for k, (t, n) in enumerate(wanted)]
     pieces += [("candidate", body.strip(), body_line), ("disk", current[last:], current.count("\n", 0, last) + 1)]
     return _traced([p for p in pieces if p[1]])
+
+
+_NOT_MATCHING = re.compile(
+    r"[ \t]*#[ \t]*(?:ifndef[ \t]+NON_MATCHING|if[ \t]+!\s*defined\s*\(?\s*NON_MATCHING\s*\)?)[ \t]*$"
+)
+
+
+def _bytes_free(text: str) -> bool:
+    """Whether a top-level item gives the object no bytes: a directive, a type, an extern or a prototype."""
+    bare = _norm(re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S))
+    if bare.startswith("#") or (bare.startswith(("typedef ", "extern ")) and "=" not in bare):
+        return True
+    if re.fullmatch(r"(?:struct|union|enum)\s+\w+\s*;|(?:struct|union|enum)\b[^{;=]*\{.*\}\s*;", bare):
+        return True  # a tag declared or defined with no object of it
+    return "=" not in bare and "{" not in bare and bool(re.fullmatch(r"[\w\s*]+\(.*\)\s*;", bare))
+
+
+def _opened(lines: Sequence[str], at: int) -> int:
+    """The line of the innermost conditional open at line `at` (on its first side), -1 when none or on another side."""
+    stack: list[int] = []
+    for number in range(at):
+        kind = _DIRECTIVE.match(lines[number])
+        word = kind[1] if kind else ""
+        if word in ("if", "ifdef", "ifndef"):
+            stack.append(number)
+        elif word in ("else", "elif") and stack:
+            stack[-1] = -1
+        elif word == "endif" and stack:
+            stack.pop()
+    return stack[-1] if stack else -1
+
+
+def _closed(lines: Sequence[str], opened: int) -> tuple[int, bool]:
+    """(the `#endif` line of the conditional opened at `opened`, whether it has another side)."""
+    depth, other = 0, False
+    for number in range(opened + 1, len(lines)):
+        kind = _DIRECTIVE.match(lines[number])
+        word = kind[1] if kind else ""
+        if word in ("if", "ifdef", "ifndef"):
+            depth += 1
+        elif word in ("else", "elif") and depth == 0:
+            other = True
+        elif word == "endif":
+            if depth == 0:
+                return number, other
+            depth -= 1
+    return len(lines), other
+
+
+def _promoted(text: str, segment: str, name: str, source: str) -> tuple[str, list[Origin]]:
+    """The landing of a stand-in kept apart from its draft (`measured_apart`): the stand-in only builds without
+    NON_MATCHING and the draft sits in a NON_MATCHING block of its own. The candidate replaces the draft where the
+    measure read it, then the definition leaves the block for the stand-in's place (the ROM order) and the stand-in and
+    its guard go; the block's types, externs, prototypes and includes before it come along, live without NON_MATCHING,
+    so the body sees what the draft saw. The block keeps every other draft; a block left empty goes."""
+    landed, origins = replace_traced(text, name, source)
+    lines = landed.splitlines(keepends=True)
+    parts = items(landed)
+    k = next(j for j, p in enumerate(parts) if p.kind == "function" and p.name == name)
+    first = k
+    while first > 0 and parts[first - 1].kind == "comment":
+        first -= 1
+
+    def line(offset: int) -> int:
+        return landed.count("\n", 0, offset)
+
+    body = set(range(line(parts[first].start), line(parts[k].end - 1) + 1))
+    block = _opened(lines, min(body))
+    end, other = _closed(lines, block) if block >= 0 else (len(lines), True)
+    found = re.compile(_stand_in(segment, name), re.M).search(landed)
+    held = _opened(lines, line(found.start())) if found else -1
+    if block < 0 or other or tree.guard(lines[block]) is None or held < 0 or not _NOT_MATCHING.match(lines[held]):
+        raise Refusal(
+            Finding(
+                "land.request",
+                f"{name}: its draft must sit in a NON_MATCHING block with no #else and its stand-in in a plain "
+                "#ifndef NON_MATCHING to land it in place of both.",
+                unit=name,
+                action="land it by hand",
+            )
+        )
+    assert found is not None
+    stand_in = line(found.start())
+    held_end, _ = _closed(lines, held)
+    # the block's lines from its start up to the first group that gives bytes (another draft) or the definition: the
+    # types and declarations the draft was written against, with their comments and spacing; a group after a draft
+    # stays, it may be written against that draft
+    stop = min(body)
+    before = [j for j, p in enumerate(parts) if block < line(p.start) < min(body)]
+    for group in _groups(landed, parts, before):
+        if not all(_bytes_free(landed[parts[j].start : parts[j].end]) for j in group):
+            lead = group[0]
+            while lead > 0 and parts[lead - 1].kind == "comment" and line(parts[lead - 1].start) > block:
+                lead -= 1  # the comment written above a draft stays with it
+            stop = line(parts[lead].start)
+            break
+    moved = set(range(block + 1, stop))
+    rest = [j for j in range(block + 1, end) if j not in body | moved and lines[j].strip()]
+    empty = all(re.match(r"\s*(?:/\*|\*|//)", lines[j]) for j in rest)  # nothing but comments left in the block
+    lead = not any(lines[j].strip() for j in range(held + 1, stand_in))  # the guard holds nothing before it
+    trail = not any(lines[j].strip() for j in range(stand_in + 1, held_end))  # nor after it
+    types = sorted(moved)
+    out: list[tuple[str, Origin]] = []
+    for number, here in enumerate(zip(lines, origins, strict=True)):
+        if number in body or number in moved or (empty and number in (block, end)):
+            continue
+        if (lead and number == held) or (trail and number == held_end):
+            continue
+        if number == block and stand_in > block:
+            out += [(lines[j], origins[j]) for j in types]  # live before the block, seen by the body after it
+        if number == stand_in:
+            put = [] if stand_in > block else [(lines[j], origins[j]) for j in types]
+            put += [(lines[j], origins[j]) for j in sorted(body)]
+            # a guard that holds other stand-ins is closed before the landed body and opened again after it
+            out += [("#endif\n", origins[held])] * (not lead) + put + [(lines[held], origins[held])] * (not trail)
+            continue
+        out.append(here)
+    return "".join(t for t, _ in out), [o for _, o in out]
 
 
 def splice(text: str, segment: str, name: str, source: str, fuzzy: bool, kind: str = "function") -> str:
