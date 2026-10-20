@@ -540,6 +540,29 @@ def _inactive(
     )
 
 
+_CALL = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_NOT_CALLS = {"if", "while", "for", "switch", "return", "sizeof", "do", "else", "case", "goto"}
+
+
+def _implicit_calls(text: str, name: str) -> list[str]:
+    """The names the preprocessed unit calls in `name`'s body and never spells anywhere else: no prototype, no
+    definition, no variable. C compiles such a call as an implicit `int f()`, which reorders registers and drops a
+    float return, so a measure of it proves nothing about the function as the project declares it (THINK-80289970:
+    a splice lost DirectionDot)."""
+    bodies = [i for i in publish.items(text) if i.kind == "function" and i.name == name]
+    found: list[str] = []
+    for body in bodies:
+        head = text.find("{", body.start, body.end)
+        inside = text[head : body.end] if head >= 0 else ""
+        for called in dict.fromkeys(m[1] for m in _CALL.finditer(inside)):
+            if called in _NOT_CALLS or called in found:
+                continue
+            spelled = len(re.findall(rf"\b{re.escape(called)}\b", text))
+            if spelled == len(re.findall(rf"\b{re.escape(called)}\s*\(", inside)):
+                found.append(called)
+    return found
+
+
 def _score_one(config: Config, params: Json) -> Json:
     extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
     resolved = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"), extras)
@@ -621,6 +644,23 @@ def _score_one(config: Config, params: Json) -> Json:
         "proofs": [asdict(p) for p in proofs],
         "rewritten": [],
     }
+    if result["exact"]:
+        placed = resolved.at(version)
+        snap, unit, recipe, _ = native.candidate(
+            config, version, placed.owner.path, placed.text, overrides, extras, [name]
+        )
+        if undeclared := _implicit_calls(view.get(snap, unit, version, recipe, lines=False).text, name):
+            raise Refusal(
+                Finding(
+                    "score.implicit",
+                    f"{name} calls {', '.join(undeclared)} with no declaration in {path}: the measure compiled an "
+                    "implicit int function, so its exact score proves nothing about the function as declared",
+                    path=path,
+                    unit=name,
+                    versions=(version,),
+                    action=f"declare {undeclared[0]} (include its header or the helper the splice dropped)",
+                )
+            )
     given = Path(params["file"]).read_text(encoding="utf-8", errors="replace")  # as the lane wrote it, not spliced
     if result["exact"] and publish.non_matching_only(given, name):
         result["notes"] = [

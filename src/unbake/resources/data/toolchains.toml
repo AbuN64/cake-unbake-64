@@ -118,7 +118,7 @@ family = "gcc"
 cc = "cc1"
 as_host = "mips_as"
 cflags = ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2"]
-supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks"]
+supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks", "-da"]
 splat = "KMC"
 emits_asm = true
 preserves_padding = true
@@ -155,7 +155,7 @@ family = "gcc"
 cc = "cc1"
 as_host = "mips_as"
 cflags = ["-G0", "-mips3", "-O2", "-mgas", "-meb", "-mcpu=VR4300", "-mhard-float", "-mgp32", "-mfp64", "-mno-fix4300"]
-supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks", "-msplit-addresses"]  # split: stores through a lui of v0..t9, never the at macro
+supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks", "-msplit-addresses", "-da"]  # split: stores through a lui of v0..t9, never the at macro
 splat = "KMC"  # the gas syntax: stand-ins assemble extracted asm with GNU as; splat's SN64 mode writes asn64's (two-operand div, .globl and .end macros)
 emits_asm = true
 preserves_padding = true

@@ -382,6 +382,10 @@ sentence = "the piece a literals_<function> row places runs to the next row over
 owner = "compare"
 sentence = "the candidate scores exact but sits only inside a NON_MATCHING side of its file, so the build still compiles the stand-in; submit it so land makes it live"
 
+[key."score.implicit"]
+owner = "compare"
+sentence = "the candidate calls a name its unit never declares, so the measure compiled an implicit int function and its score proves nothing; declare it"
+
 [key."land.inactive"]
 owner = "compare"
 sentence = "an exact body would land only inside a NON_MATCHING side, so the build would keep compiling the stand-in; submit the body on its own"

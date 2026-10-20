@@ -543,3 +543,14 @@ def test_a_stand_in_on_the_else_side_of_its_drafts_block_is_still_spliced_there(
     assert not publish.measured_apart(standard, "seg", "f")
     assert publish.measured_apart(_APART, "seg", "f")
     assert not publish.measured_apart(_APART.replace("#ifndef NON_MATCHING", "#ifdef VERSION_EU"), "seg", "f")
+
+
+def test_a_call_to_a_name_the_unit_never_declares_is_an_implicit_function():
+    # THINK-80289970: the splice lost DirectionDot; the measure compiled an implicit int call and scored exact
+    text = (
+        "extern f32 kept(f32);\nf32 g(f32 *p) {\n    f32 (*fp)(f32) = kept;\n"
+        "    return DirectionDot(p) + fp(1.0f) + kept(2.0f);\n}\n"
+    )
+    assert compare._implicit_calls(text, "g") == ["DirectionDot"]
+    assert compare._implicit_calls("f32 DirectionDot(f32 *);\n" + text, "g") == []
+    assert compare._implicit_calls(text, "h") == []
