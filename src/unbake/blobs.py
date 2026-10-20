@@ -22,6 +22,13 @@ from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha25
 FILE = "blobs.toml"
 Spans = list[tuple[int, int]]
 LEFTOVER_FORMATS = ("sn-debug", "earlier-link")  # what a `leftover` row (build residue read by a native reader) may be
+CONTENT = (
+    "graphics",
+    "model",
+    "audio",
+    "world",
+    "text",
+)  # the types the published map carries; accounting rows are not content
 RUN_MIN = 16  # the shortest one-value run that proves padding inside a gap of other bytes
 _ORDER = ("name", "aliases", "type", "format", "codec", "state", "stored_size", "decoded_size", "parent", "decoded")
 

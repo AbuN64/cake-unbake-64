@@ -693,3 +693,28 @@ def test_platform_bytes_leave_the_credit_rows_and_each_covering_symbol_is_named(
     found = report.platform_overlaps(None, None)
     assert [f.unit for f in found] == ["micro", "boot_f", "game"] and not any(f.blocking for f in found)
     assert "covers 512 identified platform bytes" in found[0].reason
+
+
+def test_map_carries_content_blobs_and_validates_with_every_type(monkeypatch):
+    from unbake import blobs, progress
+
+    allowed = _schema("blobs")
+    types = allowed["properties"]["blob"]["additionalProperties"]["properties"]["type"]["enum"]
+    document = {
+        "blob": {
+            f"b{i}": {"type": t, "state": "observed", "rom": {"a": [[i * 16, i * 16 + 8]]}} for i, t in enumerate(types)
+        }
+    }
+    monkeypatch.setattr(blobs, "load", lambda config: document)
+    monkeypatch.setattr(report, "layers", lambda config, tree, version: {})
+    row = progress._map(None, None, {"versions": {"a": {"rom_size": 4096}}}, "a", {}, ())
+    assert {r[4] for r in row["blobs"]} == set(blobs.CONTENT) and set(blobs.CONTENT) <= set(types)
+    configuration.validate("progress.map", row, "docs/map-a.json")
+    schema = _schema("progress.map")
+    assert schema["properties"]["blobs"]["items"]["prefixItems"][4]["enum"] == list(blobs.CONTENT)
+
+
+def _schema(name):
+    from importlib import resources
+
+    return json.loads((resources.files("unbake.resources") / "schemas" / f"{name}.schema.json").read_text())

@@ -72,6 +72,7 @@ def _map(config: Any, tree: Any, current: Json, version: str, lines: dict[tuple[
     content = [
         [name, start, end - start, row["state"], row["type"]]
         for name, row in blobs.load(config)["blob"].items()
+        if row["type"] in blobs.CONTENT
         for start, end in row.get("rom", {}).get(version, ())
     ]
     return {
