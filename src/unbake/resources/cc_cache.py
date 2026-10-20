@@ -313,6 +313,14 @@ def hunks(old: bytes, new: bytes) -> list[list[int]]:
     ]
 
 
+def canonical(text: bytes) -> bytes:
+    """`text` as the compiler's output can depend on it: the declarations that reach the object, as tokens. Every type
+    definition and static inline function that no surviving declaration names is left out (as in `types_only_differ`),
+    and the layout between tokens goes: two texts with this form in common compile to the same assembly."""
+    patterns()
+    return b"\n".join(b" ".join(chunk) for chunk in kept(chunks(text), set()))
+
+
 def mentioned(names: set[bytes], text: bytes) -> set[bytes]:
     """The names that occur in `text` as whole words."""
     found: set[bytes] = set()

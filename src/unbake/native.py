@@ -42,6 +42,7 @@ from unbake.contracts import (
     proof_from,
     sha256,
 )
+from unbake.resources import cc_cache
 
 _WORD = 0xFFFFFFFF
 _INPUT = "unit"  # the one name every compile input has: a rename or a move never reaches a key
@@ -98,6 +99,23 @@ def _replayed[T](cfg: Config, key: str, produce: Callable[[], T]) -> T:
         effort.count("refused", False)
         store.put(cfg, "refused", key, json.dumps([asdict(f) for f in refusal.findings]).encode())
         raise
+
+
+def _adopt(cfg: Config, key: str, text: str, steps: Sequence[compile.Step], tools: str) -> str:
+    """For a text the cache has neither an object nor a refusal under: the key of its canonical form (the text without
+    the type definitions and static inline functions nothing names), and the object or refusal a text of that form
+    already made, copied under `key`. A header edit that only adds or drops such declarations changes the text of every
+    unit including it and no byte of the compile. "" when `key` is already known, so a warm cache never tokenizes."""
+    if store.get(cfg, "unit", key) is not None or store.get(cfg, "refused", key) is not None:
+        return ""
+    same = compile.key(cc_cache.canonical(text.encode()), f"{_INPUT}.i", steps, tools)
+    if (found := store.get(cfg, "unit.canonical", same, named=True)) is not None:
+        store.put(cfg, "unit", key, found)
+        if (kept := store.get(cfg, "warnings.canonical", same, named=True)) is not None:
+            store.put(cfg, "warnings", digest((key, "warnings")), kept)
+    elif (row := store.get(cfg, "refused.canonical", same, named=True)) is not None:
+        store.put(cfg, "refused", key, row)
+    return same
 
 
 def _compile_inputs(
@@ -160,11 +178,21 @@ def objects(
             )
             return value, results
 
-        value, results = _replayed(cfg, key, build)
+        same = _adopt(cfg, key, text, steps, tools)
+        try:
+            value, results = _replayed(cfg, key, build)
+        except Refusal:
+            if same and (row := store.get(cfg, "refused", key)) is not None:
+                store.put(cfg, "refused.canonical", same, row, named=True)
+            raise
         obj.write_bytes(value)
         if results:  # the compile that ran keeps its refused warnings, so nothing compiles again to count them
             found = adapters.toolchain(cfg, recipe.toolchain).refused(results[0].stderr.decode(errors="replace"))
-            store.put(cfg, "warnings", digest((key, "warnings")), json.dumps(found).encode())
+            kept = json.dumps(found).encode()
+            store.put(cfg, "warnings", digest((key, "warnings")), kept)
+            if same and store.get(cfg, "unit", key) is not None:
+                store.put(cfg, "unit.canonical", same, value, named=True)
+                store.put(cfg, "warnings.canonical", same, kept, named=True)
         return obj, tuple(results)
 
 

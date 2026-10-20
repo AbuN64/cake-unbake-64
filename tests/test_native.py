@@ -523,3 +523,16 @@ def test_a_pool_the_rom_has_nowhere_is_a_difference(monkeypatch):
     monkeypatch.setattr(native, "_rom_at", lambda cfg, version, address: None)
     gaps = native._pool_gaps(snapshot, "a", native._Pool(0x800C0000, ((0, 4),)), bytes(4))
     assert gaps and "0x800C0000+0x0" in gaps[0]
+
+
+def test_an_unnamed_type_added_to_the_text_shares_the_compile(case, monkeypatch, toolchains):
+    case, calls, _ = _tools(case, monkeypatch, toolchains, emits_asm=True)
+    snapshot, unit, recipe, _, work, _ = case
+    for name, text in (("first", "int v;\n"), ("second", "typedef int T;\nstruct S { T a; };\nint v;\n")):
+        native.view.get.return_value = replace(native.view.get.return_value, text=text)
+        obj, _ = native.objects(snapshot, unit, "a", recipe, work / name)
+        assert obj.read_bytes() == b"assembled"
+    assert [call[0] for call in calls] == ["compile", "assemble"]  # the second text added only unnamed types
+    native.view.get.return_value = replace(native.view.get.return_value, text="typedef int T;\nT v;\n")
+    native.objects(snapshot, unit, "a", recipe, work / "third")
+    assert [call[0] for call in calls] == ["compile", "assemble", "compile", "assemble"]  # now the type is named

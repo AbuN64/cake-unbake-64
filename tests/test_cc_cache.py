@@ -247,3 +247,15 @@ def test_hunks_split_two_edits_far_apart_and_the_words_are_whole():
     assert cc_cache.mentioned({b"abc", b"xyz"}, b"abcd _xyz abc") == {b"abc"}
     far = "\n".join(lines).encode()
     assert cc_cache.types_only_differ(far, "\n".join(other).encode())
+
+
+def test_canonical_is_the_declarations_that_reach_the_object():
+    base = "int f(void) {\n return 1;\n}\nint g;\n"
+    extra = "typedef int T;\nenum E { E1 };\nstatic __inline__ int unused(void) { return 2; }\n"
+    assert cc_cache.canonical(base.encode()) == cc_cache.canonical((extra + base).encode())
+    assert cc_cache.canonical(base.encode()) == cc_cache.canonical(base.replace("\n ", " ").encode())  # layout
+    assert cc_cache.canonical(base.encode()) != cc_cache.canonical(base.replace("return 1", "return 2").encode())
+    named = "typedef int T;\nT g;\n"
+    assert b"typedef" in cc_cache.canonical(named.encode())
+    calls = "static __inline__ int pick(void) { return 2; }\nint h(void) { return pick(); }\n"
+    assert b"pick" in cc_cache.canonical(calls.encode())
