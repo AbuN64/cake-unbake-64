@@ -1,6 +1,7 @@
 """Blobs: the hand-kept facts about ROM content that is not code or data (`blobs.toml`), and the ROM byte partition.
 
-A blob is graphics, model, audio, world or text content with a physical ROM range. The file holds facts only (ranges,
+A blob records game content or an explicit accounting classification with a physical ROM range.
+The file holds facts only (ranges,
 formats, states, evidence by sha256), never bytes. `sweep` classifies every ROM byte exactly once."""
 
 from __future__ import annotations
@@ -103,6 +104,20 @@ def ranges(document: Json, version: str) -> tuple[Spans, Spans]:
         if row["state"] in out and "parent" not in row:
             out[row["state"]] += [(a, b) for a, b in row.get("rom", {}).get(version, ())]
     return out["decoded"], out["identified"]
+
+
+
+def no_row(partition: Json, document: Json, version: str) -> int:
+    """Physical bytes without a row, separate from undecoded or unidentified bytes.
+
+    Code, data, platform and automatic fill need no blob row. Every physical blob
+    row, including observed accounting rows, records its range without granting
+    decoded or identified credit. Compressed children have no physical range.
+    """
+    held = [tuple(span) for spans in partition["spans"].values() for span in spans]
+    for row in document.get("blob", {}).values():
+        held.extend(tuple(span) for span in row.get("rom", {}).get(version, ()))
+    return length(subtract([(0, partition["rom_size"])], merge(held)))
 
 
 def census(document: Json, version: str | None = None) -> Json:
@@ -429,6 +444,7 @@ def _result(config: Config, extra: Json, with_rows: bool) -> Json:
         "blobs_identified",
         "blobs_fill",
         "unknown",
+        "blobs_no_row",
         "shadowed",
     )
     parts = report.partitions(config, tree)

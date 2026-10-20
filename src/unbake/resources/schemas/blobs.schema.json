@@ -41,7 +41,13 @@
        "model",
        "audio",
        "world",
-       "text"
+       "text",
+       "sn-debug",
+       "stale-code",
+       "stale-data",
+       "fill",
+       "metadata",
+       "unclassified"
       ]
      },
      "format": {

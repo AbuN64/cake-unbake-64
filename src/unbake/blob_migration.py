@@ -24,7 +24,8 @@ _TYPES = {
     "sequence": "audio",
     "level": "world",
 }
-_CURRENT = frozenset({"graphics", "model", "audio", "world", "text"})
+_CURRENT = frozenset({"graphics", "model", "audio", "world", "text",
+                      "sn-debug", "stale-code", "stale-data", "fill", "metadata", "unclassified"})
 
 
 @dataclass

@@ -102,6 +102,10 @@
         "minimum": 0
        }
       }
+     },
+     "blobs_no_row": {
+      "type": "integer",
+      "minimum": 0
      }
     },
     "required": [
@@ -379,7 +383,10 @@
       ]
      },
      "state": {
-      "enum": ["fuzzy", "unmatched"]
+      "enum": [
+       "fuzzy",
+       "unmatched"
+      ]
      }
     },
     "required": [

@@ -360,11 +360,14 @@ def partition(config: Any, v: str, table: Mapping[str, Any], rom_size: int) -> J
     held = [(rom, rom + size, kind) for _vram, rom, size, kind in table.values() if rom is not None and size]
     code = [(a, b) for a, b, kind in held if kind == "func"]
     data = [(a, b) for a, b, kind in held if kind != "func"]
-    decoded, identified = blobs.ranges(blobs.load(config), v)
+    document = blobs.load(config)
+    decoded, identified = blobs.ranges(document, v)
     path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
     rom = path.read_bytes() if path.is_file() else None
     rom = rom if rom is not None and len(rom) == rom_size else None
-    return blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom)
+    result = blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom)
+    result["blobs_no_row"] = blobs.no_row(result, document, v)
+    return result
 
 
 def _rom_size(config: Any, v: str) -> int | None:
@@ -410,6 +413,7 @@ def accounts(config: Any, tree: Any) -> dict[str, Json]:
             "blobs_decoded": p["blobs_decoded"],
             "blobs_identified": p["blobs_identified"],
             "blobs_fill": p["blobs_fill"],
+            "blobs_no_row": p["blobs_no_row"],
             "unknown_total": p["unknown"],
             "blobs": blobs.census(document, v),
         }
@@ -485,6 +489,7 @@ _BLOB_KEYS = (
     "blobs_decoded",
     "blobs_identified",
     "blobs_fill",
+    "blobs_no_row",
     "unknown_total",
 )
 
