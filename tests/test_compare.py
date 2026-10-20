@@ -554,3 +554,91 @@ def test_a_call_to_a_name_the_unit_never_declares_is_an_implicit_function():
     assert compare._implicit_calls(text, "g") == ["DirectionDot"]
     assert compare._implicit_calls("f32 DirectionDot(f32 *);\n" + text, "g") == []
     assert compare._implicit_calls(text, "h") == []
+
+
+# ---------------------------------------------------------------- probe
+def _probe_world(world, monkeypatch, built: bytes, exact: bool = False):
+    _built(world, built)
+    proof = fixture.proof(
+        "src/main/stand_in.c", "stand_in", "a", exact, () if exact else ("version a: 1 bytes differ",)
+    )
+    proof = replace(proof, built_sha256=sha256(built))
+    seen: list[tuple] = []
+
+    def measure(config, v, name, path, text, overrides=None, overlays=None):
+        seen.append((v, name, path, text, overrides))
+        return replace(proof, version=v)
+
+    monkeypatch.setattr(compare.native, "measure", measure)
+    monkeypatch.setattr(compare.versions, "rom_bytes", lambda record, start, end: b"\x01" + bytes(end - start - 1))
+    return seen
+
+
+def test_probe_measures_one_version_of_the_owner_without_capturing_the_tree(world, monkeypatch):
+    seen = _probe_world(world, monkeypatch, bytes(0x10))
+    monkeypatch.setattr(compare.tree, "capture", Mock(side_effect=AssertionError("probe captured the tree")))
+    monkeypatch.setattr(compare.policy, "evaluate", Mock(side_effect=AssertionError("probe ran the source rules")))
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "flag": ["-O1"]}
+    result = compare.probe_command(world.cfg, params)
+    assert [(v, n, p) for v, n, p, *_ in seen] == [("a", "stand_in", "src/main/stand_in.c")]
+    assert "return 2;" in seen[0][3] and 'INCLUDE_ASM("main", stand_in)' not in seen[0][3]
+    assert seen[0][4] == {"add": ["-O1"], "omit": []}
+    assert result["unit"] == "src/main/stand_in.c" and result["members"] == ["stand_in"] and not result["exact"]
+    assert result["words"] == {"built": 4, "target": 4, "matched": 3} and result["diff"]
+    assert result["missing"] == ["version a: 1 bytes differ"]
+
+
+def test_probe_and_score_print_the_same_verdict(world, monkeypatch):
+    _probe_world(world, monkeypatch, bytes(0x10))
+    monkeypatch.setattr(compare.native, "candidate", lambda *a, **k: (Mock(), Mock(), Mock(), []))
+    monkeypatch.setattr(compare.policy, "evaluate", lambda *a: ())
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "lines": None, "short": False}
+    scored, probed = compare._score_one(world.cfg, params), compare.probe_command(world.cfg, params)
+    assert all(scored[k] == probed[k] for k in ("unit", "members", "version", "exact", "score", "words", "diff"))
+
+
+def test_probe_asks_the_tree_when_no_single_file_spells_the_function(world, monkeypatch):
+    _probe_world(world, monkeypatch, bytes(0x10))
+    second = world.cfg.project.root / "src/ovl/second.c"
+    second.write_text('#include "include_asm.h"\nINCLUDE_ASM("ovl", stand_in);\n')
+    assert compare._quick_owner(world.cfg, "a", "stand_in", {}) is None  # two stand-ins: the tree names why
+    with pytest.raises(Refusal):
+        compare.probe_command(world.cfg, {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a"})
+
+
+def test_probe_finds_the_owner_and_its_segment_from_the_file_alone(world):
+    owner = compare._quick_owner(world.cfg, "a", "stand_in", {})
+    assert owner == compare.publish.Owner("src/main/stand_in.c", "main", ("a",))
+    assert compare._quick_owner(world.cfg, "a", "no_such", {}) is None
+
+
+def test_probe_refuses_a_version_the_project_does_not_have(world):
+    with pytest.raises(Refusal) as refused:
+        compare.probe_command(world.cfg, {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "zz"})
+    assert "zz is not a version" in refused.value.findings[0].reason
+
+
+def test_probe_dumps_keep_every_pass_and_the_whole_diff(world, monkeypatch, tmp_path):
+    _probe_world(world, monkeypatch, bytes(0x10))
+    asked: list[dict] = []
+
+    def candidate(config, version, path, text, overrides=None, overlays=None, names=None):
+        asked.append({"overrides": overrides, "names": names})
+        return Mock(), Mock(), Mock(), []
+
+    def dumps(snapshot, unit, version, recipe, work):
+        work.mkdir(parents=True)
+        for name in ("unit.i", "unit.i.rtl", "unit.i.greg", "unit.s"):
+            (work / name).write_text(name)
+        return "", "", "", {}
+
+    monkeypatch.setattr(compare.native, "candidate", candidate)
+    monkeypatch.setattr(compare.native, "dumps", dumps)
+    kept = tmp_path / "kept"
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "dumps": str(kept)}
+    result = compare.probe_command(world.cfg, params)
+    assert asked[0] == {"overrides": {"add": ["-da"], "omit": []}, "names": ["stand_in"]}
+    assert sorted(Path(p).name for p in result["dumps"]) == sorted(
+        ["unit.i", "unit.i.rtl", "unit.i.greg", "unit.s", "stand_in.diff"]
+    )
+    assert (kept / "stand_in.diff").read_text().startswith("---")

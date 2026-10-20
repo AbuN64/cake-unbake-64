@@ -190,7 +190,7 @@ def finish(command: str, result: Json | None, findings: Sequence[Finding]) -> No
         return
     lines = [finding(f) for f in sorted(findings, key=lambda f: not f.blocking)]
     lines.extend(_written(command, result))
-    if command == "score":  # result fields belong to their command's contract (upgrade.source is a URL)
+    if command in ("score", "probe"):  # result fields belong to their command's contract (upgrade.source is a URL)
         lines.extend(_score(result or {}))
     lines.extend(summary(effort.closed()))
     for line in lines:

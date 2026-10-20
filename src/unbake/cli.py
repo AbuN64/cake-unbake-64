@@ -86,7 +86,7 @@ def _emit(name: str, code: int, result: Json | None, findings: Sequence[Finding]
         "cache": effort.cache_total(stages),  # kept by --short too: the stage tree it drops is not where it is read
     }
     if short and result is not None:  # the verdict and the diff only: no stage tree or proofs
-        missing = sorted({m for p in result.get("proofs", ()) for m in p["missing"]})[:8]
+        missing = sorted({m for p in result.get("proofs", ()) for m in p["missing"]} | {*result.get("missing", ())})[:8]
         document = {
             **document,
             "stages": {},

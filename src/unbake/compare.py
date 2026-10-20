@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from collections.abc import Mapping, Sequence
@@ -10,7 +11,22 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from unbake import alloc, effort, land, native, policy, pool, publish, sched, store, symptoms, tree, versions, view
+from unbake import (
+    alloc,
+    effort,
+    land,
+    native,
+    policy,
+    pool,
+    publish,
+    sched,
+    store,
+    symbols,
+    symptoms,
+    tree,
+    versions,
+    view,
+)
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Proof, Refusal
 
@@ -563,6 +579,45 @@ def _implicit_calls(text: str, name: str) -> list[str]:
     return found
 
 
+def _words(built: bytes, target: bytes) -> dict[str, int]:
+    matched = round(symptoms.score(built, target) * len(target) / 4) if built and target else 0
+    return {"built": len(built) // 4, "target": len(target) // 4, "matched": matched}
+
+
+def _verdict(
+    config: Config, version: str, name: str, path: str, proof: Proof, extras: Mapping[str, bytes], params: Json
+) -> tuple[list[str], bytes, bytes, list[str]]:
+    """(the diff lines shown, the bytes built, the ROM's bytes of the function, the whole diff) of one measured proof:
+    what score and probe both print, so a probe agrees with a score. A proof that built nothing is its compile error."""
+    table = native.symbol_facts(config, version, extras)
+    facts = table[name]
+    built = store.get(config, "bytes", proof.built_sha256) or b""
+    size = native.extent(table, name) or len(built)  # not the candidate's size
+    target = (
+        versions.rom_bytes(native.version_records(config, extras)[version], facts[1] or 0, (facts[1] or 0) + size)
+        if size
+        else b""
+    )
+    if not built and not proof.exact:
+        reason = "; ".join(ln for m in proof.missing for ln in m.splitlines() if ln.strip())
+        where = _LOCATION.search(reason)  # the first place the compiler names; a conflict's other one is in the reason
+        raise Refusal(
+            Finding(
+                "score.compile",
+                reason=reason or "no instructions were built",
+                path=where[1] if where else "",
+                line=int(where[2]) if where else 0,
+                unit=path,
+                versions=(version,),
+                action="fix the compile error shown",
+            )
+        )
+    everything = symptoms.diff(built, target, facts[0]).splitlines() if built else []
+    limit = params.get("lines") or 80
+    shown = _compact(everything, params.get("lines") or 40) if params.get("short") else everything[:limit]
+    return shown, built, target, everything
+
+
 def _score_one(config: Config, params: Json) -> Json:
     extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
     resolved = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"), extras)
@@ -601,33 +656,7 @@ def _score_one(config: Config, params: Json) -> Json:
     proof = measured(version)
     proofs = [measured(v) for v in held if v != version]
     proofs.insert(0, proof)
-    table = native.symbol_facts(config, version, extras)
-    facts = table[name]
-    built = store.get(config, "bytes", proof.built_sha256) or b""
-    size = native.extent(table, name) or len(built)  # not the candidate's size
-    target = (
-        versions.rom_bytes(native.version_records(config, extras)[version], facts[1] or 0, (facts[1] or 0) + size)
-        if size
-        else b""
-    )
-    if not built and not proof.exact:
-        reason = "; ".join(ln for m in proof.missing for ln in m.splitlines() if ln.strip())
-        where = _LOCATION.search(reason)  # the first place the compiler names; a conflict's other one is in the reason
-        raise Refusal(
-            Finding(
-                "score.compile",
-                reason=reason or "no instructions were built",
-                path=where[1] if where else "",
-                line=int(where[2]) if where else 0,
-                unit=path,
-                versions=(version,),
-                action="fix the compile error shown",
-            )
-        )
-    everything = symptoms.diff(built, target, facts[0]).splitlines() if built else []
-    limit = params.get("lines") or 80
-    shown = _compact(everything, params.get("lines") or 40) if params.get("short") else everything[:limit]
-    matched = round(symptoms.score(built, target) * len(target) / 4) if built and target else 0
+    shown, built, target, everything = _verdict(config, version, name, path, proof, extras, params)
     snapshot, unit, recipe, _ = native.candidate(config, version, path, text, overrides, extras, [name])
     source_findings = policy.evaluate(snapshot, path, text, None, False)
     result: dict[str, Any] = {
@@ -637,7 +666,7 @@ def _score_one(config: Config, params: Json) -> Json:
         "versions": list(held),
         "exact": all(p.exact for p in proofs),
         "score": proof.score,
-        "words": {"built": len(built) // 4, "target": len(target) // 4, "matched": matched},
+        "words": _words(built, target),
         "shift": symptoms.shift(built, target),
         "source": [asdict(f) for f in source_findings],
         "diff": shown,
@@ -684,5 +713,101 @@ def _score_one(config: Config, params: Json) -> Json:
                 shutil.copytree(work / "alloc", kept, dirs_exist_ok=True)
                 result["dumps"] = sorted(str(kept / f.name) for f in (work / "alloc").iterdir())
         result["alloc"] = alloc.report(name, greg, lreg, asm, symptoms.register_votes(built, target))
-        result["sched"] = sched.report(name, passes, symptoms.listing(built, facts[0]), everything)
+        vram = native.symbol_facts(config, version, extras)[name][0]
+        result["sched"] = sched.report(name, passes, symptoms.listing(built, vram), everything)
     return result
+
+
+# ---------------------------------------------------------------- probe
+def _quick_owner(config: Config, version: str, name: str, extras: Mapping[str, bytes]) -> publish.Owner | None:
+    """The file that owns `name` in `version`, found without capturing the tree: the sources that spell the name,
+    each parsed alone in that version (the parse is cached per file). A C body wins over a stand-in elsewhere, as the
+    tree decides; None when no file or more than one claims it (the caller asks the whole tree, which names why)."""
+    fact = native.symbol_facts(config, version, extras).get(name)
+    if fact is None or fact[1] is None:
+        return None
+    root, word = config.project.root, name.encode()
+    defined: list[str] = []
+    standing: list[str] = []
+    for folder, _, names in os.walk(root / "src"):
+        for file in names:
+            if not file.lower().endswith(tree.SOURCE_SUFFIXES):
+                continue
+            path = (Path(folder) / file).relative_to(root).as_posix()
+            data = extras.get(path) or (root / path).read_bytes()
+            if word not in data:
+                continue
+            defs, ins, _ = tree.parse(config, path, data, version, None, extras)
+            (defined if name in defs else standing if name in ins else []).append(path)
+    found = defined or standing
+    segment = symbols.segment_at(config, version, fact[1])
+    if len(found) != 1 or segment is None:
+        return None
+    return publish.Owner(found[0], segment, (version,))
+
+
+def _probe_dumps(
+    config: Config, version: str, name: str, placed: Placed, params: Json, extras: Mapping[str, bytes], everything: str
+) -> list[str]:
+    """Every pass dump of the probed compile (-da where the toolchain takes it, else the allocation and scheduler
+    dumps), the -g assembly, the preprocessed unit and the instruction diff, copied into --dumps DIR."""
+    kept = Path(params["dumps"]).resolve()
+    overrides = _overrides(params)
+    every = {**overrides, "add": [*overrides["add"], "-da"]}
+    path, text = placed.owner.path, placed.text
+    try:
+        snapshot, unit, recipe, _ = native.candidate(config, version, path, text, every, extras, [name])
+    except Refusal:  # a toolchain without -da: the dumps native.dumps always asks for
+        snapshot, unit, recipe, _ = native.candidate(config, version, path, text, overrides, extras, [name])
+    with store.work(config) as work:
+        native.dumps(snapshot, unit, version, recipe, work / "dumps")
+        shutil.copytree(work / "dumps", kept, dirs_exist_ok=True)
+        files = sorted(f.name for f in (work / "dumps").iterdir())
+    (kept / f"{name}.diff").write_text(everything + "\n", encoding="utf-8")
+    return [str(kept / f) for f in [*files, f"{name}.diff"]]
+
+
+def probe_command(config: Config, params: Json) -> Json:
+    """Compile only the module that owns the function, the candidate in place of its stand-in, in one version, and
+    diff that function against the ROM: the measure score makes, without the tree capture, the source rules, the
+    other versions or the landing checks. Writes nothing but --dumps DIR."""
+    with effort.stage("compare.probe"):
+        extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
+        file = Path(params["file"])
+        source = _source(file)
+        version = params.get("version") or config.project.names_from
+        if version not in config.project.versions:
+            raise Refusal(
+                Finding(
+                    "land.request",
+                    reason=f"{version} is not a version of the project",
+                    versions=tuple(config.project.versions),
+                    action="pass --version one of the project's versions",
+                )
+            )
+        name = params.get("function") or next((i.name for i in publish.items(source) if i.kind == "function"), "")
+        owner = _quick_owner(config, version, name, extras) if name else None
+        if owner is None:  # the whole tree names the owner, or why there is none
+            resolved = _resolve(config, file, params.get("function"), version, extras)
+            name, owner = resolved.name, next(p.owner for p in resolved.placed if version in p.owner.versions)
+        given = extras.get(owner.path)
+        current = given.decode() if given is not None else (config.project.root / owner.path).read_text("utf-8")
+        text, origins = _text(current, owner.segment, name, source)
+        placed = Placed(publish.Owner(owner.path, owner.segment, (version,)), text, tuple(origins))
+        resolved = Resolved(name, file, source, (placed,))
+        proof = _sited(native.measure(config, version, name, owner.path, text, _overrides(params), extras), resolved)
+        shown, built, target, everything = _verdict(config, version, name, owner.path, proof, extras, params)
+        result: dict[str, Any] = {
+            "unit": owner.path,
+            "members": [name],
+            "version": version,
+            "exact": proof.exact,
+            "score": proof.score,
+            "words": _words(built, target),
+            "shift": symptoms.shift(built, target),
+            "diff": shown,
+            "missing": list(proof.missing),
+        }
+        if params.get("dumps"):
+            result["dumps"] = _probe_dumps(config, version, name, placed, params, extras, "\n".join(everything))
+        return result

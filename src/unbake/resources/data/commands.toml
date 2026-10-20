@@ -66,6 +66,22 @@ params = [
   { name = "keep-dumps", kind = "option", type = "path", required = false, multiple = false, help = "with --alloc (implied): copy the compile's gcc dumps (.greg, .lreg, .sched, .sched2, the -g assembly and its .i) into DIR, which outlives the command" },
 ]
 
+[command.probe]
+help = "Compile only the module that owns one function, the candidate in place of its stand-in, in one version, and diff the function against the ROM in about a second: score's measure without the tree capture, source rules or other versions. Writes nothing but --dumps DIR."
+handler = "compare.probe_command"
+params = [
+  { name = "file", kind = "argument", type = "path", required = true, multiple = false, help = "C source" },
+  { name = "extras", kind = "argument", type = "path", required = false, multiple = true, help = "change-set files as score takes them: PATH=FILE overlays the project file PATH (a header) with FILE" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member the file implements, default the first function it defines" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version to probe, default the names-from version" },
+  { name = "toolchain", kind = "option", type = "str", required = false, multiple = false, help = "override the unit toolchain" },
+  { name = "flag", kind = "option", type = "str", required = false, multiple = true, help = "add one compiler option" },
+  { name = "omit-flag", kind = "option", type = "str", required = false, multiple = true, help = "remove one compiler option (with its operand)" },
+  { name = "lines", kind = "option", type = "int", required = false, multiple = false, help = "instruction diff lines to show, default 80" },
+  { name = "short", kind = "flag", type = "str", required = false, multiple = false, help = "show only the changed diff lines (40 by default)" },
+  { name = "dumps", kind = "option", type = "path", required = false, multiple = false, help = "copy every pass dump of the compile (-da where the toolchain takes it), its -g assembly, its .i and the whole instruction diff into DIR" },
+]
+
 [command.submit]
 help = "Admit sources and put exact (or improved fuzzy) candidates in the landing inbox; landing starts if idle."
 handler = "compare.submit_command"

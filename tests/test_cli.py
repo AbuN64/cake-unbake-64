@@ -265,6 +265,7 @@ def test_the_command_set_is_the_C9_set() -> None:
         "audit",
         "compare",
         "score",
+        "probe",
         "submit",
         "land",
         "report",
