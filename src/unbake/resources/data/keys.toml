@@ -190,6 +190,10 @@ sentence = "a struct is mostly padding arrays with at most three named fields; d
 owner = "policy"
 sentence = "a source file defines a record whose every field is an offset placeholder; use the real shared record"
 
+[key."source.offset-name"]
+owner = "policy"
+sentence = "a field is named for an offset it does not sit at; fix the padding before it or the name"
+
 [key."source.param-cast"]
 owner = "policy"
 sentence = "a void pointer or integer parameter is cast to a struct pointer; type the parameter"

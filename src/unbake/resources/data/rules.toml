@@ -134,6 +134,14 @@ sentence = "a source file defines a record whose every field is an offset placeh
 check = "placeholder-record"
 
 [[rule]]
+id = "offset-name"
+scope = "code"
+waivable = false
+needs = "snapshot"
+sentence = "a field is named for an offset it does not sit at; fix the padding before it or the name"
+check = "offset-name"
+
+[[rule]]
 id = "param-cast"
 scope = "code"
 waivable = false

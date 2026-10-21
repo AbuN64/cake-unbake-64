@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import config, delta, effort, native, pool, process, recipes, store, tree, versions
+from unbake import config, delta, effort, native, offsets, pool, process, recipes, store, tree, versions
 from unbake import view as _view
 from unbake.contracts import Finding, Json, Refusal, Snapshot, SourceView, UnitSpec, code_identity, digest
 
@@ -748,6 +748,24 @@ def _duplicate_records(snapshot: Snapshot, path: str, code: str) -> dict[int, st
     return found
 
 
+def _offset_headers(snapshot: Snapshot) -> Any:
+    """The record layouts of the project's headers, once per snapshot."""
+
+    def build() -> Any:
+        texts = {p: (snapshot.peek(p) or b"").decode(errors="replace") for p in _include_headers(snapshot)}
+        return offsets.registry({p: _scopes(t)["code"] for p, t in texts.items()})
+
+    return effort.memo(("offset-headers", snapshot.digest), build)
+
+
+def _offset_names(snapshot: Snapshot, scopes: Mapping[str, str]) -> dict[int, str]:
+    """{line: subject} of each field named for an offset that the layout places elsewhere."""
+    found: dict[int, str] = {}
+    for site in offsets.sites(_offset_headers(snapshot), scopes["code"], scopes["directives"]):
+        found[site.line] = f"{found[site.line]}; {site.subject}" if site.line in found else site.subject
+    return found
+
+
 _DEBT = {
     "fake-type": _fake_type,
     "pad-view": _pad_view,
@@ -787,6 +805,8 @@ def _hits(
         return dict(_DEBT[check](code))
     if check == "stand-in-body":
         return _stand_in_body(code)
+    if check == "offset-name":
+        return _offset_names(snapshot, scopes) if snapshot else {}
     if check == "duplicate-record":
         return _duplicate_records(snapshot, path, code) if snapshot else {}
     if check == "empty-loop":
@@ -1010,7 +1030,9 @@ def _census_unit(item: tuple[Snapshot, tree.Module]) -> tuple[Finding, ...]:
             sdk,
             config.load_resource("rules.toml"),
             snapshot.config.project.digest,
-            code_identity(evaluate, _view_uses, _stand_in_body, _duplicate_records, *_DEBT.values()),
+            code_identity(
+                evaluate, _view_uses, _stand_in_body, _duplicate_records, _offset_names, offsets.sites, *_DEBT.values()
+            ),
             [_active(source, p) for p in files],
         )
     )
@@ -1390,6 +1412,61 @@ def _credit_drops(root: Path, against: str, git: str, tmp: Path) -> dict[str, in
     return {v: n - after[v] for v, n in before.items() if v in after and after[v] < n}
 
 
+def _blobs(git: str, root: Path, tmp: Path, rev: str, paths: Sequence[str]) -> dict[str, str]:
+    """path -> text of each path as `rev` holds it (those it lacks are absent), in one git process."""
+    request = "".join(f"{rev}:{p}\n" for p in paths).encode()
+    out = process.run("git cat-file", [git, "cat-file", "--batch"], root, tmp=tmp, stdin=request).stdout
+    texts: dict[str, str] = {}
+    at = 0
+    for path in paths:
+        end = out.index(b"\n", at)
+        head = out[at:end].split()
+        at = end + 1
+        if len(head) == 3 and head[1] == b"blob":
+            size = int(head[2])
+            texts[path] = out[at : at + size].decode(errors="replace")
+            at += size + 1
+    return texts
+
+
+def _offset_audit(
+    root: Path, against: str, git: str, tmp: Path, changed: Sequence[str], library: Sequence[str]
+) -> tuple[list[Finding], list[Finding]]:
+    """The offset-name rows of `against` and of the working tree over the changed sources. A header judges every
+    source that reads it, so a changed header judges every source of the tree."""
+
+    def listed(*args: str) -> list[str]:
+        out = process.run("git ls", [git, *args], root, tmp=tmp).stdout.decode(errors="replace")
+        return [p for p in out.split("\0") if p]
+
+    now = listed("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    was = listed("ls-tree", "-r", "-z", "--name-only", against)
+    code = [
+        p for p in set(now) | set(was) if config.is_header(p) or (config.is_source(p) and not config.is_assembly(p))
+    ]
+    wide = any(config.is_header(p) for p in changed)
+    judged = sorted(p for p in code if (wide or p in changed) and not any(Path(p).is_relative_to(d) for d in library))
+    sentence = next(r for r in config.load_resource("rules.toml")["rule"] if r["id"] == "offset-name")["sentence"]
+    results = []
+    for rev, present in ((against, set(was)), (None, set(now))):
+        wanted = [p for p in sorted(code) if p in present and (config.is_header(p) or p in judged)]
+        if rev is None:
+            texts = {p: (root / p).read_text(errors="replace") for p in wanted if (root / p).is_file()}
+        else:
+            texts = _blobs(git, root, tmp, rev, wanted)
+        views = {p: _scopes(t) for p, t in texts.items()}
+        base = offsets.registry({p: v["code"] for p, v in views.items() if config.is_header(p)})
+        found: list[Finding] = []
+        for path in judged:
+            if path in views:
+                for site in offsets.sites(base, views[path]["code"], views[path]["directives"], path):
+                    found.append(
+                        Finding("source.offset-name", f"{sentence}: {site.subject}", path=path, line=site.line)
+                    )
+        results.append(found)
+    return results[0], results[1]
+
+
 def audit_command(params: Json) -> Json:
     """Refuse the source rule rows the working tree adds over a revision. Reads text and git only: no ROM, host or
     snapshot, so CI runs it with nothing but the checkout."""
@@ -1439,6 +1516,10 @@ def audit_command(params: Json) -> Json:
             if data is not None:
                 found.extend(text_findings(path, data.decode(errors="replace"), False))
     blocking, _ = scope(before, after, paths, _renames(_placements(old_file), _placements(new_file)))
+    laid_before, laid_after = _offset_audit(root, against, git, tmp, paths, library)
+    laid, _ = scope(laid_before, laid_after, {f.path for f in laid_after})
+    blocking = (*blocking, *laid)
+    before, after = [*before, *laid_before], [*after, *laid_after]
     if blocking:
         held, now = Counter((f.key, f.path) for f in before), Counter((f.key, f.path) for f in after)
         raise Refusal(

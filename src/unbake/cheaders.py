@@ -71,6 +71,10 @@ class Headers:
     _raw: dict[str, tuple[list[str], bool, str]] = field(default_factory=dict)  # tag -> (body tokens, union, path)
     _cache: dict[str, Struct] = field(default_factory=dict)
 
+    def copy(self) -> Headers:
+        """The declarations read so far, to which a file's own may be added without touching these."""
+        return Headers(typedefs=dict(self.typedefs), _raw=dict(self._raw))
+
     # ---- reading
 
     def read(
