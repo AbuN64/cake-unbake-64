@@ -1374,12 +1374,30 @@ def main(argv: Sequence[str]) -> int:
             [a.replace("{j}", "1") for a in command], env={**os.environ, "UNBAKE_CORES": "1"}
         ).returncode
     if _is_make(command[0]) and "-j{j}" in command:  # elastic: the jobserver is fed from the slot pool
+        from unbake import front
+
         with jobserver(host, work) as (j, env, fds):
-            if not fds:
-                return subprocess.run([a.replace("{j}", str(j)) for a in command], env={**os.environ, **env}).returncode
-            return subprocess.run(
-                [a for a in command if a != "-j{j}"], env={**os.environ, **env}, pass_fds=fds
-            ).returncode
+            argv = [a.replace("{j}", str(j)) for a in command] if not fds else [a for a in command if a != "-j{j}"]
+
+            def start(record: str | None) -> int:
+                if record is None:
+                    return subprocess.run(argv, env={**os.environ, **env}, pass_fds=fds).returncode
+                # the recording run: a failed unit never stops it, and its output is noise unless it recorded nothing
+                # (then it was the build)
+                done = subprocess.run(
+                    [*argv, *([] if "-k" in argv else ["-k"])],
+                    env={**os.environ, **env, "ABU_CC_COLLECT": record},
+                    pass_fds=fds,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+                if not Path(record).exists():
+                    sys.stdout.flush()
+                    sys.stdout.buffer.write(done.stdout)
+                    sys.stdout.buffer.flush()
+                return done.returncode
+
+            return front.build(start, Path.cwd(), front.cache(host), j)
     with cores(host, work) as j:
         child = subprocess.run([a.replace("{j}", str(j)) for a in command], env={**os.environ, "UNBAKE_CORES": str(j)})
     return child.returncode

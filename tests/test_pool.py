@@ -21,7 +21,7 @@ import pytest
 from test_effort import _config
 
 from unbake import config as configuration
-from unbake import effort, human, pool
+from unbake import effort, human, pool, process
 from unbake.contracts import Finding, Refusal, sha256
 
 _RAISED = ValueError("unset")
@@ -919,7 +919,9 @@ def _shell_pool(monkeypatch, tmp_path, *, share=4):
     import subprocess
 
     calls, acquired = [], []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)) or SimpleNamespace(returncode=7))
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)) or SimpleNamespace(returncode=7, stdout=b"")
+    )
     monkeypatch.setattr(configuration, "load_host", lambda path: _host(tmp_path))
     monkeypatch.setattr(
         pool,
@@ -939,7 +941,7 @@ def test_a_command_never_told_a_count_takes_no_slot(tmp_path, monkeypatch):
 def test_a_command_told_the_count_holds_the_share_and_gets_it(tmp_path, monkeypatch):
     calls, acquired = _shell_pool(monkeypatch, tmp_path)
     pool.main(["--", "make", "-j{j}"])
-    assert acquired == [0] and calls[0][0] == ["make", "-j4"] and calls[0][1]["env"]["UNBAKE_CORES"] == "4"
+    assert acquired == [0] and calls[0][0] == ["make", "-j4", "-k"] and calls[0][1]["env"]["UNBAKE_CORES"] == "4"
 
 
 def test_work_caps_the_share_of_a_counted_command(tmp_path, monkeypatch):
@@ -1033,11 +1035,35 @@ def test_a_make_build_runs_on_a_jobserver_fed_from_the_slot_pool(tmp_path, monke
     monkeypatch.setattr(pool, "_feed", lambda tokens, spare, stop, taken: None)
     pool.main(["--", "/usr/bin/make", "-j{j}", "check"])
     command, options = calls[0]
-    assert command == ["/usr/bin/make", "check"]  # no fixed -j: the first grant is only where the build starts
+    assert command == ["/usr/bin/make", "check", "-k"]  # no fixed -j: the first grant is only where the build starts
     assert "preexec_fn" not in options  # the feeder thread runs: no preexec_fn, and no priority is lowered
     flags = options["env"]["MAKEFLAGS"]
     assert flags.startswith("-j4 --jobserver-auth=") and options["pass_fds"]
     assert options["env"]["UNBAKE_CORES"] == "4"
+
+
+def test_a_make_build_answers_its_recorded_compiles_between_two_runs(tmp_path, monkeypatch):
+    calls, _ = _shell_pool(monkeypatch, tmp_path)
+    monkeypatch.setattr(pool, "_dir", [tmp_path])
+    monkeypatch.setattr(pool, "_cmd", [(tmp_path / "cmd-1.lock").open("a")])
+    monkeypatch.setattr(pool, "_feed", lambda tokens, spare, stop, taken: None)
+    monkeypatch.chdir(tmp_path)
+    batches = []
+    monkeypatch.setattr(process, "batch", lambda *a: batches.append(a))
+    import subprocess
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw))
+        if "ABU_CC_COLLECT" in kw["env"]:
+            Path(kw["env"]["ABU_CC_COLLECT"]).write_text("/cc1\x1f-quiet\x1fa.i\x1f-o\x1fa.s\n")
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert pool.main(["--", "/usr/bin/make", "-j{j}", "check"]) == 0
+    assert [("ABU_CC_COLLECT" in kw["env"]) for _, kw in calls] == [True, False]
+    assert [("-k" in cmd) for cmd, _ in calls] == [True, False]  # recording goes past every failed unit
+    assert len(batches) == 1 and batches[0][3] == 4 and batches[0][1] == tmp_path
+    assert not list((tmp_path / ".unbake/tmp").glob("cc-commands.*"))
 
 
 def test_the_jobserver_holds_the_grant_as_tokens_and_closes_its_pipe(tmp_path, monkeypatch):

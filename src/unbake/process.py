@@ -6,6 +6,7 @@ import os
 import selectors
 import signal
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, suppress
 from functools import cache
@@ -261,12 +262,36 @@ def git(config: Config, *args: str) -> NativeResult:
 
 def make(config: Config, targets: Sequence[str], jobs: int = 0) -> NativeResult:
     """One `make -j<jobs> <targets>` under the pool jobserver: the only process a build spawns, whatever its steps.
-    `jobs` is the work the build expects (0: unknown); the jobserver grants the slots and grows into freed ones."""
-    from unbake import pool  # pool imports store, which imports this module
+    `jobs` is the work the build expects (0: unknown); the jobserver grants the slots and grows into freed ones. The
+    compile commands are answered in a batch between two runs of it (front.build)."""
+    from unbake import front, pool  # pool imports store, which imports this module
 
     root = config.project.root
-    with effort.stage("make"), pool.jobserver(config.host, jobs) as (_, env, fds):
-        return run("make", [tool(config, "make"), "-k", *targets], root, tmp=scratch(root), env=env, pass_fds=fds)
+    with effort.stage("make"), pool.jobserver(config.host, jobs) as (granted, env, fds):
+        argv = [tool(config, "make"), "-k", *targets]
+
+        def start(record: str | None) -> NativeResult:
+            extra = {"ABU_CC_COLLECT": record} if record else {}
+            return run("make", argv, root, tmp=scratch(root), env={**env, **extra}, pass_fds=fds)
+
+        return front.build(start, root, front.cache(config.host), granted)
+
+
+def batch(store: Path, root: Path, manifest: Path, workers: int) -> None:
+    """Run the compiler front's batch (resources/cc_cache.py) over the recorded compile commands in `workers`
+    processes. A worker that fails answers fewer units; the build then compiles them, each named by make's own error."""
+    script = Path(__file__).parent / "resources" / "cc_cache.py"
+    count = max(1, workers)
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-I", str(script), "--batch", str(store), str(root), str(manifest), str(i), str(count)],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+        )
+        for i in range(count)
+    ]
+    for proc in procs:
+        proc.wait()
 
 
 def tracked(root: Path) -> set[str]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import Mock
 
 from test_native import _outputs, _tools, case, invocation  # noqa: F401  (fixtures)
@@ -134,12 +135,47 @@ def test_workers_honour_host() -> None:
     assert pool._fan(host) == pool._budget(host) == 7
 
 
-def test_make_is_one_process_under_the_jobserver(cfg, monkeypatch) -> None:
-    ran = []
+def _make_run(cfg, monkeypatch, record=None):
+    """process.make with the pool, make and the batch replaced: the runs it started, the batches it asked for."""
+    ran, batches = [], []
     monkeypatch.setattr(
         pool, "jobserver", lambda host, work=0: __import__("contextlib").nullcontext((4, {"MAKEFLAGS": "-j4"}, ()))
     )
     monkeypatch.setattr(process, "tool", lambda config, name, **k: cfg.project.root / "make")
-    monkeypatch.setattr(process, "run", lambda *a, **k: ran.append((a, k)) or "result")
-    assert process.make(cfg, ["check"], 4) == "result"
-    assert len(ran) == 1 and ran[0][0][1][-1] == "check" and ran[0][1]["env"] == {"MAKEFLAGS": "-j4"}
+
+    def run(*a, **k):
+        ran.append((a, k))
+        if record and "ABU_CC_COLLECT" in k["env"]:
+            Path(k["env"]["ABU_CC_COLLECT"]).write_text(record)
+        return f"result{len(ran)}"
+
+    monkeypatch.setattr(process, "run", run)
+    monkeypatch.setattr(process, "batch", lambda *a: batches.append(a))
+    return ran, batches
+
+
+def test_make_is_one_process_when_the_front_records_nothing(cfg, monkeypatch) -> None:
+    ran, batches = _make_run(cfg, monkeypatch)
+    assert process.make(cfg, ["check"], 4) == "result1"
+    assert len(ran) == 1 and ran[0][0][1][-1] == "check" and ran[0][1]["env"]["MAKEFLAGS"] == "-j4"
+    assert "ABU_CC_COLLECT" in ran[0][1]["env"] and not batches
+
+
+def test_make_without_a_front_cache_is_one_plain_process(cfg, monkeypatch) -> None:
+    cfg = replace(cfg, host=replace(cfg.host, cache_dir=None))
+    ran, batches = _make_run(cfg, monkeypatch)
+    assert process.make(cfg, ["check"], 4) == "result1"
+    assert len(ran) == 1 and ran[0][1]["env"] == {"MAKEFLAGS": "-j4"} and not batches
+
+
+def test_make_answers_the_recorded_compiles_in_one_batch_between_two_runs(cfg, monkeypatch) -> None:
+    root = cfg.project.root
+    (root / "build").mkdir(exist_ok=True)
+    (root / "build/a.s.cc").write_text("left over")
+    record = "/cc1\x1f-quiet\x1fbuild/a.i\x1f-o\x1fbuild/a.s\n/cc1\x1f-E\x1fb.c\n"
+    ran, batches = _make_run(cfg, monkeypatch, record)
+    assert process.make(cfg, ["check"], 4) == "result2"  # the second run is the build
+    assert [("ABU_CC_COLLECT" in k["env"]) for _, k in ran] == [True, False]
+    assert len(batches) == 1 and batches[0][3] == 4  # across the granted slots
+    assert not (root / "build/a.s.cc").exists()  # an answer nobody claimed does not outlive the build
+    assert not list((root / ".unbake/tmp").glob("cc-commands.*"))

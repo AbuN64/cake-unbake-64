@@ -14,7 +14,7 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
 
-from unbake import adapters, effort, pool, process, report, store, symbols, tree, versions
+from unbake import adapters, effort, front, pool, process, report, store, symbols, tree, versions
 from unbake import config as configuration
 from unbake.contracts import (
     Config,
@@ -675,17 +675,16 @@ def _fetch_rule(folder: str, download: Json, pins: Mapping[str, str]) -> str:
 
 
 def _cached_cc(config: Config, compiler: Path) -> str:
-    """The compiler the Makefile runs: behind resources/cc_cache.py, whose results live beside the host content cache,
-    so every tree on the host copies the assembly of a text any tree compiled (a commit that changes a header all
-    sources include changes every .i, yet its proof tree compiled those texts: 1045 s CPU in a seeded tip setup)."""
-    cache = getattr(config.host, "cache_dir", None)
+    """The compiler the Makefile runs: behind resources/cc_front.sh and cc_cache.py, whose results live beside the host
+    content cache, so every tree on the host copies the assembly of a text any tree compiled (a commit that changes a
+    header all sources include changes every .i, yet its proof tree compiled those texts: 1045 s CPU in a seeded tip
+    setup). A shell script, not python, is what make starts per source: process.make answers the cache's units in a
+    few batch processes first, and the script only moves their results into place."""
+    cache = front.cache(config.host)
     if cache is None:
         return str(compiler)
-    # imported, not run as a script: a script is compiled again on every call, a module keeps its .pyc
-    start = "import sys;sys.path.insert(0,sys.argv.pop(1));import cc_cache;sys.exit(cc_cache.main(sys.argv))"
-    folder = Path(__file__).parent / "resources"
-    parts = ("python3", "-I", "-S", "-c", start, folder, cache.with_name(f"{cache.name}.cc"), compiler)
-    return " ".join(shlex.quote(str(p)) for p in parts)
+    script = Path(__file__).parent / "resources" / "cc_front.sh"
+    return " ".join(shlex.quote(str(p)) for p in ("sh", script, cache, compiler))
 
 
 def local_mk(config: Config) -> bytes:

@@ -133,11 +133,107 @@ def test_local_mk_puts_each_compiler_behind_the_front(tmp_path):
     )
     text = build.local_mk(SimpleNamespace(host=host)).decode()
     line = next(row for row in text.splitlines() if row.startswith("CC_gcc_2_8_1_sn64 :="))
-    assert (
-        "import cc_cache" in line and "/resources /home/x/.cache/unbake/content.cc /chains/gcc-2.8.1-sn64/cc1" in line
-    )
-    assert "python3 -I -S -c " in line
-    assert importlib.resources.files("unbake.resources").joinpath("cc_cache.py").is_file()
+    assert line.startswith("CC_gcc_2_8_1_sn64 := sh ") and "/resources/cc_front.sh " in line
+    assert line.endswith(" /home/x/.cache/unbake/content.cc /chains/gcc-2.8.1-sn64/cc1")
+    assert importlib.resources.files("unbake.resources").joinpath("cc_front.sh").is_file()
+
+
+FRONT = Path(cc_cache.__file__).with_name("cc_front.sh")
+
+
+def front(root: Path, cache: Path, cc: Path, *, collect: Path | None = None) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "ABU_CC_COLLECT"}
+    if collect:
+        env["ABU_CC_COLLECT"] = str(collect)
+    args = ["sh", str(FRONT), str(cache), str(cc), "-quiet", "-O2", "x.i", "-o", "x.s"]
+    return subprocess.run(args, cwd=root, capture_output=True, env=env, check=False)
+
+
+def batch_of(root: Path, cache: Path, manifest: Path, workers: int = 2) -> int:
+    return sum(cc_cache.batch(str(cache), str(root), str(manifest), i, workers) for i in range(workers))
+
+
+def test_front_records_a_compile_and_fails_it_in_collect_mode(tmp_path):
+    cc, cache, manifest = fake_cc(tmp_path), tmp_path / "cc", tmp_path / "commands"
+    root = tree(tmp_path, "a", "int a;")
+    done = front(root, cache, cc, collect=manifest)
+    assert done.returncode == 125 and not (root / "x.s").exists() and runs(cc) == 0
+    assert cc_cache.commands(str(manifest)) == [(str(cc), ["-quiet", "-O2", "x.i", "-o", "x.s"])]
+
+
+def test_a_batch_answers_hits_and_leaves_misses_to_the_front(tmp_path):
+    cc, cache, manifest = fake_cc(tmp_path), tmp_path / "cc", tmp_path / "commands"
+    root = tmp_path / "a"
+    root.mkdir()
+    for name, text in (("hit", "int a;"), ("miss", "int c;")):
+        (root / f"{name}.i").write_text(text)
+
+    def command(name: str) -> list[str]:
+        return ["-quiet", "-O2", f"{name}.i", "-o", f"{name}.s"]
+
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        assert cc_cache.run(str(cache), str(cc), command("hit")) == 0 and runs(cc) == 1  # seeds the cache
+    finally:
+        os.chdir(cwd)
+    manifest.write_text("".join(f"{cc}\x1f" + "\x1f".join(command(n)) + "\n" for n in ("hit", "miss")))
+    assert batch_of(root, cache, manifest) == 1 and runs(cc) == 1
+    assert (root / "hit.s.cc").read_text() == "INT A;" and not (root / "miss.s.cc").exists()
+    taken = subprocess.run(["sh", str(FRONT), str(cache), str(cc), *command("hit")], cwd=root, check=False)
+    assert taken.returncode == 0 and (root / "hit.s").read_text() == "INT A;" and not (root / "hit.s.cc").exists()
+    assert runs(cc) == 1  # an answered unit ran no compiler
+    made = subprocess.run(["sh", str(FRONT), str(cache), str(cc), *command("miss")], cwd=root, check=False)
+    assert made.returncode == 0 and (root / "miss.s").read_text() == "INT C;" and runs(cc) == 2
+
+
+def test_a_batch_answer_equals_the_single_front_answer_for_hit_and_reuse(tmp_path):
+    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
+    base = "struct S { int unk10; }; int f(struct S *s) { return s->unk10 + 1; }\n"
+    renamed = base.replace("unk10", "fogNear")
+    seed = tree(tmp_path, "seed", base)
+    compile_in(seed, cache, cc)
+    args = ["-quiet", "-O2", "x.i", "-o", "x.s"]
+    for number, text in enumerate((base, renamed)):
+        single, batched = tree(tmp_path, f"s{number}", text), tree(tmp_path, f"b{number}", text)
+        manifest = tmp_path / f"m{number}"
+        manifest.write_text(f"{cc}\x1f" + "\x1f".join(args) + "\n")
+        assert cc_cache.batch(str(cache), str(batched), str(manifest), 0, 1) == 1
+        os.chdir(single)
+        try:
+            assert cc_cache.run(str(cache), str(cc), args) == 0
+        finally:
+            os.chdir(tmp_path)
+        assert (batched / "x.s.cc").read_bytes() == (single / "x.s").read_bytes()
+        assert runs(cc) == 1  # neither compiled: the renamed text reused the seed's assembly
+        assert (batched / "x.s.cc").stat().st_mtime >= (batched / "x.i").stat().st_mtime + 1
+
+
+def test_the_front_ignores_an_answer_older_than_its_input(tmp_path):
+    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
+    root = tree(tmp_path, "a", "int a;")
+    (root / "x.s.cc").write_text("STALE")
+    os.utime(root / "x.s.cc", (1, 1))
+    assert front(root, cache, cc).returncode == 0 and (root / "x.s").read_text() == "INT A;" and runs(cc) == 1
+
+
+def test_a_failing_compile_fails_the_front_after_a_batch_left_it(tmp_path):
+    cc, cache, manifest = tmp_path / "cc1", tmp_path / "cc", tmp_path / "commands"
+    cc.write_text("#!/bin/sh\necho 'x.i:1: error' >&2\nexit 3\n")
+    cc.chmod(0o755)
+    root = tree(tmp_path, "a", "int a;")
+    front(root, cache, cc, collect=manifest)
+    assert batch_of(root, cache, manifest) == 0
+    done = front(root, cache, cc)
+    assert done.returncode == 3 and b"x.i:1: error" in done.stderr and not (root / "x.s.cc").exists()
+
+
+def test_a_batch_skips_a_command_it_cannot_key_and_an_unreadable_source(tmp_path):
+    cc, cache, manifest = fake_cc(tmp_path), tmp_path / "cc", tmp_path / "commands"
+    root = tree(tmp_path, "a", "int a;")
+    manifest.write_text(f"{cc}\x1f-E\x1fy.c\n{cc}\x1f-quiet\x1fgone.i\x1f-o\x1fgone.s\n")
+    assert cc_cache.batch(str(cache), str(root), str(manifest), 0, 1) == 0
+    assert not list(root.glob("*.cc"))
 
 
 def test_renamed_accepts_only_a_consistent_one_for_one_rename():

@@ -446,6 +446,47 @@ def call(compiler: str, args: list[str]) -> int:
     return subprocess.call([compiler, *args])
 
 
+def lookup(cache: str, compiler: str, args: list[str], source: str, text: bytes) -> tuple[bytes, bool] | None:
+    """The assembly of `text` without running the compiler: (assembly, reused). A text compiled before gives its
+    stored assembly (reused False); a text that only renames or adds type declarations to the last one compiled under
+    this unit gives the last assembly, stored under the new key (reused True). None: the compiler must run."""
+    name = key(compiler, args, text)
+    entry = os.path.join(cache, name[:2], name[2:])
+    label = key(compiler, args, b"")  # the unit: this compiler and these arguments, whatever the text
+    try:
+        data = zlib.decompress(read(entry))
+        os.utime(entry)  # a hit keeps it alive
+        remember(cache, label, source)
+        return data, False
+    except (OSError, zlib.error):
+        pass
+    made = reuse(cache, label, compiler, args, text)
+    if made is None:
+        return None
+    store(entry, made)
+    remember(cache, label, source)
+    return made, True
+
+
+def store(entry: str, made: bytes) -> None:
+    part = f"{entry}.{os.getpid()}.part"
+    try:
+        os.makedirs(os.path.dirname(entry), exist_ok=True)
+        write(part, zlib.compress(made, 3))
+        os.replace(part, entry)
+    except OSError:
+        pass  # a full or read-only cache costs only the saving
+
+
+def maybe_prune(cache: str) -> None:
+    import random
+
+    if random.randrange(PRUNE_ODDS) == 0:
+        import time
+
+        prune(cache, time.time())
+
+
 def run(cache: str, compiler: str, args: list[str]) -> int:
     cache = os.fspath(cache)
     parsed = parse(args)
@@ -457,41 +498,59 @@ def run(cache: str, compiler: str, args: list[str]) -> int:
         name = key(compiler, args, text)
     except OSError:
         return call(compiler, args)
-    entry = os.path.join(cache, name[:2], name[2:])
-    label = key(compiler, args, b"")  # the unit: this compiler and these arguments, whatever the text
-    try:
-        data = zlib.decompress(read(entry))
-        write(out, data)
-        os.utime(entry)  # a hit keeps it alive
-        remember(cache, label, source)
+    found = lookup(cache, compiler, args, source, text)
+    if found is not None:
+        write(out, found[0])
+        if found[1]:
+            maybe_prune(cache)
         return 0
-    except (OSError, zlib.error):
-        pass
-    code, made = 0, reuse(cache, label, compiler, args, text)
-    if made is not None:
-        write(out, made)
-    else:
-        code = call(compiler, args)
-        made = read(out) if code == 0 else None
-    if code == 0 and made is not None:
-        part = f"{entry}.{os.getpid()}.part"
-        try:
-            os.makedirs(os.path.dirname(entry), exist_ok=True)
-            write(part, zlib.compress(made, 3))
-            os.replace(part, entry)
-        except OSError:
-            pass  # a full or read-only cache costs only the saving
-        remember(cache, label, source)
-    import random
-
-    if random.randrange(PRUNE_ODDS) == 0:
-        import time
-
-        prune(cache, time.time())
+    code = call(compiler, args)
+    if code == 0:
+        store(os.path.join(cache, name[:2], name[2:]), read(out))
+        remember(cache, key(compiler, args, b""), source)
+    maybe_prune(cache)
     return code
 
 
+SEPARATOR = "\x1f"  # between the fields of a compile command the front records (cc_front.sh)
+
+
+def commands(manifest: str) -> list[tuple[str, list[str]]]:
+    """(compiler, arguments) of every compile command the front recorded, in the order written."""
+    with open(manifest, encoding="utf-8", errors="surrogateescape") as handle:
+        rows = [line.rstrip("\n").split(SEPARATOR) for line in handle]
+    return [(row[0], row[1:]) for row in rows if row and row[0]]
+
+
+def batch(cache: str, root: str, manifest: str, index: int, count: int) -> int:
+    """Resolve, without the compiler, every recorded compile whose number is `index` modulo `count`: its assembly goes
+    to `<out>.cc`, stamped a whole second after its input, and the front moves it into place for exactly that input.
+    A compile the cache cannot answer is left to the front, which runs the compiler. Returns how many it resolved."""
+    done, reused = 0, False
+    for number, (compiler, args) in enumerate(commands(manifest)):
+        parsed = parse(args)
+        if parsed is None or number % count != index:
+            continue
+        source, out = os.path.join(root, parsed[0]), os.path.join(root, parsed[1]) + ".cc"
+        try:
+            found = lookup(cache, compiler, args, source, read(source))
+            if found is None:
+                continue
+            write(out, found[0])
+            stamp = os.stat(source).st_mtime + 2  # the shell compares whole seconds
+            os.utime(out, (stamp, stamp))
+        except OSError:
+            continue
+        done, reused = done + 1, reused or found[1]
+    if reused:
+        maybe_prune(cache)
+    return done
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 7 and argv[1] == "--batch":
+        batch(argv[2], argv[3], argv[4], int(argv[5]), int(argv[6]))
+        return 0
     if len(argv) < 3:
         sys.stderr.write("usage: cc_cache.py CACHE_DIR REAL_CC ARGS...\n")
         return 2
