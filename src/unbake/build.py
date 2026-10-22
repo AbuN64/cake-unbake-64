@@ -325,21 +325,22 @@ build/nm/%.s.o: build/%.s.o
 build/nm/%.bin.o: build/%.bin.o
 	$(Q)mkdir -p $(@D)
 	$(Q)cp -p $< $@
-build/nm/%/link.ld: build/%/link.ld
+# Static pattern rules: build/%/link.ld would also match build/nm/<version>/link.ld and write an empty script.
+$(VERSIONS:%=build/nm/%/link.ld): build/nm/%/link.ld: build/%/link.ld
 	$(Q)mkdir -p $(@D)
 	$(Q)cp $< $@
-build/nm/%/undefined_syms.ld: build/%/undefined_syms.ld
+$(VERSIONS:%=build/nm/%/undefined_syms.ld): build/nm/%/undefined_syms.ld: build/%/undefined_syms.ld
 	$(Q)mkdir -p $(@D)
 	$(Q)cp $< $@
 # A draft may define a name that this version's ROM keeps as data, or the other way round: the first definition in link
 # order wins and link.err lists every such name; any other link error stops the build.
-build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld build/nm/%/undefined_syms.ld
+$(VERSIONS:%=build/nm/%/$(NAME).elf): build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld build/nm/%/undefined_syms.ld
 	$(Q)cd build/nm/$* && { $(LD) -T link.ld -o $(NAME).elf 2> link.err \
 	|| $(LD) -T link.ld --allow-multiple-definition -o $(NAME).elf 2>> link.err; } \
 	|| { cat build/nm/$*/link.err >&2; exit 1; }
-build/nm/%/$(NAME).bin: build/nm/%/$(NAME).elf
+$(VERSIONS:%=build/nm/%/$(NAME).bin): build/nm/%/$(NAME).bin: build/nm/%/$(NAME).elf
 	$(Q)$(OBJCOPY) -O binary --gap-fill 0 $< $@
-build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin roms/baserom.%.z64
+$(VERSIONS:%=build/nm/%/$(NAME).z64): build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin roms/baserom.%.z64
 	$(Q){ head -c $(ROM0_$*) roms/baserom.$*.z64; cat $<; } > $@
 	$(Q)truncate -s $$(wc -c < roms/baserom.$*.z64) $@
 	$(Q)cat $(addsuffix .pick,$(OBJS_nm_$*)) 2>/dev/null | grep -v '^same ' | sort > build/nm/$*/report.txt; \

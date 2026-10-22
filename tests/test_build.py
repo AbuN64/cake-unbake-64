@@ -1427,7 +1427,8 @@ def test_a_non_matching_table_adds_the_nm_build_with_the_files_rows(tmp_path):
     assert "-DDRAFT" in text and "ifeq ($(NON_MATCHING),1)\n.DEFAULT_GOAL := nm\nendif" in text
     assert "$(foreach v,$(VERSIONS),build/nmraw/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
     assert "nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)" in text
-    nm_link = text[text.index("build/nm/%/$(NAME).z64:") :]
+    assert "$(VERSIONS:%=build/nm/%/link.ld): build/nm/%/link.ld: build/%/link.ld" in text
+    nm_link = text[text.index("build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin") :]
     assert "SHA-1" not in nm_link.split("\n\n")[0]  # an NM ROM matches no hash: nothing checks one
 
 
