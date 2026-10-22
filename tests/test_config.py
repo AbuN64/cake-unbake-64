@@ -445,6 +445,7 @@ def test_load_resource_carries_platform_and_family_rows() -> None:
     assert {id: r["link_sections"] for id, r in rows.items()} == {
         "gcc-2.8.1-sn64": "per-section",  # its C units' rodata sits in data segments of its own (M-RW)
         "gcc-2.7.2-kmc": "per-object",  # a function's rodata follows its code (M-BT)
+        "gcc-2.7.2-sn64": "per-object",  # SN64 2.7.2 build of RW's IO block: same layout as kmc
         "ido-5.3": "per-section",
         "ido-7.1": "per-section",
     }
@@ -456,6 +457,10 @@ def test_load_resource_carries_platform_and_family_rows() -> None:
         "-D__GNUC__=2",
         "-D__STDARG_GCC",
     ]
+    sn64 = rows["gcc-2.7.2-sn64"]
+    assert sn64["pins"]["cc1"] == "566d91772fc1435d23dbca5e8040d3e441b31375b2aec4f430e5cddc5d70d8d4"
+    assert sn64["cflags"] == ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2", "-fno-exceptions"]
+    assert sn64["downloads"][0]["files"] == ["cc1"] and sn64["assemble"] == rows["gcc-2.7.2-kmc"]["assemble"]
     assert {r["include_asm"] for id, r in rows.items() if id.startswith("ido")} == {"processor"}
     assert {(r["stand_in_as"], r["data_split"]) for r in rows.values()} == {
         ("{as}", "subsegment")

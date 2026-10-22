@@ -131,6 +131,7 @@ def test_gcc_rows_preprocess_as_they_always_did_and_only_ido_moved_to_the_shared
     shared = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
     assert {i: r["preprocess"] for i, r in rows.items() if r["family"] == "gcc"} == {
         "gcc-2.7.2-kmc": shared,
+        "gcc-2.7.2-sn64": shared,
         "gcc-2.8.1-sn64": shared,
     }
     assert {r["preprocess"][0] for i, r in rows.items() if r["family"] == "ido"} == {"{cpp}"}

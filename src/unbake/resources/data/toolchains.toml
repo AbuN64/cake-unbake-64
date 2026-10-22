@@ -149,6 +149,46 @@ url = "https://github.com/decompals/mips-gcc-2.7.2/releases/download/main/gcc-2.
 sha256 = "ff3e299c1d952c0a5cb39f7790a208d0c547cf93986eb5607f820c935cedc288"
 files = ["cc1"]
 
+[toolchain."gcc-2.7.2-sn64"]
+cppflags = ["-P", "-undef", "-nostdinc", "-D_LANGUAGE_C", "-D__GNUC__=2", "-D__STDARG_GCC"]
+link_sections = "per-object"
+include_asm = "inline"
+stand_in_as = "{as}"
+data_split = "subsegment"
+title = "GCC 2.7.2 (SN64 970404)"
+dependency = { name = "SN64 GCC 2.7.2", repository = "https://github.com/decompals/SN64-gcc" }
+family = "gcc"
+cc = "cc1"
+as_host = "mips_as"
+cflags = ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2", "-fno-exceptions"]
+supported_options = ["-O1", "-O2", "-O3", "-fno-strength-reduce", "-fno-expensive-optimizations", "-fno-schedule-insns2", "-mgp32", "-mfp32", "-mfp64", "-funsigned-char", "-fno-defer-pop", "-ffast-math", "-fno-delayed-branch", "-fforce-addr", "-fno-thread-jumps", "-fno-rerun-cse-after-loop", "-fno-cse-follow-jumps", "-fno-cse-skip-blocks", "-da", "-dL"]
+splat = "KMC"
+emits_asm = true
+preserves_padding = true
+# GCC adds with addu/addiu/subu: the trapping forms come only from hand-written assembly
+never_emits = [
+    "mfc0", "mtc0", "dmfc0", "dmtc0", "cache", "sync", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr",
+    "add", "addi", "sub", "dadd", "daddi", "dsub",
+]
+fpu_control_with = ["cvt.w.s", "cvt.w.d", "trunc.w.s", "trunc.w.d"]
+refused_warnings = ["makes pointer from integer without a cast", "makes integer from pointer without a cast", "from incompatible pointer type"]
+paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
+preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
+small_data = [0, 1, 2, 3, 4, 8]
+isa = [2, 3]
+decompme = "gcc2.7.2snew"
+preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
+compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
+assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+
+[toolchain."gcc-2.7.2-sn64".pins]
+"cc1" = "566d91772fc1435d23dbca5e8040d3e441b31375b2aec4f430e5cddc5d70d8d4"
+
+[[toolchain."gcc-2.7.2-sn64".downloads]]
+url = "https://github.com/decompals/SN64-gcc/releases/download/gcc-2.7.2-970404/SN64-gcc-2.7.2-970404-linux.tar.gz"
+sha256 = "60abe17c2562f5ae28444fe4f783fa8217d84b73e59e29cf39c41f7551d968f4"
+files = ["cc1"]
+
 [toolchain."gcc-2.8.1-sn64"]
 cppflags = ["-P", "-undef", "-nostdinc", "-D_LANGUAGE_C", "-D__GNUC__=2", "-D__STDARG_GCC"]
 link_sections = "per-section"
