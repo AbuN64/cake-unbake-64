@@ -48,7 +48,7 @@ class World:
         self.broken: set[str] = set()
         self.scores = {v: 0.9 for v in held}
         self.before = {v: 0.5 for v in held}
-        monkeypatch.setattr(publish, "tree", SimpleNamespace(capture=lambda config: self.tree))
+        monkeypatch.setattr(publish, "tree", SimpleNamespace(capture=lambda config, overlay=None: self.tree))
         monkeypatch.setattr(publish, "process", SimpleNamespace(make=self.make))
         monkeypatch.setattr(publish, "policy", SimpleNamespace(evaluate=lambda *a: (), scope=lambda *a: ((), ())))
         monkeypatch.setattr(publish, "api", SimpleNamespace(snapshot=lambda c: None, score=lambda c, n: self.before))
@@ -150,6 +150,19 @@ def test_an_exact_land_replaces_the_line(world):
     assert 'INCLUDE_ASM("main", func_80000010)' not in world.owner
     assert "return a + table[0];" in world.owner
     assert world.makes == [["build/eu/game.z64", "build/us/game.z64"]]
+
+
+def test_an_overlay_of_the_owning_file_lands_with_the_body(world):
+    # recipe try proved the body over F.overlay/src/a.c (a caller's prototype): the ship must land both
+    overlay = world.root / ".unbake/inbox"
+    overlay.mkdir(parents=True)
+    (overlay / "a.c").write_text("int func_80000010(int a);\n" + OWNER)
+    base = world.submission()
+    given = {"extras": {"src/a.c": ".unbake/inbox/a.c"}, "extra_bases": {"src/a.c": ".unbake/inbox/a.c"}}
+    submission = Submission(*[given.get(f, getattr(base, f)) for f in Submission.__dataclass_fields__])
+    publish.land(world.config, submission)
+    assert world.owner.startswith("int func_80000010(int a);\n")  # the overlay's prototype survived the splice
+    assert "return a + table[0];" in world.owner and 'INCLUDE_ASM("main", func_80000010)' not in world.owner
 
 
 def test_a_fuzzy_land_writes_the_non_matching_block(world):

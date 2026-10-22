@@ -784,7 +784,7 @@ def prepare(
         old: dict[str, bytes | None] = {p: read_file(reads, p) for p in (*(o.path for o in found), *extras)}
         writes: dict[str, bytes | None] = {**extras}
         for owner in found:
-            current = old[owner.path]
+            current = extras.get(owner.path, old[owner.path])  # the overlay's text of the file is what try proved
             if current is None:
                 raise Refusal(Finding("land.request", f"{owner.path} is missing.", path=owner.path, unit=name))
             text = splice(current.decode(), owner.segment, name, source, fuzzy)
