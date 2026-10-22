@@ -168,3 +168,18 @@ def test_a_bare_permute_finds_the_clone_in_the_home_src(tmp_path: Path, monkeypa
     monkeypatch.setenv("HOME", str(tmp_path / "none"))
     monkeypatch.setenv("PATH", "")
     assert permute._found() == ""
+
+
+def test_the_base_score_comes_from_the_preflight_and_a_worse_output_is_not_a_best(tmp_path: Path) -> None:
+    fake = tmp_path / "permuter"  # prints its base score only when not quiet, as a killed block-buffered run does
+    fake.write_text(
+        '#!/bin/sh\nfor d in "$@"; do :; done\n'
+        'case "$*" in *--quiet*) ;; *) echo "base score = 20";; esac\n'
+        'mkdir "$d/output-25-1"; printf 25 > "$d/output-25-1/score.txt"\n'
+        'printf "int g(int a) { return 9; }\\n" > "$d/output-25-1/source.c"\n'
+    )
+    fake.chmod(0o755)
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(workers=2))
+    ctx = {"source": SOURCE, "script": "true", "assemble": ["/usr/bin/touch", "{out}"], "asm_path": "nonmatchings/g.s"}
+    found = permute.search(config, "g", ctx, {"permute": 30, "permuter": str(fake)}, tmp_path / "work")  # type: ignore[arg-type]
+    assert found["base_score"] == 20 and found["best_score"] is None and found["function"] == ""

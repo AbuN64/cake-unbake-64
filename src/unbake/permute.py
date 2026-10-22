@@ -120,6 +120,7 @@ def _python(permuter: str) -> list[str]:
 
 
 PREFLIGHT = 20.0  # seconds the permuter gets to print its base score before the full run
+_UNBUFFERED = {"PYTHONUNBUFFERED": "1"}  # a permuter killed at its budget otherwise loses the base score it printed
 CAP = 2  # permuter runs at once on one host (UNBAKE_PERMUTER_CAP): each runs -j workers, more starve every other lane
 QUEUE_S = 600.0  # seconds a run queues for a place before it refuses, naming who holds them
 
@@ -239,8 +240,10 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     # alone, gas would reorder it and add the nops the ROM does not have, so the target is assembled the same way
     wrapper = work / "target.s"
     store.write(wrapper, f'.set noat\n.set noreorder\n.include "{root / ctx["asm_path"]}"\n'.encode())
-    named = str(root / ctx["asm_path"])
-    assemble = [str(wrapper) if a == named else a.replace("{out}", str(folder / "target.o")) for a in ctx["assemble"]]
+    asm_name = str(root / ctx["asm_path"])
+    assemble = [
+        str(wrapper) if a == asm_name else a.replace("{out}", str(folder / "target.o")) for a in ctx["assemble"]
+    ]
     done = process.run("permute.target", assemble, root, tmp=work / "tmp")
     if done.exit != 0:
         raise Refusal(Finding("native.exit", f"assembling the target failed: {done.stderr.decode()[-300:]}", unit=name))
@@ -264,9 +267,10 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
         # error of its own (10-22: a run with no base score burned its whole 300 CPU-s and said nothing)
         start = [a for a in argv if a != "--quiet"]
         start[start.index("-j") + 1] = "1"
-        first = process.run("permute.preflight", start, folder, tmp=work / "tmp", timeout=PREFLIGHT)
+        first = process.run("permute.preflight", start, folder, tmp=work / "tmp", timeout=PREFLIGHT, env=_UNBUFFERED)
         shown = first.stdout.decode(errors="replace") + first.stderr.decode(errors="replace")
-        if "base score" not in shown:
+        said = re.search(r"base score = (\d+)", shown)
+        if said is None:
             raise Refusal(
                 Finding(
                     "native.exit",
@@ -276,24 +280,29 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
             )
         for stale in folder.glob("output-*"):  # the preflight's own finds belong to no budget
             shutil.rmtree(stale, ignore_errors=True)
-        ran = process.run("permute.run", argv, folder, tmp=work / "tmp", timeout=seconds)
+        ran = process.run("permute.run", argv, folder, tmp=work / "tmp", timeout=seconds, env=_UNBUFFERED)
     finally:
         mark.unlink(missing_ok=True)
-    said = re.search(r"base score = (\d+)", ran.stdout.decode(errors="replace"))
-    if said is None and ran.signal != signal.SIGKILL:
+    if ran.signal != signal.SIGKILL and ran.exit not in (0, None):
         raise Refusal(
             Finding("native.exit", f"permuter said: {ran.stderr.decode()[-1500:] or ran.stdout.decode()[-1500:]}")
         )
-    base = int(said[1]) if said else None
+    score0 = int(said[1])  # the preflight's: a run killed at its budget loses its own block-buffered stdout
     rows = sorted(
         (int((d / "score.txt").read_text()), d)
         for d in folder.glob("output-*")
         if (d / "score.txt").is_file() and (d / "source.c").is_file()
     )
-    result: dict[str, Any] = {"base_score": base, "best_score": None, "function": "", "diff": "", "outputs": len(rows)}
+    result: dict[str, Any] = {
+        "base_score": score0,
+        "best_score": None,
+        "function": "",
+        "diff": "",
+        "outputs": len(rows),
+    }
     if note:
         result["budget"] = note
-    if rows and (base is None or rows[0][0] < base):
+    if rows and rows[0][0] < score0:
         score, best = rows[0]
         where = span(source := (best / "source.c").read_text(), name)
         result |= {
