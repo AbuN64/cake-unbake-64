@@ -7,6 +7,8 @@ import json
 import multiprocessing
 import os
 import pickle
+import subprocess
+import sys
 import threading
 import time
 from functools import partial
@@ -179,7 +181,7 @@ def test_flock_charges_only_blocked_time(tmp_path, monkeypatch):
             pass
     waits = {r.path[-1]: r.wait_seconds for r in effort.closed() if r.kind == "stage"}
     assert waits["blocked"] > 0 and waits["free"] == 0
-    assert calls[1] == store.fcntl.LOCK_EX
+    assert calls[1] == store.fcntl.LOCK_EX | store.fcntl.LOCK_NB
 
 
 def test_stem_flattens_slashes_and_digests_long_names():
@@ -449,3 +451,23 @@ def test_unshare_copies_a_readonly_file_even_when_unlinked(tmp_path):
     assert store.unshare(tmp_path / "asm") == 1
     assert os.access(only, os.W_OK)
     assert only.read_bytes() == b"x"
+
+
+def test_a_blocked_lock_says_who_holds_it(tmp_path, monkeypatch):
+    path = tmp_path / "held.lock"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl,sys,time;f=open(sys.argv[1],'a+b');fcntl.flock(f,2);print(1,flush=True);time.sleep(2)",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+    )
+    assert holder.stdout and holder.stdout.readline()
+    said = []
+    monkeypatch.setattr(effort, "say", said.append)
+    with store._flock(path, store.fcntl.LOCK_EX):
+        pass
+    holder.wait()
+    assert said and f"pid {holder.pid}" in said[0] and "held.lock" in said[0]

@@ -205,16 +205,46 @@ _PAUSE: Callable[[float], None] = time.sleep
 _POLL_S = 0.2
 
 
-def _poll(fd: int, flags: int, wait_s: float) -> bool:
-    """Try the lock every _POLL_S until the deadline; False when it passed with the lock still held elsewhere."""
-    deadline = _CLOCK() + wait_s
+BEAT = 15.0  # seconds between the lines a blocked command prints
+
+
+def _holders(path: Path) -> str:
+    """Who holds a flock on `path` now: "pid N (command)" per holder from /proc/locks, "" when none is found."""
+    try:
+        inode = path.stat().st_ino
+        lines = Path("/proc/locks").read_text().splitlines()
+    except OSError:
+        return ""
+    found = []
+    for line in lines:
+        words = line.split()
+        if len(words) > 5 and words[1] == "FLOCK" and words[5].rpartition(":")[2] == str(inode):
+            pid = words[4]
+            try:
+                command = (Path("/proc") / pid / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                command = "?"
+            found.append(f"pid {pid} ({command.strip()[:100]})")
+    return ", ".join(found)
+
+
+def _blocked(fd: int, flags: int, path: Path, wait_s: float | None) -> bool:
+    """Take the contended lock, printing who holds it at once and every BEAT seconds; False when `wait_s` ran out."""
+    began = last = _CLOCK()
+    first = True
     while True:
         try:
             fcntl.flock(fd, flags | fcntl.LOCK_NB)
             return True
         except BlockingIOError:
-            if _CLOCK() >= deadline:
+            now = _CLOCK()
+            if wait_s is not None and now - began >= wait_s:
                 return False
+            if first or now - last >= BEAT:
+                first, last = False, now
+                effort.say(
+                    f"waiting for lock {path.name} held by {_holders(path) or 'an unknown process'} ({now - began:.0f}s)"
+                )
             _PAUSE(_POLL_S)
 
 
@@ -234,11 +264,7 @@ def _flock(path: Path, flags: int, *, wait: bool = True, wait_s: float | None = 
                 return
             start = time.perf_counter()
             with effort.stage("store.wait_lock"):  # a blocked command shows what it waited on, never a silent gap
-                taken = True
-                if wait_s is None:
-                    fcntl.flock(fd, flags)
-                else:
-                    taken = _poll(fd, flags, wait_s)
+                taken = _blocked(fd, flags, path, wait_s)
             effort.waited(time.perf_counter() - start, "lock", path.name)
             if not taken:
                 yield None

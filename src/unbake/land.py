@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from unbake import api, effort, foreign, journal, policy, process, publish, report, rescore, store, tree
+from unbake import api, effort, foreign, journal, policy, process, publish, report, rescore, store, tree, treelock
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Proof, Receipt, Refusal, Submission, digest, proof_from, sha256
 
@@ -332,7 +332,15 @@ def drain(config: Config, only: Collection[str] | str | None = None) -> Json:
         while not busy and (entries := inbox(config, only)):
             claimed = False
             for entry in entries:
-                with store.exclusive(config, f"inbox/{entry.id}", wait=False) as mine:
+                with store.exclusive(config, f"inbox/{entry.id}", wait=False) as free:
+                    if not free:  # another drain has it: no writer's hold for an entry that is not ours
+                        continue
+                # the tree lock first (a ship holds it and then the store locks): a landing writes tracked files, so it
+                # never overlaps a ship or another writer; a caller that holds the tree already (compare, ship) skips it
+                with (
+                    treelock.hold(config.project.root, exclusive=True, who=f"land {entry.member}"),
+                    store.exclusive(config, f"inbox/{entry.id}", wait=False) as mine,
+                ):
                     if not mine or not (config.project.root / f".unbake/inbox/{entry.id}.json").exists():
                         continue
                     claimed = True

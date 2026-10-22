@@ -135,3 +135,31 @@ def test_a_pre_provenance_entry_is_quarantined_by_a_drain_not_raised_for_every_c
     path.write_text(json.dumps(old))
     assert land.inbox(world.config) == []
     assert (path.parent / "stale" / path.name).is_file() and not path.exists()
+
+
+def test_a_landing_writes_only_under_the_exclusive_tree_lock(world, monkeypatch):
+    from contextlib import contextmanager
+
+    from unbake import compare
+
+    monkeypatch.setattr(land, "process", SimpleNamespace(git=lambda *a: SimpleNamespace(stdout=b"abc\n")))
+    monkeypatch.setattr(land.effort, "invocation", lambda: "unbake submit")
+    request = compare._request("func_80000010", world.root / "cand.c", None)
+    intake = land._intake(world.config, request, [_proof(True)], None)
+    entry = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)
+    events: list[str] = []
+
+    @contextmanager
+    def hold(root, *, exclusive=False, who="", **kw):
+        events.append(f"hold {exclusive} {who}")
+        yield 0.0
+        events.append("release")
+
+    def landing(config, e):
+        events.append("land")
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(land.treelock, "hold", hold)
+    monkeypatch.setattr(land.publish, "land", landing)
+    land.drain(world.config, {entry.id})
+    assert events == ["hold True land func_80000010", "land", "release"]
