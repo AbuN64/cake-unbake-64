@@ -391,10 +391,20 @@ def test_c2_without_a_measured_extent_or_behind_a_stand_in_a_label_stays_unowned
     assert {r.name: r.member.state for r in unowned}["lab"] == "unowned"
 
 
+def _extent_cache(monkeypatch):
+    held = {}
+    monkeypatch.setattr(report.store, "put", lambda config, kind, key, value, named=False: held.__setitem__((kind, key), value))
+    monkeypatch.setattr(report.store, "get", lambda config, kind, key, named=False: held.get((kind, key)))
+    return held
+
+
 def test_c2_extents_come_from_the_built_objects_symbols(tmp_path, monkeypatch):
     from unbake import versions
-
+    _extent_cache(monkeypatch)
     module = _module("src/a.c", ["sized", "bare", "last", "gone", "outside"], ["gone"])
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.c").write_text("int sized[8];")
+    (tmp_path / "src/b.c").write_text("int x;")
     (tmp_path / "build/a/src").mkdir(parents=True)
     (tmp_path / "build/a/src/a.c.o").write_bytes(b"")
     symbols = {  # name -> (section, offset, st_size); the old compiler writes st_size 0
@@ -413,6 +423,23 @@ def test_c2_extents_come_from_the_built_objects_symbols(tmp_path, monkeypatch):
         "last": 0x20,
     }  # bare runs to the next symbol (`gone`, a stand-in, counts)
     assert report._extents(config, _tree([_module("src/b.c", ["x"])], "ext2")) == {}  # not built: no extent
+
+
+def test_extents_follow_the_module_text_to_a_new_path_without_an_object(tmp_path, monkeypatch):
+    from unbake import versions
+    _extent_cache(monkeypatch)
+    (tmp_path / "src/DATA").mkdir(parents=True)
+    (tmp_path / "src/DATA/a.c").write_text("int tab[8];")
+    (tmp_path / "build/a/src/DATA").mkdir(parents=True)
+    (tmp_path / "build/a/src/DATA/a.c.o").write_bytes(b"")
+    monkeypatch.setattr(versions, "defined", lambda obj: ({"tab": (".data", 0, 0x20)}, {".data": 0x20}))
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    assert report._extents(config, _tree([_module("src/DATA/a.c", ["tab"])], "old")) == {"a": {"tab": 0x20}}
+    (tmp_path / "src/game/DATA").mkdir(parents=True)  # the layout move: same text, new path, no object built there
+    (tmp_path / "src/game/DATA/a.c").write_text("int tab[8];")
+    assert report._extents(config, _tree([_module("src/game/DATA/a.c", ["tab"])], "new")) == {"a": {"tab": 0x20}}
+    (tmp_path / "src/game/DATA/a.c").write_text("int tab[9];")  # other text: never guessed
+    assert report._extents(config, _tree([_module("src/game/DATA/a.c", ["tab"])], "new2")) == {}
 
 
 def test_zero_byte_aliases_are_not_functions_and_exact_fuzzy_is_not_matched(project, monkeypatch):

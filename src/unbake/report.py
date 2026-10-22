@@ -225,22 +225,36 @@ def build_credits(
 def _extents(config: Any, tree: Any) -> dict[str, dict[str, int]]:
     """Per version the compiled extent of every data name a C module defines, measured in build/<v>/<module>.o with
     `versions.defined`: the symbol's ELF st_size, else (the old compiler writes none) the bytes up to the next symbol
-    of its section or the section's end. A version or module with no built object has none: report never guesses."""
+    of its section or the section's end. A measurement is kept in the host cache under the module's content, so a
+    checkout that has not built the object (a moved file, a fresh tree, the source-only `--states`) reads what an
+    earlier build of the same text measured. A version or module neither built nor measured has none: report never
+    guesses."""
     defined, root = import_module("unbake.versions").defined, Path(config.project.root)
     out: dict[str, dict[str, int]] = {}
     for module in tree.modules:
+        source = root / module.path
         for v, names in module.owns.items():
-            obj = root / "build" / v / f"{module.path}.o"
-            if not obj.is_file() or not names:
+            if not names or not source.is_file():
                 continue
-            found, sections = defined(obj)
-            for name in set(names) - set(module.stand_ins.get(v, ())):
-                if name not in found:
-                    continue
-                section, value, size = found[name]
-                after = [other for sec, other, _ in found.values() if sec == section and other > value]
-                size = size or min(after, default=sections.get(section, 0)) - value
-                if size > 0:
+            key = f"{v}:{sha256_file(source)}"
+            obj = root / "build" / v / f"{module.path}.o"
+            sizes: dict[str, int] | None = None
+            if obj.is_file():
+                sizes = {}
+                found, sections = defined(obj)
+                for name in set(names) - set(module.stand_ins.get(v, ())):
+                    if name not in found:
+                        continue
+                    section, value, size = found[name]
+                    after = [other for sec, other, _ in found.values() if sec == section and other > value]
+                    size = size or min(after, default=sections.get(section, 0)) - value
+                    if size > 0:
+                        sizes[name] = size
+                store.put(config, "extents", key, json.dumps(sizes, sort_keys=True).encode())
+            elif (kept := store.get(config, "extents", key)) is not None:
+                sizes = json.loads(kept)
+            for name, size in (sizes or {}).items():
+                if name in names and name not in module.stand_ins.get(v, ()):
                     out.setdefault(v, {})[name] = size
     return out
 
