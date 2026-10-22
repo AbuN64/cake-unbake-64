@@ -359,12 +359,15 @@ def _states(config: Any, tree: Any, exact: Collection[str] | None = None) -> Jso
                 "data": dict.fromkeys(("exact", "none"), 0),
                 "none_fns": [],
                 "fragments": 0,
+                "asm_missing": 0,
             },
         )
         if row.member.kind == "function":
             if row.code <= 0:
                 continue
-            text = _asm_text(config, row) if not row.exact and row.member.state in {"stand-in", "fuzzy"} else ""
+            behind = not row.exact and row.member.state in {"stand-in", "fuzzy"}
+            text = _asm_text(config, row) if behind else ""
+            held["asm_missing"] += int(behind and not text)  # not extracted: no fragment or handwritten check
             if text and row.version in last and _fragment(text):
                 held["code"][last[row.version]] += row.code  # not a function: its parent's state
                 held["fragments"] += 1
