@@ -364,3 +364,24 @@ def test_a_tree_copy_that_is_not_the_pin_leaves_the_host_tool(tmp_path, monkeypa
 def test_the_repo_pins_name_the_assembler_the_build_fetches():
     binary, sha256 = process._pin("n64link")
     assert binary == "n64link" and len(sha256) == 64 and process._pin("cpp") is None
+
+
+def test_make_front_batch_uses_every_host_slot_not_the_makes_first_grant(process_config, monkeypatch):
+    """A batch of compile answers is plain CPU work between two makes: a make that started on a small share of the
+    slots (1.7 cores of 16 on a ship) must not size the batch by that share."""
+    from contextlib import contextmanager
+
+    from unbake import front, pool
+
+    config = replace(process_config, host=replace(process_config.host, workers=8, slots=8))
+    seen = []
+
+    @contextmanager
+    def small_grant(host, work=0):
+        yield 2, {}, ()
+
+    monkeypatch.setattr(pool, "jobserver", small_grant)
+    monkeypatch.setattr(process, "tool", lambda *a, **k: Path("make"))
+    monkeypatch.setattr(front, "build", lambda start, root, store, workers: seen.append(workers))
+    process.make(config, ["x"])
+    assert seen == [8]

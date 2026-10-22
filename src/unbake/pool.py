@@ -1422,7 +1422,7 @@ def main(argv: Sequence[str]) -> int:
                     sys.stdout.buffer.flush()
                 return done.returncode
 
-            return front.build(start, Path.cwd(), front.cache(host), j)
+            return front.build(start, Path.cwd(), front.cache(host), max(j, host.slots))
     with cores(host, work) as j:
         child = subprocess.run([a.replace("{j}", str(j)) for a in command], env={**os.environ, "UNBAKE_CORES": str(j)})
     return child.returncode

@@ -274,7 +274,8 @@ def make(config: Config, targets: Sequence[str], jobs: int = 0) -> NativeResult:
             extra = {"ABU_CC_COLLECT": record} if record else {}
             return run("make", argv, root, tmp=scratch(root), env={**env, **extra}, pass_fds=fds)
 
-        return front.build(start, root, front.cache(config.host), granted)
+        # the batch is plain CPU work between the two makes: it takes every host slot, not the share make started with
+        return front.build(start, root, front.cache(config.host), max(granted, config.host.slots))
 
 
 def batch(store: Path, root: Path, manifest: Path, workers: int) -> None:
