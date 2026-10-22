@@ -1062,7 +1062,8 @@ def test_a_make_build_answers_its_recorded_compiles_between_two_runs(tmp_path, m
     assert pool.main(["--", "/usr/bin/make", "-j{j}", "check"]) == 0
     assert [("ABU_CC_COLLECT" in kw["env"]) for _, kw in calls] == [True, False]
     assert [("-k" in cmd) for cmd, _ in calls] == [True, False]  # recording goes past every failed unit
-    assert len(batches) == 1 and batches[0][3] == 4 and batches[0][1] == tmp_path
+    # the batch takes every host slot (16), not the make first share (4)
+    assert len(batches) == 1 and batches[0][3] == 16 and batches[0][1] == tmp_path
     assert not list((tmp_path / ".unbake/tmp").glob("cc-commands.*"))
 
 
