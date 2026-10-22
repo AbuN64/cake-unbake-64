@@ -544,3 +544,17 @@ def test_a_worker_span_at_the_log_floor_stays_alone_so_a_pools_tail_is_seen(tmp_
         effort.record_pool("units", 41, 41, 0, effort.time.perf_counter_ns(), [_envelope(raws)])
     jobs = sorted((r.spans, r.wall_seconds) for r in effort.closed() if r.kind == "job")
     assert jobs == [(1, 90.0), (40, pytest.approx(2.0))]
+
+
+def test_a_command_running_past_the_beat_says_its_stage_and_cpu(monkeypatch):
+    """No silent hold: a long command prints its wall, process-tree CPU and the innermost open stage every beat."""
+    import time
+
+    said = []
+    monkeypatch.setattr(effort, "HOLD_BEAT", 0.05)
+    monkeypatch.setattr(
+        effort, "_listeners", [lambda event, body: said.append(body["text"]) if event == "say" else None]
+    )
+    with effort.command("submit", ["submit"]), effort.stage("publish.build"):
+        time.sleep(0.2)
+    assert any("hold: submit runs" in line and "CPU-s, now in submit > publish.build" in line for line in said)

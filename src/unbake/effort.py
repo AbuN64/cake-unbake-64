@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import resource
+import threading
 import time
 import traceback
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
@@ -241,6 +242,44 @@ def closed() -> tuple[StageRecord, ...]:
     return tuple(_closed)
 
 
+HOLD_BEAT = 300.0  # a command still running after this many seconds names its stage and CPU, then again every beat
+_live: list[tuple[str, ...]] = []  # the paths of the stages open now (outermost first), for the hold beat
+
+
+def _tree_cpu() -> float:
+    """CPU seconds of this process, its finished children and everything still running below it."""
+    try:
+        me = psutil.Process(os.getpid())
+        total = sum(me.cpu_times()[:4])
+        for child in me.children(recursive=True):
+            try:
+                total += sum(child.cpu_times()[:2])
+            except psutil.Error:
+                continue
+        return total
+    except psutil.Error:
+        return _cpu()
+
+
+@contextmanager
+def _hold_beat(name: str, beat: float) -> Iterator[None]:
+    """Never a silent hold: every `beat` seconds the command runs, one `say` line gives its wall, the CPU of its whole
+    process tree and the innermost open stage, so whoever waits on it (a ship's queue) sees which stage holds them."""
+    stop, began, cpu0 = threading.Event(), time.perf_counter(), _tree_cpu()
+
+    def run() -> None:
+        while not stop.wait(beat):
+            at = " > ".join(_live[-1]) if _live else name
+            say(f"hold: {name} runs {time.perf_counter() - began:.0f} s, {_tree_cpu() - cpu0:.0f} CPU-s, now in {at}")
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
 def _cpu() -> float:
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return usage.ru_utime + usage.ru_stime
@@ -464,6 +503,7 @@ def _close(opened: _Open, status: str) -> StageRecord:
 @contextmanager
 def _scope(opened: _Open) -> Iterator[_Open]:
     token = _stack.set((*_stack.get(), opened))
+    _live.append(opened.path)
     status = "ok"
     try:
         if opened.kind in ("command", "stage", "pool"):
@@ -505,6 +545,8 @@ def _scope(opened: _Open) -> Iterator[_Open]:
                 _merge_cache(stack[-2].remote_cache, opened.remote_cache)
         finally:
             _stack.reset(token)
+            if opened.path in _live:
+                _live.remove(opened.path)
 
 
 @contextmanager
@@ -515,7 +557,7 @@ def command(name: str, argv: Sequence[str]) -> Iterator[None]:
     _waits.clear()
     token = _stack.set(())
     try:
-        with _scope(_Open(name, "command")):
+        with _hold_beat(name, HOLD_BEAT), _scope(_Open(name, "command")):
             yield None
     finally:
         _stack.reset(token)
