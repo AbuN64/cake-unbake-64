@@ -525,27 +525,17 @@ def test_a_pool_the_rom_has_nowhere_is_a_difference(monkeypatch):
     assert gaps and "0x800C0000+0x0" in gaps[0]
 
 
-def test_an_unnamed_type_added_to_the_text_shares_the_compile(case, monkeypatch, toolchains):
+def test_only_the_exact_text_shares_the_compile(case, monkeypatch, toolchains):
+    """No similar text shares an object (10-22: the canonical form let texts the compiler reads differently share one):
+    an added unused type, a reorder or a layout change compiles again; the same text again does not."""
     case, calls, _ = _tools(case, monkeypatch, toolchains, emits_asm=True)
     snapshot, unit, recipe, _, work, _ = case
-    for name, text in (("first", "int v;\n"), ("second", "typedef int T;\nstruct S { T a; };\nint v;\n")):
+    texts = ("int a, b;\nvoid f(void) { a = 1; b = 2; }\n", "int a, b;\nvoid f(void) { b = 2; a = 1; }\n")
+    texts += ("typedef int T;\n" + texts[0], texts[0].replace("{ a", "{\n a"), texts[0])
+    for number, text in enumerate(texts):
         native.view.get.return_value = replace(native.view.get.return_value, text=text)
-        obj, _ = native.objects(snapshot, unit, "a", recipe, work / name)
-        assert obj.read_bytes() == b"assembled"
-    assert [call[0] for call in calls] == ["compile", "assemble"]  # the second text added only unnamed types
-    native.view.get.return_value = replace(native.view.get.return_value, text="typedef int T;\nT v;\n")
-    native.objects(snapshot, unit, "a", recipe, work / "third")
-    assert [call[0] for call in calls] == ["compile", "assemble", "compile", "assemble"]  # now the type is named
-
-
-def test_a_view_directory_named_in_the_text_does_not_split_the_shared_compile(case, monkeypatch, toolchains):
-    case, calls, _ = _tools(case, monkeypatch, toolchains, emits_asm=True)
-    snapshot, unit, recipe, _, work, _ = case
-    for name, key in (("first", "6119c08cc36202f4"), ("second", "3648cfc1c10e3962")):
-        text = f'const char *file = "build/views/{key}/src/f.c";\ntypedef int T_{key[:4]};\n'
-        native.view.get.return_value = replace(native.view.get.return_value, text=text)
-        native.objects(snapshot, unit, "a", recipe, work / name)
-    assert [call[0] for call in calls] == ["compile", "assemble"]
+        native.objects(snapshot, unit, "a", recipe, work / str(number))
+    assert [call[0] for call in calls] == ["compile", "assemble"] * 4  # the last text is the first again: shared
 
 
 def test_a_unit_whose_data_starts_off_eight_is_measured_from_its_assembly_without_that_alignment():

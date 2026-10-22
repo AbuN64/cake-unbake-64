@@ -3,17 +3,13 @@
 The Makefile compiles one preprocessed source (`X.i`) to one assembly file (`-o X.s`). The same text under the same
 flags and compiler always gives the same assembly, wherever the tree is. A commit that touches a header every source
 includes changes every .i of the tree, yet a proof tree has compiled exactly those texts already; this front keeps each
-result under a hash of (compiler, arguments, text) so the next tree, the seeded tip cache among them, copies the
+result under a hash of (compiler identity, every argument, the exact bytes of the text) so the next tree copies the
 assembly instead of compiling it again. A miss runs the compiler and stores the result; anything the front cannot
 parse (no -o, no input file) runs the compiler as given.
 
-A header edit that only renames (a field, a type, a function) changes the text of every source that includes it yet
-leaves the assembly alone, as does an edit that only touches type declarations and static inline functions the source
-never names. A miss whose text is the last one compiled under the same compiler and arguments, with identifiers renamed
-one for one and none of the old names anywhere in that assembly, or with only unnamed type declarations or static inline
-functions added, dropped or changed, copies the last assembly. The ROM check every build ends with stays the
-proof: a wrong reuse cannot
-ship, it fails the SHA-1.
+The key is exact: no "similar" text is ever answered with another text's assembly (10-22: a reuse of the last text for
+texts that only reordered statements served stale assembly, and a stale answer that happens to match passes the ROM
+check). The chunk parser below serves tree.py's parse key, never this cache.
 """
 
 from __future__ import annotations
@@ -30,8 +26,8 @@ try:  # the C module hashlib wraps: importing hashlib itself loads OpenSSL, 4 ms
     from _sha2 import sha256
 except ImportError:  # pragma: no cover
     from hashlib import sha256
-# Everything a call that finds its assembly (or its last one) does not need loads on first use: this front runs once
-# per source of a build (about ten thousand times after a header edit), so its start is most of its cost.
+# Everything a call that finds its assembly does not need loads on first use: this front runs once per source of a
+# build (about ten thousand times after a header edit), so its start is most of its cost.
 
 MAX_AGE = 4 * 86400  # seconds an entry survives without a hit
 PRUNE_ODDS = 400  # one call in this many walks the cache and drops what aged out
@@ -46,12 +42,36 @@ def parse(args: list[str]) -> tuple[str, str] | None:
     return (sources[-1], out) if len(sources) == 1 and out.endswith(".s") else None
 
 
+IDENTITIES: dict[str, bytes] = {}
+
+
+def identity(compiler: str) -> bytes:
+    """The compiler as its output can depend on it: the bytes of every file beside it (a driver such as IDO's cc runs
+    the passes in its own folder), by name. Read once per process."""
+    if compiler not in IDENTITIES:
+        folder = os.path.dirname(os.path.abspath(compiler))
+        digest = sha256(os.path.abspath(compiler).encode())
+        for name in sorted(os.listdir(folder)):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path):
+                digest.update(b"\0" + name.encode(errors="surrogateescape") + b"\0" + read(path))
+        IDENTITIES[compiler] = digest.digest()
+    return IDENTITIES[compiler]
+
+
 def key(compiler: str, args: list[str], text: bytes) -> str:
-    """The compiler binary (path, size, mtime), every argument as given (paths name the .file line the assembly
-    carries) and the text of the source."""
-    info = os.stat(compiler)
-    head = "\0".join([compiler, str(info.st_size), str(info.st_mtime_ns), *args]).encode()
-    return sha256(head + b"\0" + text).hexdigest()
+    """The compiler's identity, every argument as given (paths name the .file line the assembly carries) and the exact
+    bytes of the source text."""
+    head = "\0".join(args).encode(errors="surrogateescape")
+    return sha256(identity(compiler) + b"\0" + head + b"\0" + text).hexdigest()
+
+
+def answer_key(compiler: str, args: list[str], text: bytes) -> str:
+    """What a batch answer (`<out>.cc`) is for, written beside it as `<out>.cc.key`: the command line exactly as the
+    front records it, then the text. The front (cc_front.sh) takes the answer only when its own command and input give
+    the same hash, so an answer is never used for another text or other flags."""
+    line = SEPARATOR.join([compiler, *args]) + "\n"
+    return sha256(line.encode(errors="surrogateescape") + text).hexdigest()
 
 
 TOKEN_SOURCE = rb"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\.?[0-9](?:[eEpP][+-]|[\w.])*|[A-Za-z_]\w*|\s+|."
@@ -78,31 +98,6 @@ KEYWORDS = frozenset(
     b"__asm__ __asm __attribute__ __attribute __inline __inline__ __volatile__ __volatile __const __signed__ "
     b"__typeof__ __typeof __extension__ __alignof__ __label__ __FUNCTION__ __PRETTY_FUNCTION__ __func__".split()
 )
-
-
-def renamed(old: bytes, new: bytes, assembly: bytes) -> bool:
-    """True when `new` is `old` with identifiers renamed one for one (every use of an old name, no new name already in
-    use) and no old name occurs, even as a part of a word, in the assembly `old` compiled to: the same compiler then
-    writes the same assembly. Whitespace must match exactly."""
-    patterns()
-    a, b = TOKEN.findall(old), TOKEN.findall(new)
-    if len(a) != len(b):
-        return False
-    mapping: dict[bytes, bytes] = {}
-    for x, y in zip(a, b, strict=True):
-        if x == y:
-            continue
-        if not (IDENT.fullmatch(x) and IDENT.fullmatch(y)) or x in KEYWORDS or y in KEYWORDS:
-            return False
-        if mapping.setdefault(x, y) != y:
-            return False
-    new_names = set(mapping.values())
-    if not mapping or len(new_names) != len(mapping) or new_names & mapping.keys():
-        return False
-    kept = {x for x, y in zip(a, b, strict=True) if x == y}
-    if kept & mapping.keys() or kept & new_names:
-        return False
-    return not set(IDENT.findall(assembly)) & mapping.keys()
 
 
 TYPE_HEAD = frozenset((b"typedef", b"struct", b"union", b"enum"))
@@ -204,182 +199,6 @@ def complete(text: bytes) -> bool:
     return depth == 0 and last in (b"", b";", b"}")
 
 
-def kept(parts: list[list[bytes]], inrest: set[bytes]) -> list[list[bytes]]:
-    """The declarations of one side of the changed region that can reach the object: every chunk that is not a pure
-    type, and every pure type that a surviving chunk, or the unchanged text around the region, names."""
-    patterns()
-    defs = [defined(c) for c in parts]
-    keep = [d is None or bool(d & inrest) for d in defs]
-    used = {t for c, k in zip(parts, keep, strict=True) if k for t in c if IDENT.fullmatch(t)}
-    grew = True
-    while grew:
-        grew = False
-        for i, d in enumerate(defs):
-            if not keep[i] and d & used:
-                keep[i], grew = True, True
-                used.update(t for t in parts[i] if IDENT.fullmatch(t))
-    return [c for c, k in zip(parts, keep, strict=True) if k]
-
-
-def common(old: bytes, new: bytes) -> tuple[int, int]:
-    """(length of the common prefix, length of the common suffix not overlapping it), by halving over slice compares."""
-    low, high = 0, min(len(old), len(new))
-    while low < high:
-        mid = (low + high + 1) // 2
-        low, high = (mid, high) if old[:mid] == new[:mid] else (low, mid - 1)
-    prefix = low
-    low, high = 0, min(len(old), len(new)) - prefix
-    while low < high:
-        mid = (low + high + 1) // 2
-        low, high = (mid, high) if old[len(old) - mid :] == new[len(new) - mid :] else (low, mid - 1)
-    return prefix, low
-
-
-def anchored(a: list[bytes], b: list[bytes]) -> list[tuple[int, int, int, int]]:
-    """The line ranges (a first, a end, b first, b end) where the line lists differ: equal lines at both ends are cut,
-    then lines found once in each list anchor the rest (the longest run of them in the same order), so two edits far
-    apart are two small ranges, not one that spans everything between."""
-    from bisect import bisect_left
-
-    out: list[tuple[int, int, int, int]] = []
-    todo = [(0, len(a), 0, len(b))]
-    while todo:
-        alo, ahi, blo, bhi = todo.pop()
-        while alo < ahi and blo < bhi and a[alo] == b[blo]:
-            alo, blo = alo + 1, blo + 1
-        while alo < ahi and blo < bhi and a[ahi - 1] == b[bhi - 1]:
-            ahi, bhi = ahi - 1, bhi - 1
-        if alo == ahi and blo == bhi:
-            continue
-        pairs: list[tuple[int, int]] = []
-        if alo < ahi and blo < bhi:
-            once_a: dict[bytes, int] = {}
-            for i in range(alo, ahi):
-                once_a[a[i]] = -1 if a[i] in once_a else i
-            once_b: dict[bytes, int] = {}
-            for j in range(blo, bhi):
-                once_b[b[j]] = -1 if b[j] in once_b else j
-            pairs = sorted((i, once_b[line]) for line, i in once_a.items() if i >= 0 and once_b.get(line, -1) >= 0)
-        tails: list[int] = []  # patience: the longest increasing run of b positions
-        back: list[int] = [-1] * len(pairs)
-        ends: list[int] = []
-        for n, (_, j) in enumerate(pairs):
-            at = bisect_left(tails, j)
-            if at == len(tails):
-                tails.append(j)
-                ends.append(n)
-            else:
-                tails[at], ends[at] = j, n
-            back[n] = ends[at - 1] if at else -1
-        chain: list[tuple[int, int]] = []
-        n = ends[-1] if ends else -1
-        while n >= 0:
-            chain.append(pairs[n])
-            n = back[n]
-        if not chain:
-            out.append((alo, ahi, blo, bhi))
-            continue
-        chain.reverse()
-        here = (alo, blo)
-        for i, j in chain:
-            todo.append((here[0], i, here[1], j))
-            here = (i + 1, j + 1)
-        todo.append((here[0], ahi, here[1], bhi))
-    return sorted(out)
-
-
-def hunks(old: bytes, new: bytes) -> list[list[int]]:
-    """The byte ranges [old start, old end, new start, new end] of whole lines where `old` and `new` differ. The
-    common head and tail are cut by halving first, so only the lines between the first and the last difference are
-    split and compared."""
-    head, tail = common(old, new)
-    lo = old.rfind(b"\n", 0, head) + 1  # the line of the first difference starts here in both texts
-    end = old.find(b"\n", len(old) - tail)  # and the line of the last one ends at a newline both texts have
-    keep = (end + 1 - (len(old) - tail)) if end >= 0 else tail
-    hi_old, hi_new = len(old) - tail + keep, len(new) - tail + keep
-    if lo >= hi_old and lo >= hi_new:
-        return []
-    mid_old, mid_new = old[lo:hi_old], new[lo:hi_new]
-    a, b = mid_old.split(b"\n"), mid_new.split(b"\n")
-    at_a, at_b = [0], [0]
-    for line in a:
-        at_a.append(at_a[-1] + len(line) + 1)
-    for line in b:
-        at_b.append(at_b[-1] + len(line) + 1)
-    top_a, top_b = len(mid_old), len(mid_new)
-    return [
-        [lo + min(at_a[w], top_a), lo + min(at_a[x], top_a), lo + min(at_b[y], top_b), lo + min(at_b[z], top_b)]
-        for w, x, y, z in anchored(a, b)
-    ]
-
-
-def canonical(text: bytes) -> bytes:
-    """`text` as the compiler's output can depend on it: the declarations that reach the object, as tokens. Every type
-    definition and static inline function that no surviving declaration names is left out (as in `types_only_differ`),
-    and the layout between tokens goes: two texts with this form in common compile to the same assembly."""
-    patterns()
-    return b"\n".join(b" ".join(chunk) for chunk in kept(chunks(text), set()))
-
-
-def mentioned(names: set[bytes], text: bytes) -> set[bytes]:
-    """The names that occur in `text` as whole words."""
-    found: set[bytes] = set()
-    for name in names:
-        at = text.find(name)
-        while at >= 0:
-            before, after = text[at - 1 : at] if at else b"", text[at + len(name) : at + len(name) + 1]
-            if not (before.isalnum() or before == b"_" or after.isalnum() or after == b"_"):
-                found.add(name)
-                break
-            at = text.find(name, at + 1)
-    return found
-
-
-def widened(old: bytes, new: bytes, span: list[int]) -> bool:
-    """Grow `span` by whole lines on both sides until each text's part is whole declarations; False when it cannot."""
-    for _ in range(80):
-        if complete(old[span[0] : span[1]]) and complete(new[span[2] : span[3]]):
-            return True
-        if span[0] > 0 and span[2] > 0:
-            back = span[0] - (old.rfind(b"\n", 0, span[0] - 1) + 1)
-            span[0], span[2] = span[0] - back, span[2] - back
-        if span[1] < len(old) and span[3] < len(new):
-            stop = old.find(b"\n", span[1])
-            step = len(old) - span[1] if stop < 0 else stop + 1 - span[1]
-            span[1], span[3] = span[1] + step, span[3] + step
-    return False
-
-
-def types_only_differ(old: bytes, new: bytes) -> bool:
-    """True when `old` and `new` differ only in type declarations (typedef, struct, union, enum definitions) and
-    static inline functions that nothing else in the text names: no .s byte depends on such a declaration (the
-    compile has no debug output), so the same compiler writes the same assembly. Each changed hunk, widened to whole
-    declarations, is the only text read closely; everything around them is searched for the names they define."""
-    patterns()
-    spans = hunks(old, new)
-    at = 0
-    while at < len(spans):
-        if not widened(old, new, spans[at]):
-            return False
-        if at and spans[at - 1][1] >= spans[at][0]:  # the widened hunk reaches the one before: they are one hunk
-            before = spans.pop(at - 1)
-            spans[at - 1] = [before[0], max(before[1], spans[at - 1][1]), before[2], max(before[3], spans[at - 1][3])]
-            at -= 1
-            continue
-        if at + 1 < len(spans) and spans[at + 1][0] <= spans[at][1]:  # or the one after
-            after = spans.pop(at + 1)
-            spans[at] = [spans[at][0], max(spans[at][1], after[1]), spans[at][2], max(spans[at][3], after[3])]
-            continue
-        at += 1
-    parts = (chunks(b"".join(old[s[0] : s[1]] for s in spans)), chunks(b"".join(new[s[2] : s[3]] for s in spans)))
-    names = {n for side in parts for c in side for n in (defined(c) or ())}
-    inrest: set[bytes] = set()
-    if names:
-        edges = [0, *(x for s in spans for x in (s[0], s[1])), len(old)]
-        inrest = mentioned(names, b"".join(old[lo:hi] for lo, hi in zip(edges[::2], edges[1::2], strict=True)))
-    return kept(parts[0], inrest) == kept(parts[1], inrest)
-
-
 def read(path: str) -> bytes:
     with open(path, "rb") as handle:
         return handle.read()
@@ -390,74 +209,12 @@ def write(path: str, data: bytes) -> None:
         handle.write(data)
 
 
-LASTS = "lasts"  # per unit (compiler + arguments), the texts last compiled or answered: one slot made trees collide
-KEEP_LASTS = 6
-
-
-def remember(cache: str, label: str, name: str, text: bytes) -> None:
-    """The text just compiled or answered under this unit (compiler and arguments), kept with the few before it: lanes
-    build different bodies of one unit, so a single slot held whichever tree wrote last and a tree whose text only
-    adds types to another's missed. Each is a copy (an entry touched through a hard link would move the .i's mtime)."""
-    folder = os.path.join(cache, LASTS, label[:2], label[2:])
-    entry = os.path.join(folder, name[:24])
-    try:
-        os.utime(entry)  # known text: newest again
-        return
-    except OSError:
-        pass
-    part = f"{entry}.{os.getpid()}.part"
-    try:
-        os.makedirs(folder, exist_ok=True)
-        write(part, text)
-        os.replace(part, entry)
-        kept = sorted(
-            (f for f in os.listdir(folder) if not f.endswith(".part")),
-            key=lambda f: -os.stat(os.path.join(folder, f)).st_mtime,
-        )
-        for old in kept[KEEP_LASTS:]:
-            try:  # noqa: SIM105 - contextlib is 1.5 ms of this front's start
-                os.unlink(os.path.join(folder, old))
-            except OSError:
-                pass
-    except OSError:
-        pass
-
-
-def reuse(cache: str, label: str, compiler: str, args: list[str], text: bytes) -> bytes | None:
-    """The assembly of the newest remembered text of this unit that `text` only renames or adds types to, else None."""
-    folder = os.path.join(cache, LASTS, label[:2], label[2:])
-    try:
-        names = sorted(
-            (f for f in os.listdir(folder) if not f.endswith(".part")),
-            key=lambda f: -os.stat(os.path.join(folder, f)).st_mtime,
-        )
-    except OSError:
-        names = []
-    paths = [os.path.join(folder, f) for f in names[:KEEP_LASTS]]
-    paths.append(os.path.join(cache, "last", label[:2], label[2:]))  # the single slot older fronts kept
-    patterns()
-    for path in paths:
-        try:
-            last = read(path)
-            name = key(compiler, args, last)
-            assembly = zlib.decompress(read(os.path.join(cache, name[:2], name[2:])))
-        except (OSError, zlib.error):
-            continue
-        if last != text and (types_only_differ(last, text) or renamed(last, text, assembly)):
-            return assembly
-    return None
-
-
 def prune(root: str, now: float) -> int:
     import glob
 
     root = os.fspath(root)
     dropped = 0
-    for entry in [
-        *glob.glob(os.path.join(root, "??", "*")),
-        *glob.glob(os.path.join(root, "last", "??", "*")),
-        *glob.glob(os.path.join(root, LASTS, "??", "*", "*")),
-    ]:
+    for entry in glob.glob(os.path.join(root, "??", "*")):
         try:
             if now - os.stat(entry).st_mtime > MAX_AGE:
                 os.unlink(entry)
@@ -473,26 +230,16 @@ def call(compiler: str, args: list[str]) -> int:
     return subprocess.call([compiler, *args])
 
 
-def lookup(cache: str, compiler: str, args: list[str], source: str, text: bytes) -> tuple[bytes, bool] | None:
-    """The assembly of `text` without running the compiler: (assembly, reused). A text compiled before gives its
-    stored assembly (reused False); a text that only renames or adds type declarations to the last one compiled under
-    this unit gives the last assembly, stored under the new key (reused True). None: the compiler must run."""
+def lookup(cache: str, compiler: str, args: list[str], text: bytes) -> bytes | None:
+    """The stored assembly of exactly this text under this compiler and these arguments; None: the compiler must run."""
     name = key(compiler, args, text)
     entry = os.path.join(cache, name[:2], name[2:])
-    label = key(compiler, args, b"")  # the unit: this compiler and these arguments, whatever the text
     try:
         data = zlib.decompress(read(entry))
         os.utime(entry)  # a hit keeps it alive
-        remember(cache, label, name, text)
-        return data, False
+        return data
     except (OSError, zlib.error):
-        pass
-    made = reuse(cache, label, compiler, args, text)
-    if made is None:
         return None
-    store(entry, made)
-    remember(cache, label, name, text)
-    return made, True
 
 
 def store(entry: str, made: bytes) -> None:
@@ -525,16 +272,13 @@ def run(cache: str, compiler: str, args: list[str]) -> int:
         name = key(compiler, args, text)
     except OSError:
         return call(compiler, args)
-    found = lookup(cache, compiler, args, source, text)
+    found = lookup(cache, compiler, args, text)
     if found is not None:
-        write(out, found[0])
-        if found[1]:
-            maybe_prune(cache)
+        write(out, found)
         return 0
     code = call(compiler, args)
     if code == 0:
         store(os.path.join(cache, name[:2], name[2:]), read(out))
-        remember(cache, key(compiler, args, b""), name, text)
     maybe_prune(cache)
     return code
 
@@ -551,26 +295,25 @@ def commands(manifest: str) -> list[tuple[str, list[str]]]:
 
 def batch(cache: str, root: str, manifest: str, index: int, count: int) -> int:
     """Resolve, without the compiler, every recorded compile whose number is `index` modulo `count`: its assembly goes
-    to `<out>.cc`, stamped a whole second after its input, and the front moves it into place for exactly that input.
-    A compile the cache cannot answer is left to the front, which runs the compiler. Returns how many it resolved."""
-    done, reused = 0, False
+    to `<out>.cc` and its answer key (`answer_key`) to `<out>.cc.key`; the front moves the answer into place only for
+    exactly that command and input. A compile the cache cannot answer is left to the front, which runs the compiler.
+    Returns how many it resolved."""
+    done = 0
     for number, (compiler, args) in enumerate(commands(manifest)):
         parsed = parse(args)
         if parsed is None or number % count != index:
             continue
         source, out = os.path.join(root, parsed[0]), os.path.join(root, parsed[1]) + ".cc"
         try:
-            found = lookup(cache, compiler, args, source, read(source))
+            text = read(source)
+            found = lookup(cache, compiler, args, text)
             if found is None:
                 continue
-            write(out, found[0])
-            stamp = os.stat(source).st_mtime + 2  # the shell compares whole seconds
-            os.utime(out, (stamp, stamp))
+            write(out, found)
+            write(out + ".key", (answer_key(compiler, args, text) + "\n").encode())
         except OSError:
             continue
-        done, reused = done + 1, reused or found[1]
-    if reused:
-        maybe_prune(cache)
+        done += 1
     return done
 
 

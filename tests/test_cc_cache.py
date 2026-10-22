@@ -187,34 +187,91 @@ def test_a_batch_answers_hits_and_leaves_misses_to_the_front(tmp_path):
     assert made.returncode == 0 and (root / "miss.s").read_text() == "INT C;" and runs(cc) == 2
 
 
-def test_a_batch_answer_equals_the_single_front_answer_for_hit_and_reuse(tmp_path):
+def test_a_batch_answer_equals_the_single_front_answer(tmp_path):
     cc, cache = fake_cc(tmp_path), tmp_path / "cc"
-    base = "struct S { int unk10; }; int f(struct S *s) { return s->unk10 + 1; }\n"
-    renamed = base.replace("unk10", "fogNear")
-    seed = tree(tmp_path, "seed", base)
-    compile_in(seed, cache, cc)
+    text = "struct S { int unk10; }; int f(struct S *s) { return s->unk10 + 1; }\n"
+    compile_in(tree(tmp_path, "seed", text), cache, cc)
     args = ["-quiet", "-O2", "x.i", "-o", "x.s"]
-    for number, text in enumerate((base, renamed)):
-        single, batched = tree(tmp_path, f"s{number}", text), tree(tmp_path, f"b{number}", text)
-        manifest = tmp_path / f"m{number}"
-        manifest.write_text(f"{cc}\x1f" + "\x1f".join(args) + "\n")
-        assert cc_cache.batch(str(cache), str(batched), str(manifest), 0, 1) == 1
-        os.chdir(single)
-        try:
-            assert cc_cache.run(str(cache), str(cc), args) == 0
-        finally:
-            os.chdir(tmp_path)
-        assert (batched / "x.s.cc").read_bytes() == (single / "x.s").read_bytes()
-        assert runs(cc) == 1  # neither compiled: the renamed text reused the seed's assembly
-        assert (batched / "x.s.cc").stat().st_mtime >= (batched / "x.i").stat().st_mtime + 1
+    single, batched = tree(tmp_path, "s", text), tree(tmp_path, "b", text)
+    manifest = tmp_path / "m"
+    manifest.write_text(f"{cc}\x1f" + "\x1f".join(args) + "\n")
+    assert cc_cache.batch(str(cache), str(batched), str(manifest), 0, 1) == 1
+    os.chdir(single)
+    try:
+        assert cc_cache.run(str(cache), str(cc), args) == 0
+    finally:
+        os.chdir(tmp_path)
+    assert (batched / "x.s.cc").read_bytes() == (single / "x.s").read_bytes()
+    assert runs(cc) == 1
 
 
-def test_the_front_ignores_an_answer_older_than_its_input(tmp_path):
+REORDERED = (
+    "int g(int);\nint a, b;\nvoid f(int x) {\n    a = x;\n    g(x);\n    b = x;\n}\n",
+    "int g(int);\nint a, b;\nvoid f(int x) {\n    a = x;\n    b = x;\n    g(x);\n}\n",  # a store moved ahead of a call
+    "int g(int);\nint a, b;\nvoid f(int x) {\n    b = x;\n    a = x;\n    g(x);\n}\n",  # two stores swapped
+)
+
+
+def test_a_text_that_only_reorders_statements_misses_the_cache(tmp_path):
+    """10-22 OPUS-WT-6: texts that only moved two stores (one ahead of a call) were answered with the previous text's
+    assembly. Every distinct text is compiled; the same text again is an exact hit."""
     cc, cache = fake_cc(tmp_path), tmp_path / "cc"
-    root = tree(tmp_path, "a", "int a;")
+    for number, text in enumerate(REORDERED):
+        assert compile_in(tree(tmp_path, f"t{number}", text), cache, cc) == text.upper()
+        assert runs(cc) == number + 1
+    assert compile_in(tree(tmp_path, "again", REORDERED[1]), cache, cc) == REORDERED[1].upper()
+    assert runs(cc) == len(REORDERED)
+
+
+def test_renames_layout_and_unused_types_are_other_texts(tmp_path):
+    """No similar text is ever answered: a rename, a layout change or an added unused type compiles again."""
+    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
+    text = "struct S { int unk10; };\nint f(struct S *s) { return s->unk10 + 1; }\n"
+    others = (text.replace("unk10", "fogNear"), text.replace("+ 1", "+1"), "typedef int unused_t;\n" + text)
+    for number, other in enumerate((text, *others)):
+        assert compile_in(tree(tmp_path, f"t{number}", other), cache, cc) == other.upper()
+    assert runs(cc) == 4
+
+
+def test_a_batch_never_answers_a_reordered_text_from_another_trees_entry(tmp_path):
+    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
+    compile_in(tree(tmp_path, "seed", REORDERED[0]), cache, cc)
+    other = tree(tmp_path, "other", REORDERED[1])
+    manifest = tmp_path / "m"
+    manifest.write_text(f"{cc}\x1f" + "\x1f".join(["-quiet", "-O2", "x.i", "-o", "x.s"]) + "\n")
+    assert cc_cache.batch(str(cache), str(other), str(manifest), 0, 1) == 0
+    assert front(other, cache, cc).returncode == 0 and (other / "x.s").read_text() == REORDERED[1].upper()
+    assert runs(cc) == 2
+
+
+def test_the_front_takes_a_batch_answer_only_for_its_exact_command_and_input(tmp_path):
+    """An answer's key names its command and text: a leftover for another text (the .i rewritten within a second,
+    whatever the dates) or other flags is dropped, never moved into place."""
+    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
+    root = tree(tmp_path, "a", REORDERED[0])
+    args = ["-quiet", "-O2", "x.i", "-o", "x.s"]
     (root / "x.s.cc").write_text("STALE")
-    os.utime(root / "x.s.cc", (1, 1))
-    assert front(root, cache, cc).returncode == 0 and (root / "x.s").read_text() == "INT A;" and runs(cc) == 1
+    (root / "x.s.cc.key").write_text(cc_cache.answer_key(str(cc), args, REORDERED[1].encode()) + "\n")
+    later = time.time() + 100  # newer than its input: a date check would take it
+    os.utime(root / "x.s.cc", (later, later))
+    assert front(root, cache, cc).returncode == 0 and (root / "x.s").read_text() == REORDERED[0].upper()
+    assert not (root / "x.s.cc").exists() and not (root / "x.s.cc.key").exists() and runs(cc) == 1
+    (root / "x.s.cc").write_text("ANSWER")
+    (root / "x.s.cc.key").write_text(cc_cache.answer_key(str(cc), ["-O1", *args[1:]], REORDERED[0].encode()) + "\n")
+    assert front(root, cache, cc).returncode == 0 and (root / "x.s").read_text() == REORDERED[0].upper()
+    (root / "x.s.cc").write_text("ANSWER")
+    (root / "x.s.cc.key").write_text(cc_cache.answer_key(str(cc), args, REORDERED[0].encode()) + "\n")
+    assert front(root, cache, cc).returncode == 0 and (root / "x.s").read_text() == "ANSWER"
+
+
+def test_a_changed_compiler_or_a_file_beside_it_is_another_key(tmp_path):
+    cc = fake_cc(tmp_path)
+    args = ["-O2", "x.i", "-o", "x.s"]
+    before = cc_cache.key(str(cc), args, b"int a;")
+    cc_cache.IDENTITIES.clear()
+    (tmp_path / "as1").write_text("another pass")  # a driver runs the passes beside it
+    assert cc_cache.key(str(cc), args, b"int a;") != before
+    cc_cache.IDENTITIES.clear()
 
 
 def test_a_failing_compile_fails_the_front_after_a_batch_left_it(tmp_path):
@@ -234,140 +291,3 @@ def test_a_batch_skips_a_command_it_cannot_key_and_an_unreadable_source(tmp_path
     manifest.write_text(f"{cc}\x1f-E\x1fy.c\n{cc}\x1f-quiet\x1fgone.i\x1f-o\x1fgone.s\n")
     assert cc_cache.batch(str(cache), str(root), str(manifest), 0, 1) == 0
     assert not list(root.glob("*.cc"))
-
-
-def test_renamed_accepts_only_a_consistent_one_for_one_rename():
-    old = b"struct S { int unk10; }; int f(struct S *s) { return s->unk10 + 1; }\n"
-    asm = b"f:\n\tlw\t$2,16($4)\n\tj\t$31\n"
-    new = old.replace(b"unk10", b"fogNear")
-    assert cc_cache.renamed(old, new, asm)
-    assert not cc_cache.renamed(old, new.replace(b"+ 1", b"+ 2"), asm)  # a value moved
-    assert not cc_cache.renamed(old, old.replace(b"unk10", b"fogNear", 1), asm)  # one use renamed, one not
-    assert not cc_cache.renamed(old, old.replace(b"int", b"long", 1), asm)  # a keyword is not a name
-    assert not cc_cache.renamed(old, old.replace(b"unk10", b"S"), asm)  # the new name is already in use
-    assert not cc_cache.renamed(old, old.replace(b" ", b"  ", 1), asm)  # whitespace differs
-    assert not cc_cache.renamed(old, new, asm + b".comm unk10,4\n")  # an old name spelled in the assembly
-    assert not cc_cache.renamed(old, new, b"static.unk10.3:\n")  # as a part of a word
-    assert not cc_cache.renamed(old, old, asm)  # nothing renamed
-
-
-def test_a_rename_run_skips_the_compiler_and_stores_the_entry(tmp_path):
-    cc = tmp_path / "cc1"
-    cc.write_text(
-        '#!/bin/sh\necho run >> "$0.runs"\n'
-        'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; *.i) src=$1;; esac; shift; done\n'
-        'sed -n \'s/.*return \\(.*\\);.*/\\1/p\' "$src" > "$out"\n'
-    )
-    cc.chmod(0o755)
-    cache = tmp_path / "cc"
-    old = "struct S { int unk10; }; int f(struct S *s) { return 7; }\n"
-    assert compile_in(tree(tmp_path, "a", old), cache, cc) == "7\n"
-    new = old.replace("unk10", "fogNear")
-    assert compile_in(tree(tmp_path, "b", new), cache, cc) == "7\n"
-    assert runs(cc) == 1
-    assert compile_in(tree(tmp_path, "c", new), cache, cc) == "7\n"  # now an exact hit
-    assert runs(cc) == 1
-    assert compile_in(tree(tmp_path, "d", new.replace("return 7", "return 8")), cache, cc) == "8\n"
-    assert runs(cc) == 2
-
-
-def test_only_unnamed_type_declarations_may_differ():
-    base = "typedef int s32;\nstruct A { s32 a; };\nstruct A g;\nint f(void) { return 1; }\n"
-    extra = "typedef struct Fresh { int q; } FreshT;\nenum E { E1, E2 };\nstruct Fwd;\n"
-    same = cc_cache.types_only_differ
-    assert same((extra + base).encode(), base.encode())
-    assert same(base.encode(), (base + extra).encode())  # at the end
-    mid = base.replace("struct A g;", extra + "struct A g;")  # in the middle
-    assert same(mid.encode(), base.encode())
-    # a variable, an extern, a function, a used type or a used enumerator changes the object
-    assert not same(b"struct B { int b; } v;\n" + base.encode(), base.encode())
-    assert not same(b"struct B v;\n" + base.encode(), base.encode())
-    assert not same(b"extern int x;\n" + base.encode(), base.encode())
-    assert not same(base.encode(), base.replace("return 1", "return 2").encode())
-    assert not same(base.encode(), base.replace("s32 a;", "s32 a; s32 b;").encode())
-    used = "enum E { E1, E2 };\nint g(void) { return E2; }\n"
-    assert not same(used.encode(), b"int g(void) { return E2; }\n")
-    # a field change of a type nothing names is invisible; of a named one it is not
-    assert same(b"struct U { int a; };\nint h;\n", b"struct U { int a; int b; };\nint h;\n")
-    assert not same(b"struct U { int a; };\nstruct U h;\n", b"struct U { int a; int b; };\nstruct U h;\n")
-    # two edits far apart, both unnamed types
-    assert same((extra + base + "int z;\n").encode(), (base + "int z;\n" + extra.replace("Fresh", "Other")).encode())
-
-
-def test_a_header_edit_adding_unused_types_skips_the_compiler(tmp_path):
-    cc = tmp_path / "cc1"
-    cc.write_text(
-        '#!/bin/sh\necho run >> "$0.runs"\n'
-        'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; *.i) src=$1;; esac; shift; done\n'
-        'sed -n \'s/.*return \\(.*\\);.*/\\1/p\' "$src" > "$out"\n'
-    )
-    cc.chmod(0o755)
-    cache = tmp_path / "cc"
-    old = "typedef int s32;\nint f(void) { return 7; }\n"
-    assert compile_in(tree(tmp_path, "a", old), cache, cc) == "7\n"
-    grown = "typedef struct Fresh { s32 q; } FreshT;\n" + old
-    assert compile_in(tree(tmp_path, "b", grown), cache, cc) == "7\n"
-    assert runs(cc) == 1
-    assert compile_in(tree(tmp_path, "c", old.replace("return 7", "return 8")), cache, cc) == "8\n"
-    assert runs(cc) == 2
-
-
-def test_a_static_inline_function_nothing_calls_may_differ():
-    same = cc_cache.types_only_differ
-    base = "typedef int s32;\nint f(void) { return 1; }\nint g;\n"
-    old = "static __inline__ s32 pick(s32 *p) { return *p; }\n"
-    new = "static __inline__ s32 pick(const s32 *p) { return p[0]; }\nstatic __inline__ s32 other(void) { return 2; }\n"
-    assert same((old + base).encode(), (new + base).encode())
-    assert same((base + old).encode(), base.encode())
-    # one a surviving chunk calls, a plain static (the compiler writes it) and a static local are not droppable
-    called = base + "int h(s32 *p) { return pick(p); }\n"
-    assert not same((old + called).encode(), (new + called).encode())
-    assert not same(b"static s32 pick(s32 *p) { return *p; }\n" + base.encode(), base.encode())
-    counted = "static __inline__ s32 pick(void) { static s32 n; return n; }\n"
-    assert not same((counted + base).encode(), base.encode())
-    # a type the dropped function names is dropped with it
-    typed = "typedef struct P { s32 a; } P;\nstatic __inline__ s32 pick(P *p) { return p->a; }\n"
-    assert same((typed + base).encode(), base.encode())
-
-
-def test_hunks_split_two_edits_far_apart_and_the_words_are_whole():
-    lines = [f"int v{i};" for i in range(2000)]
-    other = list(lines)
-    other.insert(10, "typedef int A;")
-    other.insert(1501, "typedef long B;")
-    spans = cc_cache.hunks("\n".join(lines).encode(), "\n".join(other).encode())
-    assert len(spans) == 2
-    assert all(
-        lo == hi and new_hi - new_lo <= 16 for lo, hi, new_lo, new_hi in spans
-    )  # two insertions, nothing between
-    assert cc_cache.mentioned({b"abc", b"xyz"}, b"abcd _xyz abc") == {b"abc"}
-    far = "\n".join(lines).encode()
-    assert cc_cache.types_only_differ(far, "\n".join(other).encode())
-
-
-def test_canonical_is_the_declarations_that_reach_the_object():
-    base = "int f(void) {\n return 1;\n}\nint g;\n"
-    extra = "typedef int T;\nenum E { E1 };\nstatic __inline__ int unused(void) { return 2; }\n"
-    assert cc_cache.canonical(base.encode()) == cc_cache.canonical((extra + base).encode())
-    assert cc_cache.canonical(base.encode()) == cc_cache.canonical(base.replace("\n ", " ").encode())  # layout
-    assert cc_cache.canonical(base.encode()) != cc_cache.canonical(base.replace("return 1", "return 2").encode())
-    named = "typedef int T;\nT g;\n"
-    assert b"typedef" in cc_cache.canonical(named.encode())
-    calls = "static __inline__ int pick(void) { return 2; }\nint h(void) { return pick(); }\n"
-    assert b"pick" in cc_cache.canonical(calls.encode())
-
-
-def test_another_trees_body_does_not_hide_the_text_a_header_edit_only_adds_types_to(tmp_path):
-    """Lanes compile different bodies of one unit: a third tree adding a type must still find the first."""
-    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
-    mine = "struct S { int a; };\nint f(struct S *s) { return s->a + 1; }\n"
-    theirs = "struct S { int a; };\nint f(struct S *s) { return s->a + 2; }\n"
-    edited = "struct S { int a; };\ntypedef int unused_t;\nint f(struct S *s) { return s->a + 1; }\n"
-    for number, text in enumerate((mine, theirs)):
-        compile_in(tree(tmp_path, f"t{number}", text), cache, cc)
-    assert runs(cc) == 2
-    third = tree(tmp_path, "third", edited)
-    manifest = tmp_path / "m"
-    manifest.write_text(f"{cc}\x1f" + "\x1f".join(["-quiet", "-O2", "x.i", "-o", "x.s"]) + "\n")
-    assert cc_cache.batch(str(cache), str(third), str(manifest), 0, 1) == 1  # answered from `mine`, not compiled
-    assert runs(cc) == 2
