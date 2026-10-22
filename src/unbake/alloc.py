@@ -40,8 +40,8 @@ def _edit(ours: Json, theirs: Json, flipped: Json | None) -> str:
         )
     if theirs["pseudo"] is None:
         return (
-            f"the target leaves {reg} to `{o}` only as a hard register (argument or return value): "
-            f"no C edit moves `{o}` itself; change how its value reaches the call (an extra temporary or cast)."
+            f"the candidate holds `{o}` in {reg} and has no pseudo for what the target keeps there: a value the "
+            "target keeps live is missing (a local read before a call and used after it, see the frame line)."
         )
     if flipped:
         by = [f"use `{t}` {flipped['more_refs']} more time(s) (re-read it instead of re-deriving the value)"]
