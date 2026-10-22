@@ -44,6 +44,9 @@ from unbake.contracts import (
 )
 
 _WORD = 0xFFFFFFFF
+# In every compile key since the canonical-form sharing went (10-22): rows made before it may hold another text's
+# object, and this leaves them unreachable.
+_EXACT = "\0exact-1"
 _INPUT = "unit"  # the one name every compile input has: a rename or a move never reaches a key
 _FUZZY = "-DNON_MATCHING"  # a measured module compiles its NON_MATCHING bodies, which the real build never does
 
@@ -115,7 +118,7 @@ def _compile_inputs(
             ("tool-identity", recipe.toolchain), lambda: adapters.tool_identity(snapshot.config, recipe.toolchain)
         )
     )
-    return text, steps, tools, compile.key(text.encode(), f"{_INPUT}.i", steps, tools)
+    return text, steps, tools, compile.key(text.encode(), f"{_INPUT}.i", steps, tools + _EXACT)
 
 
 def _include(snapshot: Snapshot, version: str) -> tuple[Path, ...]:
