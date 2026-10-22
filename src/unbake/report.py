@@ -775,7 +775,10 @@ def run(config: Any, params: Json) -> Json:
         if hold := publish_hold(config, tree):
             result["notes"] = [asdict(hold), *notes]
         else:
-            for path, content in progress_files(config, tree).items():
+            written = (
+                files(config, tree) if params.get("exact") else progress_files(config, tree)
+            )  # README block + image too
+            for path, content in written.items():
                 store.write(config.project.root / path, content)
             if notes:
                 result["notes"] = notes
