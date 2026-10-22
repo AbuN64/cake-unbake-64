@@ -43,7 +43,9 @@ class World:
             owns={v: ("keep", "func_80000010", "other") for v in held},
             placed={v: {"other": "ovl"} for v in held},
         )
-        self.tree = SimpleNamespace(digest="d", modules=(module,), owner=lambda v, n: "src/a.c" if v in held else None)
+        self.tree = SimpleNamespace(
+            digest="d", modules=(module,), symbols={}, owner=lambda v, n: "src/a.c" if v in held else None
+        )
         self.makes: list[list[str]] = []
         self.broken: set[str] = set()
         self.scores = {v: 0.9 for v in held}
@@ -690,3 +692,78 @@ def test_a_candidate_that_includes_a_vendored_source_is_the_whole_unit():
     assert not publish.whole_unit('#include "types.h"\nint f(int a) { return a; }\n', "g")
     text, origins = publish.whole_traced(unit)
     assert text == unit and len(origins) == 3
+
+
+# ---------------------------------------------------------------- an exact body's own literal pool stand-in
+def _pool_world(tmp_path, literals_first: bool):
+    """func_80238050_de (file src/m.CPP) has the literals row of its object and the pool stand-in file against it."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "pool.CPP").write_text('INCLUDE_RODATA("data_800C", D_80238050_C90E8);\n')
+    (tmp_path / "versions" / "a").mkdir(parents=True)
+    symbols = (
+        "literals_g = 0x800C3324; // rom:0xC3F24 size:0xD4\n"
+        "D_800C33F8_de = 0x800C33F8; // rom:0xC3FF8\nD_800C33FC_de = 0x800C33FC; // rom:0xC3FFC\n"
+        "D_800C3414_de = 0x800C3414; // rom:0xC4014\n"
+    )
+    aliases = "D_80238050_C90E8 = 0x800C33F8;\nD_other = 0x800C3500;\n"
+    pieces = [(0xC3F24, "literals_g"), (0xC3FF8, "D_80238050_C90E8"), (0xC4000, "D_80238314_C9104")]
+    if literals_first is False:
+        symbols = symbols.replace(
+            "literals_g = 0x800C3324; // rom:0xC3F24 size:0xD4", "literals_g = 0x800C3400; // rom:0xC4000"
+        )
+        pieces = [(0xC3FF8, "D_80238050_C90E8"), (0xC4000, "literals_g"), (0xC4020, "D_x")]
+    (tmp_path / "versions" / "a" / "symbol_addrs.txt").write_text(symbols)
+    (tmp_path / "versions" / "a" / "aliases.txt").write_text(aliases)
+    rows = "\n".join(f"      - [0x{r:X}, rodata, data_800C/{n}]" for r, n in pieces)
+    (tmp_path / "versions" / "a" / "splat.yaml").write_text(f"segments:\n{rows}\n")
+    facts = {"D_80238050_C90E8": (0x800C33F8, 0xC3FF8, None, "data")}
+    modules = (
+        SimpleNamespace(path="src/m.CPP", owns={"a": ("func_80238050_de", "g")}),
+        SimpleNamespace(path="src/pool.CPP", owns={"a": ("D_80238050_C90E8",)}),
+        SimpleNamespace(path="src/other.CPP", owns={"a": ("h", "D_80238314_C9104")}),
+    )
+    owners = {"func_80238050_de": "src/m.CPP", "g": "src/m.CPP"}
+    held = SimpleNamespace(modules=modules, symbols={"a": facts}, owner=lambda v, n: owners.get(n))
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    return config, held, publish.Owner("src/m.CPP", "main", ("a",))
+
+
+def test_landing_an_exact_body_retires_the_literal_pool_stand_in_after_the_literals_row(tmp_path):
+    config, held, owner = _pool_world(tmp_path, True)
+    old: dict = {}
+    out = publish._literal_pools(config, "func_80238050_de", held, [owner], {}, publish.Reads(config, {}), old)
+    assert out["src/pool.CPP"] is None and old["src/pool.CPP"]  # the stand-in's file goes; the undo has it
+    symbols = out["versions/a/symbol_addrs.txt"].decode()
+    assert "literals_g = 0x800C3324; // rom:0xC3F24 size:0xF0" not in symbols  # 0xD4 + the 8-byte pool = 0xDC
+    assert "literals_g = 0x800C3324; // rom:0xC3F24 size:0xDC\n" in symbols
+    assert "D_800C33F8_de" not in symbols and "D_800C33FC_de" not in symbols and "D_800C3414_de" in symbols
+    aliases = out["versions/a/aliases.txt"].decode()
+    assert aliases == "D_other = 0x800C3500;\nD_800C33F8_de = 0x800C33F8;\nD_800C33FC_de = 0x800C33FC;\n"
+
+
+def test_landing_an_exact_body_retires_the_literal_pool_stand_in_before_the_literals_row(tmp_path):
+    config, held, owner = _pool_world(tmp_path, False)
+    out = publish._literal_pools(config, "func_80238050_de", held, [owner], {}, publish.Reads(config, {}), {})
+    assert "literals_g = 0x800C33F8; // rom:0xC3FF8\n" in out["versions/a/symbol_addrs.txt"].decode()
+    assert out["src/pool.CPP"] is None
+
+
+def test_a_pool_stand_in_without_a_literals_row_of_the_owner_or_in_a_version_the_body_misses_stays(tmp_path):
+    config, held, owner = _pool_world(tmp_path, True)
+    stranger = SimpleNamespace(modules=held.modules, symbols=held.symbols, owner=lambda v, n: "src/other.CPP")
+    assert (
+        publish._literal_pools(config, "func_80238050_de", stranger, [owner], {}, publish.Reads(config, {}), {}) == {}
+    )
+    assert (
+        publish._literal_pools(
+            config,
+            "func_80238050_de",
+            held,
+            [publish.Owner("src/m.CPP", "main", ())],
+            {},
+            publish.Reads(config, {}),
+            {},
+        )
+        == {}
+    )
+    assert publish._literal_pools(config, "func_80000000_de", held, [owner], {}, publish.Reads(config, {}), {}) == {}

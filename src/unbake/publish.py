@@ -800,6 +800,117 @@ def _pools(
     return text, rows
 
 
+_PIECE = re.compile(r"^\s*-\s*\[0x([0-9A-Fa-f]+),\s*\w+,\s*(?:[^/\],]*/)?([^\],\s]+)\]", re.M)
+_FACT = re.compile(r"^(\w+)\s*=\s*0x([0-9A-Fa-f]+);(.*)$")
+_ROM = re.compile(r"rom:0x([0-9A-Fa-f]+)")
+_SIZE = re.compile(r"size:0x([0-9A-Fa-f]+)")
+_ADDRESS = re.compile(r"(?<![0-9A-Fa-f])[0-9A-F]{8}(?![0-9A-Fa-f])")
+
+
+def _stand_in_files(held: tree.Tree, name: str, owner_paths: Collection[str]) -> dict[str, dict[str, str]]:
+    """path -> {version: name} of the files that are nothing but a pool stand-in named after `name`: `D_<address>_...`
+    (an INCLUDE_RODATA symbol) or `D_auto_src_rw_pool_<address>_...` (the same pool as a C array), where the address
+    is the function's in any version or in its own name. A file that owns anything else, or two names in a version, is
+    not taken over."""
+    wanted = set(_ADDRESS.findall(name)) | {
+        f"{fact[0]:08X}" for table in held.symbols.values() if (fact := table.get(name)) is not None
+    }
+    if not wanted:
+        return {}
+    pool = re.compile(rf"^D_(?:auto_src_rw_pool_)?(?:{'|'.join(sorted(wanted))})_")
+    found: dict[str, dict[str, str]] = {}
+    for module in held.modules:
+        if module.path in owner_paths or configuration.is_assembly(module.path):
+            continue
+        names = {v: tuple(ns) for v, ns in module.owns.items() if ns}
+        if names and all(len(ns) == 1 and pool.match(ns[0]) for ns in names.values()):
+            found[module.path] = {v: ns[0] for v, ns in names.items()}
+    return found
+
+
+def _retire(text: str, stand_in: str, row: str, vram: int, rom: int, size: int, before: bool) -> tuple[str, list[str]]:
+    """One version's fact file without the stand-in's row, with the `literals_` row grown over the pool (`before`: it
+    starts where the pool did), and the lines of the rom rows inside the pool, which are left out of it."""
+    kept: list[str] = []
+    inside: list[str] = []
+    for line in text.splitlines():
+        m = _FACT.match(line)
+        if m and m[1] == stand_in:
+            continue
+        if m and m[1] == row:
+            if before:
+                line = re.sub(r"= 0x[0-9A-Fa-f]+;", f"= 0x{int(m[2], 16) - size:08X};", line, count=1)
+                line = _ROM.sub(lambda r: f"rom:0x{int(r[1], 16) - size:X}", line)
+            line = _SIZE.sub(lambda r: f"size:0x{int(r[1], 16) + size:X}", line)
+        elif m and vram <= int(m[2], 16) < vram + size and (r := _ROM.fullmatch(m[3].strip(" /"))):
+            if rom <= int(r[1], 16) < rom + size:
+                inside.append(f"{m[1]} = 0x{m[2]};")
+                continue
+        kept.append(line)
+    return "\n".join(kept) + "\n", inside
+
+
+def _literal_pools(
+    config: Config,
+    name: str,
+    held: tree.Tree,
+    found: Sequence[Owner],
+    writes: Mapping[str, bytes | None],
+    reads: Reads,
+    old: dict[str, bytes | None],
+) -> dict[str, bytes | None]:
+    """The writes that retire a pool stand-in named after `name` once its exact body compiles those literals itself
+    (the hand lands of func_80238050_de and func_80217630_de; the literal-pool twin of the jump-table takeover above):
+    the stand-in's file goes, its row goes, the rom rows inside the pool become aliases, and the `literals_` row of the
+    object that owns `name` and lies against the pool grows over it (or starts where the pool did). Nothing for a pool
+    that has no such row in every version it lies in; the build then proves the bytes, and a mismatch restores."""
+    owner_paths = {o.path for o in found}
+    versions = {v for o in found for v in o.versions}
+    out: dict[str, bytes | None] = {}
+
+    def current(path: str) -> str:
+        if path not in old:
+            old[path] = read_file(reads, path)
+        return ((out[path] if path in out else writes[path] if path in writes else old[path]) or b"").decode()
+
+    for path, by_version in _stand_in_files(held, name, owner_paths).items():
+        if set(by_version) - versions:
+            continue  # a version the body does not land in still needs the stand-in
+        staged: dict[str, bytes | None] = {}
+        for v, stand_in in by_version.items():
+            fact = held.symbols.get(v, {}).get(stand_in)
+            splat = config.project.root / f"versions/{v}/splat.yaml"
+            pieces = (
+                sorted((int(m[1], 16), m[2]) for m in _PIECE.finditer(splat.read_text())) if splat.is_file() else []
+            )
+            at = next((i for i, (r, n) in enumerate(pieces) if fact and n == stand_in and r == fact[1]), None)
+            if fact is None or fact[1] is None or at is None or at + 1 >= len(pieces):
+                staged = {}
+                break
+            vram, rom, size = fact[0], fact[1], pieces[at + 1][0] - fact[1]
+            beside = [pieces[i][1] for i in (at + 1, at - 1) if 0 <= i < len(pieces)]  # after the pool, then before it
+            rows = [
+                n
+                for n in beside
+                if n.startswith(tree.LITERALS) and held.owner(v, n[len(tree.LITERALS) :]) in owner_paths
+            ]
+            if not rows:
+                staged = {}
+                break
+            row = next((n for n in rows if n == f"{tree.LITERALS}{name}"), rows[0])
+            before = row == beside[0]
+            symbols, aliases = f"versions/{v}/symbol_addrs.txt", f"versions/{v}/aliases.txt"
+            new_symbols, inside = _retire(current(symbols), stand_in, row, vram, rom, size, before)
+            new_aliases, _ = _retire(current(aliases), stand_in, row, vram, rom, size, before)
+            staged[symbols] = new_symbols.encode()
+            staged[aliases] = "\n".join([*new_aliases.splitlines(), *inside]).encode() + b"\n"
+        if staged:
+            out.update(staged)
+            old.setdefault(path, read_file(reads, path))
+            out[path] = None
+    return out
+
+
 def prepare(
     config: Config, request: Json, extras: Mapping[str, bytes], fuzzy: bool, message: str | None = None
 ) -> Landing:
@@ -810,7 +921,8 @@ def prepare(
         captured = tree.capture(config)
         # the overlay's own rows, headers and sources decide who owns `name` (a symbol it renames or brings); the plan
         # stays tied to the tree as it is on disk
-        found = owners(tree.capture(config, extras) if extras else captured, name)
+        held = tree.capture(config, extras) if extras else captured
+        found = owners(held, name)
         reads = Reads(config, {})
         old: dict[str, bytes | None] = {p: read_file(reads, p) for p in (*(o.path for o in found), *extras)}
         writes: dict[str, bytes | None] = {**extras}
@@ -834,6 +946,8 @@ def prepare(
                 text, rows = _pools(config, name, owner, text, reads, old)
                 writes.update(rows)
             writes[owner.path] = text.encode()
+        if not fuzzy:  # its literals are the body's too: a pool stand-in named after the function goes
+            writes.update(_literal_pools(config, name, held, found, writes, reads, old))
         blocking, debt = judged(config, writes, old)
         refuse_blocking(blocking)
         operation = "fuzzy" if fuzzy else "publish"
