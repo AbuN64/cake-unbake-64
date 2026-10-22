@@ -1,7 +1,7 @@
 """The work tree's reader/writer lock: one file, `.unbake/tree.lock`, shared by every reader of the tree (a try, a
 probe, a score, a work) and held exclusively by whoever rewrites tracked files or the extraction under it (a ship's
 sync, check and commit). A reader that finds a writer waits and says so; it never fails for the writer's changes.
-A process that holds the lock marks its children (`UNBAKE_TREE_LOCK`), which then run inside the hold without taking it again."""
+A process that holds the lock marks its children (`UNBAKE_TREE_LOCK`): they run inside the hold, never taking it."""
 
 from __future__ import annotations
 
