@@ -380,12 +380,11 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
 
 
 def _unaligned(config: Config, held: Tree, v: str) -> dict[str, int]:
-    """The files whose data starts a run of their own off the boundary the compiler aligns it to, mapped to the start's
-    address mod 8 (what the ROM proves of the start). Where a word does not divide it the ROM packs the data at the
-    byte; where only 8 does not, the ROM pads against the address, not the section start gas pads from. Either way the
-    build drops the alignment the compiler asks for that the start does not meet in that object's data sections
-    (NOALIGN)."""
-    found: dict[str, int] = {}
+    """The files whose data starts a run of their own off a word boundary in the ROM: the ROM packs it at the byte, so
+    the build drops the alignment the compiler asks for in that object's data sections (NOALIGN := 1). Data off 8 only
+    is not here: whether the ROM pads it against the address or the section start differs per object, and the build
+    keeps its own result for every one (the native measure alone re-assembles it, where the ROM proves it)."""
+    found: set[str] = set()
     for segment, (piece, *_) in zip(config.project.version[v].segments, versions.pieces(config, v), strict=True):
         if segment.kind == "bin":
             continue
@@ -393,10 +392,9 @@ def _unaligned(config: Config, held: Tree, v: str) -> dict[str, int]:
         for rom, path, section in _rows(config, held, v, piece):
             if (path, section) != last and section != ".text":
                 vram = rom - segment.rom + (segment.vram or segment.rom)
-                if vram % 8:
-                    found.setdefault(path, vram % 8)
+                found |= {path} if vram % 4 else set()
             last = (path, section)
-    return dict(sorted(found.items()))
+    return {path: 1 for path in sorted(found)}
 
 
 def _doubled(config: Config, held: Tree, v: str, piece: str) -> set[str]:

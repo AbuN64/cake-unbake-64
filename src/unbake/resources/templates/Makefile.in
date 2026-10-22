@@ -90,8 +90,8 @@ for line in open(path):
     if found:
         section = found.group(1)
     elif section in ("data", "rdata", "rodata", "sdata"):
-        asked = re.match(r"\s*\.(p2)?align\s+(\d+)", line)
-        if asked and (start % 4 or start % (1 << int(asked.group(2)))):
+        asked = re.match(r"\s*\.(p2)?align\b\s*(\d*)", line)
+        if asked and (start % 4 or (asked.group(2) and start % (1 << int(asked.group(2))))):
             continue
         if start % 4:
             line = re.sub(r"^(\s*)\.word\b", r"\1.4byte", re.sub(r"^(\s*)\.(half|short)\b", r"\1.2byte", line))

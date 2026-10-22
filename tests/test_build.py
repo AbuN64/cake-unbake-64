@@ -793,7 +793,7 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
     held = Tree(held.digest, held.modules, table)
     config = make_config(tmp_path)
     rows = build.text_sizes(config, held, "us").decode().splitlines()
-    assert "build/us/src/b.c.o: NOALIGN := 2" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
+    assert "build/us/src/b.c.o: NOALIGN := 1" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
     text = build.makefile(config).decode()
     assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)' in text
     code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
@@ -813,7 +813,9 @@ def test_data_starting_word_aligned_but_off_eight_loses_only_the_eight_alignment
     table["us"]["d_3"] = (0x80200034, 0x1034, 0x10, "data")
     held = Tree(held.digest, held.modules, table)
     config = make_config(tmp_path)
-    assert "build/us/src/b.c.o: NOALIGN := 4" in build.text_sizes(config, held, "us").decode().splitlines()
+    assert not any(
+        "NOALIGN" in r for r in build.text_sizes(config, held, "us").decode().splitlines()
+    )  # the Makefile keeps its own
     text = build.makefile(config).decode()
     code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
