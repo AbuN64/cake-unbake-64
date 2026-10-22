@@ -135,3 +135,9 @@ def test_a_writer_named_with_spaces_does_not_crash_a_waiting_reader(tmp_path: Pa
     finally:
         writer.wait()
     assert said  # it waited and said so, not ValueError
+
+
+def test_read_only_commands_never_wait_for_a_ship():
+    from unbake import cli
+
+    assert {"score", "probe", "map", "symbols"} <= cli._MEASURERS <= cli._READERS
