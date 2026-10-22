@@ -1088,3 +1088,15 @@ def test_a_pass_that_deletes_a_file_runs_again_until_a_pass_writes_nothing(world
     monkeypatch.setattr(repo, "_sync", fake)
     out = repo.sync(world.cfg, {})
     assert len(calls) == 2 and out["written"] == ["gone.txt"]
+
+
+def test_an_extraction_change_reaches_the_files_that_include_it_through_others():
+    includes = {
+        "data/a.s": set(),
+        "data/b.s": {"data/a.s"},  # b includes a
+        "nonmatchings/s/f.s": {"b.s"},  # f includes b by its tail
+        "nonmatchings/s/g.s": set(),
+    }
+    reach = repo._including({"data/a.s"}, includes)
+    assert {"data/a.s", "data/b.s", "nonmatchings/s/f.s"} <= reach and "nonmatchings/s/g.s" not in reach
+    assert repo._including({"nonmatchings/s/g.s"}, includes) >= {"nonmatchings/s/g.s", "g.s"}

@@ -37,6 +37,8 @@ from unbake.contracts import Config, Finding, Host, Json, Refusal, Snapshot, cod
 __plumbing__ = True  # contracts.code_identity names this code and never follows it: it shapes no result
 
 _KEYS_INLINE = 1  # keys of up to this many items per worker are computed here: a dispatch costs more than they do
+_EXPRESS = "slot-express.lock"  # one slot beyond the host's budget, for commands with at most _EXPRESS_AT chunks
+_EXPRESS_AT = 2
 _INLINE_AT = 1  # a gather of up to this many chunks runs here: a dispatch costs more than one chunk does
 _REBALANCE = 0.5  # seconds between looks at the other commands while a pool works
 _executor: ProcessPoolExecutor | None = None
@@ -522,6 +524,9 @@ def _acquire(want: int, active: int = 0, cap: int = 0) -> None:
                     )
                 ],
             )
+    # a small command never queues behind heavy ones for minutes: it takes the one express slot when all are held
+    if not _slots and cap and cap <= _EXPRESS_AT and (slot := _try(pool / _EXPRESS)) is not None:
+        _slots.append(slot)
     if not _slots:  # every slot is held: wait for whichever frees first, as a stage of its own
         holders = [_pid(p) for p in peers if p != mine]
         _enter(pool)  # first come, first served: a newer command takes no slot while this one waits

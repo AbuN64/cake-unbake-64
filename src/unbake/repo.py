@@ -1111,10 +1111,10 @@ def _keep_unchanged(config: Config, v: str, before: Mapping[str, list[Any]] | No
         return
     root, prefix = config.project.root, f"asm/{v}/"
     mark = f"{prefix}.extracted"
-    changed, nested = [rel for rel in before if not (root / rel).exists()], set()
+    changed, includes = [rel for rel in before if not (root / rel).exists()], {}
     for rel, path in _asm_files(config, v).items():
         data = path.read_bytes()
-        nested.update(name.decode(errors="replace") for name in _INCLUDE.findall(data))
+        includes[rel[len(prefix) :]] = {name.decode(errors="replace") for name in _INCLUDE.findall(data)}
         old = before.get(rel)
         if rel == mark:
             continue
@@ -1123,10 +1123,30 @@ def _keep_unchanged(config: Config, v: str, before: Mapping[str, list[Any]] | No
         else:
             changed.append(rel)
     names = {rel[len(prefix) :] for rel in changed if rel.startswith(prefix)}
-    if mark not in before or any("/" not in name or name in nested for name in names):
+    if mark not in before or any(
+        "/" not in name for name in names
+    ):  # a top-level file (a macro set) reaches every object
         return
+    reach = _including(names, includes)
+    effort.count("extract-reach", len(reach) <= len(names))
     os.utime(root / mark, ns=(before[mark][1], before[mark][1]))
-    build.drop_including(config, v, names)
+    build.drop_including(config, v, reach)
+
+
+def _including(names: set[str], includes: Mapping[str, set[str]]) -> set[str]:
+    """`names` and every file of the extraction that includes one of them, directly or through others: what an object
+    that includes any of them was built from. An include is matched by its path or its tail (`-I` spells it shorter),
+    and each name also stands for its tails, which is how the compiler output of a C unit may spell it."""
+    reach = set(names)
+    todo = list(names)
+    while todo:
+        name = todo.pop()
+        tails = {name, *(name.split("/", i)[-1] for i in range(1, name.count("/") + 1))}
+        for file, spelled in includes.items():
+            if file not in reach and spelled & tails:
+                reach.add(file)
+                todo.append(file)
+    return reach | {tail for name in reach for tail in (name.split("/", i)[-1] for i in range(1, name.count("/") + 1))}
 
 
 @cache

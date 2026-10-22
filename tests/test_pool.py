@@ -1991,3 +1991,21 @@ def test_under_contention_a_lane_frees_its_slots_to_the_priority_job(tmp_path, m
     finally:
         pool._release()
         ship.close()
+
+
+def test_a_small_command_takes_the_express_slot_when_every_slot_is_held(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("UNBAKE_CORES", raising=False)
+    monkeypatch.setattr(pool, "_slots", [])
+    monkeypatch.setattr(pool, "_cmd", [])
+    monkeypatch.setattr(pool, "_dir", [])
+    base = pool._pool(tmp_path)
+    held = [pool._try(base / f"slot-{i}.lock") for i in range(4)]
+    assert all(held)
+    try:
+        pool._acquire(4, cap=2)
+        assert len(pool._slots) == 1 and pool._slots[0].name.endswith(pool._EXPRESS)
+    finally:
+        pool._release()
+        for slot in held:
+            pool._give(slot)
