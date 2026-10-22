@@ -122,3 +122,16 @@ def test_the_tree_lock_is_refused_while_holding_the_journal_lock(tmp_path: Path)
         writer.wait()
     finding = refused.value.findings[0]
     assert finding.key == "lock.order" and f"pid {os.getpid()}" in finding.reason
+
+
+def test_a_writer_named_with_spaces_does_not_crash_a_waiting_reader(tmp_path: Path) -> None:
+    (tmp_path / ".unbake").mkdir()
+    (tmp_path / ".unbake/tree.writer").write_text("land func_8021AF6C_de 1792681126 pid 60708")
+    said: list[str] = []
+    writer = _other(tmp_path, "x", 0.6)
+    try:
+        with treelock.hold(tmp_path, who="map", say=said.append):
+            pass
+    finally:
+        writer.wait()
+    assert said  # it waited and said so, not ValueError

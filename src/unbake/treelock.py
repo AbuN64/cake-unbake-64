@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -96,13 +97,14 @@ def hold(
         else:
 
             def note() -> str:
-                text = os.pread(intent, 200, 0).decode(errors="replace").strip().split()
-                return (
-                    f"waiting for {text[0]} since {time.strftime('%T', time.localtime(int(text[1])))}"
-                    + (f" (pid {text[3]})" if len(text) > 3 else "")
-                    if len(text) > 1
-                    else ("waiting for the tree lock")
+                # "<who> <time> pid <pid>": `who` may hold spaces ("land func_80123456_de")
+                found = re.fullmatch(
+                    r"(.+?) (\d+)(?: pid (\d+))?", os.pread(intent, 200, 0).decode(errors="replace").strip()
                 )
+                if not found:
+                    return "waiting for the tree lock"
+                since = time.strftime("%T", time.localtime(int(found[2])))
+                return f"waiting for {found[1]} since {since}" + (f" (pid {found[3]})" if found[3] else "")
 
             if not wait and not _free(intent, tree):
                 line = f"{note().removeprefix('waiting for ')}: read in flight, not waiting"
