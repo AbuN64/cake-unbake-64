@@ -50,7 +50,9 @@ def test_search_runs_the_permuter_and_returns_the_best_body(tmp_path: Path) -> N
     assert "perm_add_mask = 0" in (work / "permute/settings.toml").read_text()
 
 
-def test_search_without_a_permuter_names_how_to_pass_one(tmp_path: Path) -> None:
+def test_search_without_a_permuter_names_how_to_pass_one(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(permute, "_found", lambda: "")
+    monkeypatch.delenv("UNBAKE_PERMUTER", raising=False)
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(workers=2))
     with pytest.raises(Refusal) as refused:
         permute.search(config, "g", {}, {"permute": 5}, tmp_path)  # type: ignore[arg-type]
@@ -156,3 +158,13 @@ def test_a_typedef_attribute_the_parser_cannot_read_leaves_the_text_and_the_scri
     )
     assert done.returncode == 0
     assert "} __attribute__((aligned(4))) SoundEnvelope;" in (tmp_path / "out.c").read_text()
+
+
+def test_a_bare_permute_finds_the_clone_in_the_home_src(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "src/decomp-permuter").mkdir(parents=True)
+    (tmp_path / "src/decomp-permuter/permuter.py").write_text("")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert permute._found().endswith("src/decomp-permuter/permuter.py")
+    monkeypatch.setenv("HOME", str(tmp_path / "none"))
+    monkeypatch.setenv("PATH", "")
+    assert permute._found() == ""

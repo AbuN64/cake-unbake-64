@@ -93,6 +93,13 @@ def _script(root: Path, script: str, defines: Sequence[str] = (), named: Sequenc
     return "#!/bin/sh\n" + head + script.removeprefix("#!/bin/sh\n") + "\n"
 
 
+def _found() -> str:
+    """The permuter a bare `--permute` runs when none is named: the clone in ~/src/decomp-permuter (the rig's), else a
+    `permuter` on PATH. No lane writes a flag or an environment variable for it."""
+    clone = Path.home() / "src/decomp-permuter/permuter.py"
+    return str(clone) if clone.is_file() else shutil.which("permuter") or ""
+
+
 def _python(permuter: str) -> list[str]:
     """The interpreter that runs the permuter script: UNBAKE_PERMUTER_PYTHON, else the python of the venv beside the
     user's home named venv-permuter or beside the script, else none (the script's own shebang). The shebang's python
@@ -214,7 +221,7 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     """Runs the permuter for `params["permute"]` seconds on the function's context (`api.build_context`) and returns
     {base_score, best_score, function, diff, outputs}: scores are the permuter's (lower is closer to the target), the
     function is the best output's body (macros expanded, as the compiler read it) and diff its change from the base."""
-    permuter = params.get("permuter") or os.environ.get("UNBAKE_PERMUTER", "")
+    permuter = params.get("permuter") or os.environ.get("UNBAKE_PERMUTER", "") or _found()
     if not permuter or not Path(permuter).is_file():
         raise Refusal(
             Finding("native.missing_tool", "no permuter: pass --permuter PATH or set UNBAKE_PERMUTER", path=permuter)
