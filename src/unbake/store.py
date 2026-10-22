@@ -242,9 +242,7 @@ def _blocked(fd: int, flags: int, path: Path, wait_s: float | None) -> bool:
                 return False
             if first or now - last >= BEAT:
                 first, last = False, now
-                effort.say(
-                    f"waiting for lock {path.name} held by {_holders(path) or 'an unknown process'} ({now - began:.0f}s)"
-                )
+                effort.say(f"waiting for lock {path.name} held by {_holders(path) or 'unknown'} ({now - began:.0f}s)")
             _PAUSE(_POLL_S)
 
 
