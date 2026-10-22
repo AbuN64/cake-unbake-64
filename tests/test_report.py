@@ -718,3 +718,42 @@ def _schema(name):
     from importlib import resources
 
     return json.loads((resources.files("unbake.resources") / "schemas" / f"{name}.schema.json").read_text())
+
+
+_TAIL = (
+    "    /* 95884 80294C84 03E00008 */  jr         $ra\n    /* 95888 80294C88 27BD0018 */   addiu     $sp, $sp, 0x18\n"
+)
+_WHOLE = (
+    "    /* 1 80000000 27BDFFE8 */  addiu $sp, $sp, -0x18\n"
+    "    /* 2 80000004 03E00008 */  jr $ra\n"
+    "    /* 3 80000008 27BD0018 */   addiu $sp, $sp, 0x18\n"
+)
+
+
+def test_fragment_is_a_head_without_a_return_or_a_tail_that_pops_an_unpushed_frame():
+    assert report._fragment(_TAIL) and not report._fragment(_WHOLE)
+    assert report._fragment("    /* 1 80000000 27BDFFE8 */  addiu $sp, $sp, -0x18\n")
+    assert not report._fragment("")
+
+
+def test_states_are_exact_fuzzy_or_none_and_a_fragment_follows_its_parent(project, monkeypatch):
+    tree = _tree([_module("src/a.c", ["ex"], ["fz", "nn", "frag", "hw"], ["fz"])], "states")
+    facts = _facts(
+        ex=(0x1000, 16, "func"),
+        fz=(0x1010, 16, "func"),
+        nn=(0x1020, 8, "func"),
+        frag=(0x1028, 4, "func"),
+        hw=(0x1030, 8, "func"),
+        tbl=(0x2000, 30, "data"),
+    )
+    rows = _credits(tree, facts)
+    monkeypatch.setattr(report, "_rows", lambda config, tree, exact, scored: rows)
+    texts = {"frag": _TAIL, "hw": "/* Handwritten function */\n" + _WHOLE, "nn": _WHOLE, "fz": _WHOLE}
+    monkeypatch.setattr(report, "_asm_text", lambda config, row: texts.get(row.name, ""))
+    got = report._states(_config(project), tree)
+    assert got["exact_from"] == "assumed"
+    a = got["versions"]["a"]
+    assert a["functions"] == {"exact": 2, "fuzzy": 1, "none": 1, "handwritten": 1}
+    assert a["code"]["none"] == 8 + 4 and a["code"]["exact"] == 16 + 8 and a["code"]["fuzzy"] == 16
+    assert a["fragments"] == 1 and [f[0] for f in a["none_fns"]] == ["nn"]
+    assert a["data"] == {"exact": 0, "none": 30}

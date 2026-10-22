@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping
@@ -244,23 +245,23 @@ def _extents(config: Any, tree: Any) -> dict[str, dict[str, int]]:
     return out
 
 
+def _rows(
+    config: Any, tree: Any, exact: frozenset[str], scored: Mapping[str, Mapping[str, float]]
+) -> tuple[Credit, ...]:
+    held = facts(config)
+    rows = build_credits(
+        list(config.project.version), tree, held, exact, scored, _broken(config, tree), _extents(config, tree)
+    )
+    spans = {v: blobs.merge(platform.ranges(config, v)) for v in config.project.version}
+    return off_platform(rows, spans)
+
+
 def credits(config: Any, tree: Any) -> tuple[Credit, ...]:
     """Every (name, version) credit row, computed once per tree digest: the README, the overview and the map all read
     these same rows."""
 
     def build() -> tuple[Credit, ...]:
-        held = facts(config)
-        rows = build_credits(
-            list(config.project.version),
-            tree,
-            held,
-            exact_versions(config, tree),
-            rescore.rows(config, tree, held),
-            _broken(config, tree),
-            _extents(config, tree),
-        )
-        spans = {v: blobs.merge(platform.ranges(config, v)) for v in config.project.version}
-        return off_platform(rows, spans)
+        return _rows(config, tree, exact_versions(config, tree), rescore.rows(config, tree, facts(config)))
 
     return effort.memo(("credits", tree.digest, platform.sha(config)), build)
 
@@ -306,6 +307,96 @@ def scores(config: Any, tree: Any, only: Collection[str] | None = None) -> dict[
     """name -> version -> cached fuzzy score of every NON_MATCHING function (what `unbake score` and the API read);
     of the names in `only` alone when given."""
     return rescore.rows(config, tree, facts(config), only)
+
+
+_INSN = re.compile(r"^\s*/\*\s*[0-9A-F]+\s+[0-9A-F]{8}\s+[0-9A-F]{8}\s*\*/\s*(.+)$")
+_POP = re.compile(r"^(lw|ld)\s+\$ra,|^addiu\s+\$sp,\s*\$sp,\s*(0x)?[0-9]")
+_PUSH = re.compile(r"^addiu\s+\$sp,\s*\$sp,\s*-")
+
+
+def _fragment(text: str) -> bool:
+    """Whether extracted assembly is a piece of a function a symbol cut in two, not a function: a head has no `jr $ra`;
+    a tail pops a frame (lw/ld $ra or a positive addiu $sp) it never pushed."""
+    insns = [m.group(1).strip() for line in text.splitlines() if (m := _INSN.match(line))]
+    if not insns:
+        return False
+    if not any(re.match(r"jr\s+\$ra\b", i) for i in insns):
+        return True
+    return any(_POP.match(i) for i in insns) and not any(_PUSH.match(i) for i in insns)
+
+
+def _asm_text(config: Any, row: Credit) -> str:
+    """The extracted assembly of a function row (empty when absent); the path is built from the row's own ROM offset,
+    so no symbol table is loaded per row."""
+    from unbake import symbols
+
+    segment = symbols.segment_at(config, row.version, row.member.rom)
+    path = Path(config.project.root) / f"asm/{row.version}/nonmatchings/{segment}/{row.name}.s"
+    try:
+        return path.read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def _states(config: Any, tree: Any, exact: Collection[str] | None = None) -> Json:
+    """Per version exactly three states, read from the source alone (no build, no compile, no score): `exact` (C the
+    ROM build uses, plus a stand-in whose extracted assembly is marked handwritten: it is the original), `fuzzy` (not
+    exact, with a body behind NON_MATCHING that the tree capture found by preprocessing for the version) and `none`.
+    Functions and code bytes count in all three; data bytes are exact or none. `exact`: the versions that link exact
+    (default every version: the integration train checks each push); `exact_from` says which."""
+    from unbake import symbols
+
+    versions = list(config.project.version)
+    linked = frozenset(versions if exact is None else exact)
+    out: Json = {}
+    last: dict[str, str] = {}  # version -> state of the function row before: a fragment's bytes follow it
+    for row in _rows(config, tree, linked, {}):
+        held = out.setdefault(
+            row.version,
+            {
+                "functions": dict.fromkeys(("exact", "fuzzy", "none", "handwritten"), 0),
+                "code": dict.fromkeys(("exact", "fuzzy", "none", "handwritten"), 0),
+                "data": dict.fromkeys(("exact", "none"), 0),
+                "none_fns": [],
+                "fragments": 0,
+            },
+        )
+        if row.member.kind == "function":
+            if row.code <= 0:
+                continue
+            text = _asm_text(config, row) if not row.exact and row.member.state in {"stand-in", "fuzzy"} else ""
+            if text and row.version in last and _fragment(text):
+                held["code"][last[row.version]] += row.code  # not a function: its parent's state
+                held["fragments"] += 1
+                continue
+            hand = symbols.HANDWRITTEN in text
+            state = "exact" if row.exact or hand else "fuzzy" if row.member.state == "fuzzy" else "none"
+            if state == "none":
+                held["none_fns"].append([row.name, row.code, row.member.group])
+            for kind, size in (("functions", 1), ("code", row.code)):
+                held[kind][state] += size
+                held[kind]["handwritten"] += size if hand else 0
+            last[row.version] = state
+        elif row.data > 0:
+            held["data"]["exact" if row.exact else "none"] += row.data
+    for row in out.values():
+        total = sum(row["code"][k] for k in ("exact", "fuzzy", "none")) + sum(row["data"].values())
+        done = row["code"]["exact"] + row["data"]["exact"]
+        row["exact_percent"] = _pct(done, total)
+        row["fuzzy_percent"] = _pct(done + row["code"]["fuzzy"], total)
+        row["bytes_total"] = total
+        row["none_fns"].sort(key=lambda f: (f[1], f[0]))
+    return {"versions": out, "exact_from": "assumed" if exact is None else "given", "digest": tree.digest}
+
+
+def _states_run(config: Any, params: Json) -> Json:
+    """Write the three-state counts to .unbake/states.json and return them under `states`; nothing tracked changes and
+    nothing is built, compiled or scored."""
+    with effort.stage("report.states"):
+        document = _states(config, _capture(config), params.get("exact") or None)
+        path = Path(config.project.root) / ".unbake/states.json"
+        store.write(path, (json.dumps(document, sort_keys=True) + "\n").encode())
+        return {"states": document["versions"], "exact_from": document["exact_from"], "digest": document["digest"]}
 
 
 def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:
@@ -666,6 +757,8 @@ def files(config: Any, tree: Any, settle: bool = False) -> dict[str, bytes]:
 
 
 def run(config: Any, params: Json) -> Json:
+    if params.get("states"):
+        return _states_run(config, params)
     with effort.stage("report.run"):
         pending = sum(p.is_file() for p in (Path(config.project.root) / ".unbake/inbox").glob("*.json"))
         from unbake import progress

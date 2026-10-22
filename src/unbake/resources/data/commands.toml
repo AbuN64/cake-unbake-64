@@ -150,6 +150,8 @@ help = "Progress per version, kind and segment; write progress.json schema 2."
 handler = "report.run"
 params = [
   { name = "next", kind = "flag", type = "str", required = false, multiple = false, help = "list unmatched functions by increasing size" },
+  { name = "states", kind = "flag", type = "str", required = false, multiple = false, help = "only the three states (exact, fuzzy, none) of functions, code and data bytes per version, from the source alone (no build, compile or score); writes .unbake/states.json and nothing tracked" },
+  { name = "exact", kind = "option", type = "str", required = false, multiple = true, help = "with --states: a version whose last link matched the ROM (repeat); with none every version is taken as linking exact" },
 ]
 
 [command.blobs]

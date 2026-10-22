@@ -399,15 +399,34 @@
     ],
     "additionalProperties": false
    }
+  },
+  "states": {
+   "type": "object"
+  },
+  "exact_from": {
+   "enum": [
+    "assumed",
+    "given"
+   ]
   }
  },
- "required": [
-  "digest",
-  "versions",
-  "segments",
-  "kinds",
-  "debt",
-  "inbox"
- ],
- "additionalProperties": false
+ "additionalProperties": false,
+ "anyOf": [
+  {
+   "required": [
+    "digest",
+    "versions",
+    "segments",
+    "kinds",
+    "debt",
+    "inbox"
+   ]
+  },
+  {
+   "required": [
+    "states",
+    "digest"
+   ]
+  }
+ ]
 }
