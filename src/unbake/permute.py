@@ -170,6 +170,25 @@ def _place(config: Config, proc: Path = Path("/proc")) -> Path:
         time.sleep(1.0)
 
 
+CPU_S = 300.0  # CPU seconds one permuter run may use (UNBAKE_PERMUTE_CPU): the host-wide cap on any command
+
+
+def _budget(seconds: float, jobs: int) -> tuple[float, int, str]:
+    """(wall seconds, jobs, note) of a run kept inside CPU_S: the jobs shrink first so the wall time asked for stands,
+    then the wall time; the note says what was cut and how to extend it."""
+    cap = float(os.environ.get("UNBAKE_PERMUTE_CPU") or CPU_S)
+    if seconds * jobs <= cap:
+        return seconds, jobs, ""
+    fewer = max(1, int(cap // max(seconds, 1.0)))
+    wall = min(seconds, cap / fewer)
+    return (
+        wall,
+        fewer,
+        f"asked {seconds:.0f} s x {jobs} jobs = {seconds * jobs:.0f} CPU s; ran {wall:.0f} s x {fewer} jobs "
+        f"(cap {cap:.0f} CPU s). Extend with UNBAKE_PERMUTE_CPU=<cpu seconds> in the environment",
+    )
+
+
 def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Json:
     """Runs the permuter for `params["permute"]` seconds on the function's context (`api.build_context`) and returns
     {base_score, best_score, function, diff, outputs}: scores are the permuter's (lower is closer to the target), the
@@ -188,11 +207,17 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     weights = "".join(f"perm_{p} = 0\n" for p in _JUNK)
     settings = f'func_name = "{name}"\ncompiler_type = "gcc"\n[weight_overrides]\n{weights}'
     store.write(folder / "settings.toml", settings.encode())
-    assemble = [a.replace("{out}", str(folder / "target.o")) for a in ctx["assemble"]]
+    # the build includes a function's assembly from C inside `.set noat` / `.set noreorder` (INCLUDE_ASM): assembled
+    # alone, gas would reorder it and add the nops the ROM does not have, so the target is assembled the same way
+    wrapper = work / "target.s"
+    store.write(wrapper, f'.set noat\n.set noreorder\n.include "{root / ctx["asm_path"]}"\n'.encode())
+    named = str(root / ctx["asm_path"])
+    assemble = [str(wrapper) if a == named else a.replace("{out}", str(folder / "target.o")) for a in ctx["assemble"]]
     done = process.run("permute.target", assemble, root, tmp=work / "tmp")
     if done.exit != 0:
         raise Refusal(Finding("native.exit", f"assembling the target failed: {done.stderr.decode()[-300:]}", unit=name))
-    jobs = str(params.get("jobs") or min(8, config.host.workers))
+    seconds, count, note = _budget(float(params["permute"]), int(params.get("jobs") or min(8, config.host.workers)))
+    jobs = str(count)
     argv = [
         "/usr/bin/nice",
         "-n",
@@ -207,7 +232,7 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     ]
     mark = _place(config)
     try:
-        ran = process.run("permute.run", argv, folder, tmp=work / "tmp", timeout=float(params["permute"]))
+        ran = process.run("permute.run", argv, folder, tmp=work / "tmp", timeout=seconds)
     finally:
         mark.unlink(missing_ok=True)
     said = re.search(r"base score = (\d+)", ran.stdout.decode(errors="replace"))
@@ -222,6 +247,8 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
         if (d / "score.txt").is_file() and (d / "source.c").is_file()
     )
     result: dict[str, Any] = {"base_score": base, "best_score": None, "function": "", "diff": "", "outputs": len(rows)}
+    if note:
+        result["budget"] = note
     if rows and (base is None or rows[0][0] < base):
         score, best = rows[0]
         where = span(source := (best / "source.c").read_text(), name)

@@ -38,7 +38,7 @@ def test_search_runs_the_permuter_and_returns_the_best_body(tmp_path: Path) -> N
     )
     fake.chmod(0o755)
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(workers=2))
-    ctx = {"source": SOURCE, "script": "true", "assemble": ["/usr/bin/touch", "{out}"]}
+    ctx = {"source": SOURCE, "script": "true", "assemble": ["/usr/bin/touch", "{out}"], "asm_path": "nonmatchings/g.s"}
     work = tmp_path / "work"
     found = permute.search(config, "g", ctx, {"permute": 30, "permuter": str(fake)}, work)  # type: ignore[arg-type]
     assert (found["base_score"], found["best_score"], found["outputs"]) == (20, 5, 2)
@@ -116,3 +116,14 @@ def test_shield_hides_what_the_permuters_parser_misreads_and_the_script_puts_it_
     assert "'-DUNBAKE_ATTR_0=__attribute__((aligned(4)))' " in script and script.rindex("-DUNBAKE") < script.rindex(
         '"$1"'
     )
+
+
+def test_a_run_is_kept_under_the_cpu_cap_and_says_how_to_extend(monkeypatch) -> None:
+    monkeypatch.delenv("UNBAKE_PERMUTE_CPU", raising=False)
+    assert permute._budget(30, 8) == (30, 8, "") and permute._budget(60, 4)[2] == ""  # 240 CPU s
+    wall, jobs, note = permute._budget(1200, 8)  # the 20 min x 8 jobs lane runs
+    assert wall * jobs <= 300 and jobs == 1 and "UNBAKE_PERMUTE_CPU" in note
+    wall, jobs, note = permute._budget(100, 8)
+    assert (wall, jobs) == (100, 3) and "100 s x 3 jobs" in note
+    monkeypatch.setenv("UNBAKE_PERMUTE_CPU", "9000")
+    assert permute._budget(1200, 6) == (1200, 6, "")
