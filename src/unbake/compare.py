@@ -156,10 +156,15 @@ def _source(file: Path) -> str:
     return file.read_text(encoding="utf-8")
 
 
-def _extras(config: Config, specs: Sequence[Path]) -> dict[str, bytes]:
-    """The change-set files `PATH=FILE`: the project path each replaces and its new text."""
+def _extras(config: Config, specs: Sequence[Path], file: Path | None = None) -> dict[str, bytes]:
+    """The change-set files `PATH=FILE`: the project path each replaces and its new text. A candidate `X.c` brings the
+    files under `X.overlay/` (each at its project path) as well: the headers and rows it was proved with."""
     root, out = config.project.root.resolve(), {}
-    for spec in specs:
+    beside = file.with_suffix(".overlay") if file else None
+    companions = (
+        [Path(f"{p.relative_to(beside)}={p}") for p in sorted(beside.rglob("*")) if p.is_file()] if beside else []
+    )
+    for spec in [*specs, *companions]:
         target, equals, source = str(spec).partition("=")
         path = (root / target).resolve()
         if configuration.is_source(target) and not path.is_file():
@@ -291,7 +296,7 @@ def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
 def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, enter: bool) -> dict[str, Any]:
     """Measure one candidate in every holding version; with `enter`, put it in the inbox when it is exact (or a fuzzy
     gain) and land the inbox. Without it nothing is submitted, journalled or written."""
-    extras = _extras(config, files[1:])
+    extras = _extras(config, files[1:], files[0])
     resolved = _resolve(config, files[0], params.get("function"), None, extras)
     name, source, held = resolved.name, resolved.source, resolved.held
     proofs = _measure(config, resolved, None, extras)
@@ -378,7 +383,7 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
     resolved: dict[int, Any] = {}
     for n, group in enumerate(groups):
         try:
-            given = _extras(config, group[1:])
+            given = _extras(config, group[1:], group[0])
             resolved[n] = (_resolve(config, group[0], None, None, given), given)
         except Refusal as refusal:
             resolved[n] = refusal
@@ -466,7 +471,9 @@ def score_command(config: Config, params: Json) -> Json:
 def _permute(config: Config, params: Json) -> Json:
     """score --permute SECONDS: the permuter on the candidate's function in one version, its best body spliced into a
     copy of the candidate file (--out, default FILE.permuted.c) that `recipe try` takes; scores are the permuter's."""
-    extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
+    extras = _extras(
+        config, [Path(s) for s in params.get("extras") or ()], Path(params["file"]) if params.get("file") else None
+    )
     file = Path(params["file"])
     resolved = _resolve(config, file, params.get("function"), params.get("version"), extras)
     held, preferred = resolved.held, config.project.names_from
@@ -682,7 +689,9 @@ def _verdict(
 
 
 def _score_one(config: Config, params: Json) -> Json:
-    extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
+    extras = _extras(
+        config, [Path(s) for s in params.get("extras") or ()], Path(params["file"]) if params.get("file") else None
+    )
     resolved = _resolve(config, Path(params["file"]), params.get("function"), params.get("version"), extras)
     name, held = resolved.name, resolved.held
     overrides = _overrides(params)
@@ -847,7 +856,9 @@ def probe_command(config: Config, params: Json) -> Json:
     diff that function against the ROM: the measure score makes, without the tree capture, the source rules, the
     other versions or the landing checks. Writes nothing but --dumps DIR."""
     with effort.stage("compare.probe"):
-        extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
+        extras = _extras(
+            config, [Path(s) for s in params.get("extras") or ()], Path(params["file"]) if params.get("file") else None
+        )
         file = Path(params["file"])
         source = _source(file)
         version = params.get("version") or config.project.names_from

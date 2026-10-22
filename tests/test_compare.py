@@ -667,3 +667,12 @@ def test_a_whole_file_candidate_changing_two_functions_is_refused_not_guessed() 
             owners, ["us"], FILE.replace("return 1", "return 4").replace("return 2", "return 3"), None, read
         )
     assert "a, b" in refused.value.findings[0].reason and "--function" in refused.value.findings[0].action
+
+
+def test_a_candidate_brings_the_files_under_its_overlay_directory_at_their_project_paths(world):
+    cand = world.tmp / "cand.c"
+    cand.write_text(CANDIDATE)
+    (world.tmp / "cand.overlay/include").mkdir(parents=True)
+    (world.tmp / "cand.overlay/include/new.h").write_text("typedef int T;\n")
+    assert compare._extras(world.cfg, [], cand) == {"include/new.h": b"typedef int T;\n"}
+    assert compare._extras(world.cfg, [], world.tmp / "other.c") == {}

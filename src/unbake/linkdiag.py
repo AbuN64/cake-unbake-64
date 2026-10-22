@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from unbake import process, symbols, tree
 from unbake.contracts import Config
@@ -70,7 +71,7 @@ def _find(config: Config, version: str) -> tuple[str, int, int] | None:
     scratch.mkdir(parents=True, exist_ok=True)
     out = scratch / f"linkdiag-{version}.map"
     elf = scratch / f"linkdiag-{version}.elf"
-    argv = [process.tool(config, "mips_ld"), "-T", "link.ld", f"-Map={out}", "-o", str(elf)]
+    argv: list[str | Path] = [process.tool(config, "mips_ld"), "-T", "link.ld", f"-Map={out}", "-o", str(elf)]
     process.run("linkdiag", argv, root / "build" / version, tmp=scratch)
     text = out.read_text(errors="replace") if out.is_file() else ""
     out.unlink(missing_ok=True)
