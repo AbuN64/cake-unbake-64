@@ -777,7 +777,9 @@ def prepare(
         name = request["function"]
         source = Path(request["file"]).read_text(encoding="utf-8")
         captured = tree.capture(config)
-        found = owners(captured, name)
+        # the overlay's own rows, headers and sources decide who owns `name` (a symbol it renames or brings); the plan
+        # stays tied to the tree as it is on disk
+        found = owners(tree.capture(config, extras) if extras else captured, name)
         reads = Reads(config, {})
         old: dict[str, bytes | None] = {p: read_file(reads, p) for p in (*(o.path for o in found), *extras)}
         writes: dict[str, bytes | None] = {**extras}
