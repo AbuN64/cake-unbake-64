@@ -737,6 +737,30 @@ def _own_pool(config: Config, name: str, stand_in: str, versions: Sequence[str])
     return found
 
 
+def _table_rows(config: Config, name: str, versions: Sequence[str]) -> dict[str, tuple[int, int]]:
+    """(vram, rom) per version of the one `jtbl_` data row whose bytes are exactly the jump table of `name`, for a table
+    no INCLUDE_RODATA line stands in for (an overlay function's table lives in main rodata: its stand-in is a word
+    array or a slice of a data blob that sync writes for the row, not a line in the function's file); {} when any
+    version has no such single row or already places `literals_<name>`."""
+    found = {}
+    for v in versions:
+        table = api.symbols(config, v)
+        if f"{tree.LITERALS}{name}" in table:
+            return {}
+        hits = [
+            (f[0], f[1])
+            for n, f in table.items()
+            if n.startswith("jtbl_")
+            and f[3] != "func"
+            and f[1] is not None
+            and repo.jump_table_of(config, v, f[1]) == name
+        ]
+        if len(hits) != 1:
+            return {}
+        found[v] = hits[0]
+    return found
+
+
 def _placed_rows(text: str, name: str, vram: int, rom: int) -> str:
     """symbol_addrs.txt with `literals_<name>` at the table's address: it takes the place of a data row (a jtbl_) that
     names the same bytes, else it is added at the end."""
@@ -766,6 +790,13 @@ def _pools(
                 old[path] = read_file(reads, path)
             current = rows.get(path) or old[path] or b""
             rows[path] = _placed_rows(current.decode(), name, vram, rom).encode()
+    if not rows and re.search(
+        r"\bswitch\b", text
+    ):  # the table's stand-in is the data row itself: the row becomes the compiled table's place
+        for v, (vram, rom) in _table_rows(config, name, owner.versions).items():
+            path = f"versions/{v}/symbol_addrs.txt"
+            old[path] = read_file(reads, path)
+            rows[path] = _placed_rows((old[path] or b"").decode(), name, vram, rom).encode()
     return text, rows
 
 

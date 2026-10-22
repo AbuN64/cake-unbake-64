@@ -605,6 +605,34 @@ def test_landing_an_exact_body_drops_the_rodata_stand_in_holding_its_own_table_a
     assert publish._pools(config, "f", owner, text, publish.Reads(config, {}), {}) == (text, {})
 
 
+def test_landing_an_exact_overlay_switch_places_literals_over_its_jtbl_data_row_without_an_include_rodata(
+    monkeypatch, tmp_path
+):
+    # JTBL-OVL-1 func_804303F8_de: an overlay function's table is main rodata held by a jtbl_ data row (a word array or
+    # a blob slice sync writes), with no INCLUDE_RODATA line in the function's file to find it by
+    for v in ("a", "b"):
+        (tmp_path / "versions" / v).mkdir(parents=True)
+        (tmp_path / "versions" / v / "symbol_addrs.txt").write_text(
+            "f = 0x80400000; // type:func rom:0x1000\njtbl_800DDC30 = 0x800DDC30; // rom:0xDE830\n"
+        )
+    facts = {"f": (0x80400000, 0x1000, None, "func"), "jtbl_800DDC30": (0x800DDC30, 0xDE830, None, "data")}
+    monkeypatch.setattr(publish.api, "symbols", lambda config, v: facts)
+    monkeypatch.setattr(publish.repo, "jump_table_of", lambda config, v, rom: {0xDE830: "f"}.get(rom))
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    owner = publish.Owner("src/m.c", "main", ("a", "b"))
+    text = "int f(int x) {\n    switch (x) {\n    }\n}\n"
+    old: dict = {}
+    out, written = publish._pools(config, "f", owner, text, publish.Reads(config, {}), old)
+    assert out == text
+    for v in ("a", "b"):
+        assert written[f"versions/{v}/symbol_addrs.txt"].decode() == (
+            "f = 0x80400000; // type:func rom:0x1000\nliterals_f = 0x800DDC30; // rom:0xDE830\n"
+        )
+    assert publish._pools(config, "f", owner, "int f(void) {}\n", publish.Reads(config, {}), {})[1] == {}  # no switch
+    monkeypatch.setattr(publish.repo, "jump_table_of", lambda config, v, rom: "g")
+    assert publish._pools(config, "f", owner, text, publish.Reads(config, {}), {}) == (text, {})  # g's table
+
+
 def test_a_body_only_on_the_non_matching_side_is_inactive_in_the_build():
     # THINK-802946A4: a lane scored the unit file with its body left in #ifdef NON_MATCHING: exact, and nothing shipped
     fuzzy = '#ifdef NON_MATCHING\nvoid f(void) {}\n#else\nINCLUDE_ASM("main", f);\n#endif\n'
