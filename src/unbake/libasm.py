@@ -69,22 +69,11 @@ def _target(ins: rabbitizer.Instruction, at: int) -> int | None:
     return int(ins.getInstrIndexAsVram()) if ins.getOpcodeName() in ("j", "jal") else None
 
 
-def render(
-    name: str, words: Sequence[int], vram: int, symbols: Mapping[int, str], functions: Mapping[int, str] = {}
-) -> str | None:
-    """Readable assembly of the words, one instruction per line, or None when a target outside the routine has no
-    symbol. Internal targets get labels, external ones read as their symbol, or as `function+0xOFF` of the nearest
-    of `functions` below it when it lands inside another routine (hand code shares tails between entry points);
-    a `lui` and the low-half instruction that completes a symbol's address read `%hi(symbol)` and `%lo(symbol)`,
-    also through an index add on the same base (`addu $at, $at, $t0`, a table access)."""
-    code = [rabbitizer.Instruction(w, vram + 4 * i) for i, w in enumerate(words)]
-    end = vram + 4 * len(words)
-    targets = {i: t for i, ins in enumerate(code) if (t := _target(ins, vram + 4 * i)) is not None}
-    outside = {t: symbols.get(t) or _inside(functions, t) for t in targets.values() if not vram <= t < end}
-    if not all(outside.values()):
-        return None
-    labels = {(t - vram) // 4 for t in targets.values() if vram <= t < end}
-    override: dict[int, str] = {}
+def _pairs(words: Sequence[int], symbols: Mapping[int, str] | None) -> dict[int, tuple[int, bool]]:
+    """The `lui` and the low-half instruction that completes the address of a symbol: instruction index -> (address,
+    whether it is the `lui`), also through an index add on the same base (a table access). With no symbols every
+    address counts."""
+    found: dict[int, tuple[int, bool]] = {}
     for i, word in enumerate(words):
         if word >> 26 != 0x0F or (word >> 16 & 31) == 0:
             continue
@@ -93,23 +82,69 @@ def render(
             low = words[j]
             if low >> 26 in _LOW_USERS and low >> 21 & 31 == register:
                 address = ((word & 0xFFFF) << 16) + _signed(low) & 0xFFFFFFFF
-                if address in symbols:
-                    override[i], override[j] = f"%hi({symbols[address]})", f"%lo({symbols[address]})"
+                if symbols is None or address in symbols:
+                    found[i], found[j] = (address, True), (address, False)
                 break
             if (_writes(words[j], register) and not _indexes(words[j], register)) or (words[j] >> 26 in (2, 3)):
                 break
+    return found
+
+
+def _shape(words: Sequence[int], vram: int) -> tuple[int, ...]:
+    """The words with every field that depends on where the routine and its neighbours sit masked: jump targets,
+    branch offsets leaving the routine, and the halves of a symbol address. Two versions' copies of one library routine
+    have the same shape though their addresses and symbol names differ."""
+    pairs = _pairs(words, None)
+    end = vram + 4 * len(words)
+    out = []
+    for i, word in enumerate(words):
+        ins = rabbitizer.Instruction(word, vram + 4 * i)
+        target = _target(ins, vram + 4 * i)
+        if i in pairs or (target is not None and not vram <= target < end):
+            word &= 0xFFFF0000 if ins.isBranch() or i in pairs else 0xFC000000
+        out.append(word)
+    return tuple(out)
+
+
+def render(
+    name: str,
+    words: Sequence[int],
+    vram: int,
+    symbols: Mapping[int, str],
+    functions: Mapping[int, str] = {},
+    label: str | None = None,
+) -> str | None:
+    """Readable assembly of the words, one instruction per line, or None when a target outside the routine has no
+    symbol. Internal targets get labels, external ones read as their symbol, or as `function+0xOFF` of the nearest
+    of `functions` below it when it lands inside another routine (hand code shares tails between entry points);
+    a `lui` and the low-half instruction that completes a symbol's address read `%hi(symbol)` and `%lo(symbol)`,
+    also through an index add on the same base (`addu $at, $at, $t0`, a table access). Local labels are named after
+    `label` (the routine's name unless given), so the versions of one routine named differently share them."""
+    label = label or name
+    code = [rabbitizer.Instruction(w, vram + 4 * i) for i, w in enumerate(words)]
+    end = vram + 4 * len(words)
+    targets = {i: t for i, ins in enumerate(code) if (t := _target(ins, vram + 4 * i)) is not None}
+    outside = {t: symbols.get(t) or _inside(functions, t) for t in targets.values() if not vram <= t < end}
+    if not all(outside.values()):
+        return None
+    labels = {(t - vram) // 4 for t in targets.values() if vram <= t < end}
+    override = {
+        i: text
+        for i, address in _pairs(words, symbols).items()
+        for text in (f"%hi({symbols[address[0]]})" if address[1] else f"%lo({symbols[address[0]]})",)
+    }
     # o32 assembles a doubleword move as two words and an odd double FP register as a pair: code the ROM holds
     # as 64-bit instructions (an exception handler saving the whole context) is assembled with 64-bit registers
     wide = [".set gp=64", ".set fp=64"] if any(_wide(w) for w in words) else []
     lines = [".set noreorder", ".set noat", *wide, ".section .text", f".globl {name}", f"{name}:"]
     for i, ins in enumerate(code):
         if i in labels:
-            lines.append(f".L{name}_{4 * i:03X}:")
+            lines.append(f".L{label}_{4 * i:03X}:")
         if i in override:
             text = ins.disassemble(immOverride=override[i])
         elif i in targets:
             t = targets[i]
-            text = ins.disassemble(immOverride=f".L{name}_{t - vram:03X}" if vram <= t < end else outside[t])
+            text = ins.disassemble(immOverride=f".L{label}_{t - vram:03X}" if vram <= t < end else outside[t])
         else:
             text = _operands(ins, words[i])
         lines.append("    " + " ".join(text.split()))
@@ -263,11 +298,32 @@ def homes(cfg: Config, held: Any) -> dict[str, Any]:
     return out
 
 
+def _alike(a: Sequence[int], b: Sequence[int]) -> bool:
+    """Whether two shapes read as one routine: the symbol files of the versions do not always cut a routine at the same
+    word, so a few words at either end may differ."""
+    from difflib import SequenceMatcher
+
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 16:
+        return False
+    match = SequenceMatcher(None, a, b, autojunk=False)
+    return match.real_quick_ratio() >= 0.9 and match.quick_ratio() >= 0.9 and match.ratio() >= 0.9
+
+
+def _stem(name: str, versions: Sequence[str]) -> str:
+    """The routine's file stem: its name without the version suffix the symbol files add (`func_80200400_eu_x`)."""
+    suffixes = sorted((("_" + v.replace("-", "_")) for v in versions), key=len, reverse=True)
+    return next((name[: -len(x)] for x in suffixes if name.endswith(x) and len(name) > len(x)), name)
+
+
 def plan(cfg: Config, held: Any) -> dict[str, bytes]:
-    """Extract foreign library routines as source, one function per file; existing source is never overwritten. A
+    """Extract foreign library routines as source, one routine per file; existing source is never overwritten. A
     routine is a library stand-in or has lost it (no file owns it); it is rendered when every version holding it is
-    foreign and renders, the lines the versions disagree on kept in version conditionals (`merge`); otherwise it keeps
-    (or gets back) its stand-in in a library file."""
+    foreign and renders. The copies of one routine that the versions name apart (`func_80200400_de`, `..._us`: the
+    symbol files add a version suffix where the address differs) have the same shape, so they share one file named
+    without the suffix, the lines the versions disagree on (their names, addresses, symbols) kept in version
+    conditionals (`merge`). A routine that cannot render keeps (or gets back) its stand-in in a library file."""
     if not getattr(cfg.project, "libraries", ()):
         return {}
     writes: dict[str, bytes] = {}
@@ -285,32 +341,65 @@ def plan(cfg: Config, held: Any) -> dict[str, bytes]:
 
     candidates = [(m, n) for m in held.modules if config.library(cfg.project, m.path) for n in _stand_ins(m)]
     candidates += [(m, n) for n, m in lost.items()]
-    done: set[str] = set()
+    versions = list(cfg.project.versions)
+    # name -> (module, version -> (words, vram, symbol names, functions), version -> shape)
+    routines: dict[str, tuple[Any, dict[str, tuple[Any, ...]], dict[str, tuple[int, ...]]]] = {}
     for module, name in candidates:
-        if name in done:
+        if name in routines:
             continue
-        done.add(name)
         toolchain = adapters.row(recipes.of(cfg, module.path).toolchain)
-        texts: dict[str, str] = {}
-        for version in (v for v in cfg.project.versions if name in held.symbols[v]):
+        facts: dict[str, tuple[Any, ...]] = {}
+        shapes: dict[str, tuple[int, ...]] = {}
+        for version in (v for v in versions if name in held.symbols[v]):
             found = _rom_words(cfg, held, roms, version, name) if free(version, name) else None
             if found is None or not foreign(found[0], found[1], toolchain):
                 break
             table = sorted(held.symbols[version].items(), reverse=True)
             names = {r[0]: n for n, r in table}
             functions = {r[0]: n for n, r in table if r[3] == "func"}
-            text = render(name, found[0], found[1], names, functions)
-            if text is None:
+            if render(name, found[0], found[1], names, functions) is None:
                 break
-            texts[version] = text
+            facts[version] = (found[0], found[1], names, functions)
+            shapes[version] = _shape(found[0], found[1])
         else:
-            if texts:
-                path = str(Path(module.path).with_name(name + ".s"))
-                raw = merge(texts).encode()
-                existing = cfg.project.root / path
-                if existing.exists() and existing.read_bytes() != raw:
-                    raise Refusal(Finding("library-asm.source", "would overwrite existing assembly source", path=path))
-                writes[path] = raw
+            if facts:
+                routines[name] = (module, facts, shapes)
+
+    def first(n: str) -> tuple[int, int, str]:
+        return min(versions.index(v) for v in routines[n][1]), min(r[1] for r in routines[n][1].values()), n
+
+    order = sorted(routines, key=first)
+    grouped: set[str] = set()
+    for name in order:
+        if name in grouped:
+            continue
+        grouped.add(name)
+        members = [name]
+        taken = set(routines[name][1])
+        own = set(routines[name][2].values())
+        for other in order:
+            if other in grouped or taken & set(routines[other][1]):
+                continue
+            if any(_alike(a, b) for a in own for b in routines[other][2].values()):
+                grouped.add(other)
+                members.append(other)
+                taken |= set(routines[other][1])
+        # a routine with a real name keeps it: the file is named after the first member that is not `func_<address>`
+        lead = next((m for m in members if not m.startswith("func_")), name)
+        stem = _stem(lead, versions) if len(members) > 1 else name
+        module = routines[name][0]
+        texts: dict[str, str] = {}
+        for member in members:
+            for version, (words, vram, names, functions) in routines[member][1].items():
+                text = render(member, words, vram, names, functions, stem)
+                assert text is not None
+                texts[version] = text
+        path = str(Path(module.path).with_name(stem + ".s"))
+        raw = merge({v: texts[v] for v in versions if v in texts}).encode()
+        existing = cfg.project.root / path
+        if existing.exists() and existing.read_bytes() != raw:
+            raise Refusal(Finding("library-asm.source", "would overwrite existing assembly source", path=path))
+        writes[path] = raw
     return writes
 
 

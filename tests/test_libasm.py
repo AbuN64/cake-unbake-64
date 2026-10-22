@@ -274,3 +274,54 @@ def test_filled_load_delay_slot_is_foreign_only_where_loads_interlock():
     assert not libasm.foreign(unrelated, 0x80001000, row)
     hilo = [0x00001012, 0x806500C7, 0, 0x00A50018, 0x03E00008, 0]  # mflo v0; lb a1; nop; mult a1,a1: HI/LO hazard
     assert not libasm.foreign(hilo, 0x80001000, row)
+
+
+def test_routines_the_versions_name_apart_share_one_source_named_without_the_suffix(tmp_path, monkeypatch):
+    words = {"a": (0x40026000, 0x0C000140, 0, 0x03E00008, 0), "b": (0x40026000, 0x0C000150, 0, 0x03E00008, 0)}
+    facts = {
+        "a": "f_a = 0x80000400; // type:func rom:0x1000 size:0x14\n"
+        "x_a = 0x80000500; // type:func rom:0x1100 size:0x4\n",
+        "b": "f_b = 0x80000400; // type:func rom:0x1000 size:0x14\n"
+        "x_b = 0x80000540; // type:func rom:0x1100 size:0x4\n",
+    }
+    cfg = fixture.config(
+        tmp_path,
+        sources={
+            "src/sdk/f.c": '#if defined(VERSION_A)\nINCLUDE_ASM("main", f_a);\n#endif\n'
+            '#if defined(VERSION_B)\nINCLUDE_ASM("main", f_b);\n#endif\n',
+            "src/game.c": 'INCLUDE_ASM("main", x_a);\nINCLUDE_ASM("main", x_b);\n',
+        },
+        symbols=facts,
+    )
+    cfg.project.libraries = ("src/sdk",)
+    for version in cfg.project.versions:
+        _patch(cfg, version, 0x1000, words[version])
+    monkeypatch.setattr(repo, "_generated", lambda config, held: {})
+    text = libasm.plan(cfg, tree.capture(cfg))["src/sdk/f.s"].decode()
+    assert ".if VERSION_B\n.globl f_b\nf_b:\n.else\n.globl f_a\nf_a:\n.endif\n" in text
+    assert "jal x_a" in text and "jal x_b" in text
+    assert [libasm.select(text, v, ["a", "b"]).count("jal") for v in "ab"] == [1, 1]
+    result = repo.sync(cfg, {})
+    held = tree.capture(cfg)
+    assert "src/sdk/f.s" in result["written"] and "INCLUDE_ASM" not in (cfg.project.root / "src/sdk/f.c").read_text()
+    assert held.owner("a", "f_a") == held.owner("b", "f_b") == "src/sdk/f.s"
+    assert repo.sync(cfg, {})["written"] == []
+
+
+def test_a_named_routine_gives_its_name_to_the_shared_source(tmp_path, monkeypatch):
+    words = (0x40026000, 0x03E00008, 0)
+    names = {"a": "func_80000400_a", "b": "Named"}
+    facts = {v: f"{n} = 0x80000400; // type:func rom:0x1000 size:0xC\n" for v, n in names.items()}
+    cfg = fixture.config(
+        tmp_path,
+        sources={
+            "src/sdk/f.c": '#if defined(VERSION_A)\nINCLUDE_ASM("main", func_80000400_a);\n#endif\n'
+            '#if defined(VERSION_B)\nINCLUDE_ASM("main", Named);\n#endif\n'
+        },
+        symbols=facts,
+    )
+    cfg.project.libraries = ("src/sdk",)
+    for version in cfg.project.versions:
+        _patch(cfg, version, 0x1000, words)
+    monkeypatch.setattr(repo, "_generated", lambda config, held: {})
+    assert list(libasm.plan(cfg, tree.capture(cfg))) == ["src/sdk/Named.s"]
