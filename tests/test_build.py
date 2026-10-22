@@ -676,8 +676,9 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
 
 
 def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
-    """splat writes every file again: an extraction with the same output leaves the stamp and every file at their
-    old dates (else every object of the version is made again); a changed file and the stamp take new dates."""
+    """splat writes every file again. Unchanged bytes keep their dates; a changed file takes a new date but the stamp
+    (every object's input) keeps its own, as each object naming the file follows it (asm.deps); an object that named a
+    file the extraction no longer makes is dated long ago; a change under the shared include folder moves the stamp."""
     import subprocess
     import sys
 
@@ -686,15 +687,25 @@ def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
     (tmp_path / "roms").mkdir(exist_ok=True)
     (tmp_path / "roms/baserom.us.z64").write_bytes(bytes(64))
     (tmp_path / "versions/us/splat.yaml").write_text("")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.c").write_text('INCLUDE_ASM("seg", g);\n')
     (tmp_path / "out.txt").write_text("call f\n")
+    (tmp_path / "names.txt").write_text("f g")
+    (tmp_path / "macro.txt").write_text("macro\n")
     splat = tmp_path / "splat.py"
     splat.write_text(
         "from pathlib import Path\n"
-        "for name in ('f', 'g'):\n"
-        "    path = Path('asm/us/nonmatchings/seg') / (name + '.s')\n"
-        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    path.write_text(Path('out.txt').read_text() + name + '\\n')\n"
+        "folder = Path('asm/us/nonmatchings/seg')\n"
+        "folder.mkdir(parents=True, exist_ok=True)\n"
+        "for old in folder.glob('*.s'):\n"
+        "    old.unlink()\n"
+        "for name in Path('names.txt').read_text().split():\n"
+        "    (folder / (name + '.s')).write_text(Path('out.txt').read_text() + name + '\\n')\n"
+        "Path('asm/us/include').mkdir(exist_ok=True)\n"
+        "Path('asm/us/include/macro.inc').write_text(Path('macro.txt').read_text())\n"
     )
+    files = ("asm/us/nonmatchings/seg/f.s", "asm/us/nonmatchings/seg/g.s", "asm/us/include/macro.inc")
+    stamp = "asm/us/.extracted"
 
     def extract():
         result = subprocess.run(
@@ -704,18 +715,32 @@ def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
             text=True,
         )
         assert result.returncode == 0, result.stderr
-        return {p: (tmp_path / p).stat().st_mtime_ns for p in ("asm/us/.extracted", *files)}
+        return {p: (tmp_path / p).stat().st_mtime_ns for p in (stamp, *files) if (tmp_path / p).exists()}
 
-    files = ("asm/us/nonmatchings/seg/f.s", "asm/us/nonmatchings/seg/g.s")
+    def age(*paths):
+        for path in paths:
+            os.utime(tmp_path / path, ns=(old, old))
+
     first = extract()
-    old = first["asm/us/.extracted"] - 10**10
-    for path in first:
-        os.utime(tmp_path / path, ns=(old, old))
+    old = first[stamp] - 10**10
+    age(*first)
     assert extract() == dict.fromkeys(first, old)
     assert not list((tmp_path / "build").glob(".extract-dates-*"))
     (tmp_path / "out.txt").write_text("call f_renamed\n")
     changed = extract()
-    assert all(changed[p] > old for p in first)
+    assert changed[files[0]] > old and changed[files[1]] > old and changed[files[2]] == old
+    assert changed[stamp] == old
+    age(*changed)
+    obj = tmp_path / "build/us/src/a.c.o"
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    obj.write_text("o")
+    (tmp_path / "names.txt").write_text("f")  # g.s, which a.c names, is no longer extracted
+    gone = extract()
+    assert gone[stamp] == old and files[1] not in gone
+    assert obj.stat().st_mtime_ns == build._LONG_AGO
+    age(*gone)
+    (tmp_path / "macro.txt").write_text("macro 2\n")  # every object assembles the shared include folder
+    assert extract()[stamp] > old
 
 
 def test_an_object_follows_the_extracted_files_its_include_lines_name(tmp_path):
