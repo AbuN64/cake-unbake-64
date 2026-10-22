@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import config, delta, effort, native, offsets, pool, process, recipes, store, tree, versions
+from unbake import config, delta, effort, lookalike, native, offsets, pool, process, recipes, store, tree, versions
 from unbake import view as _view
 from unbake.contracts import Finding, Json, Refusal, Snapshot, SourceView, UnitSpec, code_identity, digest
 
@@ -885,7 +885,12 @@ def _findings(
             if rule["waivable"] and any(reason.strip() for reason in waivers):
                 continue
             subject = hits[n] or (lines[n - 1].strip()[:120] if n <= len(lines) else "")
-            findings.append(Finding(f"source.{rule['id']}", f"{rule['sentence']}: {subject}", path=path, line=n))
+            action = ""
+            if rule["id"] == "pad-view" and snapshot is not None:
+                action = lookalike.hint(snapshot.config.project.root, path, text, n)
+            findings.append(
+                Finding(f"source.{rule['id']}", f"{rule['sentence']}: {subject}", path=path, line=n, action=action)
+            )
     return tuple(findings)
 
 
