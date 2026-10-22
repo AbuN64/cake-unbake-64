@@ -234,16 +234,29 @@ $$(shell python3 -I build/asm-deps.py $$(VERSIONS) >build/asm.deps)
 # when its bytes change, so a header edit that leaves a source's text alone (a comment, a part another version reads)
 # preprocesses that source again and compiles nothing. The stamp (.i.ok) carries the header times; the object compiles
 # when its .i is newer than it or another input (the extraction, the text size) changed, else it is only touched.
-build/%.i.ok: $$$$(call src,$$$$*) | $$(STAMPS)
+# A flags row (TC, CPPFLAGS, CFLAGS of a [file] row, the toolchain's compiler) that changes remakes the objects it
+# reaches: each object keeps the flags it was made with beside it (`.flags` for the compile, `.i.ok.flags` for the
+# preprocess) and, when its own flags differ, make sees one more prerequisite that is out of date. A stamp a build never
+# wrote (an object made before the stamps) is trusted, so the first run after an upgrade rebuilds nothing.
+shq = '$$(subst ','\'',$$(1))'
+CC_FLAGS = $$(TC) $$(CC_$$(TC)) $$(CFLAGS) $$(ASFLAGS) $$(DEFINES)
+PP_FLAGS = $$(TC) $$(CPPFLAGS) $$(DEFINES)
+same_flags = $$(and $$(findstring $$(1),$$(2)),$$(findstring $$(2),$$(1)))
+flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(CC_FLAGS),$$(file <$$@.flags)),,flags-changed))
+pp_flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(PP_FLAGS),$$(file <$$@.flags)),,flags-changed))
+.PHONY: flags-changed
+flags-changed:
+build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(PREPROCESS_$$(TC))
 	$$(Q)if cmp -s $$(@:.ok=.new) $$(@:.ok=); then rm -f $$(@:.ok=.new); else mv -f $$(@:.ok=.new) $$(@:.ok=); fi
+	$$(Q)printf '%s\n' $$(call shq,$$(PP_FLAGS)) > $$@.flags
 	$$(Q)touch $$@
-build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) | $$(STAMPS)
-	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
-	[ $$(@:.o=.i) -ot $$@ ]; then touch $$@; \
+build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS)
+	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)$$(flags_changed)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
+	[ $$(@:.o=.i) -ot $$@ ]; then printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; touch $$@; \
 	else $$(COMPILE_$$(TC)) && if [ -f $$@.same ]; then rm -f $$@.same; else $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \
-	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi; fi
+	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi && printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; fi
 build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASDEFS) $$(ASINC) -Iinclude $$< -o $$@

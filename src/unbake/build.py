@@ -165,7 +165,12 @@ def _recipe(id: str) -> str:
     lines = [_shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]}))]
     if row["emits_asm"]:
         keep = "$(@:.o=.s.prev)"
-        lines.insert(0, f"{{ [ ! -f $(@:.o=.s) ] || mv -f $(@:.o=.s) {keep}; }}")  # the last assembly, to compare
+        # The last assembly an object was made from, to compare. It is removed only once the object is made, so one
+        # still here says the last run failed: the assembly beside it is that failed run's (partial, or of a text no
+        # object holds) and goes, never into `prev`.
+        asm = "$(@:.o=.s)"
+        lines.insert(0, f"if [ -f {keep} ]; then rm -f {asm}; elif [ -f {asm} ]; then mv -f {asm} {keep}; fi")
+        lines.append("test -s $(@:.o=.s)")  # a compiler that exited 0 without assembly has not compiled
         # the alignment the ROM's start of the data does not meet is dropped (data packed at the byte, or off 8)
         lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)')
         if row.get("jump_table_base"):
@@ -178,7 +183,7 @@ def _recipe(id: str) -> str:
         # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
         # with the same text size: the object stands, and `.same` tells the rule to skip the trim it already holds.
         same = (
-            '[ -z "$(filter-out %.i.ok,$?)" ] && [ -f $@ ] && [ -f ' + keep + " ] && "
+            '[ -z "$(filter-out %.i.ok,$?)$(flags_changed)" ] && [ -f $@ ] && [ -f ' + keep + " ] && "
             '[ "x$(file <$@.textsize)" = "x$(TEXTSIZE)" ] && cmp -s $(@:.o=.s) ' + keep
         )
         lines.append(
@@ -677,6 +682,18 @@ def _fetch_rule(folder: str, download: Json, pins: Mapping[str, str]) -> str:
     )
 
 
+def _stable(path: Path) -> Path:
+    """`path` spelled through the symlink that names its versioned directory: under a deployed venv
+    `~/venv-decomp.<key>/...` a sibling link `~/venv-decomp` points at the live one, and local.mk names the link, so a
+    deploy that switches it moves every tree at once and a tree never holds a venv path a prune may delete."""
+    path = Path(path)
+    for folder in path.parents:
+        name, dot, _ = folder.name.rpartition(".")
+        if dot and name and (link := folder.with_name(name)).is_symlink() and link.resolve() == folder.resolve():
+            return link / path.relative_to(folder)
+    return path
+
+
 def _cached_cc(config: Config, compiler: Path) -> str:
     """The compiler the Makefile runs: behind resources/cc_front.sh and cc_cache.py, whose results live beside the host
     content cache, so every tree on the host copies the assembly of a text any tree compiled (a commit that changes a
@@ -686,7 +703,7 @@ def _cached_cc(config: Config, compiler: Path) -> str:
     cache = front.cache(config.host)
     if cache is None:
         return str(compiler)
-    script = Path(__file__).parent / "resources" / "cc_front.sh"
+    script = _stable(Path(__file__).parent / "resources" / "cc_front.sh")
     return " ".join(shlex.quote(str(p)) for p in ("sh", script, cache, compiler))
 
 
@@ -695,7 +712,7 @@ def local_mk(config: Config) -> bytes:
         assignments = [
             f"JOBS := {config.host.workers}",
             *(
-                f"{var} := {config.host.tools.get(row['host'], '')}"
+                f"{var} := {_stable(config.host.tools[row['host']]) if row['host'] in config.host.tools else ''}"
                 for var, row in sorted(_REPO["make"]["tools"].items())
                 if "download" not in row  # a pinned tool is the Makefile's own fetch, never a machine path
             ),
