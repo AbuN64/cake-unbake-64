@@ -793,14 +793,33 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
     held = Tree(held.digest, held.modules, table)
     config = make_config(tmp_path)
     rows = build.text_sizes(config, held, "us").decode().splitlines()
-    assert "build/us/src/b.c.o: NOALIGN := 1" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
+    assert "build/us/src/b.c.o: NOALIGN := 2" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
     text = build.makefile(config).decode()
-    assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s),true)' in text
+    assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)' in text
     code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
     source.write_text(".text\n.align 2\nf:\n.section .rodata\n.align 3\n.word 1\n.half 2\n.text\n.align 2\n")
-    subprocess.run([sys.executable, "-I", "-c", code, str(source)], check=True)
+    subprocess.run([sys.executable, "-I", "-c", code, str(source), "2"], check=True)
     assert source.read_text() == ".text\n.align 2\nf:\n.section .rodata\n.4byte 1\n.2byte 2\n.text\n.align 2\n"
+
+
+def test_data_starting_word_aligned_but_off_eight_loses_only_the_eight_alignment(tmp_path):
+    """A unit's .rodata at 4 mod 8 (a jump table behind `.align 3`): the ROM pads by address, gas by section start."""
+    import subprocess
+    import sys
+
+    held = make_tree(both("src/a.c", "f_1", "d_2"), both("src/b.c", "d_3"))
+    table = {v: dict(rows) for v, rows in held.symbols.items()}
+    table["us"]["d_3"] = (0x80200034, 0x1034, 0x10, "data")
+    held = Tree(held.digest, held.modules, table)
+    config = make_config(tmp_path)
+    assert "build/us/src/b.c.o: NOALIGN := 4" in build.text_sizes(config, held, "us").decode().splitlines()
+    text = build.makefile(config).decode()
+    code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
+    source = tmp_path / "x.s"
+    source.write_text(".text\n.align 3\nf:\n.section .rodata\n.word 1\n.align 2\n.align 3\n.word 2\n.half 3\n")
+    subprocess.run([sys.executable, "-I", "-c", code, str(source), "4"], check=True)
+    assert source.read_text() == ".text\n.align 3\nf:\n.section .rodata\n.word 1\n.align 2\n.word 2\n.half 3\n"
 
 
 def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():

@@ -78,20 +78,23 @@ CODE_SED := -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)[^%]*/\* h
 	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)\s[^%]*$$$$@\1.word 0x\2@' \
 	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 1000[0-9A-F]{4} \*/\s*)b(\s+)@\1beq\2$$$$zero, $$$$zero, @' \
 	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 0401[0-9A-F]{4} \*/\s*)b(\s+)@\1bgez\2$$$$zero, @'
-# An object whose data starts off a word boundary in the ROM (NOALIGN in text_sizes.mk) has the alignment its
-# compiler asks for in data sections dropped from its assembly, and its words and halves spelled as unaligned data:
-# the ROM packs that data at the byte, so a pad the assembler adds would shift everything after it.
+# An object whose data starts off an 8-byte boundary in the ROM (NOALIGN in text_sizes.mk, the start's address mod 8)
+# has the alignment its compiler asks for and the start does not meet dropped from the data sections of its assembly:
+# the assembler pads from the section start, so it would pad where the ROM, aligned by address, did not. Off a word
+# boundary the ROM packs the data at the byte: all alignment goes and words and halves are spelled as unaligned data.
 define STRIP_ALIGN
 import re, sys
-path, section, out = sys.argv[1], "text", []
+path, start, section, out = sys.argv[1], int(sys.argv[2]), "text", []
 for line in open(path):
     found = re.match(r"\s*\.section\s+\.?(\w+)", line) or re.match(r"\s*\.(text|data|rdata|sdata|bss|rodata)\b", line)
     if found:
         section = found.group(1)
     elif section in ("data", "rdata", "rodata", "sdata"):
-        if re.match(r"\s*\.(p2)?align\b", line):
+        asked = re.match(r"\s*\.(p2)?align\s+(\d+)", line)
+        if asked and (start % 4 or start % (1 << int(asked.group(2)))):
             continue
-        line = re.sub(r"^(\s*)\.word\b", r"\1.4byte", re.sub(r"^(\s*)\.(half|short)\b", r"\1.2byte", line))
+        if start % 4:
+            line = re.sub(r"^(\s*)\.word\b", r"\1.4byte", re.sub(r"^(\s*)\.(half|short)\b", r"\1.2byte", line))
     out.append(line)
 open(path, "w").write("".join(out))
 endef

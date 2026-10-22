@@ -547,6 +547,19 @@ def test_only_the_non_matching_bodies_of_the_measured_names_stay_on():
     assert tree.fuzzy_only(FUZZY_MODULE, []).count("#if 0") == 3
 
 
+def test_a_block_sharing_its_draft_with_siblings_is_off_once_the_candidate_stands_in_the_stand_ins_place():
+    """The candidate replaced the stand-in of `wanted`, so the block that holds an older draft of it, with the drafts
+    (and the declarations) of the other functions it shares the block with, stays off: only the candidate is live."""
+    shared = (
+        "int wanted(void) { return 2; }\n#ifdef NON_MATCHING\nextern int broken;\nint wanted(void) { return 1; }\n"
+        "int other(void) { return 3; }\n#endif\n"
+    )
+    assert tree.fuzzy_only(shared, ["wanted"]).splitlines()[1] == "#if 0"
+    assert tree.fuzzy_only(shared, ["other"]).splitlines()[1] == "#ifdef NON_MATCHING"  # no plain definition of it
+    drafted = shared.replace("int wanted(void) { return 2; }\n", 'INCLUDE_ASM("main", wanted);\n', 1)
+    assert tree.fuzzy_only(drafted, ["wanted"]).splitlines()[1] == "#ifdef NON_MATCHING"  # a stand-in defines no C
+
+
 def test_a_conditional_inside_a_body_does_not_end_the_block():
     text = "#ifdef NON_MATCHING\n#if X\nint a;\n#endif\nint wanted(void) { return 1; }\n#endif\n"
     assert tree.fuzzy_only(text, ["wanted"]) == text

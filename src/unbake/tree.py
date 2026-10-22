@@ -614,15 +614,20 @@ def defined(text: str) -> list[str]:
     return _scan(text)[0]
 
 
-def fuzzy_only(text: str, names: Collection[str]) -> str:
-    """`text` with the NON_MATCHING body of every function but `names` switched off: a measured module compiles the
-    bodies of the names it measures, and a sibling's body (its own includes and declarations, often the older context
+    bodies of the names it measures that no plain definition gives, and a sibling's body (its own includes and
+    declarations, often the older context of the file) is no part of what a name's bytes depend on. A switched-off
+    block keeps its line count and its `#else` side, so every diagnostic names the line it names in `text`."""
     of the file) is no part of what a name's bytes depend on. A switched-off block keeps its line count and its `#else`
     side, so every diagnostic names the line it names in `text`."""
     lines = text.splitlines(keepends=True)
-    for opened, other, closed in non_matching_blocks(lines):
+    blocks = non_matching_blocks(lines)
+    fenced = {n for opened, _, closed in blocks for n in range(opened, closed + 1)}
+    # a name the file defines outside every block (the candidate standing where its stand-in was) is measured from that
+    # definition: an older draft of it in a block, often one shared with other functions, is no part of the measure
+    wanted = set(names) - set(defined("".join(ln for n, ln in enumerate(lines) if n not in fenced)))
+    for opened, other, closed in blocks:
         body = "".join(lines[opened + 1 : other if other >= 0 else closed])
-        if not set(defined(body)) & set(names) and (m := _plain(lines[opened])):
+        if not set(defined(body)) & wanted and (m := _plain(lines[opened])):
             lines[opened] = f"{m[0]}if 0{m[1]}"
     return "".join(lines)
 

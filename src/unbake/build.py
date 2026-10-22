@@ -166,7 +166,8 @@ def _recipe(id: str) -> str:
     if row["emits_asm"]:
         keep = "$(@:.o=.s.prev)"
         lines.insert(0, f"{{ [ ! -f $(@:.o=.s) ] || mv -f $(@:.o=.s) {keep}; }}")  # the last assembly, to compare
-        lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s),true)')  # data packed at the byte
+        # the alignment the ROM's start of the data does not meet is dropped (data packed at the byte, or off 8)
+        lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)')
         if row.get("jump_table_base"):
             entry = r"^([ \t]*\.word[ \t]+\.L[0-9]+)[ \t]*$$"
             lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
@@ -374,14 +375,17 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
                 after = runs[k + 1][0] if k + 1 < len(runs) else end
                 sizes[path] = None if path in sizes or after is None else after - rom
         rows = [f"build/{v}/{path}.o: TEXTSIZE := 0x{size:X}" for path, size in sorted(sizes.items()) if size]
-        rows += [f"build/{v}/{path}.o: NOALIGN := 1" for path in _unaligned(config, held, v)]
+        rows += [f"build/{v}/{path}.o: NOALIGN := {m}" for path, m in _unaligned(config, held, v).items()]
         return "\n".join([f"# {_GENERATED}", *rows, ""]).encode()
 
 
-def _unaligned(config: Config, held: Tree, v: str) -> list[str]:
-    """The files whose data starts a run of their own off a word boundary in the ROM: the ROM packs it at the byte, so
-    the build drops the alignment the compiler asks for in that object's data sections (NOALIGN)."""
-    found: set[str] = set()
+def _unaligned(config: Config, held: Tree, v: str) -> dict[str, int]:
+    """The files whose data starts a run of their own off the boundary the compiler aligns it to, mapped to the start's
+    address mod 8 (what the ROM proves of the start). Where a word does not divide it the ROM packs the data at the
+    byte; where only 8 does not, the ROM pads against the address, not the section start gas pads from. Either way the
+    build drops the alignment the compiler asks for that the start does not meet in that object's data sections
+    (NOALIGN)."""
+    found: dict[str, int] = {}
     for segment, (piece, *_) in zip(config.project.version[v].segments, versions.pieces(config, v), strict=True):
         if segment.kind == "bin":
             continue
@@ -389,9 +393,10 @@ def _unaligned(config: Config, held: Tree, v: str) -> list[str]:
         for rom, path, section in _rows(config, held, v, piece):
             if (path, section) != last and section != ".text":
                 vram = rom - segment.rom + (segment.vram or segment.rom)
-                found |= {path} if vram % 4 else set()
+                if vram % 8:
+                    found.setdefault(path, vram % 8)
             last = (path, section)
-    return sorted(found)
+    return dict(sorted(found.items()))
 
 
 def _doubled(config: Config, held: Tree, v: str, piece: str) -> set[str]:
