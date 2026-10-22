@@ -333,7 +333,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(text.splitlines()) < 300
+    assert len(text.splitlines()) < 340
     assert "src/f1.c" not in text
 
 
@@ -673,6 +673,49 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
     assert make() == (["src/a.c"], targets[:1])
     (tmp_path / "build/us/src/b.c.i.ok").unlink()  # objects built before the stamps: nothing newer, nothing to do
     assert make() == ([], [])
+
+
+def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
+    """splat writes every file again: an extraction with the same output leaves the stamp and every file at their
+    old dates (else every object of the version is made again); a changed file and the stamp take new dates."""
+    import subprocess
+    import sys
+
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "roms").mkdir(exist_ok=True)
+    (tmp_path / "roms/baserom.us.z64").write_bytes(bytes(64))
+    (tmp_path / "versions/us/splat.yaml").write_text("")
+    (tmp_path / "out.txt").write_text("call f\n")
+    splat = tmp_path / "splat.py"
+    splat.write_text(
+        "from pathlib import Path\n"
+        "for name in ('f', 'g'):\n"
+        "    path = Path('asm/us/nonmatchings/seg') / (name + '.s')\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    path.write_text(Path('out.txt').read_text() + name + '\\n')\n"
+    )
+
+    def extract():
+        result = subprocess.run(
+            ["make", "--no-print-directory", "extract-us", f"SPLAT={sys.executable} {splat}"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return {p: (tmp_path / p).stat().st_mtime_ns for p in ("asm/us/.extracted", *files)}
+
+    files = ("asm/us/nonmatchings/seg/f.s", "asm/us/nonmatchings/seg/g.s")
+    first = extract()
+    old = first["asm/us/.extracted"] - 10**10
+    for path in first:
+        os.utime(tmp_path / path, ns=(old, old))
+    assert extract() == dict.fromkeys(first, old)
+    assert not list((tmp_path / "build").glob(".extract-dates-*"))
+    (tmp_path / "out.txt").write_text("call f_renamed\n")
+    changed = extract()
+    assert all(changed[p] > old for p in first)
 
 
 def test_an_object_follows_the_extracted_files_its_include_lines_name(tmp_path):

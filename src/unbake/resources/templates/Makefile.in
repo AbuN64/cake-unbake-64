@@ -137,8 +137,45 @@ for (start, kind, name), (end, _, _) in zip(rows, rows[1:]):
     open(path, "w").write("\n".join(out) + "\n")
 endef
 export FILL_DATA
+# splat writes every extracted file again, so each new date would remake every object of the version (through the
+# extraction stamp and the files a source names) although nothing changed. A file whose bytes are the same gets its old
+# date back, and the stamp keeps its date unless a file was added, removed or changed.
+define KEEP_DATES
+import hashlib, json, os, sys
+mode, version = sys.argv[1], sys.argv[2]
+root, keep = "asm/" + version, "build/.extract-dates-" + version + ".json"
+stamp = root + "/.extracted"
+def scan():
+    found = {}
+    for here, _, names in os.walk(root):
+        for name in names:
+            path = os.path.join(here, name)
+            if path != stamp:
+                with open(path, "rb") as data:
+                    found[path] = hashlib.sha1(data.read()).hexdigest()
+    return found
+if mode == "save":
+    os.makedirs("build", exist_ok=True)
+    files = {path: [digest, os.stat(path).st_mtime_ns] for path, digest in scan().items()}
+    when = os.stat(stamp).st_mtime_ns if os.path.exists(stamp) else None
+    with open(keep, "w") as out:
+        json.dump({"files": files, "stamp": when}, out)
+else:
+    with open(keep) as saved:
+        old = json.load(saved)
+    files, same = scan(), 0
+    for path, digest in files.items():
+        if old["files"].get(path, [None])[0] == digest:
+            os.utime(path, ns=(old["files"][path][1], old["files"][path][1]))
+            same += 1
+    if old["stamp"] is not None and same == len(files) == len(old["files"]):
+        os.utime(stamp, ns=(old["stamp"], old["stamp"]))
+    os.remove(keep)
+endef
+export KEEP_DATES
 extract: $$(VERSIONS:%=extract-%)
 extract-%:
+	$$(Q)python3 -I -c "$$$$KEEP_DATES" save $$*
 	$$(Q)$$(SPLAT) split versions/$$*/splat.yaml
 	$$(Q)find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
 		case $$$$(grep -m1 -oE '^ */\* [0-9A-F]+ [0-9A-F]{8}' "$$$$f" | tail -c 2) in \
@@ -148,6 +185,7 @@ extract-%:
 	$$(Q)python3 -I -c "$$$$FILL_DATA" $$*
 	$$(Q)find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
 	$$(Q)touch asm/$$*/.extracted
+	$$(Q)python3 -I -c "$$$$KEEP_DATES" restore $$*
 # An object assembles extracted files its source only names through a macro: every object follows the extraction.
 asm/%/.extracted: | roms/baserom.%.z64
 	+$$(Q)$$(MAKE) --no-print-directory extract-$$*
