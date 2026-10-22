@@ -64,7 +64,14 @@ def _enqueue(
     inbox_path = config.project.root / ".unbake/inbox"
     for directory in (inbox_path, inbox_path / "done"):  # a refused entry is tried again: its refusal may be stale
         path = directory / f"{identity}.json"
-        if path.is_file():
+        if path.is_file() and directory.name == "done":
+            # the tree accepted this source just now (publish.accept ran): its stand-in is still there, so the landing
+            # this record reports is no longer on the branch (reset, reverted). The record is stale, not an answer.
+            stale = inbox_path / "stale"
+            stale.mkdir(parents=True, exist_ok=True)
+            for old in directory.glob(f"{identity}.*"):
+                os.replace(old, stale / old.name)
+        elif path.is_file():
             try:
                 return _read(path)
             except Refusal as stale:
