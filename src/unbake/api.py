@@ -59,7 +59,7 @@ def score(config: Config, name: str) -> Mapping[str, float]:
     """The cached fuzzy score of a function per version (the `score` store kind); report is loaded on first use."""
     from unbake import report
 
-    return report.scores(config, capture(config)).get(name, {})
+    return report.scores(config, capture(config), (name,)).get(name, {})
 
 
 def snapshot(config: Config) -> Snapshot:

@@ -418,3 +418,13 @@ def test_a_refused_command_still_reports_its_cache_counts(monkeypatch: Patch, ca
     cli.main(["setup", "--host", "host.toml"])
     document = _envelope(capsys.readouterr().out)
     assert not document["ok"] and document["cache"]["hits"] == 1 and document["cache"]["misses"] == 0
+
+
+def test_a_call_with_no_host_falls_back_to_the_user_config_or_names_the_fix(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNBAKE_HOST", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert config.default_host() is None
+    assert "~/.config/unbake/unbake.toml" in config.NO_HOST
+    (tmp_path / ".config/unbake").mkdir(parents=True)
+    (tmp_path / ".config/unbake/unbake.toml").write_text("")
+    assert config.default_host() == tmp_path / ".config/unbake/unbake.toml"

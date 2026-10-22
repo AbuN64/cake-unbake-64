@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from contextlib import suppress
 from dataclasses import asdict
 from importlib import import_module
@@ -302,9 +302,10 @@ def platform_overlaps(config: Any, tree: Any) -> list[Finding]:
     ]
 
 
-def scores(config: Any, tree: Any) -> dict[str, dict[str, float]]:
-    """name -> version -> cached fuzzy score of every NON_MATCHING function (what `unbake score` and the API read)."""
-    return rescore.rows(config, tree, facts(config))
+def scores(config: Any, tree: Any, only: Collection[str] | None = None) -> dict[str, dict[str, float]]:
+    """name -> version -> cached fuzzy score of every NON_MATCHING function (what `unbake score` and the API read);
+    of the names in `only` alone when given."""
+    return rescore.rows(config, tree, facts(config), only)
 
 
 def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:

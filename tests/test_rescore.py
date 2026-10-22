@@ -99,3 +99,10 @@ def test_the_missing_functions_of_a_module_are_measured_together_once_per_versio
         assert calls == []  # a warm rerun measures nothing
     finally:
         rescore._measure = original
+
+
+def test_only_names_given_are_looked_up_and_measured(world):
+    config, tree, facts, _stored, measured, _ = world
+    assert rescore.rows(config, tree, facts, ("g",)) == {} and measured == []
+    assert rescore.rows(config, tree, facts, ("f",)) == {"f": {"a": 0.25, "b": 0.25}}
+    assert sorted(measured) == [("f", "a"), ("f", "b")]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from functools import lru_cache
 from importlib import import_module
 from typing import Any, Protocol
@@ -62,15 +62,19 @@ def _job(item: tuple[Any, str, str, tuple[tuple[str, str], ...]]) -> dict[str, f
     return values
 
 
-def scores(config: Any, tree: _Tree, facts: Facts) -> dict[str, dict[str, float]]:
-    """name -> version -> score of every NON_MATCHING function. A score is keyed by the module text, the name, the
-    target bytes and the scorer, so an unchanged body measures nothing and a changed one measures exactly once."""
+def scores(config: Any, tree: _Tree, facts: Facts, only: Collection[str] | None = None) -> dict[str, dict[str, float]]:
+    """name -> version -> score of every NON_MATCHING function (of `only` alone when given: nothing else is read,
+    keyed or measured, so one function's score never waits on the project's). A score is keyed by the module text,
+    the name, the target bytes and the scorer, so an unchanged body measures nothing and a changed one measures
+    exactly once."""
     with effort.stage("rescore.scores"):
         found: dict[str, dict[str, float]] = {}
         misses: dict[tuple[str, str], list[tuple[str, str]]] = {}
         texts: dict[str, str] = {}
         for module in tree.modules:
             for name in module.fuzzy:
+                if only is not None and name not in only:
+                    continue
                 for version, owned in module.owns.items():
                     fact = facts.get(version, {}).get(name)
                     if name not in owned or fact is None:
@@ -92,6 +96,7 @@ def scores(config: Any, tree: _Tree, facts: Facts) -> dict[str, dict[str, float]
         return found
 
 
-def rows(config: Any, tree: _Tree, facts: Facts) -> dict[str, dict[str, float]]:
-    """The scores of the tree's NON_MATCHING bodies, measured only where the cache has no entry."""
-    return scores(config, tree, facts)
+def rows(config: Any, tree: _Tree, facts: Facts, only: Collection[str] | None = None) -> dict[str, dict[str, float]]:
+    """The scores of the tree's NON_MATCHING bodies (of `only` when given), measured only where the cache has no
+    entry."""
+    return scores(config, tree, facts, only)

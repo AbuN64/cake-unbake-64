@@ -110,8 +110,9 @@ def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
                 root = Path(params.pop("project", None) or Path.cwd()).resolve()
                 result = handler({**params, "host": host, "project": root})
             else:
+                host = host or config.default_host()
                 if host is None:
-                    raise Refusal(Finding("config.missing", "no host config: pass --host or set UNBAKE_HOST"))
+                    raise Refusal(Finding("config.missing", config.NO_HOST))
                 root = Path(params.pop("project") or Path.cwd()).resolve()  # splat runs elsewhere: one absolute root
                 cfg = config.load(root, host)
                 effort.bind(cfg)

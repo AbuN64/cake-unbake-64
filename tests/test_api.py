@@ -64,7 +64,7 @@ def test_cached_memo_and_pool_map_are_the_shared_ones(tmp_path: Path) -> None:
 def test_score_reads_report_lazily(tmp_path: Path, monkeypatch) -> None:
     from unbake import report
 
-    monkeypatch.setattr(report, "scores", lambda config, held: {"fuzzy": {"a": 0.5}}, raising=False)
+    monkeypatch.setattr(report, "scores", lambda config, held, only=None: {"fuzzy": {"a": 0.5}}, raising=False)
     assert api.score(fixture.config(tmp_path), "fuzzy") == {"a": 0.5}
 
 

@@ -247,6 +247,19 @@ def _usable_memory() -> int:
     return int(limit) if limit.isdigit() else psutil.virtual_memory().total
 
 
+DEFAULT_HOST = Path("~/.config/unbake/unbake.toml")
+NO_HOST = (
+    "no host config: pass --host, set UNBAKE_HOST, or create ~/.config/unbake/unbake.toml "
+    "(a seat's `decomp --profile P unbake|recipe ...` passes the profile's tools.host itself)"
+)
+
+
+def default_host() -> Path | None:
+    """The host config a call names nowhere: the user's ~/.config/unbake/unbake.toml when it exists."""
+    path = DEFAULT_HOST.expanduser()
+    return path if path.is_file() else None
+
+
 def load_host(path: Path) -> Host:
     document, _, origins = _read(path, "host")
     problems: list[Finding] = []
