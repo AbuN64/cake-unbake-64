@@ -193,14 +193,16 @@ def _recipe(id: str) -> str:
     return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
 
-def _file_blocks(config: Config) -> list[str]:
-    """Target-specific variables per [file] row: a dir/ key is a pattern over its objects, a path is one object."""
+def _file_blocks(config: Config, tree: str = "") -> list[str]:
+    """Target-specific variables per [file] row: a dir/ key is a pattern over its objects, a path is one object.
+    `tree` is the build/ subfolder of a second object tree ("nmraw/": the NON_MATCHING objects) that takes the
+    same rows."""
     project, rows = config.project, []
     for path in sorted(project.files, key=lambda p: (not p.endswith("/"), len(p), p)):
         facts = file_facts(project, path)
         id = facts.toolchain or project.toolchain
         row = configuration.toolchain(id)
-        target = "$(foreach v,$(VERSIONS),build/$(v)/" + (f"{path}%.o)" if path.endswith("/") else f"{path}.o)")
+        target = f"$(foreach v,$(VERSIONS),build/{tree}$(v)/" + (f"{path}%.o)" if path.endswith("/") else f"{path}.o)")
         cpp, cc = _preprocessor_split(row, facts.cflags)
         rows += [
             f"{target}: TC := {_key(id)}",
@@ -225,10 +227,132 @@ def _preprocessor_split(row: Json, flags: Sequence[str]) -> tuple[list[str], lis
     return cpp, cc
 
 
+_PATHS = """ver = $(firstword $(subst /, ,$1))
+src = $(patsubst $(call ver,$1)/%,%,$1)
+DEFINES = -D$(VMACRO_$(call ver,$*))"""
+# build/nmraw/<version>/ holds the objects of a NON_MATCHING compile and build/nm/<version>/ the ones the NM link uses;
+# the version is the first path word that is neither.
+_PATHS_NM = """ver = $(firstword $(filter-out nm nmraw,$(subst /, ,$1)))
+src = $(patsubst $(call ver,$1)/%,%,$(patsubst nmraw/%,%,$(patsubst nm/%,%,$1)))
+DEFINES = -D$(VMACRO_$(call ver,$*)) $(if $(filter nmraw/%,$*),-D@DEFINE@)"""
+_NM_GOAL = """ifeq ($(NON_MATCHING),1)
+.DEFAULT_GOAL := nm
+endif
+"""
+# A unit's NON_MATCHING object may stand in for its matching one when the unit keeps its size: the same sections but
+# a text that is no longer than the ROM's, filled with zeros up to it. Then every unit starts where it did, the link
+# script needs no change and the ROM keeps its size. A draft that makes its unit's text or data longer leaves the
+# matching object in: it is not in that ROM (report.txt names it). Inside a padded unit the code after the first
+# draft moves, so a raw table of the ROM that names such a function is stale: the report counts the symbols that move.
+_NM_PICK = r"""import os, shutil, struct, subprocess, sys
+def read(path):
+    d = open(path, "rb").read()
+    o = struct.unpack_from(">I", d, 32)[0]
+    e, c, x = struct.unpack_from(">HHH", d, 46)
+    rows = [struct.unpack_from(">10I", d, o + k * e) for k in range(c)]
+    names = d[rows[x][4]:rows[x][4] + rows[x][5]]
+    name = lambda r: names[r[0]:].split(b"\0")[0].decode()
+    skip = (".pdr", ".comment", ".mdebug", ".reginfo", ".gnu.attributes")
+    sizes = {name(r): r[5] for r in rows if r[1] in (1, 8) and name(r) not in skip}
+    data = {name(r): d[r[4]:r[4] + r[5]] for r in rows if r[1] == 1 and name(r) not in skip}
+    syms, table = set(), {}
+    for k, r in enumerate(rows):
+        if r[1] == 2:
+            strs = d[rows[r[6]][4]:rows[r[6]][4] + rows[r[6]][5]]
+            for j in range(r[5] // 16):
+                n, v, z, i, _, sh = struct.unpack_from(">IIIBBH", d, r[4] + 16 * j)
+                s = strs[n:].split(b"\0")[0].decode()
+                table[(k, j)] = s
+                if 0 < sh < 0xFF00 and i & 15 not in (3, 4) and s and not s.startswith(".L"):
+                    syms.add((s, name(rows[sh]), v))
+    relocs = set()
+    for r in rows:
+        if r[1] == 9 and name(rows[r[7]]) not in skip:
+            for j in range(r[5] // 8):
+                off, info = struct.unpack_from(">II", d, r[4] + 8 * j)
+                relocs.add((name(rows[r[7]]), off, info & 255, table.get((r[6], info >> 8), "")))
+    return sizes, syms, data, relocs
+raw, matching, out, objcopy = sys.argv[1:5]
+a, b = read(raw), read(matching)
+rest = lambda sizes: {k: v for k, v in sizes.items() if k != ".text"}
+if a == b:
+    verdict, pick = "same", matching
+elif a[:2] == b[:2]:
+    verdict, pick = "draft", raw
+elif rest(a[0]) == rest(b[0]) and a[0].get(".text", 0) <= b[0].get(".text", 0):
+    # a shorter text keeps the unit's size when zeros fill the rest: the next unit starts where it did
+    subprocess.run([objcopy, "-O", "binary", "-j", ".text", raw, out + ".text"], check=True)
+    text = open(out + ".text", "rb").read()
+    open(out + ".text", "wb").write(text + bytes(b[0][".text"] - len(text)))
+    subprocess.run([objcopy, "--update-section", ".text=" + out + ".text", raw, out], check=True)
+    os.remove(out + ".text")
+    moved = len({sym[0] for sym in a[1] ^ b[1]})
+    verdict, pick = "draft-padded %d bytes, %d symbols move" % (b[0][".text"] - a[0][".text"], moved), None
+else:
+    grown = [k for k in sorted(set(a[0]) | set(b[0])) if a[0].get(k, 0) != b[0].get(k, 0)]
+    why = " ".join("%s:%d->%d" % (k, b[0].get(k, 0), a[0].get(k, 0)) for k in grown)
+    verdict, pick = "left-out " + (why or "symbols moved"), matching
+if pick:
+    shutil.copyfile(pick, out)
+open(out + ".pick", "w").write("%s %s\n" % (verdict, out))"""
+_NM_RULES = r"""# make NON_MATCHING=1 (or make nm): every draft compiles in (-D@DEFINE@) and one ROM per version
+# links under build/nm/<version>/. The drafts compile into a second tree build/nmraw/<version>/ with the
+# matching build's rules and flags. A unit whose NON_MATCHING object keeps the unit's size (NM_PICK: the same
+# sections, a text no longer than the ROM's, zero-filled to it) takes the matching object's place in the link; any
+# other unit keeps its matching object. The ROM so keeps its size and every unit's address, and matches no SHA-1, so
+# nothing here checks one. build/nm/<version>/report.txt names the units whose draft is in (and how many symbols
+# move in them) and the ones left out (and the section that grew).
+define NM_PICK
+@NM_PICK@
+endef
+export NM_PICK
+.PHONY: nm
+nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)
+$(foreach v,$(VERSIONS),$(eval OBJS_nm_$(v) := $(patsubst build/$(v)/%,build/nm/$(v)/%,$(OBJS_$(v)))))
+-include $(foreach v,$(VERSIONS),$(patsubst build/$(v)/%,build/nmraw/$(v)/%,$(OBJS_$(v):.o=.d)))
+# A raw object follows the extracted files its matching twin names, and takes the same text sizes.
+$(shell sed -E 's@^build/@build/nmraw/@' build/asm.deps > build/asm-nmraw.deps)
+-include build/asm-nmraw.deps
+$(shell cat $(VERSIONS:%=versions/%/text_sizes.mk) | sed -E 's@^build/@build/nmraw/@' > build/text_sizes_nmraw.mk)
+-include build/text_sizes_nmraw.mk
+build/nm/%.o: build/nmraw/%.o build/%.o
+	$(Q)mkdir -p $(@D)
+	$(Q)python3 -I -c "$$NM_PICK" $^ $@ $(OBJCOPY)
+# An assembly or binary piece is the matching build's.
+build/nm/%.s.o: build/%.s.o
+	$(Q)mkdir -p $(@D)
+	$(Q)cp -p $< $@
+build/nm/%.bin.o: build/%.bin.o
+	$(Q)mkdir -p $(@D)
+	$(Q)cp -p $< $@
+build/nm/%/link.ld: build/%/link.ld
+	$(Q)mkdir -p $(@D)
+	$(Q)cp $< $@
+build/nm/%/undefined_syms.ld: build/%/undefined_syms.ld
+	$(Q)mkdir -p $(@D)
+	$(Q)cp $< $@
+# A draft may define a name that this version's ROM keeps as data, or the other way round: the first definition in link
+# order wins and link.err lists every such name; any other link error stops the build.
+build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld build/nm/%/undefined_syms.ld
+	$(Q)cd build/nm/$* && { $(LD) -T link.ld -o $(NAME).elf 2> link.err \
+	|| $(LD) -T link.ld --allow-multiple-definition -o $(NAME).elf 2>> link.err; } \
+	|| { cat build/nm/$*/link.err >&2; exit 1; }
+build/nm/%/$(NAME).bin: build/nm/%/$(NAME).elf
+	$(Q)$(OBJCOPY) -O binary --gap-fill 0 $< $@
+build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin roms/baserom.%.z64
+	$(Q){ head -c $(ROM0_$*) roms/baserom.$*.z64; cat $<; } > $@
+	$(Q)truncate -s $$(wc -c < roms/baserom.$*.z64) $@
+	$(Q)cat $(addsuffix .pick,$(OBJS_nm_$*)) 2>/dev/null | grep -v '^same ' | sort > build/nm/$*/report.txt; \
+	echo "NM ROM $*: $$(grep -c '^draft' build/nm/$*/report.txt) unit(s) with drafts in," \
+	"$$(grep -c '^left-out' build/nm/$*/report.txt) left out (build/nm/$*/report.txt)"
+"""
+
+
 def makefile(config: Config) -> bytes:
     """The one Makefile of a repository: the same body for every game, whatever the number of files."""
     with effort.stage("build.makefile"):
         project, rows = config.project, configuration.toolchains()
+        nm = getattr(project, "non_matching", None)  # the macro of a NON_MATCHING build, when the project has one
         default = rows[project.toolchain]
         used = sorted({project.toolchain, *(f.toolchain for f in project.files.values() if f.toolchain)})
         pinned = _fetched(used)
@@ -277,7 +401,10 @@ def makefile(config: Config) -> bytes:
             cflags=" ".join(_flags(default, config)),
             asflags=" ".join([*platform, *project.asflags]),
             compile_recipes="\n".join(_recipe(id) for id in used),
-            file_blocks="\n".join(_file_blocks(config)),
+            file_blocks="\n".join(_file_blocks(config) + (_file_blocks(config, "nmraw/") if nm else [])),
+            path_rules=_PATHS_NM.replace("@DEFINE@", nm) if nm else _PATHS,
+            nm_goal=_NM_GOAL if nm else "",
+            nm_rules=_NM_RULES.replace("@DEFINE@", nm).replace("@NM_PICK@", _NM_PICK) + "\n" if nm else "",
             stamps=" ".join(stamps),
             toolchain_rules="\n".join(chains),
             label="[A-Za-z_.]*" + re.escape(_REPO["splat"]["options"]["symbol_name_format"].replace("$VRAM", "")),

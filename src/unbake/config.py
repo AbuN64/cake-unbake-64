@@ -509,6 +509,7 @@ def load_project(
         digest=digest(document),
         origins=origins,
         library_origin={p: o for p, o in ((p, r.get("origin")) for p, r in document.get("library", {}).items()) if o},
+        non_matching=(document["non_matching"].get("define", "NON_MATCHING") if "non_matching" in document else None),
     )
 
 

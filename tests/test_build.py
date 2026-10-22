@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1411,3 +1412,128 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
     edit("// another note\nint a2;\n")
     assert make() == [1, 1, 1]
     assert make() == [0, 0, 0]
+
+
+def test_a_project_without_a_non_matching_table_gets_no_nm_build(tmp_path):
+    text = build.makefile(make_config(tmp_path)).decode()
+    assert "nmraw" not in text and "NM_PICK" not in text and "DEFAULT_GOAL := nm" not in text
+    assert "ver = $(firstword $(subst /, ,$1))" in text
+
+
+def test_a_non_matching_table_adds_the_nm_build_with_the_files_rows(tmp_path):
+    config = make_config(tmp_path, {"src/a.c": FileFacts(cflags=("-O1",))})
+    config.project.non_matching = "DRAFT"
+    text = build.makefile(config).decode()
+    assert "-DDRAFT" in text and "ifeq ($(NON_MATCHING),1)\n.DEFAULT_GOAL := nm\nendif" in text
+    assert "$(foreach v,$(VERSIONS),build/nmraw/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
+    assert "nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)" in text
+    nm_link = text[text.index("build/nm/%/$(NAME).z64:") :]
+    assert "SHA-1" not in nm_link.split("\n\n")[0]  # an NM ROM matches no hash: nothing checks one
+
+
+def elf(sections: dict[str, int], symbols: list[tuple[str, str, int]], fill: int = 0) -> bytes:
+    """A minimal big-endian ELF32 object: PROGBITS sections of the given sizes and symbols (name, section, value)."""
+    import struct
+
+    names = list(sections)
+    every = [*names, ".symtab", ".strtab", ".shstrtab"]
+    shstr, strtab, index = b"\0", b"\0", {}
+    for n in every:
+        index[n] = len(shstr)
+        shstr += n.encode() + b"\0"
+    syms = b"\0" * 16
+    for name, section, value in symbols:
+        syms += struct.pack(">IIIBBH", len(strtab), value, 0, 0x12, 0, names.index(section) + 1)
+        strtab += name.encode() + b"\0"
+    blobs = [bytes([fill]) * sections[n] for n in names] + [syms, strtab, shstr]
+    kinds = [1] * len(names) + [2, 3, 3]
+    out, headers, offset = bytearray(52), [b"\0" * 40], 52
+    for n, blob, kind in zip(every, blobs, kinds, strict=True):
+        link = len(names) + 2 if kind == 2 else 0
+        flags, entsize = (6 if kind == 1 else 0), (16 if kind == 2 else 0)
+        headers.append(struct.pack(">10I", index[n], kind, flags, 0, offset, len(blob), link, 0, 4, entsize))
+        out += blob
+        offset += len(blob)
+    out += b"".join(headers)
+    ident = b"\x7fELF\x01\x02\x01" + bytes(9)
+    count = len(headers)
+    struct.pack_into(">16sHHIIIIIHHHHHH", out, 0, ident, 1, 8, 1, 0, 0, offset, 0, 52, 0, 0, 40, count, count - 1)
+    return bytes(out)
+
+
+@pytest.mark.parametrize(
+    "raw,verdict",
+    [
+        (elf({".text": 16}, [("f", ".text", 0), ("g", ".text", 8)], fill=7), "draft"),
+        (elf({".text": 16}, [("f", ".text", 0), ("g", ".text", 8), (".L12", ".text", 4)], fill=7), "draft"),
+        (elf({".text": 16}, [("f", ".text", 0), ("g", ".text", 8)]), "same"),
+        (elf({".text": 8}, [("f", ".text", 0)], fill=7), "draft-padded 8 bytes, 1 symbols move"),
+        (elf({".text": 20}, [("f", ".text", 0), ("g", ".text", 8)], fill=7), "left-out .text:16->20"),
+        (elf({".text": 16, ".rdata": 8}, [("f", ".text", 0), ("g", ".text", 8)], fill=7), "left-out .rdata:0->8"),
+        (elf({".text": 16}, [("f", ".text", 0), ("g", ".text", 12)], fill=7), "draft-padded 0 bytes, 1 symbols move"),
+    ],
+)
+def test_an_nm_object_replaces_the_matching_one_only_when_the_layout_stays(tmp_path, raw, verdict):
+    """NM_PICK: the draft's object takes the place of the matching one when every section keeps its size and every
+    symbol its offset; otherwise the matching object stays, and the reason is written beside the pick."""
+    import shutil
+    import subprocess
+    import sys
+
+    config = make_config(tmp_path)
+    config.project.non_matching = "NON_MATCHING"
+    text = build.makefile(config).decode()
+    script = text[text.index("define NM_PICK\n") + len("define NM_PICK\n") : text.index("\nendef\nexport NM_PICK")]
+    matching = elf({".text": 16}, [("f", ".text", 0), ("g", ".text", 8)])
+    (tmp_path / "raw.o").write_bytes(raw)
+    (tmp_path / "matching.o").write_bytes(matching)
+    objcopy = shutil.which("mips-linux-gnu-objcopy") or shutil.which("objcopy")
+    if verdict.startswith("draft-padded") and not objcopy:
+        pytest.skip("no objcopy to pad with")
+    run = subprocess.run(
+        [sys.executable, "-I", "-c", script, "raw.o", "matching.o", "out.o", objcopy or "objcopy"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    assert (tmp_path / "out.o.pick").read_text() == f"{verdict} out.o\n"
+    if verdict.startswith("draft-padded"):  # the draft's text, zero-filled to the matching unit's size
+        subprocess.run([objcopy, "-O", "binary", "-j", ".text", "out.o", "text.bin"], cwd=tmp_path, check=True)
+        filled = int(verdict.split()[1])
+        assert (tmp_path / "text.bin").read_bytes() == bytes([7]) * (16 - filled) + bytes(filled)
+    else:
+        assert (tmp_path / "out.o").read_bytes() == (raw if verdict == "draft" else matching)
+
+
+def test_the_nm_object_of_a_unit_builds_with_the_define_and_is_picked_against_the_matching_one(tmp_path):
+    """make -n on the generated rules: the raw object compiles the same source with -DNON_MATCHING (the matching one
+    without it), and the NM object is the pick between the two."""
+    import subprocess
+
+    config = make_config(tmp_path)
+    config.project.non_matching = "NON_MATCHING"
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.c").write_text("int a;\n")
+    (tmp_path / "asm/us").mkdir(parents=True)
+    (tmp_path / "asm/us/.extracted").touch()
+    (tmp_path / "versions/us/text_sizes.mk").write_text("build/us/src/a.c.o: TEXTSIZE := 0x10\n")
+    run = subprocess.run(
+        [
+            *("make", "-n", "STAMPS=", "TC=stub", "PREPROCESS_stub=@echo pre $(DEFINES) $<"),
+            *("COMPILE_stub=echo cc $@", "build/nm/us/src/a.c.o"),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    lines = run.stdout.splitlines()
+    assert any("pre -DVERSION_US -DNON_MATCHING src/a.c" in line for line in lines)
+    assert any(re.search(r"pre -DVERSION_US\s+src/a.c", line) for line in lines)  # the matching object takes no define
+    assert any(
+        "build/nmraw/us/src/a.c.o build/us/src/a.c.o build/nm/us/src/a.c.o" in line and "$NM_PICK" in line
+        for line in lines
+    )
+    assert "build/nmraw/us/src/a.c.o: TEXTSIZE := 0x10" in (tmp_path / "build/text_sizes_nmraw.mk").read_text()

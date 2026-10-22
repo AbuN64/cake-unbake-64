@@ -56,6 +56,18 @@
    "minLength": 1,
    "description": "the version whose memory map the README progress block shows"
   },
+  "non_matching": {
+   "type": "object",
+   "description": "present: the Makefile also builds every draft in (make NON_MATCHING=1) and links one ROM per version under build/nm/",
+   "properties": {
+    "define": {
+     "type": "string",
+     "pattern": "^[A-Z_][A-Z0-9_]*$",
+     "description": "the macro the drafts test; NON_MATCHING when absent"
+    }
+   },
+   "additionalProperties": false
+  },
   "readme_map_link": {
    "type": "string",
    "minLength": 1,

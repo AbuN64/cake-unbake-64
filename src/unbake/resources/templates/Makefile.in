@@ -20,14 +20,12 @@ ifeq ($$(filter -j% --jobserver%,$$(MAKEFLAGS)),)
 MAKEFLAGS += -j$$(JOBS)
 endif
 endif
-${tool_defaults}
+${nm_goal}${tool_defaults}
 ${version_vars}
 STAMPS := ${stamps}
 
 # The first path word under build/ is the version: build/<version>/<source path>.o
-ver = $$(firstword $$(subst /, ,$$1))
-src = $$(patsubst $$(call ver,$$1)/%,%,$$1)
-DEFINES = -D$$(VMACRO_$$(call ver,$$*))
+${path_rules}
 INCLUDES = -Iinclude -I$$(dir $$<)
 ASINC = -Iasm/$$(call ver,$$*)
 # Every version macro for the assembler, 1 for the version built and 0 for the others: library assembly keeps the
@@ -291,4 +289,4 @@ build/%/$$(NAME).z64: build/%/$$(NAME).bin roms/baserom.%.z64
 	$$(Q)truncate -s $$$$(wc -c < roms/baserom.$$*.z64) $$@
 	$$(Q)test "$$$$(sha1sum < $$@ | cut -d' ' -f1)" = $$(SHA1_$$*) || { echo "$$@: SHA-1 is not $$(SHA1_$$*)" >&2; exit 1; }
 
-${toolchain_rules}
+${nm_rules}${toolchain_rules}

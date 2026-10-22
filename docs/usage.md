@@ -112,7 +112,7 @@ what is absent.
 
 A project is `config.toml` at schema 4: `name`, `toolchain`, optional `title`, `names_from`, `libraries`, `cppflags`,
 `cflags`, `asflags`, one `[version.<id>]` table per ROM (`sha1`, `segments`, optional README inputs) and optional
-`[file."path or dir/"]` rows (`toolchain`, `cflags`, `omit`) where the most specific row wins. Everything else is
+`[file."path or dir/"]` rows (`toolchain`, `cflags`, `omit`) where the most specific row wins. An optional `[non_matching]` table (`define`, `NON_MATCHING` when absent) adds the NON_MATCHING build below. Everything else is
 derived: the baserom path, the `VERSION_<ID>` macro, `versions/<id>/` and the include directories. The facts on disk
 are `versions/<id>/symbol_addrs.txt` (splat format, `type:func|data rom:0x... size:0x...`) and the sources.
 
@@ -150,6 +150,13 @@ fair share as a make jobserver, grows into slots other commands free and gives t
 host file comes from `UNBAKE_HOST`; without one the command runs alone on one job. `unbake setup`, `check` and `score`
 already build this way; only a hand-run `make` needs `unbake-run`.
 
+A project with a `[non_matching]` table also builds every draft in: `make NON_MATCHING=1` (or `make nm`) compiles the
+sources with `-D<define>` into `build/nmraw/<version>/` and links one ROM per version, `build/nm/<version>/<name>.z64`.
+A unit whose NON_MATCHING object keeps the layout of its matching one (every section the same size, every symbol at
+the same offset) takes its place; any other unit keeps its matching object, so every address and size in the ROM
+stays and the raw tables that name code stay right. The ROM differs from the baserom in the drafts' code only and
+matches no SHA-1, so nothing checks one. `build/nm/<version>/report.txt` lists the units left out and the section
+that grew.
 `make check CHECK=tree` checks only that the committed generated files are present, with no ROM;
 `unbake sync --check` is the currency check, run from outside (a landing runs it every round).
 
