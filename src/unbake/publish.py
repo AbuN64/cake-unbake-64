@@ -450,6 +450,21 @@ def splice_traced(
     return _traced([p for p in pieces if p[1]])
 
 
+_VENDORED = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"[^"]+\.c(?:pp)?"', re.M | re.I)
+
+
+def whole_unit(source: str, name: str) -> bool:
+    """Whether the candidate is the whole unit that supplies `name`: it includes a C source (a vendored library body
+    selected by the defines above the include) and does not define `name` itself, so the function is found by symbol in
+    the built object and the candidate replaces the unit instead of being spliced into it."""
+    return bool(_VENDORED.search(source)) and not any(i.kind == "function" and i.name == name for i in items(source))
+
+
+def whole_traced(source: str) -> tuple[str, list[Origin]]:
+    """The candidate as the unit, every line from the candidate."""
+    return _traced([("candidate", source if source.endswith("\n") else source + "\n", 1)])
+
+
 def replace_traced(current: str, name: str, source: str) -> tuple[str, list[Origin]]:
     """`current` with the definition of `name` it already holds replaced by the candidate's (a landed function), and
     per line of the new text where it came from. The candidate's other items come along as `splice_traced` brings

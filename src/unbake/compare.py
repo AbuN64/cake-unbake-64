@@ -245,6 +245,8 @@ def _text(current: str, segment: str, name: str, source: str) -> tuple[str, list
     of its lines came from. A stand-in that only builds without NON_MATCHING (`#ifndef NON_MATCHING`), whose draft
     the file holds in a NON_MATCHING block of its own, is not where a measure reads the candidate: the candidate
     takes the draft's place, among the types and declarations the draft is written against."""
+    if publish.whole_unit(source, name):  # a vendored library unit: the file is the unit, the member is found by symbol
+        return publish.whole_traced(source)
     if publish.measured_apart(current, segment, name):
         return publish.replace_traced(current, name, source)
     try:

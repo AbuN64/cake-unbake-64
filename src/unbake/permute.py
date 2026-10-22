@@ -45,6 +45,18 @@ def _script(root: Path, script: str) -> str:
     return "#!/bin/sh\n" + head + script.removeprefix("#!/bin/sh\n") + "\n"
 
 
+def _python(permuter: str) -> list[str]:
+    """The interpreter that runs the permuter script: UNBAKE_PERMUTER_PYTHON, else the python of the venv beside the
+    user's home named venv-permuter or beside the script, else none (the script's own shebang). The shebang's python
+    is the system one, which holds none of the permuter's requirements."""
+    given = os.environ.get("UNBAKE_PERMUTER_PYTHON", "")
+    home, here = Path.home(), Path(permuter).resolve().parent
+    for python in (given, home / "venv-permuter/bin/python", here / "venv/bin/python", here / ".venv/bin/python"):
+        if python and Path(python).is_file() and os.access(python, os.X_OK):
+            return [str(python)]
+    return []
+
+
 def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Json:
     """Runs the permuter for `params["permute"]` seconds on the function's context (`api.build_context`) and returns
     {base_score, best_score, function, diff, outputs}: scores are the permuter's (lower is closer to the target), the
@@ -67,7 +79,18 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     if done.exit != 0:
         raise Refusal(Finding("native.exit", f"assembling the target failed: {done.stderr.decode()[-300:]}", unit=name))
     jobs = str(params.get("jobs") or min(8, config.host.workers))
-    argv = ["/usr/bin/nice", "-n", "10", permuter, "-j", jobs, "--best-only", "--quiet", str(folder)]
+    argv = [
+        "/usr/bin/nice",
+        "-n",
+        "10",
+        *_python(permuter),
+        permuter,
+        "-j",
+        jobs,
+        "--best-only",
+        "--quiet",
+        str(folder),
+    ]
     ran = process.run("permute.run", argv, folder, tmp=work / "tmp", timeout=float(params["permute"]))
     said = re.search(r"base score = (\d+)", ran.stdout.decode(errors="replace"))
     if said is None and ran.signal != signal.SIGKILL:

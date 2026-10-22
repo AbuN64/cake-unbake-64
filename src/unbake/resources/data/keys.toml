@@ -524,3 +524,7 @@ sentence = "the change is not a pure identifier rename, so only a build proves i
 [key."blobs.proof"]
 owner = "blobs"
 sentence = "a pinned blob proof input or typed byte coverage failed; no decoded credit was granted"
+
+[key."tree.inflight"]
+owner = "cli"
+sentence = "a writer was changing the tree: the measure read the tree as the writer had it, and a ship's ROM check stays the proof"

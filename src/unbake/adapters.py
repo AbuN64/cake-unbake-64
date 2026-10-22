@@ -395,6 +395,13 @@ def linker(config: Config) -> Linker:
     return N64Link(config)
 
 
+def _asm_includes(config: Config, version: str) -> list[str]:
+    """Where the build's assembler finds the `.include` lines a C unit's INCLUDE_ASM leaves in its assembly: the
+    version's extraction, its include folder and the project's, absolute because a script runs from any directory."""
+    root = config.project.root
+    return [f"-I{root / 'asm' / version}", f"-I{root / 'asm' / version / 'include'}", f"-I{root / 'include'}"]
+
+
 def script(config: Config, recipe: Recipe, version: str) -> str:
     """POSIX sh compiling "$1" to "$3" as a compile script; every word quoted except the "$n" words."""
     with effort.stage("adapters.script"):
@@ -431,7 +438,7 @@ def script(config: Config, recipe: Recipe, version: str) -> str:
                 (
                     chain.argv(
                         "assemble",
-                        asflags=recipe.asflags,
+                        asflags=[*recipe.asflags, *_asm_includes(config, version)],  # the build's ASFLAGS + ASINC
                         includes=[],
                         name=["function"],
                         source=['"$3.s"'],

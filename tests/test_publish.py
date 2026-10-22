@@ -640,3 +640,12 @@ def test_a_whole_file_candidate_keeps_an_earlier_function_with_a_version_guard_i
     )
     out, _ = publish.replace_traced(text, "target", text)
     assert out == text  # the file scored as its own candidate is the file, `before` not brought twice
+
+
+def test_a_candidate_that_includes_a_vendored_source_is_the_whole_unit():
+    unit = '#include "include_asm.h"\n#define L_x\n#include "libgcc2.inc.c"\n'
+    assert publish.whole_unit(unit, "__x")
+    assert not publish.whole_unit(unit + "int __x(int a) { return a; }\n", "__x")  # it defines the member itself
+    assert not publish.whole_unit('#include "types.h"\nint f(int a) { return a; }\n', "g")
+    text, origins = publish.whole_traced(unit)
+    assert text == unit and len(origins) == 3

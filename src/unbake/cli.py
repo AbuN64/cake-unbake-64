@@ -99,6 +99,7 @@ def _emit(name: str, code: int, result: Json | None, findings: Sequence[Finding]
 
 
 _READERS = frozenset({"compare", "score", "probe", "symbols", "map"})  # they read the tree a ship rewrites
+_MEASURERS = frozenset({"score", "probe"})  # they write nothing and prove nothing: a ship in flight never holds them
 
 
 def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
@@ -120,8 +121,11 @@ def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
                 root = Path(params.pop("project") or Path.cwd()).resolve()  # splat runs elsewhere: one absolute root
                 cfg = config.load(root, host)
                 effort.bind(cfg)
-                with treelock.hold(root, who=name) if name in _READERS else nullcontext():
+                with treelock.hold(root, who=name, wait=name not in _MEASURERS) if name in _READERS else nullcontext():
                     result = handler(cfg, params)
+                if treelock.inflight and isinstance(result, dict):
+                    note = [Finding("tree.inflight", line, blocking=False) for line in treelock.inflight]
+                    result = {**result, "notes": [*result.get("notes", ()), *(asdict(f) for f in note)]}
                 findings = [*_refused(result), *_noted(result)]
                 code = _failed(findings)
     except Refusal as refusal:

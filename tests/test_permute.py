@@ -55,3 +55,17 @@ def test_search_without_a_permuter_names_how_to_pass_one(tmp_path: Path) -> None
     with pytest.raises(Refusal) as refused:
         permute.search(config, "g", {}, {"permute": 5}, tmp_path)  # type: ignore[arg-type]
     assert "UNBAKE_PERMUTER" in refused.value.findings[0].reason
+
+
+def test_the_permuter_runs_under_the_venv_python_it_needs_not_the_shebangs(tmp_path: Path, monkeypatch) -> None:
+    venv = tmp_path / "venv-permuter/bin"
+    venv.mkdir(parents=True)
+    (venv / "python").write_text("#!/bin/sh\n")
+    (venv / "python").chmod(0o755)
+    script = tmp_path / "permuter.py"
+    script.write_text("")
+    monkeypatch.delenv("UNBAKE_PERMUTER_PYTHON", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert permute._python(str(script)) == [str(venv / "python")]
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "none"))
+    assert permute._python(str(script)) == []

@@ -41,6 +41,31 @@ def test_readers_share_and_a_reader_waits_out_a_writer(tmp_path: Path) -> None:
     assert said and said[0].startswith("waiting for ")
 
 
+def test_a_measurer_never_waits_for_a_writer_and_names_it(tmp_path: Path) -> None:
+    said: list[str] = []
+    writer = _other(tmp_path, "x", 1.5)
+    began = time.monotonic()
+    treelock.inflight.clear()
+    with treelock.hold(tmp_path, who="probe", say=said.append, wait=False) as waited:
+        assert waited == 0.0 and time.monotonic() - began < 0.5
+    writer.wait()
+    assert len(treelock.inflight) == 1 and "pid " in treelock.inflight[0] and "not waiting" in treelock.inflight[0]
+    assert said and "writer" in said[0]
+    treelock.inflight.clear()
+    with treelock.hold(tmp_path, who="probe", wait=False):  # no writer: an ordinary shared hold
+        pass
+    assert not treelock.inflight
+
+
+def test_a_waiting_reader_names_the_writer_pid_and_start(tmp_path: Path) -> None:
+    said: list[str] = []
+    writer = _other(tmp_path, "x", 0.6)
+    with treelock.hold(tmp_path, who="compare", say=said.append):
+        pass
+    writer.wait()
+    assert said and " since " in said[0] and "(pid " in said[0]
+
+
 def test_a_holder_marks_its_children_so_they_run_inside_the_hold(tmp_path: Path) -> None:
     with treelock.hold(tmp_path, exclusive=True), treelock.hold(tmp_path) as waited:  # would deadlock without the mark
         assert waited == 0.0

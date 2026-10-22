@@ -240,6 +240,8 @@ def test_script_emitted_assembly(adapter_config, recipe, toolchains):
     assert len(script.splitlines()) == 6
     assert '"$3.i" -o "$3.s"' in script
     assert '"$3.s" -o "$3"' in script
+    root = adapter_config.project.root
+    assert f"-I{root}/asm/a" in script and f"-I{root}/include" in script  # an INCLUDE_ASM's .include resolves
 
 
 @pytest.mark.parametrize("trim,score", [(False, False), (True, True)])
