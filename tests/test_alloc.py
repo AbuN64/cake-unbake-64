@@ -76,9 +76,13 @@ def test_report_names_pseudos_local_alloc_placed_and_flips_only_within_one_alloc
     (row,) = alloc.report("f", greg, lreg, ASM, {"$f0": Counter({"$f2": 3})})
     assert (row["register"], row["candidate"]["pseudo"], row["candidate"]["allocator"]) == ("$f2", 141, "local")
     assert (row["target"]["pseudo"], row["target"]["allocator"]) == (140, "local")
-    assert row["flip"] is None  # the target's 140 outranks 141 already: nothing to lift
+    assert row["flip"]["cause"] == "conflict"  # 140 outranks 141 already: the prediction names what lowers 141
     (mixed,) = alloc.report("f", greg, lreg, ASM, {"$f0": Counter({"$s4": 2})})  # global winner vs local pseudo
-    assert (mixed["candidate"]["allocator"], mixed["target"]["allocator"], mixed["flip"]) == ("global", "local", None)
+    assert (mixed["candidate"]["allocator"], mixed["target"]["allocator"], mixed["flip"]["cause"]) == (
+        "global",
+        "local",
+        "allocator",
+    )
 
 
 LREG_RTL = (

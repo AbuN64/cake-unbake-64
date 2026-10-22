@@ -88,6 +88,33 @@ def _sited(proof: Proof, resolved: Resolved) -> Proof:
     return replace(proof, missing=tuple(_SITE.sub(fix, m) for m in proof.missing))
 
 
+def _siter(config: Config, placed: Placed, resolved: Resolved) -> Callable[[int], str]:
+    """A line of the compiled module as `file:line  text`: of the candidate, or of the file it was spliced into."""
+    cache: dict[str, list[str]] = {}
+
+    def lines(path: str) -> list[str]:
+        if path not in cache:
+            source = resolved.source if Path(path) == resolved.file else None
+            try:
+                cache[path] = (source if source is not None else (config.project.root / path).read_text("utf-8")).split(
+                    "\n"
+                )
+            except OSError:
+                cache[path] = []
+        return cache[path]
+
+    def site(line: int) -> str:
+        if not 0 < line <= len(placed.origins):
+            return ""
+        kind, number = placed.origins[line - 1]
+        path = str(resolved.file) if kind == "candidate" else placed.owner.path
+        rows = lines(str(resolved.file) if kind == "candidate" else placed.owner.path)
+        text = rows[number - 1].strip() if 0 < number <= len(rows) else ""
+        return f"{path}:{number}  `{text[:100]}`"
+
+    return site
+
+
 def _measure(
     config: Config, resolved: Resolved, overrides: Json | None = None, overlays: Mapping[str, bytes] | None = None
 ) -> tuple[Proof, ...]:
@@ -814,7 +841,14 @@ def _score_one(config: Config, params: Json) -> Json:
                 kept = Path(params["keep_dumps"]).resolve()
                 shutil.copytree(work / "alloc", kept, dirs_exist_ok=True)
                 result["dumps"] = sorted(str(kept / f.name) for f in (work / "alloc").iterdir())
-        result["alloc"] = alloc.report(name, greg, lreg, asm, symptoms.register_votes(built, target))
+        result["alloc"] = alloc.report(
+            name,
+            greg,
+            lreg,
+            asm,
+            symptoms.register_votes(built, target),
+            _siter(config, resolved.at(version), resolved),
+        )
         vram = native.symbol_facts(config, version, extras)[name][0]
         result["sched"] = sched.report(name, passes, symptoms.listing(built, vram), everything)
     return result

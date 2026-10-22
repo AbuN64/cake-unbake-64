@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 
 from unbake.contracts import Json
 
@@ -43,7 +44,7 @@ def _edit(ours: Json, theirs: Json, flipped: Json | None) -> str:
             f"the candidate holds `{o}` in {reg} and has no pseudo for what the target keeps there: a value the "
             "target keeps live is missing (a local read before a call and used after it, see the frame line)."
         )
-    if flipped:
+    if flipped and "cause" not in flipped:
         by = [f"use `{t}` {flipped['more_refs']} more time(s) (re-read it instead of re-deriving the value)"]
         if flipped["shorter_by"]:
             by.append(f"shorten its life by {flipped['shorter_by']} insns (assign it later or end its last use sooner)")
@@ -64,6 +65,64 @@ def _edit(ours: Json, theirs: Json, flipped: Json | None) -> str:
         f"conflict with a value live at the same time: split `{t}` into two temporaries around {where or 'its uses'}"
         f", or reorder so `{o}` ends before `{t}` starts."
     )
+
+
+def _fewer(refs: int, length: int, beat: float) -> int | None:
+    """How many references fewer a pseudo of `refs` refs over `length` insns needs to fall to priority `beat`."""
+    return next((refs - n for n in range(refs - 1, 0, -1) if priority(n, length) <= beat), None)
+
+
+def _spots(rows: list[Json], site: Callable[[int], str] | None, first_last: bool = False) -> str:
+    """The source places of a pseudo's references, `file:line  text`; `first_last` keeps its first and last only."""
+    found = [site(r["line"]) for r in rows] if site else []
+    found = [t for t in found if t]
+    if first_last and len(found) > 2:
+        found = [found[0], found[-1]]
+    return "; ".join(dict.fromkeys(found))
+
+
+def _rewrites(ours: Json, theirs: Json, flipped: Json | None, site: Callable[[int], str] | None) -> list[str]:
+    """Concrete edits, each naming the file:line to change and what to do there, for a register the candidate gives to
+    `ours` and the target to `theirs`."""
+    if flipped is None or not site:
+        return []
+    o, t = ours["name"], theirs["name"]
+    out: list[str] = []
+    last = _spots(theirs["lines"][-1:], site)
+    first = _spots(theirs["lines"][:1], site)
+    if flipped.get("cause") == "allocator" and theirs["lines"]:
+        wide = theirs["allocator"] == "global"
+        out.append(
+            f"`{t}` must be placed by {theirs['allocator']}-alloc: its uses are {_spots(theirs['lines'], site)}; "
+            + (
+                "assign it before the branch or loop that encloses its first use and read it after"
+                if wide
+                else "declare it in the inner block where it is used"
+            )
+        )
+    if flipped.get("more_refs") and not flipped.get("cause") and last:
+        out.append(
+            f"add {flipped['more_refs']} more read(s) of `{t}`: at {last} use the variable again where the code "
+            "re-derives its value (a repeated expression, a reload through a pointer)"
+        )
+    if flipped.get("shorter_by") and first:
+        out.append(
+            f"shorten the life of `{t}` by {flipped['shorter_by']} insns: it starts at {first}; move that statement "
+            "down to just before the first statement that reads it"
+        )
+    if flipped.get("fewer_refs") and ours["lines"]:
+        out.append(
+            f"give `{o}` {flipped['fewer_refs']} reference(s) fewer: its uses are {_spots(ours['lines'], site)}; "
+            "read it once into the expression that needs it, or drop the repeated reads"
+        )
+    if ours["lines"] and theirs["lines"]:
+        a, b = ours["lines"][-1]["line"], theirs["lines"][0]["line"]
+        if a > b:  # the two lives overlap in the source: end the candidate's before the target's starts
+            out.append(
+                f"`{o}` is still live at {_spots(ours['lines'][-1:], site)} when `{t}` starts at {first}: move that "
+                f"last use of `{o}` above {first}, or start `{t}` after it"
+            )
+    return out
 
 
 def _part(text: str, name: str) -> str:
@@ -99,7 +158,14 @@ def lines(lreg: str, function: str, pseudos: set[int]) -> dict[int, list[Json]]:
     }
 
 
-def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Counter[str]]) -> list[Json]:
+def report(
+    function: str,
+    greg: str,
+    lreg: str,
+    asm: str,
+    votes: dict[str, Counter[str]],
+    site: Callable[[int], str] | None = None,
+) -> list[Json]:
     """A row per register the target fills with another pseudo than the candidate's winner; `votes` maps each register
     the candidate uses to the one the target uses in the same operand of the aligned instructions. A pseudo local-alloc
     placed (in the dispositions, never in the global order) is named too, with its allocator: "free" means no pseudo
@@ -173,6 +239,14 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
             and theirs["priority"] < ours["priority"]
         )
         lifted = flip(theirs["refs"], theirs["length"], ours["priority"]) if beaten else None
+        if lifted is None and ours["pseudo"] is not None and theirs["pseudo"] is not None:
+            # not a plain priority loss (the target's pseudo outranks already, or another allocator places it): the
+            # prediction is what lifts it over the candidate's pseudo anyway, and what lowers the candidate's below it
+            lifted = {
+                **flip(theirs["refs"], theirs["length"], ours["priority"]),
+                "fewer_refs": _fewer(ours["refs"], ours["length"], theirs["priority"]),
+                "cause": "allocator" if ours["allocator"] != theirs["allocator"] else "conflict",
+            }
         rows.append(
             {
                 "register": ours["register"],
@@ -181,6 +255,7 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
                 "votes": count,
                 "flip": lifted,
                 "edit": _edit(ours, theirs, lifted),
+                "rewrites": _rewrites(ours, theirs, lifted, site),
             }
         )
     return rows
