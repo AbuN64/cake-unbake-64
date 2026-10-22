@@ -204,11 +204,11 @@ def run(config: Config, params: Json) -> Json:
         try:
             now = tree.capture(config)
             after = {**repo.generated(config, now), **repo.stand_ins(config, now)}  # what `unbake sync` would write
-            moved = {p: b for p, b in after.items() if before.get(p) != b}  # only what the split moves: no old drift
+            shifted = {p: b for p, b in after.items() if before.get(p) != b}  # only what the split moves: no old drift
             files = (
                 *files,
                 *journal.apply(
-                    config, publish.make_plan("generated", plan.base, moved, (), (), ""), publish.Reads(config, {})
+                    config, publish.make_plan("generated", plan.base, shifted, (), (), ""), publish.Reads(config, {})
                 ),
             )
             now = tree.capture(config)
