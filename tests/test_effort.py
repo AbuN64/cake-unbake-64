@@ -558,3 +558,24 @@ def test_a_command_running_past_the_beat_says_its_stage_and_cpu(monkeypatch):
     with effort.command("submit", ["submit"]), effort.stage("publish.build"):
         time.sleep(0.2)
     assert any("hold: submit runs" in line and "CPU-s, now in submit > publish.build" in line for line in said)
+
+
+def test_only_the_ship_lock_holder_keeps_normal_priority(monkeypatch):
+    """One rule: a command without UNBAKE_PRIORITY=1 runs nice (inherited by its workers); the holder is not niced."""
+    calls = []
+    level = [0]
+
+    def nice(step):
+        level[0] += step
+        calls.append(step)
+        return level[0]
+
+    monkeypatch.setattr(effort.os, "nice", nice)
+    monkeypatch.delenv("UNBAKE_NICE", raising=False)
+    monkeypatch.setenv("UNBAKE_PRIORITY", "1")
+    assert effort.yield_cpu() == 0 and calls == [0]
+    monkeypatch.delenv("UNBAKE_PRIORITY")
+    assert effort.yield_cpu() == effort.NICE
+    assert effort.yield_cpu() == effort.NICE and calls[-1] == 0  # never lowers it, never nices twice
+    monkeypatch.setenv("UNBAKE_NICE", "0")
+    assert effort.yield_cpu() == effort.NICE and calls[-1] == 0  # 0 keeps whatever it is

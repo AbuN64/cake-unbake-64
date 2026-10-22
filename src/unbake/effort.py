@@ -242,6 +242,23 @@ def closed() -> tuple[StageRecord, ...]:
     return tuple(_closed)
 
 
+NICE = 15  # the niceness of every command but the ship lock holder (UNBAKE_PRIORITY=1); UNBAKE_NICE overrides, 0 keeps
+
+
+def yield_cpu() -> int:
+    """One rule for the host: only the job every tree waits on (the ship/land lock holder, UNBAKE_PRIORITY=1) runs at
+    normal priority; any other command (and its workers, compilers and permuters, which inherit it) runs nice, so a
+    crowd of lane commands never slows the lock holder. Returns the niceness now (never lowers an existing one)."""
+    want = int(os.environ.get("UNBAKE_NICE", NICE))
+    if os.environ.get("UNBAKE_PRIORITY") == "1" or want <= 0:
+        return os.nice(0)
+    try:
+        now = os.nice(0)
+        return os.nice(want - now) if now < want else now
+    except OSError:
+        return -1
+
+
 HOLD_BEAT = 300.0  # a command still running after this many seconds names its stage and CPU, then again every beat
 _live: list[tuple[str, ...]] = []  # the paths of the stages open now (outermost first), for the hold beat
 
@@ -556,6 +573,7 @@ def command(name: str, argv: Sequence[str]) -> Iterator[None]:
     _memo, _seen = {}, set()
     _waits.clear()
     token = _stack.set(())
+    yield_cpu()
     try:
         with _hold_beat(name, HOLD_BEAT), _scope(_Open(name, "command")):
             yield None
