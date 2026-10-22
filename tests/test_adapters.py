@@ -337,6 +337,25 @@ def test_chain_steps_are_neutral(adapter_config, chains, recipe, id, names):
     assert not any("VERSION" in w for s in steps for w in s.argv)  # nothing of a version reaches a cached step
 
 
+def test_an_align_step_drops_the_alignment_a_data_start_does_not_meet_between_compile_and_assemble(
+    adapter_config, chains, recipe, tmp_path
+):
+    """Data the ROM has at 4 mod 8 (a jump table behind `.align 3`): the step is the Makefile's own STRIP_ALIGN."""
+    import subprocess
+
+    steps = adapters.chain_steps(adapter_config, "fake-9", recipe, [], "unit", 4)
+    assert [s.phase for s in steps] == ["compile", "align", "assemble"] and steps[1].out == "source.s"
+    assert adapters.chain_steps(adapter_config, "fake-9", recipe, [], "unit", 0) == adapters.chain_steps(
+        adapter_config, "fake-9", recipe, [], "unit"
+    )
+    assert adapters.chain_steps(adapter_config, "gcc-test", recipe, [], "unit", 4)[-1].phase == "compile"
+    source = tmp_path / "source.s"
+    source.write_text(".section .rodata\n.word 1\n.align 3\n.word 2\n.text\n.align 3\n")
+    argv = [w.replace("{in}", "source.s").replace("{out}", steps[1].out) for w in steps[1].argv]
+    subprocess.run(argv, cwd=tmp_path, check=True)
+    assert source.read_text() == ".section .rodata\n.word 1\n.word 2\n.text\n.align 3\n"
+
+
 def _tool_files(config, names):
     for name in names:
         path = config.host.toolchain_root / name if "/" in name else config.host.tools[name]

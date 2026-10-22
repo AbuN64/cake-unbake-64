@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from importlib import metadata
@@ -295,8 +296,19 @@ def _asflags(row: Json, recipe: Recipe, includes: Sequence[str]) -> list[str]:
     return [*recipe.asflags, *(() if "{includes}" in row["assemble"] else includes)]
 
 
-def chain_steps(config: Config, id: str, recipe: Recipe, include: Sequence[Path], stem: str) -> tuple[Step, ...]:
-    """The compile and assemble commands of a unit with {in} and {out} for their files, for abucache's compile cache."""
+def strip_align_script() -> str:
+    """The python of the generated Makefile's STRIP_ALIGN: the one text both builds run, so what a measure assembles is
+    what the build assembles."""
+    text = configuration.template("Makefile.in")
+    return text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0] + "\n"
+
+
+def chain_steps(
+    config: Config, id: str, recipe: Recipe, include: Sequence[Path], stem: str, align: int = 0
+) -> tuple[Step, ...]:
+    """The compile and assemble commands of a unit with {in} and {out} for their files, for abucache's compile cache.
+    `align` is the address mod 8 the ROM puts the unit's data at (the Makefile's NOALIGN): the assembly drops the
+    alignment that start does not meet before it is assembled."""
     chain = toolchain(config, id)
     row, includes = chain.row, [f"-I{p}" for p in include]
     steps = [
@@ -307,6 +319,10 @@ def chain_steps(config: Config, id: str, recipe: Recipe, include: Sequence[Path]
         )
     ]
     if row["emits_asm"]:
+        if align:
+            steps.append(
+                Step("align", "source.s", (sys.executable, "-I", "-c", strip_align_script(), "{in}", str(align)))
+            )
         argv = (
             chain.argv(
                 "assemble",

@@ -123,7 +123,7 @@ def _adopt(cfg: Config, key: str, text: str, steps: Sequence[compile.Step], tool
 
 
 def _compile_inputs(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, include: tuple[Path, ...]
+    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, include: tuple[Path, ...], align: int = 0
 ) -> tuple[str, tuple[compile.Step, ...], str, str]:
     seen = view.get(snapshot, unit, version, recipe, lines=False)
     text = seen.text
@@ -131,7 +131,7 @@ def _compile_inputs(
     # directories (absolute paths of this checkout) are not an input, so they stay out of the key and every
     # worktree of the project shares its objects.
     reads = re.search(r"\.(?:include|incbin)\b", text) is not None
-    steps = adapters.chain_steps(snapshot.config, recipe.toolchain, recipe, include if reads else (), _INPUT)
+    steps = adapters.chain_steps(snapshot.config, recipe.toolchain, recipe, include if reads else (), _INPUT, align)
     tools = str(
         effort.memo(
             ("tool-identity", recipe.toolchain), lambda: adapters.tool_identity(snapshot.config, recipe.toolchain)
@@ -147,10 +147,11 @@ def _include(snapshot: Snapshot, version: str) -> tuple[Path, ...]:
 
 
 def objects(
-    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path
+    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe, work: Path, align: int = 0
 ) -> tuple[Path, tuple[NativeResult, ...]]:
     """Preprocess, compile and assemble one module through abucache's cache keyed by the preprocessed bytes, the
-    commands and the tools. The same text compiles once, whatever file, version or checkout asks."""
+    commands and the tools. The same text compiles once, whatever file, version or checkout asks. With `align` (the
+    address mod 8 of the unit's data in the ROM) its assembly loses the alignment that start does not meet."""
     with effort.stage("native.objects"), _tools(unit, snapshot, unit, version, recipe):
         cfg = snapshot.config
         work.mkdir(parents=True, exist_ok=True)
@@ -160,7 +161,7 @@ def objects(
             versioned = replace(recipe, asflags=(*recipe.asflags, *libasm.defsyms(list(cfg.project.versions), version)))
             result = adapters.GnuAssembler(cfg).assemble(source, versioned, _include(snapshot, version), obj)
             return obj, (result,)
-        text, steps, tools, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
+        text, steps, tools, key = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version), align)
         source, obj = (
             work / f"{_INPUT}.i",
             work / f"{Path(unit.path).stem}.o",
@@ -602,6 +603,12 @@ def _pool_gaps(snapshot: Snapshot, version: str, pool: _Pool, built: bytes) -> l
     ]
 
 
+def _unmet(starts: Mapping[str, int]) -> int:
+    """The address mod 8 of the data of the unit where the ROM has it, 0 when it starts on an 8-byte boundary (the
+    first of its data sections off one: read-only data, then data)."""
+    return next((starts[s] % 8 for s in (".rodata", ".data") if starts.get(s, 0) % 8), 0)
+
+
 def _link(
     snapshot: Snapshot,
     unit: UnitSpec,
@@ -613,6 +620,7 @@ def _link(
     work: Path,
     facts: dict[str, symbols.Symbol],
     spelled: Collection[str] = (),
+    align: int = 0,
 ) -> Proof:
     cfg = snapshot.config
     blob = obj.read_bytes()
@@ -639,6 +647,13 @@ def _link(
         ".rodata" not in starts or _superseded(pool, defined, facts, table, spelled, name)
     ):  # the unit's own literal pool sits where the ROM's code reads it
         starts[".rodata"] = pool.base
+    if not align and (align := _unmet(starts)):
+        # the ROM packs the unit's data against its address, where the assembler pads from the section start: the same
+        # module assembled without the alignment its start does not meet, then measured again
+        again, _ = objects(snapshot, unit, version, recipe, work / f"align{align}", align)
+        return _link(
+            snapshot, unit, version, name, recipe, source, again, work / f"align{align}", facts, spelled, align
+        )
     for out in totals:  # a section no named symbol places follows the code (the per-object shape)
         starts.setdefault(out, (end + 15) & ~15)
     placed = tuple(
@@ -660,6 +675,7 @@ def _link(
             abucache.__version__,
             adapters.tool_identity(cfg, recipe.toolchain),
             code_identity(_link, _pool, _pool_gaps, _superseded),
+            align,
             sorted(n for n in defined if n in spelled),
             asdict(pool),
         )

@@ -546,3 +546,11 @@ def test_a_view_directory_named_in_the_text_does_not_split_the_shared_compile(ca
         native.view.get.return_value = replace(native.view.get.return_value, text=text)
         native.objects(snapshot, unit, "a", recipe, work / name)
     assert [call[0] for call in calls] == ["compile", "assemble"]
+
+
+def test_a_unit_whose_data_starts_off_eight_is_measured_from_its_assembly_without_that_alignment():
+    from unbake import native
+
+    assert native._unmet({".text": 0x80000000, ".rodata": 0x800C9D2C}) == 4
+    assert native._unmet({".text": 0x80000004, ".rodata": 0x800C9D28, ".data": 0x800D0002}) == 2
+    assert native._unmet({".text": 0x80000004, ".rodata": 0x800C9D28}) == 0
