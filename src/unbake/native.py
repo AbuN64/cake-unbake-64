@@ -244,7 +244,7 @@ def dumps(
     work.mkdir(parents=True, exist_ok=True)
     (work / f"{stem}.i").write_text(text, encoding="utf-8")
     argv = [a.replace("{in}", f"{stem}.i").replace("{out}", f"{stem}.s") for a in steps[0].argv]
-    argv += ["-g", "-dg", "-dl", "-dS", "-dR"]
+    argv += ["-g", "-dg", "-dl", "-dS", "-dR", "-dL"]  # -dL: the loop dump, why a giv was or was not reduced
     result = process.run("native.dumps", argv, work, tmp=process.scratch(snapshot.config.project.root))
     found = [work / f"{stem}.i.{kind}" for kind in ("greg", "lreg")]
     if result.exit != 0:  # the candidate does not compile: its errors, never a toolchain verdict
@@ -268,7 +268,9 @@ def dumps(
             )
         )
     greg, lreg, asm = (f.read_text(errors="replace") for f in (*found, work / f"{stem}.s"))
-    passes = {k: f.read_text(errors="replace") for k in ("sched", "sched2") if (f := work / f"{stem}.i.{k}").is_file()}
+    passes = {
+        k: f.read_text(errors="replace") for k in ("sched", "sched2", "loop") if (f := work / f"{stem}.i.{k}").is_file()
+    }
     return greg, lreg, asm, passes
 
 

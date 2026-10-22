@@ -198,7 +198,7 @@ def test_allocation_dumps_name_a_compile_error_as_one_and_a_dumpless_toolchain_a
 
     def run(name, argv, cwd, **_):
         assert name == "native.dumps" and cwd == work
-        assert argv == ["cc1", "f.i", "-o", "f.s", "-g", "-dg", "-dl", "-dS", "-dR"]
+        assert argv == ["cc1", "f.i", "-o", "f.s", "-g", "-dg", "-dl", "-dS", "-dR", "-dL"]
         assert (cwd / "f.i").read_text() == "int f;"
         for kind in files:
             (cwd / f"f.i.{kind}").write_text(f";; Function f\n;; {kind}\n")

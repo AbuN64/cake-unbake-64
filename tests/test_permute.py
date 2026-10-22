@@ -69,3 +69,50 @@ def test_the_permuter_runs_under_the_venv_python_it_needs_not_the_shebangs(tmp_p
     assert permute._python(str(script)) == [str(venv / "python")]
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "none"))
     assert permute._python(str(script)) == []
+
+
+def _proc(root: Path, pid: int, parent: int, command: str) -> None:
+    folder = root / str(pid)
+    folder.mkdir(parents=True)
+    (folder / "cmdline").write_bytes(command.replace(" ", "\0").encode())
+    (folder / "stat").write_text(f"{pid} (python3) S {parent} 1 1")
+
+
+def test_running_counts_runs_not_their_workers_and_places_are_capped(tmp_path: Path, monkeypatch) -> None:
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _proc(proc, 100, 1, "python3 /x/permuter.py -j 6 dir")
+    _proc(proc, 101, 100, "python3 /x/permuter.py -j 6 dir")  # a worker of the first
+    _proc(proc, 200, 1, "/x/venv/bin/python /x/permuter.py -j 4 other")
+    _proc(proc, 300, 1, "vim permuter.py")  # not a run
+    assert [p for p, _ in permute._running(proc, tmp_path / "none")] == [100, 200]
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.setattr(permute, "QUEUE_S", 0.0)
+    cfg = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    from unbake import store
+
+    monkeypatch.setattr(store, "exclusive", lambda *a, **k: __import__("contextlib").nullcontext(True))
+    with pytest.raises(Refusal) as refused:
+        permute._place(cfg, proc)
+    assert refused.value.findings[0].key == "permute.cap" and "pid 100" in refused.value.findings[0].reason
+    monkeypatch.setenv("UNBAKE_PERMUTER_CAP", "3")
+    mark = permute._place(cfg, proc)
+    assert mark.is_file()
+    mark.unlink()
+
+
+def test_shield_hides_what_the_permuters_parser_misreads_and_the_script_puts_it_back() -> None:
+    source = (
+        "struct A { int x; } __attribute__((aligned(4)));\n"
+        "typedef struct { char pad[0x11D8 - sizeof(Head) - sizeof(Cam)]; } B;\n"
+        "typedef char C_size_check[(sizeof(C) == 0x8) ? 1 : -1];\n"
+    )
+    text, defines = permute._shield(source)
+    assert "__attribute__" not in text and "UNBAKE_ATTR_0" in text
+    assert "[0x11D8 - UNBAKE_SIZEOF_Head - UNBAKE_SIZEOF_Cam]" in text
+    assert "UNBAKE_SIZEOF_C" in text  # a bracket holding a minus is shielded whole
+    assert "-DUNBAKE_ATTR_0=__attribute__((aligned(4)))" in defines and "-DUNBAKE_SIZEOF_Head=sizeof(Head)" in defines
+    script = permute._script(Path("/p"), '#!/bin/sh\ncpp -P "$1" > "$3.i"\n', defines)
+    assert "'-DUNBAKE_ATTR_0=__attribute__((aligned(4)))' " in script and script.rindex("-DUNBAKE") < script.rindex(
+        '"$1"'
+    )

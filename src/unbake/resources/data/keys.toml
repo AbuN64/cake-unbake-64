@@ -528,3 +528,7 @@ sentence = "a pinned blob proof input or typed byte coverage failed; no decoded 
 [key."tree.inflight"]
 owner = "cli"
 sentence = "a writer was changing the tree: the measure read the tree as the writer had it, and a ship's ROM check stays the proof"
+
+[key."permute.cap"]
+owner = "permute"
+sentence = "the host already runs its permitted number of permuter runs"
