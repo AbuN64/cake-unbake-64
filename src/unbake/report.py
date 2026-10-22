@@ -6,7 +6,7 @@ import json
 import re
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import asdict
 from importlib import import_module
@@ -330,7 +330,10 @@ def _asm_text(config: Any, row: Credit) -> str:
     so no symbol table is loaded per row."""
     from unbake import symbols
 
-    segment = symbols.segment_at(config, row.version, row.member.rom)
+    try:
+        segment = symbols.segment_at(config, row.version, row.member.rom)
+    except (AttributeError, KeyError):  # a project that names no segments has no extracted assembly
+        return ""
     path = Path(config.project.root) / f"asm/{row.version}/nonmatchings/{segment}/{row.name}.s"
     try:
         return path.read_text(errors="replace")
@@ -338,7 +341,7 @@ def _asm_text(config: Any, row: Credit) -> str:
         return ""
 
 
-def _states(config: Any, tree: Any, exact: Collection[str] | None = None) -> Json:
+def _states(config: Any, tree: Any, exact: Collection[str] | None = None, rows: Iterable[Credit] | None = None) -> Json:
     """Per version exactly three states, read from the source alone (no build, no compile, no score): `exact` (C the
     ROM build uses, plus a stand-in whose extracted assembly is marked handwritten: it is the original), `fuzzy` (not
     exact, with a body behind NON_MATCHING that the tree capture found by preprocessing for the version) and `none`.
@@ -350,7 +353,7 @@ def _states(config: Any, tree: Any, exact: Collection[str] | None = None) -> Jso
     linked = frozenset(versions if exact is None else exact)
     out: Json = {}
     last: dict[str, str] = {}  # version -> state of the function row before: a fragment's bytes follow it
-    for row in _rows(config, tree, linked, {}):
+    for row in _rows(config, tree, linked, {}) if rows is None else rows:
         held = out.setdefault(
             row.version,
             {
@@ -524,6 +527,10 @@ def layers(config: Any, tree: Any, v: str) -> Json:
 
 def _versions(config: Any, tree: Any, totals: Buckets) -> dict[str, Json]:
     held = accounts(config, tree)
+    three = _states(config, tree, None, credits(config, tree))["versions"]  # fuzzy is a state, never a score
+    for v, b in totals.items():
+        if v in three:
+            b.update(code_fuzzy=three[v]["code"]["fuzzy"], data_fuzzy=0, functions_fuzzy=three[v]["functions"]["fuzzy"])
     return {v: {**_tally(b), **held.get(v, {})} for v, b in totals.items()}
 
 

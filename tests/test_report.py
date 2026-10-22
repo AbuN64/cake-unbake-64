@@ -86,9 +86,9 @@ def test_exact_fuzzy_and_stand_in_give_the_old_numbers(project, monkeypatch, sco
     assert tally["code_total"] == 49 and tally["code_matched"] == 20
     assert tally["data_total"] == 30 and tally["data_matched"] == 0
     assert tally["functions_total"] == 3 and tally["functions_matched"] == 1
-    assert tally["code_fuzzy"] == round(score * 21) and tally["data_fuzzy"] == 0
-    assert tally["functions_fuzzy"] == int(score > 0)
-    assert tally["fuzzy_percent"] == report._pct(20 + 30 * 0 + round(score * 21), 79)
+    assert tally["code_fuzzy"] == 21 and tally["data_fuzzy"] == 0  # a state (a NON_MATCHING body), never the score
+    assert tally["functions_fuzzy"] == 1
+    assert tally["fuzzy_percent"] == report._pct(20 + 21, 79)
 
 
 def test_a_name_is_exact_only_in_a_version_that_links_exact(project):
@@ -609,7 +609,7 @@ def test_next_fuzzy_state_matches_measured_summary_and_preserves_zero_score_c_li
     configuration.validate("result.report", result, "report")
     expected = int(bool(score) and not broken)
     assert sum(row["state"] == "fuzzy" for row in result["next"]) == expected
-    assert result["versions"]["a"]["functions_fuzzy"] == expected
+    assert result["versions"]["a"]["functions_fuzzy"] == 1  # the three-state count: a NON_MATCHING body is fuzzy
     assert {row["name"]: row["state"] for row in result["next"]} == {
         "asm": "unmatched",
         "fuzzy": "fuzzy" if expected else "unmatched",
