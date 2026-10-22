@@ -38,10 +38,43 @@ def test_readers_share_and_a_reader_waits_out_a_writer(tmp_path: Path) -> None:
     with treelock.hold(tmp_path, who="try f", say=said.append) as waited:
         assert waited >= 0.5 and time.monotonic() - began >= 0.5
     writer.wait()
-    assert said and said[0].startswith("waiting for the tree lock (a ship or extraction holds it)")
+    assert said and said[0].startswith("waiting for ")
 
 
 def test_a_holder_marks_its_children_so_they_run_inside_the_hold(tmp_path: Path) -> None:
     with treelock.hold(tmp_path, exclusive=True), treelock.hold(tmp_path) as waited:  # would deadlock without the mark
         assert waited == 0.0
     assert treelock.ENV not in __import__("os").environ
+
+
+LOOP = (
+    "import sys,time;from pathlib import Path;from unbake import treelock\n"
+    "end=time.monotonic()+float(sys.argv[2])\n"
+    "while time.monotonic()<end:\n"
+    "    with treelock.hold(Path(sys.argv[1])):\n"
+    "        time.sleep(0.4)\n"
+)
+
+
+def test_a_stream_of_readers_never_starves_a_writer_and_the_writer_bumps_the_epoch(tmp_path: Path) -> None:
+    env = {"PYTHONPATH": str(Path(treelock.__file__).parents[1])}
+    readers = [
+        subprocess.Popen([sys.executable, "-I", "-c", LOOP, str(tmp_path), "6"], env=env, stderr=subprocess.DEVNULL)
+        for _ in range(4)
+    ]  # back to back, overlapping: without a writer's announcement the lock is never free
+    time.sleep(1.0)
+    before = treelock.epoch(tmp_path)
+    with treelock.hold(tmp_path, exclusive=True, who="ship", say=lambda text: None) as waited:
+        assert waited < 1.5  # within about one reader's hold, not when the stream ends
+    assert treelock.epoch(tmp_path) == before + 1
+    for reader in readers:
+        reader.wait()
+
+
+def test_a_reader_behind_a_writer_names_it(tmp_path: Path) -> None:
+    said: list[str] = []
+    writer = _other(tmp_path, "x", 1.0)
+    with treelock.hold(tmp_path, say=said.append):
+        pass
+    writer.wait()
+    assert said and "waiting for" in said[0]

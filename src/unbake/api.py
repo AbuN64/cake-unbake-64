@@ -38,6 +38,7 @@ __all__ = [
     "stage",
     "summary",
     "symbols",
+    "tree_epoch",
     "tree_lock",
 ]
 
@@ -173,3 +174,10 @@ def tree_lock(
     from unbake import treelock
 
     return treelock.hold(config.project.root, exclusive=exclusive, who=who, say=say or effort.say)
+
+
+def tree_epoch(config: Config) -> int:
+    """How many exclusive holds of the work tree have ended: a change since a command began says a writer ran."""
+    from unbake import treelock
+
+    return treelock.epoch(config.project.root)

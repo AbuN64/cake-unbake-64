@@ -1,7 +1,9 @@
-"""The work tree's reader/writer lock: one file, `.unbake/tree.lock`, shared by every reader of the tree (a try, a
-probe, a score, a work) and held exclusively by whoever rewrites tracked files or the extraction under it (a ship's
-sync, check and commit). A reader that finds a writer waits and says so; it never fails for the writer's changes.
-A process that holds the lock marks its children (`UNBAKE_TREE_LOCK`): they run inside the hold, never taking it."""
+"""The work tree's reader/writer lock: `.unbake/tree.lock`, shared by every reader of the tree (a probe, a score, a
+compare) and held exclusively by whoever rewrites tracked files or the extraction under it (a ship's sync, check and
+commit). A writer announces itself first (`tree.writer`, holding its name and time): new readers wait behind the
+announcement, readers already inside finish, so a stream of readers never starves it. A reader that waits says for whom.
+A process that holds the lock marks its children (`UNBAKE_TREE_LOCK`): they run inside the hold, never taking it. Each
+exclusive hold ends by bumping `tree.epoch`, so a command that spans a writer's window can tell it happened."""
 
 from __future__ import annotations
 
@@ -18,33 +20,69 @@ ENV = "UNBAKE_TREE_LOCK"
 BEAT = 15.0  # seconds between the lines a waiting process prints
 
 
+def epoch(root: Path) -> int:
+    """How many exclusive holds of the tree have ended."""
+    try:
+        return int((Path(root) / ".unbake" / "tree.epoch").read_text() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _take(handle: int, mode: int, say: Callable[[str], None], note: Callable[[], str]) -> float:
+    """Take the flock in `mode`, printing `note()` at once and every BEAT while it waits; the seconds waited."""
+    began = last = time.monotonic()
+    first = True
+    while True:
+        try:
+            fcntl.flock(handle, mode | fcntl.LOCK_NB)
+            return time.monotonic() - began
+        except BlockingIOError:
+            now = time.monotonic()
+            if first or now - last >= BEAT:
+                first, last = False, now
+                say(f"{note()} ({now - began:.0f}s)")
+            time.sleep(0.2)
+
+
 @contextmanager
 def hold(
     root: Path, *, exclusive: bool = False, who: str = "", say: Callable[[str], None] = effort.say
 ) -> Iterator[float]:
-    """Hold the tree lock of `root` (shared by default); yields the seconds it waited."""
+    """Hold the tree lock of `root` (shared by default); yields the seconds waited."""
     if os.environ.get(ENV):  # a parent of ours holds it
         yield 0.0
         return
-    path = Path(root) / ".unbake" / "tree.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    began = last = time.monotonic()
-    with path.open("a") as handle:
-        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-        while True:
-            try:
-                fcntl.flock(handle, mode | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                now = time.monotonic()
-                if now - last >= BEAT or last == began:
-                    last = now
-                    kind = "a reader" if exclusive else "a ship or extraction"
-                    say(f"waiting for the tree lock ({kind} holds it) {now - began:.0f}s {who}".rstrip())
-                time.sleep(0.5)
+    folder = Path(root) / ".unbake"
+    folder.mkdir(parents=True, exist_ok=True)
+    tree, intent = (os.open(folder / name, os.O_RDWR | os.O_CREAT, 0o644) for name in ("tree.lock", "tree.writer"))
+    try:
+        if exclusive:  # announce: readers that come now queue behind us
+            waited = _take(intent, fcntl.LOCK_EX, say, lambda: "waiting for another writer of the tree")
+            os.ftruncate(intent, 0)
+            os.write(intent, f"{who or 'writer'} {time.time():.0f}".encode())
+            waited += _take(tree, fcntl.LOCK_EX, say, lambda: f"waiting for readers of the tree to finish ({who})")
+        else:
+
+            def note() -> str:
+                text = os.pread(intent, 200, 0).decode(errors="replace").strip().split()
+                return (
+                    f"waiting for {text[0]} since {time.strftime('%T', time.localtime(int(text[1])))}"
+                    if len(text) > 1
+                    else ("waiting for the tree lock")
+                )
+
+            waited = _take(intent, fcntl.LOCK_SH, say, note)  # a writer announced: wait it out
+            fcntl.flock(intent, fcntl.LOCK_UN)
+            waited += _take(tree, fcntl.LOCK_SH, say, lambda: "waiting for the tree lock")
         os.environ[ENV] = "1"
         try:
-            yield time.monotonic() - began
+            yield waited
         finally:
             os.environ.pop(ENV, None)
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            if exclusive:
+                (folder / "tree.epoch").write_text(str(epoch(root) + 1))
+            fcntl.flock(tree, fcntl.LOCK_UN)
+            fcntl.flock(intent, fcntl.LOCK_UN)
+    finally:
+        os.close(tree)
+        os.close(intent)
