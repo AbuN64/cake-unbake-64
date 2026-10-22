@@ -614,11 +614,11 @@ def defined(text: str) -> list[str]:
     return _scan(text)[0]
 
 
+def fuzzy_only(text: str, names: Collection[str]) -> str:
+    """`text` with the NON_MATCHING body of every function but `names` switched off: a measured module compiles the
     bodies of the names it measures that no plain definition gives, and a sibling's body (its own includes and
     declarations, often the older context of the file) is no part of what a name's bytes depend on. A switched-off
     block keeps its line count and its `#else` side, so every diagnostic names the line it names in `text`."""
-    of the file) is no part of what a name's bytes depend on. A switched-off block keeps its line count and its `#else`
-    side, so every diagnostic names the line it names in `text`."""
     lines = text.splitlines(keepends=True)
     blocks = non_matching_blocks(lines)
     fenced = {n for opened, _, closed in blocks for n in range(opened, closed + 1)}
