@@ -66,6 +66,10 @@ params = [
   { name = "short", kind = "flag", type = "str", required = false, multiple = false, help = "print only the verdict, the first difference and the diff lines as JSON: no stage tree or proofs (a few hundred bytes)" },
   { name = "variants", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {file, overlays}: score every candidate in this one process, all cores, stdout JSON per variant" },
   { name = "alloc", kind = "flag", type = "str", required = false, multiple = false, help = "compile once more with the register allocation dumps and name, per register the target fills differently, the pseudo that won it, its priority and what would flip it, and per moved load or store the scheduler's priority, dependencies and tie" },
+  { name = "permute", kind = "option", type = "int", required = false, multiple = false, help = "run decomp-permuter on the function for this many seconds (nice, at most 8 jobs) instead of scoring: its best body is spliced into a copy of FILE (--out) for recipe try; the scores are the permuter's, lower is closer" },
+  { name = "permuter", kind = "option", type = "path", required = false, multiple = false, help = "the permuter executable (default $UNBAKE_PERMUTER)" },
+  { name = "jobs", kind = "option", type = "int", required = false, multiple = false, help = "permuter threads, default min(8, host workers)" },
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "with --permute, where the permuted candidate goes, default FILE.permuted.c" },
   { name = "keep-dumps", kind = "option", type = "path", required = false, multiple = false, help = "with --alloc (implied): copy the compile's gcc dumps (.greg, .lreg, .sched, .sched2, the -g assembly and its .i) into DIR, which outlives the command" },
 ]
 

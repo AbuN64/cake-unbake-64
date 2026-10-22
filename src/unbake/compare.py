@@ -13,9 +13,11 @@ from typing import Any
 
 from unbake import (
     alloc,
+    api,
     effort,
     land,
     native,
+    permute,
     policy,
     pool,
     publish,
@@ -456,7 +458,28 @@ def score_command(config: Config, params: Json) -> Json:
             return _score_variants(config, params)
         if not params.get("file"):
             raise Refusal(Finding("land.request", reason="score needs a C source", action="pass FILE or --variants"))
+        if params.get("permute"):
+            return _permute(config, params)
         return _score_one(config, params)
+
+
+def _permute(config: Config, params: Json) -> Json:
+    """score --permute SECONDS: the permuter on the candidate's function in one version, its best body spliced into a
+    copy of the candidate file (--out, default FILE.permuted.c) that `recipe try` takes; scores are the permuter's."""
+    extras = _extras(config, [Path(s) for s in params.get("extras") or ()])
+    file = Path(params["file"])
+    resolved = _resolve(config, file, params.get("function"), params.get("version"), extras)
+    held, preferred = resolved.held, config.project.names_from
+    version = params.get("version") or (preferred if preferred in held else held[0])
+    ctx = api.build_context(config, resolved.name, version, resolved.at(version).text.encode())
+    with store.work(config) as work:
+        found = permute.search(config, resolved.name, ctx, params, work)
+    given = file.read_text(encoding="utf-8", errors="replace")
+    text = permute.candidate(given, resolved.name, found) if permute.span(given, resolved.name) else None
+    out = Path(params.get("out") or f"{file}.permuted.c")
+    if text is not None:
+        store.write(out, text.encode())
+    return {"permute": {**found, "version": version, "member": resolved.name, "candidate": str(out) if text else ""}}
 
 
 def _variant_params(params: Json, row: Any) -> Json:
@@ -692,7 +715,8 @@ def _score_one(config: Config, params: Json) -> Json:
             )
         return replace(proof, exact=False, score=0.0, missing=(why,), symptoms=symptoms.from_missing((why,)))
 
-    for version in [version] if params.get("version") else [version, *(v for v in held if v != version)]:
+    order = [version] if params.get("version") else [version, *(v for v in held if v != version)]
+    for version in order:
         try:  # an unasked-for version where the candidate sits in an inactive #if: the first version it is active in
             proof = measured(version)
         except Refusal as inactive:

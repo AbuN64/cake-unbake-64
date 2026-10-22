@@ -103,7 +103,11 @@ def build_context(config: Config, name: str, version: str, text: bytes | None = 
         {
             "as": [str(process.tool(config, "mips_as"))],
             "asflags": recipe.asflags,
-            "includes": [f"-I{root / 'asm' / version / 'include'}", f"-I{root / 'include'}"],
+            "includes": [
+                f"-I{root / 'asm' / version}",
+                f"-I{root / 'asm' / version / 'include'}",
+                f"-I{root / 'include'}",
+            ],
             "source": [str(root / target)],
             "out": ["{out}"],
         },

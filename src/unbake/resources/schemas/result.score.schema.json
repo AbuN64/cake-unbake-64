@@ -26,9 +26,11 @@
   "sched": {"type": "array", "items": {"type": "object"}},
   "diff": {"type": "array", "items": {"type": "string"}},
   "proofs": {"type": "array", "items": {"type": "object"}},
-  "variants": {"type": "array", "items": {"type": "object"}}
+  "variants": {"type": "array", "items": {"type": "object"}},
+  "permute": {"type": "object"}
  },
  "anyOf": [
+  {"required": ["permute"]},
   {"required": ["unit", "members", "version", "versions", "exact", "score", "words", "shift", "source", "diff", "proofs"]},
   {"required": ["variants"]}
  ],
