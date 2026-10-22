@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Collection, Mapping, Sequence
 from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -90,6 +91,8 @@ def _enqueue(
             for n, (path, data) in enumerate(sorted(extra_bases.items()))
         },
         tuple(withheld),
+        os.environ.get("RECIPE_SESSION", ""),
+        time.time(),
     )
     value = json.loads(json.dumps(asdict(entry)))
     configuration.validate("submission", value, f".unbake/inbox/{identity}.json")
@@ -234,11 +237,44 @@ def _move(config: Config, identity: str, destination: str) -> None:
             os.replace(path, target / path.name)
 
 
-def inbox(config: Config, only: str | None = None) -> list[Submission]:
+_STALE_SECONDS = 3 * 3600  # an entry nobody drained in this long belongs to a lane that is gone
+
+
+def _abandoned(session: str, entered: float) -> bool:
+    """An entry whose numeric session (a process id) no longer exists, or that outlived `_STALE_SECONDS`."""
+    if entered and time.time() - entered > _STALE_SECONDS:
+        return True
+    try:
+        os.kill(int(session), 0)
+    except ProcessLookupError:
+        return True
+    except (ValueError, OSError):
+        return False
+    return False
+
+
+def expire(config: Config) -> list[str]:
+    """Moves each abandoned entry (dead session, or older than `_STALE_SECONDS`) to inbox/attic; returns their ids."""
+    gone = []
+    for path in sorted((config.project.root / ".unbake/inbox").glob("*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(value, dict) and _abandoned(
+            str(value.get("session", "")), float(value.get("entered") or path.stat().st_mtime)
+        ):
+            _move(config, path.stem, "attic")
+            gone.append(path.stem)
+    return gone
+
+
+def inbox(config: Config, only: Collection[str] | str | None = None) -> list[Submission]:
     with effort.stage("land.inbox"):
         entries, stamped = [], []
+        wanted = {only} if isinstance(only, str) else only
         for path in (config.project.root / ".unbake/inbox").glob("*.json"):
-            if only is not None and path.stem != only:
+            if wanted is not None and path.stem not in wanted:
                 continue
             with suppress(FileNotFoundError):  # another drain landed it between the listing and now
                 stamped.append((path.stat().st_mtime_ns, path.name, path))
@@ -282,9 +318,11 @@ def _record_refused(config: Config, entry: Submission, findings: Sequence[Findin
         store.write(kept, json.dumps({**json.loads(kept.read_text()), "refusal": body["findings"]}).encode())
 
 
-def drain(config: Config, only: str | None = None) -> Json:
-    """Lands the inbox, one lock per entry so drains run side by side; `only` lands the one entry of that id."""
+def drain(config: Config, only: Collection[str] | str | None = None) -> Json:
+    """Lands the inbox, one lock per entry so drains run side by side; `only` lands the entries of those ids and
+    leaves every other lane's entry where it is. Abandoned entries go to inbox/attic first."""
     with effort.stage("land.drain"):
+        expire(config)
         landed: list[Any] = []
         refused: list[Any] = []
         busy = False
@@ -310,7 +348,7 @@ def drain(config: Config, only: str | None = None) -> Json:
 
 
 def land_command(config: Config, params: Json) -> Json:
-    return drain(config)
+    return drain(config, tuple(params.get("only") or ()) or None)
 
 
 def _bodies(config: Config, paths: Sequence[str]) -> tuple[Finding, ...]:

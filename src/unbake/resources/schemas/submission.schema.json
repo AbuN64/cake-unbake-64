@@ -196,6 +196,8 @@
     "check"
    ]
   },
+  "session": {"type": "string"},
+  "entered": {"type": "number"},
   "note": {
    "type": "string"
   },

@@ -588,6 +588,8 @@ class Submission:
     extras: Json  # change set: project path -> inbox copy, landed with the source; {} for one file
     extra_bases: Mapping[str, str | None]  # measured extra inputs: inbox copy, or absent at admission
     withheld: tuple[str, ...]  # versions the source is not exact in, landed withheld; () when exact in all
+    session: str = ""  # RECIPE_SESSION of the submitting command ("" when unnamed): who owns the entry
+    entered: float = 0.0  # epoch seconds at admission; an old entry of a dead or silent session goes to inbox/attic
 
 
 # ---------------------------------------------------------------- observability

@@ -302,7 +302,7 @@ def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, e
             )
         except Refusal as refusal:
             found.extend(refusal.findings)
-    drain = land.drain(config) if entry else None
+    drain = land.drain(config, entry.id) if entry else None
     return {
         "unit": ", ".join(p.owner.path for p in resolved.placed),
         "member": name,
@@ -434,7 +434,8 @@ def _bulk(config: Config, files: Sequence[Path], params: Json) -> Json:
                 refused=bool(found),
             )
         rows.append(row)
-    drain = land.drain(config) if any(row["id"] for row in rows) else None
+    ids = {row["id"] for row in rows if row["id"]}
+    drain = land.drain(config, ids) if ids else None
     return {"submissions": rows, "drain": drain}
 
 
@@ -691,8 +692,15 @@ def _score_one(config: Config, params: Json) -> Json:
             )
         return replace(proof, exact=False, score=0.0, missing=(why,), symptoms=symptoms.from_missing((why,)))
 
+    for version in [version] if params.get("version") else [version, *(v for v in held if v != version)]:
+        try:  # an unasked-for version where the candidate sits in an inactive #if: the first version it is active in
+            proof = measured(version)
+        except Refusal as inactive:
+            if params.get("version") or inactive.findings[0].key != "score.inactive" or version == held[-1]:
+                raise
+            continue
+        break
     path, text = resolved.at(version).owner.path, resolved.at(version).text
-    proof = measured(version)
     proofs = [measured(v) for v in held if v != version]
     proofs.insert(0, proof)
     shown, built, target, everything = _verdict(config, version, name, path, proof, extras, params)

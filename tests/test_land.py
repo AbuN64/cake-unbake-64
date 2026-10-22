@@ -91,3 +91,29 @@ def test_a_pre_provenance_inbox_entry_is_replaced_by_the_resubmission_not_refuse
     again = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)
     assert again.id == entry.id and "extra_bases" in json.loads(path.read_text())
     assert (world.root / ".unbake/inbox/stale" / f"{entry.id}.json").is_file()
+
+
+def test_drain_lands_only_the_named_entries_and_abandoned_ones_go_to_the_attic(world, monkeypatch):
+    import json
+    import os
+    import time
+
+    monkeypatch.setattr(land, "process", SimpleNamespace(git=lambda *a: SimpleNamespace(stdout=b"abc\n")))
+    monkeypatch.setattr(land.effort, "invocation", lambda: "unbake submit")
+    monkeypatch.setenv("RECIPE_SESSION", "LANE-A")
+    from unbake import compare
+
+    request = compare._request("func_80000010", world.root / "cand.c", None)
+    intake = land._intake(world.config, request, [_proof(True)], None)
+    mine = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)
+    other = land._entered(world.config, request, b"s32 g(void) {}\n", (), "compare", intake)
+    assert mine.session == "LANE-A" and mine.entered > 0
+    assert [e.id for e in land.inbox(world.config, {mine.id})] == [mine.id]
+    inbox = world.root / ".unbake/inbox"
+    old = json.loads((inbox / f"{other.id}.json").read_text())
+    old["entered"] = time.time() - 4 * 3600
+    (inbox / f"{other.id}.json").write_text(json.dumps(old))
+    dead = {**json.loads((inbox / f"{mine.id}.json").read_text()), "session": "999999999"}
+    assert land._abandoned(dead["session"], time.time()) and not land._abandoned(str(os.getpid()), time.time())
+    assert land.expire(world.config) == [other.id]
+    assert (inbox / "attic" / f"{other.id}.json").is_file() and (inbox / f"{mine.id}.json").is_file()

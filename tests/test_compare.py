@@ -79,8 +79,9 @@ class World:
             self.submit(config, c["request"], c["proofs"], c["source"], c["origin"], c.get("extras")) for c in calls
         ]
 
-    def drain(self, config):
+    def drain(self, config, only=None):
         self.drains += 1
+        self.only = only
         return {"running": False, "landed": [], "refused": []}
 
 
@@ -171,7 +172,7 @@ def test_submit_enters_an_exact_candidate_and_drains_the_inbox(world):
         "note": "why",
     }
     assert call["source"] == CANDIDATE.encode() and call["origin"] == "submit" and call["extras"] == {}
-    assert world.drains == 1
+    assert world.drains == 1 and world.only == row["id"]  # only its own entry lands
 
 
 def test_an_inexact_candidate_reports_the_gap_and_submit_still_offers_the_fuzzy_gain(world):

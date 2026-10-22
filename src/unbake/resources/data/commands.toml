@@ -97,9 +97,11 @@ params = [
 ]
 
 [command.land]
-help = "Land every inbox submission in order, writing each; returns at once if a landing is already running."
+help = "Land every inbox submission in order (or only the --only ids), writing each; abandoned entries go to inbox/attic; returns at once if a landing is already running."
 handler = "land.land_command"
-params = []
+params = [
+  { name = "only", kind = "option", type = "str", required = false, multiple = true, help = "land only this submission id (repeatable), leaving every other entry" },
+]
 
 [command.check]
 help = "Census source rules over the whole project, or only the given units (and the units that read a given header)."
