@@ -528,9 +528,24 @@ def layers(config: Any, tree: Any, v: str) -> Json:
 def _versions(config: Any, tree: Any, totals: Buckets) -> dict[str, Json]:
     held = accounts(config, tree)
     three = _states(config, tree, None, credits(config, tree))["versions"]  # fuzzy is a state, never a score
-    for v, b in totals.items():
+    for v, b in totals.items():  # one accounting: every README, svg and progress.json number is the three-state count
         if v in three:
-            b.update(code_fuzzy=three[v]["code"]["fuzzy"], data_fuzzy=0, functions_fuzzy=three[v]["functions"]["fuzzy"])
+            t = three[v]
+            for kind in ("code", "functions"):
+                b.update(
+                    {
+                        f"{kind}_matched": t[kind]["exact"],
+                        f"{kind}_fuzzy": t[kind]["fuzzy"],
+                        f"{kind}_none": t[kind]["none"],
+                        f"{kind}_total": t[kind]["exact"] + t[kind]["fuzzy"] + t[kind]["none"],
+                    }
+                )
+            b.update(
+                data_matched=t["data"]["exact"],
+                data_fuzzy=0,
+                data_none=t["data"]["none"],
+                data_total=sum(t["data"].values()),
+            )
     return {v: {**_tally(b), **held.get(v, {})} for v, b in totals.items()}
 
 
@@ -561,7 +576,8 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     matched = sum(bucket[p + "_matched"] for p in parts)
     total = sum(bucket[p + "_total"] for p in parts)
     asm = bucket.get(kind + "_asm", 0)  # matched library assembly, shown apart from matched C
-    suffix = f" ({asm:,} asm)" if asm else ""
+    none = sum(bucket.get(p + "_none", 0) for p in parts)
+    suffix = (f" ({asm:,} asm)" if asm else "") + (f" ({none:,} none)" if none else "")
     return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells) + suffix
 
 
@@ -570,7 +586,8 @@ def _rom_line(label: str, bucket: Json, cells: int) -> str:
     blobs, against the exact ROM size."""
     sure = bucket["code_matched"] + bucket["data_matched"] + bucket["blobs_decoded"] + bucket["platform_total"]
     reach = sure + bucket["code_fuzzy"] + bucket["data_fuzzy"] + bucket["blobs_identified"]
-    return _bar(label, sure, reach, bucket["rom_size"], cells)
+    none = bucket.get("code_none", 0) + bucket.get("data_none", 0)
+    return _bar(label, sure, reach, bucket["rom_size"], cells) + (f" ({none:,} none)" if none else "")
 
 
 def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
@@ -630,6 +647,9 @@ def readme(text: str, config: Any, report: Json) -> str:
                 "functions_fuzzy",
                 "code_fuzzy",
                 "data_fuzzy",
+                "code_none",
+                "data_none",
+                "functions_none",
                 "code_asm",
                 "functions_asm",
             )
