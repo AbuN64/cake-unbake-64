@@ -38,6 +38,7 @@ __all__ = [
     "stage",
     "summary",
     "symbols",
+    "tree_lock",
 ]
 
 
@@ -163,3 +164,12 @@ def closed() -> tuple[StageRecord, ...]:
 def summary(records: Sequence[StageRecord]) -> list[str]:
     """The stage tree and the cache lines of closed records, as the human lines a command prints with --stages."""
     return human.summary(records)
+
+
+def tree_lock(
+    config: Config, *, exclusive: bool = False, who: str = "", say: Callable[[str], None] | None = None
+) -> AbstractContextManager[float]:
+    """Hold the work tree's reader/writer lock (see `unbake.treelock`); a reader waits for a ship instead of failing."""
+    from unbake import treelock
+
+    return treelock.hold(config.project.root, exclusive=exclusive, who=who, say=say or effort.say)

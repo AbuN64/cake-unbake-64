@@ -35,6 +35,7 @@ EXPECTED = [
     "stage",
     "summary",
     "symbols",
+    "tree_lock",
 ]
 
 

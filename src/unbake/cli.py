@@ -6,6 +6,7 @@ import json
 import sys
 import traceback
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import asdict
 from importlib import import_module
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any
 import click
 from click.core import ParameterSource
 
-from unbake import __version__, config, effort, human, store
+from unbake import __version__, config, effort, human, store, treelock
 from unbake.contracts import Finding, Json, Refusal
 
 
@@ -97,6 +98,9 @@ def _emit(name: str, code: int, result: Json | None, findings: Sequence[Finding]
     return code
 
 
+_READERS = frozenset({"compare", "score", "probe", "symbols", "map"})  # they read the tree a ship rewrites
+
+
 def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
     result: Json | None = None
     findings: list[Finding] = []
@@ -116,7 +120,8 @@ def _run(name: str, params: dict[str, Any], argv: Sequence[str]) -> int:
                 root = Path(params.pop("project") or Path.cwd()).resolve()  # splat runs elsewhere: one absolute root
                 cfg = config.load(root, host)
                 effort.bind(cfg)
-                result = handler(cfg, params)
+                with treelock.hold(root, who=name) if name in _READERS else nullcontext():
+                    result = handler(cfg, params)
                 findings = [*_refused(result), *_noted(result)]
                 code = _failed(findings)
     except Refusal as refusal:
