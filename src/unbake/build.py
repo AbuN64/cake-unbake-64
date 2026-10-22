@@ -255,7 +255,7 @@ def read(path):
     skip = (".pdr", ".comment", ".mdebug", ".reginfo", ".gnu.attributes")
     sizes = {name(r): r[5] for r in rows if r[1] in (1, 8) and name(r) not in skip}
     data = {name(r): d[r[4]:r[4] + r[5]] for r in rows if r[1] == 1 and name(r) not in skip}
-    syms, table = set(), {}
+    syms, table, undef = set(), {}, set()
     for k, r in enumerate(rows):
         if r[1] == 2:
             strs = d[rows[r[6]][4]:rows[r[6]][4] + rows[r[6]][5]]
@@ -263,6 +263,8 @@ def read(path):
                 n, v, z, i, _, sh = struct.unpack_from(">IIIBBH", d, r[4] + 16 * j)
                 s = strs[n:].split(b"\0")[0].decode()
                 table[(k, j)] = s
+                if sh == 0 and s and j and i >> 4:
+                    undef.add(s)
                 if 0 < sh < 0xFF00 and i & 15 not in (3, 4) and s and not s.startswith(".L"):
                     syms.add((s, name(rows[sh]), v))
     relocs = set()
@@ -271,11 +273,15 @@ def read(path):
             for j in range(r[5] // 8):
                 off, info = struct.unpack_from(">II", d, r[4] + 8 * j)
                 relocs.add((name(rows[r[7]]), off, info & 255, table.get((r[6], info >> 8), "")))
-    return sizes, syms, data, relocs
+    return sizes, syms, data, relocs, undef
 raw, matching, out, objcopy, ld = sys.argv[1:6]
 a, b = read(raw), read(matching)
 rest = lambda sizes: {k: v for k, v in sizes.items() if k != ".text"}
-if a == b:
+missing = sorted(a[4] - b[4] - {x[0] for x in b[1]})
+if missing:
+    # a draft naming a symbol the unit does not (a fuzzy draft's own data name) cannot link to this ROM
+    verdict, pick = "left-out undefined " + " ".join(missing[:3]), matching
+elif a == b:
     verdict, pick = "same", matching
 elif a[:2] == b[:2]:
     verdict, pick = "draft", raw
