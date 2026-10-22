@@ -390,39 +390,62 @@ def write(path: str, data: bytes) -> None:
         handle.write(data)
 
 
-def remember(cache: str, label: str, source: str) -> None:
-    """The text last compiled under this compiler and these arguments: a hard link to the .i (make replaces that file
-    and never writes it in place), else a copy."""
-    entry = os.path.join(cache, "last", label[:2], label[2:])
+LASTS = "lasts"  # per unit (compiler + arguments), the texts last compiled or answered: one slot made trees collide
+KEEP_LASTS = 6
+
+
+def remember(cache: str, label: str, name: str, text: bytes) -> None:
+    """The text just compiled or answered under this unit (compiler and arguments), kept with the few before it: lanes
+    build different bodies of one unit, so a single slot held whichever tree wrote last and a tree whose text only
+    adds types to another's missed. Each is a copy (an entry touched through a hard link would move the .i's mtime)."""
+    folder = os.path.join(cache, LASTS, label[:2], label[2:])
+    entry = os.path.join(folder, name[:24])
+    try:
+        os.utime(entry)  # known text: newest again
+        return
+    except OSError:
+        pass
     part = f"{entry}.{os.getpid()}.part"
     try:
-        os.makedirs(os.path.dirname(entry), exist_ok=True)
-        try:  # noqa: SIM105 - contextlib is 1.5 ms of this front's start
-            os.unlink(part)
-        except FileNotFoundError:
-            pass
-        try:
-            os.link(source, part)
-        except OSError:
-            write(part, read(source))
+        os.makedirs(folder, exist_ok=True)
+        write(part, text)
         os.replace(part, entry)
+        kept = sorted(
+            (f for f in os.listdir(folder) if not f.endswith(".part")),
+            key=lambda f: -os.stat(os.path.join(folder, f)).st_mtime,
+        )
+        for old in kept[KEEP_LASTS:]:
+            try:  # noqa: SIM105 - contextlib is 1.5 ms of this front's start
+                os.unlink(os.path.join(folder, old))
+            except OSError:
+                pass
     except OSError:
         pass
 
 
 def reuse(cache: str, label: str, compiler: str, args: list[str], text: bytes) -> bytes | None:
-    """The assembly of the last text compiled under this label when `text` only renames it, else None."""
+    """The assembly of the newest remembered text of this unit that `text` only renames or adds types to, else None."""
+    folder = os.path.join(cache, LASTS, label[:2], label[2:])
     try:
-        last = read(os.path.join(cache, "last", label[:2], label[2:]))
-        name = key(compiler, args, last)
-        assembly = zlib.decompress(read(os.path.join(cache, name[:2], name[2:])))
-    except (OSError, zlib.error):
-        return None
-    if last == text:
-        return None
+        names = sorted(
+            (f for f in os.listdir(folder) if not f.endswith(".part")),
+            key=lambda f: -os.stat(os.path.join(folder, f)).st_mtime,
+        )
+    except OSError:
+        names = []
+    paths = [os.path.join(folder, f) for f in names[:KEEP_LASTS]]
+    paths.append(os.path.join(cache, "last", label[:2], label[2:]))  # the single slot older fronts kept
     patterns()
-    # the cheap test first: a header edit that only adds, drops or changes type declarations nothing here names
-    return assembly if types_only_differ(last, text) or renamed(last, text, assembly) else None
+    for path in paths:
+        try:
+            last = read(path)
+            name = key(compiler, args, last)
+            assembly = zlib.decompress(read(os.path.join(cache, name[:2], name[2:])))
+        except (OSError, zlib.error):
+            continue
+        if last != text and (types_only_differ(last, text) or renamed(last, text, assembly)):
+            return assembly
+    return None
 
 
 def prune(root: str, now: float) -> int:
@@ -430,7 +453,11 @@ def prune(root: str, now: float) -> int:
 
     root = os.fspath(root)
     dropped = 0
-    for entry in [*glob.glob(os.path.join(root, "??", "*")), *glob.glob(os.path.join(root, "last", "??", "*"))]:
+    for entry in [
+        *glob.glob(os.path.join(root, "??", "*")),
+        *glob.glob(os.path.join(root, "last", "??", "*")),
+        *glob.glob(os.path.join(root, LASTS, "??", "*", "*")),
+    ]:
         try:
             if now - os.stat(entry).st_mtime > MAX_AGE:
                 os.unlink(entry)
@@ -456,7 +483,7 @@ def lookup(cache: str, compiler: str, args: list[str], source: str, text: bytes)
     try:
         data = zlib.decompress(read(entry))
         os.utime(entry)  # a hit keeps it alive
-        remember(cache, label, source)
+        remember(cache, label, name, text)
         return data, False
     except (OSError, zlib.error):
         pass
@@ -464,7 +491,7 @@ def lookup(cache: str, compiler: str, args: list[str], source: str, text: bytes)
     if made is None:
         return None
     store(entry, made)
-    remember(cache, label, source)
+    remember(cache, label, name, text)
     return made, True
 
 
@@ -507,7 +534,7 @@ def run(cache: str, compiler: str, args: list[str]) -> int:
     code = call(compiler, args)
     if code == 0:
         store(os.path.join(cache, name[:2], name[2:]), read(out))
-        remember(cache, key(compiler, args, b""), source)
+        remember(cache, key(compiler, args, b""), name, text)
     maybe_prune(cache)
     return code
 

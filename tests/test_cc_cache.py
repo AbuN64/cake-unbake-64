@@ -355,3 +355,19 @@ def test_canonical_is_the_declarations_that_reach_the_object():
     assert b"typedef" in cc_cache.canonical(named.encode())
     calls = "static __inline__ int pick(void) { return 2; }\nint h(void) { return pick(); }\n"
     assert b"pick" in cc_cache.canonical(calls.encode())
+
+
+def test_another_trees_body_does_not_hide_the_text_a_header_edit_only_adds_types_to(tmp_path):
+    """Lanes compile different bodies of one unit: a third tree adding a type must still find the first."""
+    cc, cache = fake_cc(tmp_path), tmp_path / "cc"
+    mine = "struct S { int a; };\nint f(struct S *s) { return s->a + 1; }\n"
+    theirs = "struct S { int a; };\nint f(struct S *s) { return s->a + 2; }\n"
+    edited = "struct S { int a; };\ntypedef int unused_t;\nint f(struct S *s) { return s->a + 1; }\n"
+    for number, text in enumerate((mine, theirs)):
+        compile_in(tree(tmp_path, f"t{number}", text), cache, cc)
+    assert runs(cc) == 2
+    third = tree(tmp_path, "third", edited)
+    manifest = tmp_path / "m"
+    manifest.write_text(f"{cc}\x1f" + "\x1f".join(["-quiet", "-O2", "x.i", "-o", "x.s"]) + "\n")
+    assert cc_cache.batch(str(cache), str(third), str(manifest), 0, 1) == 1  # answered from `mine`, not compiled
+    assert runs(cc) == 2
