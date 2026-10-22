@@ -97,6 +97,10 @@ sentence = "written files differ from the plan"
 owner = "compare"
 sentence = "the build does not match the ROM in every holding version"
 
+[key."lock.order"]
+owner = "treelock"
+sentence = "the tree lock was asked for while holding the journal lock"
+
 [key."land.request"]
 owner = "compare"
 sentence = "the request does not name a publishable function"

@@ -169,8 +169,10 @@ def run(config: Config, params: Json) -> Json:
     rows = _rows(Path(params["pad_split"]).resolve())
     with ExitStack() as held:
         held.enter_context(effort.stage("publish.pad_split"))
+        held.enter_context(
+            treelock.hold(config.project.root, exclusive=True, who="pad-split")
+        )  # the tree, then the journal
         held.enter_context(journal.held(config))
-        held.enter_context(treelock.hold(config.project.root, exclusive=True, who="pad-split"))
         captured = tree.capture(config)
         reads = publish.Reads(config, {})
         old: dict[str, bytes | None] = {}

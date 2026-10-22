@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -103,3 +104,21 @@ def test_a_reader_behind_a_writer_names_it(tmp_path: Path) -> None:
         pass
     writer.wait()
     assert said and "waiting for" in said[0]
+
+
+def test_the_tree_lock_is_refused_while_holding_the_journal_lock(tmp_path: Path) -> None:
+    import pytest
+
+    from unbake import journal
+    from unbake.contracts import Refusal
+
+    writer = _other(tmp_path, "x", 0.5)
+    journal._HELD.add(tmp_path)
+    try:
+        with pytest.raises(Refusal) as refused, treelock.hold(tmp_path, exclusive=True, who="landing"):
+            pass
+    finally:
+        journal._HELD.discard(tmp_path)
+        writer.wait()
+    finding = refused.value.findings[0]
+    assert finding.key == "lock.order" and f"pid {os.getpid()}" in finding.reason

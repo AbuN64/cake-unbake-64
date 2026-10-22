@@ -73,8 +73,10 @@ def run(config: Config, params: Json) -> Json:
         if not held.enter_context(store.exclusive(config, "land", wait=False)):
             raise Refusal(Finding("land.request", "A landing is running; retry the data batch when idle."))
         held.enter_context(store.shared(config, "structure"))  # the drain's order: land, then structure
+        held.enter_context(
+            treelock.hold(config.project.root, exclusive=True, who="batch-data")
+        )  # the tree, then the journal
         held.enter_context(journal.held(config))
-        held.enter_context(treelock.hold(config.project.root, exclusive=True, who="batch-data"))
         captured = tree.capture(config)
         reads = publish.Reads(config, {})
         old: dict[str, bytes | None] = {}

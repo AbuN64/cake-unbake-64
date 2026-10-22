@@ -3,7 +3,12 @@ compare) and held exclusively by whoever rewrites tracked files or the extractio
 commit). A writer announces itself first (`tree.writer`, holding its name and time): new readers wait behind the
 announcement, readers already inside finish, so a stream of readers never starves it. A reader that waits says for whom.
 A process that holds the lock marks its children (`UNBAKE_TREE_LOCK`): they run inside the hold, never taking it. Each
-exclusive hold ends by bumping `tree.epoch`, so a command that spans a writer's window can tell it happened."""
+exclusive hold ends by bumping `tree.epoch`, so a command that spans a writer's window can tell it happened.
+
+LOCK ORDER, one hierarchy for every process (10-22: a ship holding the tree and a pad-split submit holding the journal
+each waited for the other lock): ship lock, then this tree lock, then the journal (landing) lock, then the store locks.
+Taking the tree lock while holding the journal lock is refused at once (`lock.order`, naming this process and the
+tree's holder) instead of waiting for a lock whose holder may be waiting for ours."""
 
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from unbake import effort
+from unbake.contracts import Finding, Refusal
 
 ENV = "UNBAKE_TREE_LOCK"
 BEAT = 15.0  # seconds between the lines a waiting process prints
@@ -66,6 +72,18 @@ def hold(
     if os.environ.get(ENV):  # a parent of ours holds it
         yield 0.0
         return
+    from unbake import journal  # the order check: the journal lock is below this one
+
+    if Path(root) in journal.holding():
+        who = (Path(root) / ".unbake" / "tree.writer").read_text(errors="replace").strip() or "a reader"
+        raise Refusal(
+            Finding(
+                "lock.order",
+                f"pid {os.getpid()} holds the journal lock and asks for the tree lock (held by {who}): the tree lock "
+                "comes first, a wait here can deadlock with a ship that holds the tree and waits for the journal",
+                action="take treelock.hold before journal.held",
+            )
+        )
     folder = Path(root) / ".unbake"
     folder.mkdir(parents=True, exist_ok=True)
     tree, intent = (os.open(folder / name, os.O_RDWR | os.O_CREAT, 0o644) for name in ("tree.lock", "tree.writer"))
