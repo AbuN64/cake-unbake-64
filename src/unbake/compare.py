@@ -841,14 +841,9 @@ def _score_one(config: Config, params: Json) -> Json:
                 kept = Path(params["keep_dumps"]).resolve()
                 shutil.copytree(work / "alloc", kept, dirs_exist_ok=True)
                 result["dumps"] = sorted(str(kept / f.name) for f in (work / "alloc").iterdir())
-        result["alloc"] = alloc.report(
-            name,
-            greg,
-            lreg,
-            asm,
-            symptoms.register_votes(built, target),
-            _siter(config, resolved.at(version), resolved),
-        )
+        site = _siter(config, resolved.at(version), resolved)
+        result["alloc"] = alloc.report(name, greg, lreg, asm, symptoms.register_votes(built, target), site)
+        result["rotations"] = alloc.rotations(result["alloc"], site)
         vram = native.symbol_facts(config, version, extras)[name][0]
         result["sched"] = sched.report(name, passes, symptoms.listing(built, vram), everything)
     return result

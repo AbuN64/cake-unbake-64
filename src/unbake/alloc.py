@@ -259,3 +259,100 @@ def report(
             }
         )
     return rows
+
+
+# Matched functions whose recorded tries went from a register swap to the exact body by one source edit
+# (.unbake/recipe-attempts: the rows before and after the edit, scored by recipe try on every version).
+PRECEDENTS: tuple[Json, ...] = (
+    {
+        "function": "func_8024ADD0_de",
+        "kind": "fold-temp",
+        "cycle": 2,
+        "files": "f",
+        "from": 0.9701,
+        "to": 1.0,
+        "edit": "dropped the local `opacity` that held one float expression (`opacity = (f32)blended + ((f32)(alpha - "
+        "blended) * 0.5f); result = (u32)opacity;` became `result = (u32)((f32)blended + ((f32)(alpha - blended) * "
+        "0.5f));`), which put $f0/$f1 back",
+    },
+)
+
+
+def _fit(precedent: Json, size: int, files: str) -> int:
+    return int(2 * (precedent["cycle"] == size) + (precedent["files"] == files))
+
+
+def rotations(rows: list[Json], site: Callable[[int], str] | None = None) -> list[Json]:
+    """The register permutations the rows make up: the target keeps in b the pseudo the candidate has in a, and the
+    chain a -> b -> ... closes on a (a swap, a rotation of three). Each names the order that decides it in this
+    compiler (of two overlapping lives the higher priority takes the lower-numbered free register, so the target's
+    register order is the priority order it expects) and carries rewrites ranked by the matched functions in
+    PRECEDENTS that fixed a rotation of the same size and register file, then the generic edits unsupported."""
+    edge: dict[str, Json] = {}
+    for row in rows:
+        have = row["target"]["register"]
+        both = row["candidate"]["pseudo"] is not None and row["target"]["pseudo"] is not None
+        if both and (have not in edge or row["votes"] > edge[have]["votes"]):
+            edge[have] = row
+    done: set[str] = set()
+    found: list[Json] = []
+    for start in edge:
+        chain = [start]
+        while chain[-1] in edge and edge[chain[-1]]["register"] not in chain:
+            chain.append(edge[chain[-1]]["register"])
+        if start in done or chain[-1] not in edge or edge[chain[-1]]["register"] != start:
+            continue
+        done.update(chain)
+        temps = [
+            edge[r]["target"] for r in chain
+        ]  # temps[i] sits in chain[i] and belongs in edge[chain[i]]["register"]
+        wanted = sorted(temps, key=lambda t: HARD[edge[t["register"]]["register"]])
+        names = ", ".join(f"`{t['name']}`" for t in wanted)
+        files = "f" if all(t["register"].startswith("$f") for t in temps) else "i"
+        loose = [t for t in temps if not t["name"].startswith("pseudo") and len(t["lines"]) <= 2] or temps[:1]
+        loose.sort(key=lambda t: (t["name"].startswith("pseudo"), len(t["lines"])))
+        generic = [
+            {
+                "kind": "fold-temp",
+                "text": f"fold `{t['name']}` into the expression that reads it, no local: {_spots(t['lines'], site)}",
+            }
+            for t in loose
+        ] + [
+            {
+                "kind": "reorder",
+                "text": f"define them in the order {names}: the first definition of each, earliest first",
+            }
+        ]
+        ranked: list[dict[str, object]] = []
+        for item in generic:
+            hits = [p for p in PRECEDENTS if p["kind"] == item["kind"]]
+            best = max(hits, key=lambda p: (_fit(p, len(chain), files), p["to"] - p["from"]), default=None)
+            fit = _fit(best, len(chain), files) if best else 0
+            ranked.append(
+                {
+                    **item,
+                    "precedent": best and best["function"],
+                    "gain": best and round(best["to"] - best["from"], 4),
+                    "score": float(len(hits) * (1 + fit)),
+                    "because": best and f"{best['function']}: {best['edit']}",
+                }
+            )
+        ranked.sort(key=lambda r: -(r["score"] if isinstance(r["score"], float) else 0.0))
+        found.append(
+            {
+                "registers": chain,
+                "temps": [t["name"] for t in temps],
+                "moves": [f"{t['name']} {t['register']} -> {edge[t['register']]['register']}" for t in temps],
+                "kind": "swap" if len(chain) == 2 else f"rotation of {len(chain)}",
+                "priority_order": [f"{t['name']} {t['priority']}" for t in sorted(temps, key=lambda t: -t["priority"])],
+                "starts": {t["name"]: t["lines"][0]["line"] if t["lines"] else None for t in temps},
+                "needs": [
+                    f"`{a['name']}` ({a['priority']}) outranks `{b['name']}` ({b['priority']})"
+                    for i, a in enumerate(wanted)
+                    for b in wanted[i + 1 :]
+                    if a["priority"] <= b["priority"]
+                ],
+                "rewrites": ranked,
+            }
+        )
+    return found

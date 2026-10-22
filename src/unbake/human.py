@@ -174,6 +174,13 @@ def _score(result: Json) -> list[str]:
                     f"{r['line']}:{r['refs']}" + f"*{r['depth']}" * (r["depth"] > 1) for r in side["lines"]
                 )
                 lines.append(f"  {side['name']} refs by line: {spread}")
+    for turn in result.get("rotations", ()):
+        lines.append(f"{turn['kind']} of {' '.join(turn['registers'])}: {'; '.join(turn['moves'])}")
+        lines.append("  priority order in the candidate: " + ", ".join(turn["priority_order"]))
+        lines.extend(f"  the target's register order needs {need}" for need in turn["needs"])
+        for i, edit in enumerate(turn["rewrites"], 1):
+            lines.append(f"  rewrite {i} [{edit['kind']}, score {edit['score']}]: {edit['text']}")
+            lines.extend([f"    precedent {edit['because']} (+{edit['gain']})"] if edit.get("because") else [])
     lines.extend(f"dump {path}" for path in result.get("dumps", ()))
     for row in result.get("sched", ()):
         way = "earlier" if row["words"] > 0 else "later"

@@ -123,3 +123,51 @@ def test_every_register_row_proposes_one_c_edit() -> None:
     assert "never uses $s6" in free["edit"] and "live across a call" in free["edit"]
     beaten = next(row for row in rows if row["flip"])
     assert "more time(s)" in beaten["edit"]
+
+
+def _pseudo(reg: str, name: str, priority: float, lines: list[int]) -> dict:
+    return {
+        "register": reg,
+        "pseudo": 7,
+        "name": name,
+        "priority": priority,
+        "refs": 3,
+        "length": 4,
+        "allocator": "local",
+        "lines": [{"line": n, "depth": 1, "refs": 1, "weighted": 1} for n in lines],
+    }
+
+
+def _row(have: str, want: str, held: dict, wanted_name: dict, votes: int) -> dict:
+    return {"register": want, "candidate": held, "target": wanted_name, "votes": votes, "flip": None}
+
+
+def test_rotations_name_three_temps_that_turn_through_three_registers_and_rank_the_precedent_first() -> None:
+    index = _pseudo("$v1", "index", 2.0, [10, 12])
+    base = _pseudo("$a0", "base", 1.0, [11])
+    total = _pseudo("$v0", "total", 1.5, [13])
+    rows = [  # the target keeps index in $a0, base in $v0, total in $v1
+        _row("$v1", "$a0", base, index, 6),
+        _row("$a0", "$v0", total, base, 6),
+        _row("$v0", "$v1", index, total, 4),
+    ]
+    (turn,) = alloc.rotations(rows, lambda line: f"f.c:{line}")
+    assert turn["kind"] == "rotation of 3" and sorted(turn["registers"]) == ["$a0", "$v0", "$v1"]
+    assert sorted(turn["temps"]) == ["base", "index", "total"]
+    assert turn["priority_order"] == ["index 2.0", "total 1.5", "base 1.0"]
+    assert turn["needs"] and "outranks" in turn["needs"][0]
+    top = turn["rewrites"][0]
+    assert top["kind"] == "fold-temp" and top["precedent"] == "func_8024ADD0_de" and top["gain"] == 0.0299
+    assert turn["rewrites"][-1]["kind"] == "reorder" and turn["rewrites"][-1]["score"] < top["score"]
+
+
+def test_rotations_see_a_swap_of_float_temps_and_prefer_the_precedent_of_the_same_size() -> None:
+    a, b = _pseudo("$f0", "pseudo 88", 1.0, [5]), _pseudo("$f1", "pseudo 89", 1.0, [6])
+    rows = [_row("$f1", "$f0", a, b, 3), _row("$f0", "$f1", b, a, 4)]
+    (turn,) = alloc.rotations(rows)
+    assert turn["kind"] == "swap" and turn["rewrites"][0]["precedent"] == "func_8024ADD0_de"
+
+
+def test_rotations_ignore_a_register_the_target_does_not_return_to_the_chain() -> None:
+    a, b = _pseudo("$v0", "a", 1.0, [1]), _pseudo("$v1", "b", 1.0, [2])
+    assert alloc.rotations([_row("$v1", "$v0", a, b, 3)]) == []
