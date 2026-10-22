@@ -94,7 +94,8 @@ help = "Admit sources and put exact (or improved fuzzy) candidates in the landin
 handler = "compare.submit_command"
 params = [
   { name = "files", kind = "argument", type = "path", required = false, multiple = true, help = "C sources, then change-set files: PATH=FILE replaces the project file PATH (a header) with FILE" },
-  { name = "batch-data", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {member, file}: prove extracted data together and publish atomically" },
+  { name = "batch-data", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {member, file}: prove extracted data together (written, built and linked whole under the exclusive tree lock), then restore the tracked tree and write the change as a patch" },
+  { name = "patch", kind = "option", type = "path", required = false, multiple = false, help = "with --batch-data, where the patch goes (default .unbake/batch-data/<digest>.patch)" },
   { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member, only with exactly one file" },
   { name = "bulk", kind = "flag", type = "str", required = false, multiple = false, help = "each source, with the PATH=FILE change-set files that follow it, is one candidate (member from the source name): admit all groups independently, a refusal blocks no other group, then run land once" },
   { name = "note", kind = "option", type = "str", required = false, multiple = false, help = "a free-text note recorded with the submission" },

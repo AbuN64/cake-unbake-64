@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from unbake import api, effort, journal, native, policy, process, repo, report, tree
+from unbake import api, effort, journal, linkdiag, native, policy, process, repo, report, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Plan, Proof, Receipt, Refusal, Submission, digest, sha1, sha256
 
@@ -818,19 +818,25 @@ def build(config: Config, versions: Sequence[str]) -> None:
     """Builds the ROM of each given version (one make, each target once) and refuses unless every sha1 matches."""
     with effort.stage("publish.build"):
         roms = {v: f"build/{v}/{config.project.name}.z64" for v in versions}
-        process.make(config, list(roms.values()), config.host.slots or config.host.workers)
+        made = process.make(config, list(roms.values()), config.host.slots or config.host.workers)
         bad = []
         for v, rom in roms.items():
             built = config.project.root / rom
             if not built.is_file() or sha1(built.read_bytes()) != config.project.version[v].sha1:
                 bad.append(v)
         if bad:
+            linker = [
+                ln
+                for ln in (made.stderr if made else b"").decode(errors="replace").splitlines()
+                if re.search(r"overlap|overflow", ln)
+            ]
+            off = [d for v in bad if (d := linkdiag.first_off(config, v))]
             raise Refusal(
                 Finding(
                     "land.not_exact",
                     "The built ROM differs from the base ROM.",
                     versions=tuple(bad),
-                    missing=tuple(f"{v}: sha1" for v in bad),
+                    missing=(*(f"{v}: sha1" for v in bad), *linker[:3], *off),
                     action="make check",
                 )
             )

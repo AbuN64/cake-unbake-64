@@ -11,12 +11,11 @@ from typing import Any
 from unbake import process, store
 from unbake.contracts import Config, Finding, Json, Refusal
 
-
 # passes whose output no original source has (masks, ^0, empty statements, dummy blocks): never proposed
 _JUNK = (
-    "add_mask xor_zero refer_to_var empty_stmt mult_zero dummy_comma_expr add_self_assignment pad_var_decl "
-    "alias_array ins_block remove_ast duplicate_assignment var_cond_block"
-).split()
+    "add_mask", "xor_zero", "refer_to_var", "empty_stmt", "mult_zero", "dummy_comma_expr", "add_self_assignment",
+    "pad_var_decl", "alias_array", "ins_block", "remove_ast", "duplicate_assignment", "var_cond_block",
+)  # fmt: skip
 
 
 def span(text: str, name: str) -> tuple[int, int] | None:

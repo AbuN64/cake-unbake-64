@@ -169,6 +169,7 @@
     "additionalProperties": false
    }
   },
+  "patch": {"type": "object"},
   "drain": {
    "oneOf": [
     {

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 from contextlib import ExitStack
-from dataclasses import asdict
 from pathlib import Path
 
-from unbake import effort, journal, publish, store, tree
-from unbake.contracts import Config, Finding, Json, Receipt, Refusal, digest
+from unbake import effort, journal, process, publish, store, tree, treelock
+from unbake.contracts import Config, Finding, Json, Refusal, digest
 
 
 def _manifest(path: Path) -> list[dict[str, str]]:
@@ -31,6 +30,22 @@ def _manifest(path: Path) -> list[dict[str, str]]:
         raise Refusal(Finding("land.request", f"Invalid data manifest: {error}", path=str(path))) from error
 
 
+def _patch(config: Config, files: tuple[str, ...], base: str, path: Path) -> Path:
+    """The batch as a patch file over HEAD, then the tracked tree back as it was: the batch was proved (written, built
+    and linked whole) under the exclusive tree lock, and no other lane ever sees its files."""
+    root = config.project.root
+    path = path if path.is_absolute() else root / path
+    head = process.git(config, "diff", "--binary", "--full-index", "HEAD", "--", *files).stdout
+    store.write(path, head)
+    reads, old = publish.Reads(config, {}), {}
+    for name in files:
+        shown = process.git(config, "show", f"HEAD:{name}")
+        old[name] = shown.stdout if shown.exit == 0 else None  # a file HEAD lacks goes again
+        publish.read_file(reads, name)
+    journal.apply(config, publish.make_plan("restore", base, old, (), (), "restore"), reads)
+    return path
+
+
 def run(config: Config, params: Json) -> Json:
     if params["files"] or params["function"]:
         raise Refusal(Finding("land.request", "--batch-data cannot be combined with files or --function."))
@@ -41,6 +56,7 @@ def run(config: Config, params: Json) -> Json:
             raise Refusal(Finding("land.request", "A landing is running; retry the data batch when idle."))
         held.enter_context(store.shared(config, "structure"))  # the drain's order: land, then structure
         held.enter_context(journal.held(config))
+        held.enter_context(treelock.hold(config.project.root, exclusive=True, who="batch-data"))
         captured = tree.capture(config)
         reads = publish.Reads(config, {})
         old: dict[str, bytes | None] = {}
@@ -64,19 +80,10 @@ def run(config: Config, params: Json) -> Json:
         plan = publish.make_plan("publish", captured.digest, writes, tuple(sorted(writes)), debt, message)
         landing = publish.Landing(plan, reads, tuple(sorted(versions)), "", (), old)
         files = publish.apply_checked(config, landing)
-        landed, submissions = [], []
+        patch = _patch(config, files, plan.base, Path(params.get("patch") or f".unbake/batch-data/{plan.digest}.patch"))
+        submissions = []
         for row in rows:
             identity = digest((plan.digest, row["member"]))
-            body = {
-                "id": identity,
-                "member": row["member"],
-                "operation": "publish",
-                "files": list(files),
-                "message": plan.message,
-            }
-            receipt = Receipt("publish", files, plan.message, plan.digest, (), len(debt), effort.invocation())
-            store.log(config, "receipt", {**body, **asdict(receipt)})
-            landed.append(body)
             submissions.append(
                 {
                     "file": row["file"],
@@ -90,4 +97,8 @@ def run(config: Config, params: Json) -> Json:
                     "consumers": {"count": 0, "wall": 0.0},
                 }
             )
-        return {"submissions": submissions, "drain": {"running": False, "landed": landed, "refused": []}}
+        return {
+            "submissions": submissions,
+            "drain": {"running": False, "landed": [], "refused": []},
+            "patch": {"path": str(patch), "files": list(files), "message": plan.message},
+        }

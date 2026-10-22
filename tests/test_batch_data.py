@@ -28,6 +28,20 @@ def world(tmp_path, monkeypatch):
     return w
 
 
+def _git(world, shown):
+    """A fake HEAD: `show` answers the file as committed, `diff` the patch text."""
+
+    def git(config, *args):
+        if args[0] == "show":
+            name = args[1].removeprefix("HEAD:")
+            return (
+                SimpleNamespace(exit=0, stdout=shown[name]) if name in shown else SimpleNamespace(exit=128, stdout=b"")
+            )
+        return SimpleNamespace(exit=0, stdout=b"PATCH of " + b" ".join(a.encode() for a in args[4:]))
+
+    return SimpleNamespace(git=git)
+
+
 def _params(world):
     return {"files": [], "function": None, "batch_data": str(world.root / "rows.json")}
 
@@ -39,14 +53,23 @@ def test_manifest_rejects_duplicates(tmp_path):
 
 
 def test_a_batch_replaces_each_line_and_builds_once(world, monkeypatch):
-    logged = []
-    monkeypatch.setattr(batch_data.store, "log", lambda c, kind, body: logged.append(body["member"]))
+    before = world.owner
+    monkeypatch.setattr(batch_data, "process", _git(world, {"src/a.c": before.encode()}))
+    seen = []
+    real = batch_data.publish.apply_checked
+
+    def applied(config, landing):
+        files = real(config, landing)
+        seen.append(world.owner)
+        return files
+
+    monkeypatch.setattr(batch_data.publish, "apply_checked", applied)
     out = batch_data.run(world.config, _params(world))
-    text = world.owner
-    assert "INCLUDE_DATA" not in text and "INCLUDE_RODATA" not in text
-    assert "int D_80001000[2] = {1, 2};" in text and 'const char D_80002000[] = "hi";' in text
+    assert "INCLUDE_DATA" not in seen[0] and 'const char D_80002000[] = "hi";' in seen[0]  # proved written, built whole
     assert world.makes == [["build/eu/game.z64", "build/us/game.z64"]]
-    assert logged == ["D_80001000", "D_80002000"] and len(out["submissions"]) == 2
+    assert len(out["submissions"]) == 2 and out["drain"]["landed"] == []  # nothing landed: a patch was written
+    assert world.owner == before  # the tracked tree is back as it was
+    assert (world.root / out["patch"]["path"]).read_bytes().startswith(b"PATCH of")
 
 
 def test_a_batch_that_does_not_build_exact_changes_nothing(world):
@@ -58,14 +81,24 @@ def test_a_batch_that_does_not_build_exact_changes_nothing(world):
 
 
 def test_a_batch_retypes_data_the_owner_already_defines_in_c_and_builds_it(world, monkeypatch):
-    monkeypatch.setattr(batch_data.store, "log", lambda c, kind, body: None)
     world.root.joinpath("src/a.c").write_text(
         'INCLUDE_DATA("main", D_80001000);\n/* font */\nunsigned int D_80002000[1] = {\n    0,\n};\n'
         "int f(void) { return 0; }\n"
     )
     world.root.joinpath("d2.c").write_text("unsigned char *D_80002000 = 0;\n")
+    written = world.root.joinpath("src/a.c").read_text()
+    monkeypatch.setattr(batch_data, "process", _git(world, {"src/a.c": written.encode()}))
+    seen = []
+    real = batch_data.publish.apply_checked
+
+    def applied(config, landing):
+        files = real(config, landing)
+        seen.append(world.owner)
+        return files
+
+    monkeypatch.setattr(batch_data.publish, "apply_checked", applied)
     batch_data.run(world.config, _params(world))
-    text = world.owner
+    text = seen[0]
     assert "unsigned char *D_80002000 = 0;" in text and "unsigned int D_80002000[1]" not in text
     assert "/* font */" in text and "INCLUDE_DATA" not in text
     assert world.makes == [["build/eu/game.z64", "build/us/game.z64"]]  # the bytes are proven by the exact build
