@@ -12,6 +12,13 @@ from unbake import process, store
 from unbake.contracts import Config, Finding, Json, Refusal
 
 
+# passes whose output no original source has (masks, ^0, empty statements, dummy blocks): never proposed
+_JUNK = (
+    "add_mask xor_zero refer_to_var empty_stmt mult_zero dummy_comma_expr add_self_assignment pad_var_decl "
+    "alias_array ins_block remove_ast duplicate_assignment var_cond_block"
+).split()
+
+
 def span(text: str, name: str) -> tuple[int, int] | None:
     """The [start, end) of `name`'s definition (its head line to the closing brace) in C text, None when it has none."""
     head = re.compile(rf"^[A-Za-z_][^\n;{{}}=]*\b{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{", re.M)
@@ -53,7 +60,9 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     store.write(folder / "base.c", ctx["source"].encode())
     store.write(folder / "compile.sh", _script(root, ctx["script"]).encode())
     (folder / "compile.sh").chmod(0o755)
-    store.write(folder / "settings.toml", f'func_name = "{name}"\ncompiler_type = "gcc"\n'.encode())
+    weights = "".join(f"perm_{p} = 0\n" for p in _JUNK)
+    settings = f'func_name = "{name}"\ncompiler_type = "gcc"\n[weight_overrides]\n{weights}'
+    store.write(folder / "settings.toml", settings.encode())
     assemble = [a.replace("{out}", str(folder / "target.o")) for a in ctx["assemble"]]
     done = process.run("permute.target", assemble, root, tmp=work / "tmp")
     if done.exit != 0:

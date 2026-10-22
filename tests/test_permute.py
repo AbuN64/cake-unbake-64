@@ -47,6 +47,7 @@ def test_search_runs_the_permuter_and_returns_the_best_body(tmp_path: Path) -> N
         permute.candidate(SOURCE, "g", found) or ""
     )
     assert (work / "permute/compile.sh").read_text().startswith("#!/bin/sh\nset -- ")
+    assert "perm_add_mask = 0" in (work / "permute/settings.toml").read_text()
 
 
 def test_search_without_a_permuter_names_how_to_pass_one(tmp_path: Path) -> None:
