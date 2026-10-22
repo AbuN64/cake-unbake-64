@@ -151,6 +151,64 @@
     },
     "additionalProperties": false
    }
+  },
+  "dir": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "toolchain": {
+      "type": "string",
+      "minLength": 1
+     },
+     "cflags": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "omit": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "library": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "toolchain": {
+      "type": "string",
+      "minLength": 1
+     },
+     "cflags": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "omit": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "origin": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "additionalProperties": false
+   }
   }
  },
  "required": [

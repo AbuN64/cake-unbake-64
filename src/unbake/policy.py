@@ -1488,7 +1488,7 @@ def audit_command(params: Json) -> Json:
         return result.stdout
 
     document = tomllib.loads((root / "config.toml").read_text()) if (root / "config.toml").is_file() else {}
-    library = tuple(document.get("libraries", ()))
+    library = (*document.get("libraries", ()), *document.get("library", {}))
     names = (
         run(
             "diff",

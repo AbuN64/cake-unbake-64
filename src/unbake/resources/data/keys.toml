@@ -547,3 +547,19 @@ sentence = "a [file] row gives a path what the row above it gives already"
 [key."compilers.disagree"]
 owner = "compilers"
 sentence = "a unit's code has shapes that its toolchain row cannot emit and no census run shows it exact"
+
+[key."config.dead_row"]
+owner = "config"
+sentence = "a [file], [dir] or [library] row gives its files what the row above it gives already"
+
+[key."layout.input"]
+owner = "folders"
+sentence = "the layout command has no usable rules, plan or tree state to work from"
+
+[key."layout.collision"]
+owner = "folders"
+sentence = "two files move to one path, or a file moves onto one that stays"
+
+[key."layout.split"]
+owner = "folders"
+sentence = "a directory row, library or flag names a directory whose files move to different places"

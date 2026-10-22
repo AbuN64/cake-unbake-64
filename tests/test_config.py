@@ -473,3 +473,70 @@ def test_host_auto_workers_respect_both_affinity_and_configured_cores(
 ) -> None:
     loaded = _auto_host(tmp_path, monkeypatch, affinity, "max", 128 << 30, **{"resources.cores": cores})
     assert loaded.workers == workers
+
+
+# ---- [dir] and [library] rows, and the dead-row lint
+ROWS = (
+    RW.split("[file.")[0]
+    + """
+[dir."src/IO/"]
+toolchain = "gcc-2.7.2-sn64"
+
+[library."src/sdk/"]
+cflags = ["-mfp32"]
+origin = "Nintendo libgultra 2.0I"
+
+[file."src/IO/80200500.CPP"]
+toolchain = "gcc-2.7.2-kmc"
+"""
+)
+ROWS_TRACKED = ["src/IO/80200500.CPP", "src/IO/80200600.CPP", "src/sdk/os.c", "src/main.c"]
+
+
+def test_a_dir_row_is_a_directory_row_and_a_library_row_marks_a_library(tmp_path: Path) -> None:
+    project = _load(tmp_path, ROWS, ROWS_TRACKED)
+    assert contracts.file_facts(project, "src/IO/80200600.CPP").toolchain == "gcc-2.7.2-sn64"
+    assert contracts.file_facts(project, "src/IO/80200500.CPP").toolchain == "gcc-2.7.2-kmc"
+    assert contracts.file_facts(project, "src/sdk/os.c").cflags == ("-mfp32",)
+    assert "src/sdk/" in project.libraries and configuration.library(project, "src/sdk/os.c")
+    assert project.library_origin == {"src/sdk/": "Nintendo libgultra 2.0I"}
+
+
+def test_flat_libraries_and_library_rows_are_both_libraries(tmp_path: Path) -> None:
+    text = ROWS.replace('libraries = ["src/libgcc/", "src/sdk/libgultra/"]', 'libraries = ["src/lib/"]', 1)
+    project = _load(tmp_path, text, [*ROWS_TRACKED, "src/lib/a.c"])
+    assert set(project.libraries) == {"src/lib/", "src/sdk/"}
+
+
+def test_a_dir_key_must_end_in_a_slash_under_src(tmp_path: Path) -> None:
+    for bad in ('[dir."src/IO"]', '[dir."other/"]', '[library."src/"]'):
+        text = ROWS.replace('[dir."src/IO/"]', bad, 1)
+        refusal = _refusal(_load, tmp_path, text, ROWS_TRACKED)
+        assert refusal.findings[0].key in {"config.file", "config.file_unknown"}, bad
+
+
+def test_a_path_in_two_row_tables_is_refused(tmp_path: Path) -> None:
+    text = ROWS + '\n[file."src/IO/"]\ncflags = ["-g"]\n'
+    refusal = _refusal(_load, tmp_path, text, ROWS_TRACKED)
+    assert "config.file" in _keys(refusal) and any("also a [file] row" in f.reason for f in refusal.findings)
+
+
+def test_a_file_row_equal_to_its_directory_row_is_refused_as_dead(tmp_path: Path) -> None:
+    text = ROWS.replace('toolchain = "gcc-2.7.2-kmc"\n', 'toolchain = "gcc-2.7.2-sn64"\n')
+    refusal = _refusal(_load, tmp_path, text, ROWS_TRACKED)
+    assert _keys(refusal) == {"config.dead_row"}
+    assert refusal.findings[0].path == "project:file.src/IO/80200500.CPP"
+
+
+def test_a_row_equal_to_the_project_default_is_debt_and_a_library_row_is_never_dead(tmp_path: Path) -> None:
+    default = ROWS.split('toolchain = "')[1].split('"')[0]
+    text = ROWS.replace('[dir."src/IO/"]\ntoolchain = "gcc-2.7.2-sn64"', f'[dir."src/IO/"]\ntoolchain = "{default}"')
+    text = text.replace('[file."src/IO/80200500.CPP"]\ntoolchain = "gcc-2.7.2-kmc"\n', "")
+    assert configuration.dead_rows(_load(tmp_path, text, ROWS_TRACKED)) == ["src/IO/"]
+    library = ROWS.replace('cflags = ["-mfp32"]\n', "")
+    assert configuration.dead_rows(_load(tmp_path, library, ROWS_TRACKED)) == []
+
+
+def test_dead_rows_lists_what_the_lint_refuses(tmp_path: Path) -> None:
+    project = _load(tmp_path, ROWS, ROWS_TRACKED)
+    assert configuration.dead_rows(project) == []

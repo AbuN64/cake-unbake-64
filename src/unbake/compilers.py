@@ -626,23 +626,9 @@ def smallest_rows(
     return sorted(rows)
 
 
-def _facts(config: Config, path: str, parent: bool) -> tuple[str, frozenset[str], frozenset[str]]:
-    """(toolchain, added, omitted) of the row that applies to a path, or, with `parent`, of the row that would apply
-    if the path's own row were gone."""
-    files = dict(config.project.files)
-    if parent:
-        files.pop(path, None)
-    prefixes = [k for k in files if k.endswith("/") and path.startswith(k) and k != path]
-    row = files.get(path) if not parent else None
-    row = row or (files[max(prefixes, key=len)] if prefixes else None)
-    if row is None:
-        return config.project.toolchain, frozenset(), frozenset()
-    return row.toolchain or config.project.toolchain, frozenset(row.cflags), frozenset(row.omit)
-
-
 def dead_rows(config: Config) -> list[str]:
-    """[file] rows that give a path what the row above it (the directory's, or the project default) gives already."""
-    return sorted(p for p in config.project.files if _facts(config, p, False) == _facts(config, p, True))
+    """[file], [dir] and [library] rows that give a path what the row above it gives already."""
+    return configuration.dead_rows(config.project)
 
 
 def _exact(row: Mapping[str, Any]) -> dict[str, int]:

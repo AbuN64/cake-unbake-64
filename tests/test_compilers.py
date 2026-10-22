@@ -121,7 +121,7 @@ def test_smallest_rows_leave_a_default_project_with_no_rows() -> None:
 
 
 def _project(**rows: FileFacts) -> Config:
-    project = SimpleNamespace(toolchain="gcc-test", files=rows)
+    project = SimpleNamespace(toolchain="gcc-test", files=rows, libraries=())
     return SimpleNamespace(project=project)  # type: ignore[return-value]
 
 

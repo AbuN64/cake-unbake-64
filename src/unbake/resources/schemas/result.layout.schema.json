@@ -1,0 +1,89 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.layout",
+ "type": "object",
+ "required": [
+  "action"
+ ],
+ "properties": {
+  "action": {
+   "enum": [
+    "plan",
+    "apply",
+    "literals",
+    "carry",
+    "verify"
+   ]
+  },
+  "moved": {},
+  "kept": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "rows": {
+   "type": "array",
+   "items": {}
+  },
+  "path": {
+   "type": "string"
+  },
+  "map": {
+   "type": "string"
+  },
+  "config": {
+   "type": "object"
+  },
+  "written": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "next": {
+   "type": "string"
+  },
+  "clash": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "patch": {
+   "type": "string"
+  },
+  "same": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "differ": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "absent": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "bad": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "link_script": {
+   "type": "boolean"
+  },
+  "notes": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "held": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  }
+ },
+ "additionalProperties": false
+}

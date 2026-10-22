@@ -203,3 +203,13 @@ params = [
   { name = "cpu", kind = "option", type = "int", required = false, multiple = false, help = "census: CPU seconds one call may spend before it stops and resumes next call, default 240" },
   { name = "drafts", kind = "flag", type = "str", required = false, multiple = false, help = "census: also judge the NON_MATCHING bodies of units that have them" },
 ]
+[command.layout]
+help = "Move a project's files to a target folder layout by rules: plan the map, apply it (files, config.toml rows, sync), carry uncommitted work across, verify the objects. Writes only .unbake/layout until apply."
+handler = "folders.run"
+params = [
+  { name = "action", kind = "argument", type = "str", required = true, multiple = false, help = "plan | apply | literals | carry | verify" },
+  { name = "rules", kind = "option", type = "path", required = false, multiple = false, help = "plan: the rules file ([[rule]] rows: match, to, optional row)" },
+  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "apply, carry, verify: the plan file, default .unbake/layout/plan.json" },
+  { name = "patch", kind = "option", type = "path", required = false, multiple = false, help = "carry: where to write the patch, default .unbake/layout/carry.patch" },
+  { name = "old", kind = "option", type = "path", required = false, multiple = false, help = "verify: a directory holding the build tree and link script from before the move" },
+]

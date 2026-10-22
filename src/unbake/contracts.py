@@ -373,6 +373,7 @@ class Project:
     files: Mapping[str, FileFacts]  # [file] rows by path or "dir/" prefix
     digest: str
     origins: Mapping[str, Origin] = field(default_factory=dict)
+    library_origin: Mapping[str, str] = field(default_factory=dict)  # [library] row path -> where it came from
 
 
 def macro(version: str) -> str:

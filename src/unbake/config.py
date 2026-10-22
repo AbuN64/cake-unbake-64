@@ -6,7 +6,7 @@ import json
 import math
 import os
 import tomllib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from functools import cache, partial
 from importlib import resources
@@ -388,6 +388,40 @@ def _tracked(root: Path) -> set[str]:
     return process.tracked(root)
 
 
+def _folder(path: str, slash: bool = True) -> bool:
+    """Whether a row path is a source directory under src/, ending in / when `slash`."""
+    parts = Path(path).parts
+    ok = not (Path(path).is_absolute() or ".." in parts or len(parts) < 2 or parts[0] != "src")
+    return ok and (path.endswith("/") or not slash)
+
+
+def _above(files: Mapping[str, FileFacts], path: str) -> FileFacts | None:
+    """The row a path would get without its own row: the longest directory row above it."""
+    folders = [k for k in files if k.endswith("/") and path.startswith(k) and k != path]
+    return files[max(folders, key=len)] if folders else None
+
+
+def dead_paths(files: Mapping[str, FileFacts], default: str, keep: Iterable[str] = ()) -> list[str]:
+    """Rows that give their path what the row above it (else the project default) gives already: an exception that
+    excepts nothing (rows in `keep` stay: a library row marks a boundary). A row's toolchain falls back to the
+    project's, and only the deepest row applies."""
+
+    def facts(row: FileFacts | None) -> tuple[str, frozenset[str], frozenset[str]]:
+        return (
+            (row.toolchain or default, frozenset(row.cflags), frozenset(row.omit))
+            if row
+            else (default, frozenset(), frozenset())
+        )
+
+    return sorted(p for p, row in files.items() if p not in set(keep) and facts(row) == facts(_above(files, p)))
+
+
+def dead_rows(project: Project) -> list[str]:
+    """The [file], [dir] and [library] rows of a project that equal the row above them (see `_dead`). Loading refuses
+    only a row that equals a directory row above it; one that equals the project default is project debt."""
+    return dead_paths(project.files, project.toolchain, project.libraries)
+
+
 def load_project(
     root: Path, reader: Callable[[str], bytes] | None = None, tracked: Callable[[], Iterable[str]] | None = None
 ) -> Project:
@@ -406,8 +440,7 @@ def load_project(
     if document["toolchain"] not in load_resource("toolchains.toml")["toolchain"]:
         problems.append(bad("toolchain", f"{document['toolchain']} is not in toolchains.toml"))
     for folder in document.get("libraries", ()):
-        path = Path(folder)
-        if path.is_absolute() or ".." in path.parts or len(path.parts) < 2 or path.parts[0] != "src":
+        if not _folder(folder, False):
             problems.append(bad("libraries", f"{folder} must be a source subdirectory"))
     version: dict[str, VersionFacts] = {}
     for vid, row in table.items():
@@ -416,13 +449,23 @@ def load_project(
         ) or (Segment("main", 0x1000, None, "code"),)
         meta = {k: row[k] for k in ("cartridge_id", "region", "description") if k in row}
         version[vid] = VersionFacts(row["sha1"], row["size"], segments, meta)
-    files = {
-        path: FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())))
-        for path, row in document.get("file", {}).items()
-    }
+    files: dict[str, FileFacts] = {}
+    spelled: dict[str, str] = {}  # row path -> the table it was written in
+    for kind in ("file", "dir", "library"):
+        for path, row in document.get(kind, {}).items():
+            facts = FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())))
+            if path in files:
+                problems.append(bad(f"{kind}.{path}", f"{path} is also a [{spelled[path]}] row"))
+            elif kind != "file" and not _folder(path):
+                problems.append(bad(f"{kind}.{path}", f"[{kind}] key {path} must be a source directory ending in /"))
+            else:
+                files[path], spelled[path] = facts, kind
+    libraries = [*document.get("libraries", ()), *(p for p, k in spelled.items() if k == "library")]
+    for folder in {f for f in libraries if libraries.count(f) > 1}:
+        problems.append(bad("libraries", f"{folder} is a library twice"))
     for path, row in files.items():
         if row.toolchain is not None and row.toolchain not in load_resource("toolchains.toml")["toolchain"]:
-            problems.append(bad(f"file.{path}.toolchain", f"{row.toolchain} is not in toolchains.toml"))
+            problems.append(bad(f"{spelled[path]}.{path}.toolchain", f"{row.toolchain} is not in toolchains.toml"))
     if files:
         have = set((tracked or (lambda: _tracked(root)))())
         for path in files:
@@ -430,11 +473,22 @@ def load_project(
                 problems.append(
                     Finding(
                         "config.file_unknown",
-                        f"[file] key {path} matches no tracked file",
-                        path=f"project:file.{path}",
-                        origin=origins.get(f"file.{path}"),
+                        f"[{spelled[path]}] key {path} matches no tracked file",
+                        path=f"project:{spelled[path]}.{path}",
+                        origin=origins.get(f"{spelled[path]}.{path}"),
                     )
                 )
+    boundaries = [p for p, k in spelled.items() if k == "library"]
+    for path in (p for p in dead_paths(files, document["toolchain"], boundaries) if _above(files, p) is not None):
+        problems.append(
+            Finding(
+                "config.dead_row",
+                f"[{spelled[path]}] row {path} gives its files what the row above it gives already",
+                path=f"project:{spelled[path]}.{path}",
+                origin=origins.get(f"{spelled[path]}.{path}.toolchain") or origins.get(f"{spelled[path]}.{path}"),
+                action=f'delete [{spelled[path]}."{path}"]',
+            )
+        )
     if problems:
         raise Refusal(*problems)
     return Project(
@@ -443,7 +497,7 @@ def load_project(
         title=document.get("title", document["name"]),
         toolchain=document["toolchain"],
         names_from=names_from,
-        libraries=tuple(document.get("libraries", ())),
+        libraries=tuple(libraries),
         cppflags=tuple(document.get("cppflags", ())),
         cflags=tuple(document.get("cflags", ())),
         asflags=tuple(document.get("asflags", ())),
@@ -454,6 +508,7 @@ def load_project(
         files=files,
         digest=digest(document),
         origins=origins,
+        library_origin={p: o for p, o in ((p, r.get("origin")) for p, r in document.get("library", {}).items()) if o},
     )
 
 
