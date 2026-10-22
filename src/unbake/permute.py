@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import signal
 import time
 from collections.abc import Sequence
@@ -42,19 +43,25 @@ def replace(source: str, name: str, body: str) -> str:
     return source[: where[0]] + body.strip() + source[where[1] :]
 
 
-_ATTRIBUTE = re.compile(r"\}\s*(__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\))")
+_ATTRIBUTE = re.compile(r"\}\s*(__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\))(?:(\s*)(\w+)(\s*;))?")
 _BRACKET = re.compile(r"\[[^\]\n]*\]")
 _SIZEOF = re.compile(r"\bsizeof\s*\(\s*(\w+)\s*\)")
 
 
-def _shield(source: str) -> tuple[str, list[str]]:
-    """The source the permuter's C parser can round-trip, and the -D options that put the original text back when the
-    result is preprocessed again. Its parser reads `} __attribute__((aligned(4)));` as a lost attribute and
-    `[N - sizeof(A) - sizeof(B)]` as a cast; both become one identifier that the compile script defines as the
-    original, so every permuted body is compiled against the layout the build has."""
+def _shield(source: str) -> tuple[str, list[str], list[tuple[str, str]]]:
+    """The source the permuter's C parser can round-trip, the -D options that put the original text back when the
+    result is preprocessed again, and the (typedef name, attribute) pairs the compile script puts back. Its parser
+    reads `} __attribute__((aligned(4)));` as a lost attribute and `[N - sizeof(A) - sizeof(B)]` as a cast; both
+    become one identifier that the compile script defines as the original. `typedef struct {...} __attribute__((..))
+    Name;` has no identifier form the parser reads: the attribute leaves the text and the script writes it back before
+    `Name;`, so every permuted body is compiled against the layout the build has."""
     defines: dict[str, str] = {}
+    named: list[tuple[str, str]] = []
 
     def attribute(found: re.Match[str]) -> str:
+        if found[3]:  # `} ATTR Name;`: the parser reads neither the attribute nor a stand-in for it
+            named.append((found[3], found[1]))
+            return f"}}{found[2]}{found[3]}{found[4]}"
         name = f"UNBAKE_ATTR_{len(defines)}"
         defines[name] = found[1]
         return f"}} {name}"
@@ -68,15 +75,21 @@ def _shield(source: str) -> tuple[str, list[str]]:
         return _SIZEOF.sub(one, found[0]) if "-" in found[0] else found[0]
 
     text = _BRACKET.sub(sizes, _ATTRIBUTE.sub(attribute, source))
-    return text, [f"-D{name}={body}" for name, body in defines.items()]
+    return text, [f"-D{name}={body}" for name, body in defines.items()], named
 
 
-def _script(root: Path, script: str, defines: Sequence[str] = ()) -> str:
+def _script(root: Path, script: str, defines: Sequence[str] = (), named: Sequence[tuple[str, str]] = ()) -> str:
     """The build's compile script run from the project root with "$1" and "$3" made absolute first; `defines` go to
     its preprocessor."""
     if defines:
         script = script.replace('"$1"', " ".join(shlex.quote(d) for d in defines) + ' "$1"', 1)
     head = f'set -- "$(readlink -f "$1")" "$2" "$(readlink -f "$3")"; cd {root}\n'
+    if named:  # the attributes the parser could not read go back before their typedef names, in a copy beside the input
+        rules = ""
+        for name, attr in named:
+            back = attr.replace("&", "\\&")
+            rules += " -e " + shlex.quote(f"s/}}[[:space:]]*{name}[[:space:]]*;/}} {back} {name};/")
+        head += f'sed -E{rules} "$1" > "$1.attr.c"; set -- "$1.attr.c" "$2" "$3"\n'
     return "#!/bin/sh\n" + head + script.removeprefix("#!/bin/sh\n") + "\n"
 
 
@@ -84,6 +97,13 @@ def _python(permuter: str) -> list[str]:
     """The interpreter that runs the permuter script: UNBAKE_PERMUTER_PYTHON, else the python of the venv beside the
     user's home named venv-permuter or beside the script, else none (the script's own shebang). The shebang's python
     is the system one, which holds none of the permuter's requirements."""
+    try:
+        with open(permuter, "rb") as script:
+            first = script.readline(200)
+    except OSError:
+        first = b""
+    if first.startswith(b"#!") and b"python" not in first:  # a shell wrapper (~/.local/bin/permuter) runs itself
+        return []
     given = os.environ.get("UNBAKE_PERMUTER_PYTHON", "")
     home, here = Path.home(), Path(permuter).resolve().parent
     for python in (given, home / "venv-permuter/bin/python", here / "venv/bin/python", here / ".venv/bin/python"):
@@ -92,6 +112,7 @@ def _python(permuter: str) -> list[str]:
     return []
 
 
+PREFLIGHT = 20.0  # seconds the permuter gets to print its base score before the full run
 CAP = 2  # permuter runs at once on one host (UNBAKE_PERMUTER_CAP): each runs -j workers, more starve every other lane
 QUEUE_S = 600.0  # seconds a run queues for a place before it refuses, naming who holds them
 
@@ -200,9 +221,9 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
         )
     root, folder = config.project.root, work / "permute"
     folder.mkdir(parents=True, exist_ok=True)
-    base, defines = _shield(ctx["source"])
+    base, defines, named = _shield(ctx["source"])
     store.write(folder / "base.c", base.encode())
-    store.write(folder / "compile.sh", _script(root, ctx["script"], defines).encode())
+    store.write(folder / "compile.sh", _script(root, ctx["script"], defines, named).encode())
     (folder / "compile.sh").chmod(0o755)
     weights = "".join(f"perm_{p} = 0\n" for p in _JUNK)
     settings = f'func_name = "{name}"\ncompiler_type = "gcc"\n[weight_overrides]\n{weights}'
@@ -232,6 +253,22 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
     ]
     mark = _place(config)
     try:
+        # fail fast: the permuter prints its base score at start; one that prints none in PREFLIGHT seconds has an
+        # error of its own (10-22: a run with no base score burned its whole 300 CPU-s and said nothing)
+        start = [a for a in argv if a != "--quiet"]
+        start[start.index("-j") + 1] = "1"
+        first = process.run("permute.preflight", start, folder, tmp=work / "tmp", timeout=PREFLIGHT)
+        shown = first.stdout.decode(errors="replace") + first.stderr.decode(errors="replace")
+        if "base score" not in shown:
+            raise Refusal(
+                Finding(
+                    "native.exit",
+                    f"permuter printed no base score in {PREFLIGHT:g}s (its own output follows): {shown[-1500:]}",
+                    unit=name,
+                )
+            )
+        for stale in folder.glob("output-*"):  # the preflight's own finds belong to no budget
+            shutil.rmtree(stale, ignore_errors=True)
         ran = process.run("permute.run", argv, folder, tmp=work / "tmp", timeout=seconds)
     finally:
         mark.unlink(missing_ok=True)

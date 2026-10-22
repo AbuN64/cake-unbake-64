@@ -107,7 +107,8 @@ def test_shield_hides_what_the_permuters_parser_misreads_and_the_script_puts_it_
         "typedef struct { char pad[0x11D8 - sizeof(Head) - sizeof(Cam)]; } B;\n"
         "typedef char C_size_check[(sizeof(C) == 0x8) ? 1 : -1];\n"
     )
-    text, defines = permute._shield(source)
+    text, defines, named = permute._shield(source)
+    assert named == []
     assert "__attribute__" not in text and "UNBAKE_ATTR_0" in text
     assert "[0x11D8 - UNBAKE_SIZEOF_Head - UNBAKE_SIZEOF_Cam]" in text
     assert "UNBAKE_SIZEOF_C" in text  # a bracket holding a minus is shielded whole
@@ -127,3 +128,31 @@ def test_a_run_is_kept_under_the_cpu_cap_and_says_how_to_extend(monkeypatch) -> 
     assert (wall, jobs) == (100, 3) and "100 s x 3 jobs" in note
     monkeypatch.setenv("UNBAKE_PERMUTE_CPU", "9000")
     assert permute._budget(1200, 6) == (1200, 6, "")
+
+
+def test_a_permuter_that_prints_no_base_score_fails_fast_with_its_own_error(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "permuter"
+    fake.write_text('#!/bin/sh\necho "Traceback: cannot compile the base" >&2\nexit 1\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(permute, "PREFLIGHT", 5.0)
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(workers=2))
+    ctx = {"source": SOURCE, "script": "true", "assemble": ["/usr/bin/touch", "{out}"], "asm_path": "nonmatchings/g.s"}
+    with pytest.raises(Refusal) as raised:
+        permute.search(config, "g", ctx, {"permute": 300, "permuter": str(fake)}, tmp_path / "work")  # type: ignore[arg-type]
+    assert "cannot compile the base" in str(raised.value.findings[0])
+
+
+def test_a_typedef_attribute_the_parser_cannot_read_leaves_the_text_and_the_script_writes_it_back(tmp_path) -> None:
+    source = "typedef struct {\n  int a;\n} __attribute__((aligned(4))) SoundEnvelope;\nint g(void) { return 0; }\n"
+    text, defines, named = permute._shield(source)
+    assert "__attribute__" not in text and "} SoundEnvelope;" in text and defines == []
+    assert named == [("SoundEnvelope", "__attribute__((aligned(4)))")]
+    script = permute._script(tmp_path, '#!/bin/sh\ncat "$1" > "$3"\n', defines, named)
+    (tmp_path / "base.c").write_text(text)
+    import subprocess
+
+    done = subprocess.run(
+        ["sh", "-c", script, "x", str(tmp_path / "base.c"), "-o", str(tmp_path / "out.c")], check=False
+    )
+    assert done.returncode == 0
+    assert "} __attribute__((aligned(4))) SoundEnvelope;" in (tmp_path / "out.c").read_text()
