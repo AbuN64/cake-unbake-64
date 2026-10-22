@@ -192,3 +192,14 @@ params = [
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write the full JSON here and keep the result to counts" },
   { name = "text", kind = "option", type = "path", required = false, multiple = false, help = "write the human view (proposals and header disagreements) here" },
 ]
+[command.compilers]
+help = "Which compiler built each unit: fingerprint the built objects, census candidate compilers on the C functions, propose the smallest directory rows. Writes only .unbake/compilers."
+handler = "compilers.run"
+params = [
+  { name = "action", kind = "argument", type = "str", required = true, multiple = false, help = "fingerprint | census | propose" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version whose build is read, default names_from" },
+  { name = "toolchains", kind = "option", type = "str", required = false, multiple = false, help = "census: comma list of candidate toolchain ids, default every installed one of the project's family" },
+  { name = "paths", kind = "option", type = "str", required = false, multiple = true, help = "only units under this source path prefix; once per prefix" },
+  { name = "cpu", kind = "option", type = "int", required = false, multiple = false, help = "census: CPU seconds one call may spend before it stops and resumes next call, default 240" },
+  { name = "drafts", kind = "flag", type = "str", required = false, multiple = false, help = "census: also judge the NON_MATCHING bodies of units that have them" },
+]

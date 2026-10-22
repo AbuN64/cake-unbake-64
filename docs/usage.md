@@ -40,8 +40,33 @@ unbake map                                           # write the layout map to .
 ```
 
 A function that is exact in every version lands at once with a ROM proof and a commit.
-The commands are `init`, `setup`, `sync`, `check`, `audit`, `compare`, `score`, `submit`, `land`, `report`, `map`
-and `symbols`.
+The commands are `init`, `setup`, `sync`, `check`, `audit`, `compare`, `score`, `submit`, `land`, `report`, `map`,
+`symbols` and `compilers`.
+
+## Compilers
+
+`unbake compilers` says which compiler built each unit and how few directory rows say so. It reads the build the project
+already has (`build/<version>/` objects and preprocessed texts) and writes only `.unbake/compilers/`.
+
+```sh
+unbake compilers fingerprint                 # shapes of every function in the ROM-equal objects; no compiler runs
+unbake compilers census --paths src/IO/      # recompile the C functions with every candidate; stops after its CPU budget
+unbake compilers census                      # ... and run again to resume until `remaining` is 0
+unbake compilers census --drafts             # also judge the NON_MATCHING bodies against the ROM-equal object
+unbake compilers propose                     # the smallest rows, dead rows, shape disagreements, drafts a row makes exact
+```
+
+`fingerprint` classes a function by letters: the epilogue (`F` stack adjust in the delay slot, `U` adjust before a
+`jr; nop`), how a global address is formed (`M` assembler temporary, `S` a split register) and `+f64` for single floats
+in odd FPRs. The catalog row of each toolchain (`fingerprint` in `toolchains.toml`) says which shapes it can emit, so a
+unit whose code has a shape its row cannot emit is flagged unless a census run shows it exact anyway.
+
+`census` candidates are every installed catalog toolchain of the project's default family, each with its default
+flags and each of its `probe_flags` sets, plus the unit's own recipe (`--toolchains a,b` names them). A function counts
+the instruction lines that differ from the ROM-equal object, trailing alignment nops aside.
+
+`propose` reads both files and prints rows as data: `kind` `dir` or `file`, the `toolchain`, flags to `add` and `omit`,
+and how many units each covers. Rows land only when `make check` passes.
 
 ## Types
 

@@ -24,6 +24,8 @@ paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
 preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
 small_data = [0, 1, 2, 3, 4, 8]
 isa = [2, 3]
+# unbake compilers: the shapes this compiler can emit (epilogue filled|unfilled, addresses split|macro|either, save_area top|below-locals, fp fp32|fp64)
+fingerprint = { epilogue = "filled", addresses = "macro", save_area = "below-locals", fp = ["fp32"] }
 decompme = "ido7.1"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-Wab,-r4300_mul", "{codegen}", "-c", "{source}", "-o", "{out}"]
@@ -74,6 +76,8 @@ paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
 preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
 small_data = [0, 1, 2, 3, 4, 8]
 isa = [2, 3]
+# unbake compilers: the shapes this compiler can emit (epilogue filled|unfilled, addresses split|macro|either, save_area top|below-locals, fp fp32|fp64)
+fingerprint = { epilogue = "filled", addresses = "macro", save_area = "below-locals", fp = ["fp32"] }
 decompme = "ido5.3"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-Wab,-r4300_mul", "{codegen}", "-c", "{source}", "-o", "{out}"]
@@ -136,6 +140,8 @@ paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
 preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
 small_data = [0, 1, 2, 3, 4, 8]
 isa = [2, 3]
+# unbake compilers: the shapes this compiler can emit (epilogue filled|unfilled, addresses split|macro|either, save_area top|below-locals, fp fp32|fp64)
+fingerprint = { epilogue = "unfilled", addresses = "macro", save_area = "top", fp = ["fp32"] }
 decompme = "gcc2.7.2kmc"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
@@ -176,6 +182,8 @@ paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
 preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
 small_data = [0, 1, 2, 3, 4, 8]
 isa = [2, 3]
+# unbake compilers: the shapes this compiler can emit (epilogue filled|unfilled, addresses split|macro|either, save_area top|below-locals, fp fp32|fp64)
+fingerprint = { epilogue = "unfilled", addresses = "split", save_area = "top", fp = ["fp32"] }
 decompme = "gcc2.7.2snew"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
@@ -218,6 +226,10 @@ paired = ["-G", "-I", "-D", "-U", "-include", "-imacros", "-isystem", "-iquote"]
 preprocessor_options = ["-D", "-U", "-I", "-include", "-imacros", "-isystem", "-iquote"]
 small_data = [0, 1, 2, 3, 4, 8]
 isa = [2, 3]
+# unbake compilers: the shapes this compiler can emit (epilogue filled|unfilled, addresses split|macro|either, save_area top|below-locals, fp fp32|fp64)
+fingerprint = { epilogue = "filled", addresses = "either", save_area = "top", fp = ["fp32", "fp64"] }
+# unbake compilers census: flag sets tried beside the defaults
+probe_flags = [["-mfp32"], ["-msplit-addresses"], ["-fno-thread-jumps", "-fno-rerun-cse-after-loop"], ["-ffast-math", "-fno-delayed-branch"]]
 decompme = "gcc2.8.1sn"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]

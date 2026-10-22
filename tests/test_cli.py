@@ -257,6 +257,7 @@ def test_score_short_prints_the_verdict_and_diff_without_the_stage_tree_or_proof
 def test_the_command_set_is_the_C9_set() -> None:
     assert set(COMMANDS) == {
         "blobs",
+        "compilers",
         "names",
         "init",
         "setup",

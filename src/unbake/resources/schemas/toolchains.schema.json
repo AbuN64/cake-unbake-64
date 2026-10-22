@@ -228,6 +228,58 @@
      },
      "rdata_alloc": {
       "type": "boolean"
+     },
+     "fingerprint": {
+      "type": "object",
+      "properties": {
+       "epilogue": {
+        "enum": [
+         "filled",
+         "unfilled"
+        ]
+       },
+       "addresses": {
+        "enum": [
+         "split",
+         "macro",
+         "either"
+        ]
+       },
+       "save_area": {
+        "enum": [
+         "top",
+         "below-locals"
+        ]
+       },
+       "fp": {
+        "type": "array",
+        "items": {
+         "enum": [
+          "fp32",
+          "fp64"
+         ]
+        },
+        "minItems": 1
+       }
+      },
+      "required": [
+       "epilogue",
+       "addresses",
+       "save_area",
+       "fp"
+      ],
+      "additionalProperties": false
+     },
+     "probe_flags": {
+      "type": "array",
+      "items": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       },
+       "minItems": 1
+      }
      }
     },
     "required": [

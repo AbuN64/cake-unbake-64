@@ -125,7 +125,6 @@ sentence = "a configured tool is not an executable file"
 owner = "adapters"
 sentence = "the preprocessor reported an error"
 
-
 [key."recipe.conflict"]
 owner = "recipes"
 sentence = "the same option is added and omitted"
@@ -536,3 +535,15 @@ sentence = "a writer was changing the tree: the measure read the tree as the wri
 [key."permute.cap"]
 owner = "permute"
 sentence = "the host already runs its permitted number of permuter runs"
+
+[key."compilers.input"]
+owner = "compilers"
+sentence = "compilers has no built objects, no census or an unknown action to work from"
+
+[key."compilers.dead_row"]
+owner = "compilers"
+sentence = "a [file] row gives a path what the row above it gives already"
+
+[key."compilers.disagree"]
+owner = "compilers"
+sentence = "a unit's code has shapes that its toolchain row cannot emit and no census run shows it exact"

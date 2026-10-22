@@ -1,0 +1,153 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.compilers",
+ "type": "object",
+ "required": [
+  "action",
+  "version"
+ ],
+ "properties": {
+  "action": {
+   "enum": [
+    "fingerprint",
+    "census",
+    "propose"
+   ]
+  },
+  "version": {
+   "type": "string"
+  },
+  "path": {
+   "type": "string"
+  },
+  "table": {
+   "type": "string"
+  },
+  "units": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "functions": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "classes": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer"
+   }
+  },
+  "done": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "remaining": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "cpu_seconds": {
+   "type": "number",
+   "minimum": 0
+  },
+  "candidates": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "judged": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "exact_current": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "unresolved": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "exact_under": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "integer"
+   }
+  },
+  "rows": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "path",
+     "kind",
+     "tag",
+     "toolchain",
+     "add",
+     "omit",
+     "covers"
+    ],
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "kind": {
+      "enum": [
+       "dir",
+       "file"
+      ]
+     },
+     "tag": {
+      "type": "string"
+     },
+     "toolchain": {
+      "type": "string"
+     },
+     "add": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "omit": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "covers": {
+      "type": "integer",
+      "minimum": 0
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "dead_rows": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "disagree": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "drafts": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "notes": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  }
+ },
+ "additionalProperties": false
+}
