@@ -763,6 +763,9 @@ def run(config: Any, params: Json) -> Json:
     if params.get("states"):
         return _states_run(config, params)
     with effort.stage("report.run"):
+        if exact := params.get("exact"):  # the caller vouches for the link verdict (a checked push); no build runs
+            build = import_module("unbake.build")
+            record_build(Path(config.project.root), build.project_inputs(config.project), sorted(exact))
         pending = sum(p.is_file() for p in (Path(config.project.root) / ".unbake/inbox").glob("*.json"))
         from unbake import progress
 
