@@ -32,11 +32,22 @@ def build[Result](start: Callable[[str | None], Result], root: Path, store: Path
         first = start(str(manifest))
         if not manifest.exists():
             return first
-        with effort.stage("make.front"):
+        with effort.stage("make.front") as span:
             process.batch(store, root, manifest, workers)
+            answered, total = _answered(manifest, root)
+            span.add(items=total)
+            effort.say(f"make.front: {answered} of {total} compiles from the cache, {total - answered} compile")
         return start(None)
     finally:
         _clear(manifest, root)
+
+
+def _answered(manifest: Path, root: Path) -> tuple[int, int]:
+    """(compiles the batch answered, compiles the build recorded): the rest run the compiler in the second make."""
+    from unbake.resources import cc_cache
+
+    parsed = [p for _, args in cc_cache.commands(str(manifest)) if (p := cc_cache.parse(args)) is not None]
+    return sum((root / (out + ".cc")).exists() for _, out in parsed), len(parsed)
 
 
 def _clear(manifest: Path, root: Path) -> None:
