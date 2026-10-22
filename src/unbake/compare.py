@@ -553,6 +553,9 @@ def _variant_job(item: tuple[Config, Json]) -> Json:
     }
 
 
+_MAX_VARIANTS = 50  # a variant costs about 5 CPU s (a compile of its module): 50 stay under the 5 CPU-minute cap
+
+
 def _score_variants(config: Config, params: Json) -> Json:
     """Validate the whole manifest first, then dispatch each variant as one complete score."""
     manifest = Path(params["variants"])
@@ -584,6 +587,15 @@ def _score_variants(config: Config, params: Json) -> Json:
                 reason="--variants must hold a JSON list",
                 path=str(manifest),
                 action="pass {file, overlays} rows",
+            )
+        )
+    if len(rows) > _MAX_VARIANTS:
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason=f"--variants holds {len(rows)} rows: at about 5 CPU s each, over {_MAX_VARIANTS} passes the cap",
+                path=str(manifest),
+                action=f"split the list into runs of at most {_MAX_VARIANTS} rows",
             )
         )
     variants = []

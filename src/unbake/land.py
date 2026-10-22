@@ -284,10 +284,11 @@ def inbox(config: Config, only: Collection[str] | str | None = None) -> list[Sub
             except FileNotFoundError:
                 continue
             except (Refusal, ValueError, TypeError, KeyError, OSError) as error:
-                if isinstance(error, Refusal) and any(f.key == "land.rebase" for f in error.findings):
-                    raise  # unsupported provenance stays intact for explicit review and resubmission
+                stale = isinstance(error, Refusal) and any(f.key == "land.rebase" for f in error.findings)
                 finding = Finding("inbox.corrupt", str(error), path=str(path.relative_to(config.project.root)))
-                _move(config, path.stem, "refused")
+                _move(
+                    config, path.stem, "stale" if stale else "refused"
+                )  # stale: kept for review, never blocks a drain
                 store.log(config, "refusal", {"id": path.stem, "findings": [asdict(finding)]})
         return entries
 

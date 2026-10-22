@@ -676,3 +676,11 @@ def test_a_candidate_brings_the_files_under_its_overlay_directory_at_their_proje
     (world.tmp / "cand.overlay/include/new.h").write_text("typedef int T;\n")
     assert compare._extras(world.cfg, [], cand) == {"include/new.h": b"typedef int T;\n"}
     assert compare._extras(world.cfg, [], world.tmp / "other.c") == {}
+
+
+def test_a_variants_list_over_the_cpu_cap_is_refused_with_the_split(world):
+    manifest = world.tmp / "many.json"
+    manifest.write_text(json.dumps([{"file": "a.c"}] * (compare._MAX_VARIANTS + 1)))
+    with pytest.raises(Refusal) as refused:
+        compare.score_command(world.cfg, {"variants": str(manifest)})
+    assert "split the list into runs of at most 50" in refused.value.findings[0].action

@@ -117,3 +117,21 @@ def test_drain_lands_only_the_named_entries_and_abandoned_ones_go_to_the_attic(w
     assert land._abandoned(dead["session"], time.time()) and not land._abandoned(str(os.getpid()), time.time())
     assert land.expire(world.config) == [other.id]
     assert (inbox / "attic" / f"{other.id}.json").is_file() and (inbox / f"{mine.id}.json").is_file()
+
+
+def test_a_pre_provenance_entry_is_quarantined_by_a_drain_not_raised_for_every_caller(world, monkeypatch):
+    import json
+
+    from unbake import compare
+
+    monkeypatch.setattr(land, "process", SimpleNamespace(git=lambda *a: SimpleNamespace(stdout=b"abc\n")))
+    monkeypatch.setattr(land.effort, "invocation", lambda: "unbake submit")
+    request = compare._request("func_80000010", world.root / "cand.c", None)
+    intake = land._intake(world.config, request, [_proof(True)], None)
+    entry = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)
+    path = world.root / ".unbake/inbox" / f"{entry.id}.json"
+    old = json.loads(path.read_text())
+    old.pop("extra_bases")
+    path.write_text(json.dumps(old))
+    assert land.inbox(world.config) == []
+    assert (path.parent / "stale" / path.name).is_file() and not path.exists()
