@@ -793,6 +793,27 @@ def drop_including(config: Config, version: str, names: set[str]) -> int:
     return dropped
 
 
+_DEPENDENCY_LINE = re.compile(r"asm-deps\.py|asm\.deps|mkdir -p build\)")
+
+
+def _dependency_lines(text: str) -> set[str]:
+    """The lines of a Makefile that only add prerequisites to objects: the ASM_DEPS script that lists the extracted
+    files each source names, and the lines that run and include its output. They decide when an object is made again,
+    never what its recipe writes, so a change to them reaches no object."""
+    found: set[str] = set()
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("define ASM_DEPS"):
+            inside = True
+            found.add(line)
+        elif inside and line == "endef":
+            inside = False
+            found.add(line)
+        elif inside or _DEPENDENCY_LINE.search(line):
+            found.add(line)
+    return found
+
+
 _PREPROCESS_LINE = re.compile(r"^(?:\S.*?: )?(?:CPPFLAGS|DEFINES|INCLUDES) :?= ")
 
 
@@ -951,6 +972,7 @@ _LONG_AGO = 1_000_000_000  # ns: older than any input, so make remakes the file 
 def drop_reflagged(config: Config, new: bytes | None = None) -> int:
     """make does not see a rule change, so the Makefile the objects in build/ were made by is kept
     (.unbake/make.Makefile) and compared with the one about to build (`new`, default the tree's Makefile). A changed
+    line that only adds prerequisites (`_dependency_lines`) reaches no object. A changed
     line that decides only the preprocessed text (`_preprocess_lines`) removes the .i stamp (`.i.ok`) of the objects
     it reaches, so their text is made again and only an object whose text changed compiles again; any other changed
     line reaches what the rules using it make (`_reach`): a per-file row its object in every version, a recipe or a
@@ -973,6 +995,7 @@ def drop_reflagged(config: Config, new: bytes | None = None) -> int:
     before, after = old.decode(), new.decode()
     changed = set(before.splitlines()) ^ set(after.splitlines())
     moved = {line for line in changed if line.strip() and not line.startswith("#")}
+    moved -= _dependency_lines(before) | _dependency_lines(after)
     if not moved:
         return 0
     text_only = _preprocess_lines(before) | _preprocess_lines(after)

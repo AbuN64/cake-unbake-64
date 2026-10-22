@@ -333,7 +333,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(text.splitlines()) < 260
+    assert len(text.splitlines()) < 300
     assert "src/f1.c" not in text
 
 
@@ -673,6 +673,89 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
     assert make() == (["src/a.c"], targets[:1])
     (tmp_path / "build/us/src/b.c.i.ok").unlink()  # objects built before the stamps: nothing newer, nothing to do
     assert make() == ([], [])
+
+
+def test_an_object_follows_the_extracted_files_its_include_lines_name(tmp_path):
+    """The compiler's assembly holds only an `.include` of each INCLUDE_ASM/RODATA/DATA file; the assembler reads its
+    content. A stub compiler appends the named files' text to the object, as the assembler does: a file edited in place
+    (a symbol renamed, the source and its .i unchanged) must rebuild exactly the objects that name it."""
+    import subprocess
+    import sys
+
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "asm/us/nonmatchings/seg").mkdir(parents=True)
+    (tmp_path / "asm/us/data/seg").mkdir(parents=True)
+    (tmp_path / "asm/eu-1/nonmatchings/seg").mkdir(parents=True)
+    (tmp_path / "asm/us/.extracted").touch()
+    (tmp_path / "versions/us/text_sizes.mk").write_text("")
+    (tmp_path / "src/a.c").write_text(
+        'INCLUDE_ASM("seg", f_a);\nINCLUDE_RODATA("seg", d_a);\nINCLUDE_ASM("seg", f_eu);\n'
+    )
+    (tmp_path / "src/b.c").write_text('INCLUDE_ASM("seg", f_b);\nINCLUDE_ASM("seg", f_gone);\n')
+    (tmp_path / "src/c.c").write_text("int c;\n")
+    files = {
+        "asm/us/nonmatchings/seg/f_a.s": "call old_name\n",
+        "asm/us/data/seg/d_a.s": "data old_name\n",
+        "asm/eu-1/nonmatchings/seg/f_eu.s": "only the other version has it\n",
+        "asm/us/nonmatchings/seg/f_b.s": "b body\n",
+    }
+    for path, text in files.items():
+        (tmp_path / path).write_text(text)
+    compiler = tmp_path / "compiler.py"
+    compiler.write_text(
+        "from pathlib import Path\nimport re, sys\n"
+        "text = Path(sys.argv[-3]).read_text()\n"
+        "for kind, seg, name in re.findall(r'INCLUDE_(ASM|RODATA)\\(\"(\\w+)\", (\\w+)\\)', text):\n"
+        "    where = Path('asm/us') / ('nonmatchings' if kind == 'ASM' else 'data') / seg / (name + '.s')\n"
+        "    text += where.read_text() if where.exists() else ''\n"
+        "Path(sys.argv[-1]).write_text(text)\n"
+        "with Path('compiled').open('a') as log: log.write(sys.argv[-1] + '\\n')\n"
+    )
+    targets = [f"build/us/src/{name}.c.o" for name in "abc"]
+
+    def make():
+        (tmp_path / "compiled").write_text("")
+        result = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "-j1",
+                *targets,
+                "STAMPS=",
+                "TC=stub",
+                f"AS={sys.executable} {compiler}",
+                "PREPROCESS_stub=@cp $< $(@:.ok=.new)",
+                "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
+                "TRIM_TEXT=true",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return sorted((tmp_path / "compiled").read_text().splitlines())
+
+    def edit(path, text):  # everything built ages first, so the edit is newer than every output
+        now = time.time_ns()
+        for old in tmp_path.rglob("*"):
+            os.utime(old, ns=(now - 2 * 10**10, now - 2 * 10**10))
+        (tmp_path / path).write_text(text)
+
+    assert make() == targets
+    assert make() == []
+    assert "old_name" in (tmp_path / targets[0]).read_text()
+    edit("asm/us/nonmatchings/seg/f_a.s", "call new_name\n")  # the .i of a.c is the same text
+    assert make() == targets[:1]
+    assert "new_name" in (tmp_path / targets[0]).read_text()
+    assert make() == []
+    edit("asm/us/data/seg/d_a.s", "data new_name\n")  # an INCLUDE_RODATA file follows too
+    assert make() == targets[:1]
+    edit("asm/us/nonmatchings/seg/f_b.s", "b changed\n")  # only b names it
+    assert make() == targets[1:2]
+    edit("asm/eu-1/nonmatchings/seg/f_eu.s", "another version\n")  # a file of a version not built: nothing
+    assert make() == []
 
 
 @pytest.mark.parametrize("mode", ["symbol", "subsegment"])
@@ -1106,6 +1189,20 @@ def test_a_changed_variable_reaches_the_objects_of_the_rules_using_it(tmp_path):
     made = (tmp_path / "build/us/asm/d.s.o").stat().st_mtime_ns
     assert build.drop_reflagged(config, RULES.replace("-O2", "-O3").encode()) == 4
     assert (tmp_path / "build/us/asm/d.s.o").stat().st_mtime_ns == made
+
+
+def test_dependency_lines_added_to_the_makefile_keep_every_compiled_object(tmp_path):
+    """The deploy that adds the extracted-file prerequisites (the ASM_DEPS script and the lines that run and include
+    it) must not read as a change nothing names: that would drop every compiled object of every tree."""
+    config = _reflag_tree(tmp_path, RULES)
+    block = (
+        "define ASM_DEPS\nimport os, sys\nprint(os.getcwd(), sys.argv)\nendef\n"
+        "$(shell mkdir -p build)\n$(file >build/asm-deps.py,$(ASM_DEPS))\n"
+        "$(shell python3 -I build/asm-deps.py $(VERSIONS) >build/asm.deps)\n-include build/asm.deps\n"
+    )
+    assert build.drop_reflagged(config, (RULES + block).encode()) == 0
+    assert all((tmp_path / f"build/{v}/src/{u}.c.o").exists() for v in ("us", "de") for u in ("a", "b"))
+    assert (tmp_path / "build/us/asm/d.s.o").stat().st_mtime_ns != build._LONG_AGO
 
 
 def test_a_changed_line_nothing_names_drops_every_compiled_object(tmp_path):
