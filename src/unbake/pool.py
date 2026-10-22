@@ -472,10 +472,30 @@ def _until(
 def _wait_free(pool: Path, mine: Path, want: int) -> None:
     """Blocks until any slot of the host frees and takes it."""
 
+    began = last = time.monotonic()
+
     def attempt() -> bool:
-        return bool(_take(pool, _divide(pool, mine, want)[1], 1))
+        nonlocal last
+        if _take(pool, _divide(pool, mine, want)[1], 1):
+            return True
+        if time.monotonic() - last >= 15.0:  # a wait is never silent (10-22: `recipe status` hung 60 s saying nothing)
+            last = time.monotonic()
+            who = ", ".join(f"{_pid(p)} {_command(_pid(p))}" for p in _peers(pool, mine) if p != mine)
+            effort.say(
+                f"unbake: waiting for a worker slot ({last - began:.0f}s); the slots are held by: {who or 'none'}"
+            )
+        return False
 
     _until(pool, mine, attempt)
+
+
+def _command(pid: int) -> str:
+    """What a process runs, for a message: its first words, else its pid alone."""
+    try:
+        words = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return ""
+    return " ".join(w.decode(errors="replace") for w in words[-4:] if w)[:80]
 
 
 def _acquire(want: int, active: int = 0, cap: int = 0) -> None:
