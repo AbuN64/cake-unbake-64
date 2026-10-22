@@ -272,7 +272,7 @@ def read(path):
                 off, info = struct.unpack_from(">II", d, r[4] + 8 * j)
                 relocs.add((name(rows[r[7]]), off, info & 255, table.get((r[6], info >> 8), "")))
     return sizes, syms, data, relocs
-raw, matching, out, objcopy = sys.argv[1:5]
+raw, matching, out, objcopy, ld = sys.argv[1:6]
 a, b = read(raw), read(matching)
 rest = lambda sizes: {k: v for k, v in sizes.items() if k != ".text"}
 if a == b:
@@ -281,11 +281,10 @@ elif a[:2] == b[:2]:
     verdict, pick = "draft", raw
 elif rest(a[0]) == rest(b[0]) and a[0].get(".text", 0) <= b[0].get(".text", 0):
     # a shorter text keeps the unit's size when zeros fill the rest: the next unit starts where it did
-    subprocess.run([objcopy, "-O", "binary", "-j", ".text", raw, out + ".text"], check=True)
-    text = open(out + ".text", "rb").read()
-    open(out + ".text", "wb").write(text + bytes(b[0][".text"] - len(text)))
-    subprocess.run([objcopy, "--update-section", ".text=" + out + ".text", raw, out], check=True)
-    os.remove(out + ".text")
+    # ld -r keeps the relocations, which objcopy --update-section drops from a section it replaces
+    open(out + ".lds", "w").write("SECTIONS { .text : { *(.text) . = %d; } }\n" % b[0][".text"])
+    subprocess.run([ld, "-r", "-T", out + ".lds", "-o", out, raw], check=True)
+    os.remove(out + ".lds")
     moved = len({sym[0] for sym in a[1] ^ b[1]})
     verdict, pick = "draft-padded %d bytes, %d symbols move" % (b[0][".text"] - a[0][".text"], moved), None
 else:
@@ -317,7 +316,7 @@ $(shell cat $(VERSIONS:%=versions/%/text_sizes.mk) | sed -E 's@^build/@build/nmr
 -include build/text_sizes_nmraw.mk
 build/nm/%.o: build/nmraw/%.o build/%.o
 	$(Q)mkdir -p $(@D)
-	$(Q)python3 -I -c "$$NM_PICK" $^ $@ $(OBJCOPY)
+	$(Q)python3 -I -c "$$NM_PICK" $^ $@ $(OBJCOPY) $(LD)
 # An assembly or binary piece is the matching build's.
 build/nm/%.s.o: build/%.s.o
 	$(Q)mkdir -p $(@D)

@@ -1452,7 +1452,7 @@ def elf(sections: dict[str, int], symbols: list[tuple[str, str, int]], fill: int
     for n, blob, kind in zip(every, blobs, kinds, strict=True):
         link = len(names) + 2 if kind == 2 else 0
         flags, entsize = (6 if kind == 1 else 0), (16 if kind == 2 else 0)
-        headers.append(struct.pack(">10I", index[n], kind, flags, 0, offset, len(blob), link, 0, 4, entsize))
+        headers.append(struct.pack(">10I", index[n], kind, flags, 0, offset, len(blob), link, int(kind == 2), 4, entsize))
         out += blob
         offset += len(blob)
     out += b"".join(headers)
@@ -1489,10 +1489,10 @@ def test_an_nm_object_replaces_the_matching_one_only_when_the_layout_stays(tmp_p
     (tmp_path / "raw.o").write_bytes(raw)
     (tmp_path / "matching.o").write_bytes(matching)
     objcopy = shutil.which("mips-linux-gnu-objcopy") or shutil.which("objcopy")
-    if verdict.startswith("draft-padded") and not objcopy:
-        pytest.skip("no objcopy to pad with")
+    if verdict.startswith("draft-padded") and not (objcopy and shutil.which("mips-linux-gnu-ld")):
+        pytest.skip("no objcopy and mips ld to pad with")
     run = subprocess.run(
-        [sys.executable, "-I", "-c", script, "raw.o", "matching.o", "out.o", objcopy or "objcopy"],
+        [sys.executable, "-I", "-c", script, "raw.o", "matching.o", "out.o", objcopy or "objcopy", shutil.which("mips-linux-gnu-ld") or "ld"],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -1538,3 +1538,31 @@ def test_the_nm_object_of_a_unit_builds_with_the_define_and_is_picked_against_th
         for line in lines
     )
     assert "build/nmraw/us/src/a.c.o: TEXTSIZE := 0x10" in (tmp_path / "build/text_sizes_nmraw.mk").read_text()
+
+
+def test_a_padded_nm_object_keeps_its_relocations(tmp_path):
+    """Padding must not drop .rel.text: a draft whose calls lose their relocations links to jal 0."""
+    import shutil
+    import subprocess
+    import sys
+
+    tools = [shutil.which("mips-linux-gnu-" + t) for t in ("as", "ld", "objcopy", "readelf")]
+    if not all(tools):
+        pytest.skip("no mips binutils")
+    as_, ld, objcopy, readelf = tools
+    config = make_config(tmp_path)
+    config.project.non_matching = "NON_MATCHING"
+    text = build.makefile(config).decode()
+    script = text[text.index("define NM_PICK\n") + len("define NM_PICK\n") : text.index("\nendef\nexport NM_PICK")]
+    (tmp_path / "raw.s").write_text(".text\n.globl f\nf:\n jal g\n nop\n")
+    (tmp_path / "match.s").write_text(".text\n.globl f\nf:\n jal g\n nop\n nop\n nop\n")
+    for n in ("raw", "match"):
+        subprocess.run([as_, "-march=vr4300", "-EB", "-o", f"{n}.o", f"{n}.s"], cwd=tmp_path, check=True)
+    run = subprocess.run(
+        [sys.executable, "-I", "-c", script, "raw.o", "match.o", "out.o", objcopy, ld],
+        cwd=tmp_path, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    )
+    assert run.returncode == 0, run.stderr
+    assert "draft-padded" in (tmp_path / "out.o.pick").read_text()
+    rel = subprocess.run([readelf, "-r", "out.o"], cwd=tmp_path, capture_output=True, text=True).stdout
+    assert "R_MIPS_26" in rel
