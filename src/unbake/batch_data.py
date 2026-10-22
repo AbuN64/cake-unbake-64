@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -30,19 +31,36 @@ def _manifest(path: Path) -> list[dict[str, str]]:
         raise Refusal(Finding("land.request", f"Invalid data manifest: {error}", path=str(path))) from error
 
 
-def _patch(config: Config, files: tuple[str, ...], base: str, path: Path) -> Path:
-    """The batch as a patch file over HEAD, then the tracked tree back as it was: the batch was proved (written, built
-    and linked whole) under the exclusive tree lock, and no other lane ever sees its files."""
-    root = config.project.root
-    path = path if path.is_absolute() else root / path
-    head = process.git(config, "diff", "--binary", "--full-index", "HEAD", "--", *files).stdout
-    store.write(path, head)
+def committed(config: Config, name: str) -> bytes | None:
+    """The bytes HEAD has of a project file, None when HEAD lacks it."""
+    if not process.git(config, "ls-tree", "HEAD", "--", name).stdout.strip():
+        return None
+    return process.git(config, "show", f"HEAD:{name}").stdout
+
+
+def restore(config: Config, files: Sequence[str], base: str) -> None:
+    """The tracked tree back as HEAD has it: each file rewritten to its committed bytes (one HEAD lacks removed)."""
     reads, old = publish.Reads(config, {}), {}
     for name in files:
-        shown = process.git(config, "show", f"HEAD:{name}")
-        old[name] = shown.stdout if shown.exit == 0 else None  # a file HEAD lacks goes again
+        old[name] = committed(config, name)
         publish.read_file(reads, name)
     journal.apply(config, publish.make_plan("restore", base, old, (), (), "restore"), reads)
+
+
+def patch(config: Config, files: Sequence[str], base: str, path: Path) -> Path:
+    """The files' change over HEAD as a patch file (a file HEAD lacks as a new file), then the tracked tree back as it
+    was: the change was proved (written, built whole) under the exclusive tree lock and no other lane saw its files."""
+    root = config.project.root
+    path = path if path.is_absolute() else root / path
+    body = process.git(config, "diff", "--binary", "--full-index", "HEAD", "--", *files).stdout
+    for name in files:
+        if committed(config, name) is None and (root / name).is_file():
+            text = (root / name).read_text(encoding="utf-8").splitlines(keepends=True)
+            tail = "" if not text or text[-1].endswith("\n") else "\n\\ No newline at end of file\n"
+            head = f"diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n"
+            body += (head + f"@@ -0,0 +1,{len(text)} @@\n" + "".join("+" + line for line in text) + tail).encode()
+    store.write(path, body)
+    restore(config, files, base)
     return path
 
 
@@ -80,7 +98,7 @@ def run(config: Config, params: Json) -> Json:
         plan = publish.make_plan("publish", captured.digest, writes, tuple(sorted(writes)), debt, message)
         landing = publish.Landing(plan, reads, tuple(sorted(versions)), "", (), old)
         files = publish.apply_checked(config, landing)
-        patch = _patch(config, files, plan.base, Path(params.get("patch") or f".unbake/batch-data/{plan.digest}.patch"))
+        made = patch(config, files, plan.base, Path(params.get("patch") or f".unbake/batch-data/{plan.digest}.patch"))
         submissions = []
         for row in rows:
             identity = digest((plan.digest, row["member"]))
@@ -100,5 +118,5 @@ def run(config: Config, params: Json) -> Json:
         return {
             "submissions": submissions,
             "drain": {"running": False, "landed": [], "refused": []},
-            "patch": {"path": str(patch), "files": list(files), "message": plan.message},
+            "patch": {"path": str(made), "files": list(files), "message": plan.message},
         }

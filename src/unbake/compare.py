@@ -362,6 +362,10 @@ def submit_command(config: Config, params: Json) -> Json:
             from unbake import batch_data
 
             return batch_data.run(config, params)
+        if params.get("pad_split"):
+            from unbake import padsplit
+
+            return padsplit.run(config, params)
         if not params["files"]:
             raise Refusal(Finding("land.request", "Pass source files or --batch-data MANIFEST."))
         files = [Path(f) for f in params["files"]]

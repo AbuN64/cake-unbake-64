@@ -32,11 +32,10 @@ def _git(world, shown):
     """A fake HEAD: `show` answers the file as committed, `diff` the patch text."""
 
     def git(config, *args):
+        if args[0] == "ls-tree":
+            return SimpleNamespace(exit=0, stdout=b"100644 blob x\t" + args[-1].encode() if args[-1] in shown else b"")
         if args[0] == "show":
-            name = args[1].removeprefix("HEAD:")
-            return (
-                SimpleNamespace(exit=0, stdout=shown[name]) if name in shown else SimpleNamespace(exit=128, stdout=b"")
-            )
+            return SimpleNamespace(exit=0, stdout=shown[args[1].removeprefix("HEAD:")])
         return SimpleNamespace(exit=0, stdout=b"PATCH of " + b" ".join(a.encode() for a in args[4:]))
 
     return SimpleNamespace(git=git)
