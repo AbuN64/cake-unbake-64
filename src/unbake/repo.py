@@ -534,6 +534,9 @@ def jump_table_of(config: Config, version: str, rom: int) -> str | None:
     return _jump_target([int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data) - 3, 4)], code)
 
 
+_PASSES = 8  # most passes one sync makes before it stops at a state it keeps rewriting
+
+
 def sync(config: Config, params: Json) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
     files that would change. The README block, its image and progress.json follow the check verdict: with none for
@@ -542,6 +545,21 @@ def sync(config: Config, params: Json) -> Json:
     this process on the tree it left; the README files it writes are not read by the capture, so their fixed point is
     the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
     result, current = _sync(config, params)
+    root = config.project.root
+    for _ in range(0 if params.get("check") else _PASSES):
+        # a pass that deleted a file (an owned unit dropped one version at a time) moves what the next pass
+        # reads: sync runs to its own fixed point, so one sync settles every version
+        if not result["written"] or not (
+            params.get("settle") or any(not (root / w).exists() for w in result["written"])
+        ):
+            break
+        again, current = _sync(config, params)
+        result = {
+            "written": sorted({*result["written"], *again["written"]}),
+            "stand_ins": {**result["stand_ins"], **again["stand_ins"]},
+        }
+        if not again["written"]:
+            break
     if params.get("settle") and result["written"]:
         _, current = _sync(config, {"check": True})
     if not (config.project.root / "README.md").is_file():

@@ -358,7 +358,7 @@ def test_sync_settle_writes_then_checks_again_only_after_a_write_and_refuses_a_m
     runs = []
     real = repo._sync
     monkeypatch.setattr(repo, "_sync", lambda c, p: runs.append(bool(p.get("check"))) or real(c, p))
-    assert "Makefile" in repo.sync(world.cfg, {"settle": True})["written"] and runs == [False, True]
+    assert "Makefile" in repo.sync(world.cfg, {"settle": True})["written"] and runs == [False, False, True]
     runs.clear()
     assert repo.sync(world.cfg, {"settle": True})["written"] == [] and runs == [False]  # a fixed point: no recheck
     calls = iter(range(100))
@@ -504,6 +504,7 @@ def test_sync_drops_a_word_array_a_literals_row_supersedes_and_the_file_that_hel
         {"src/main/chunk.c": {}, "src/main/keep.c": {"a": ("f_keep",)}},
         stale={"src/main/chunk.c": {"a": ("d_chunk",)}, "src/main/keep.c": {"a": ("d_chunk",)}},
     )
+    monkeypatch.setattr(repo, "_PASSES", 0)  # the stub tree never reflects the first pass
     repo.sync(world.cfg, {"check": False})
     assert not (world.root / "src/main/chunk.c").exists()
     assert (world.root / "src/main/keep.c").read_text() == "int f_keep(void) { return 1; }\n"
@@ -1071,3 +1072,19 @@ def test_a_current_extraction_without_a_facts_snapshot_gets_one(tmp_path, monkey
     repo.store.write(repo._extract_stamp(config, "us"), b"K")
     assert repo.extract_job((config, "us")) is False
     assert repo._facts_snapshot(config, "us").read_text() == RENAME_FACTS
+
+
+def test_a_pass_that_deletes_a_file_runs_again_until_a_pass_writes_nothing(world, monkeypatch):
+    world.root.joinpath("gone.txt").write_text("x")
+    calls = []
+
+    def fake(config, params):
+        calls.append(1)
+        if len(calls) == 1:
+            world.root.joinpath("gone.txt").unlink()
+            return {"written": ["gone.txt"], "stand_ins": {}}, None
+        return {"written": [], "stand_ins": {}}, None
+
+    monkeypatch.setattr(repo, "_sync", fake)
+    out = repo.sync(world.cfg, {})
+    assert len(calls) == 2 and out["written"] == ["gone.txt"]
