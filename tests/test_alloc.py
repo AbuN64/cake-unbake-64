@@ -110,3 +110,12 @@ def test_report_rows_carry_each_pseudos_references_by_line() -> None:
     (row,) = alloc.report("f", GREG, LREG + LREG_RTL.split("\n", 1)[1], ASM, votes)
     assert row["candidate"]["lines"] or row["target"]["lines"]
     assert all("weighted" in r for r in row["candidate"]["lines"] + row["target"]["lines"])
+
+
+def test_every_register_row_proposes_one_c_edit() -> None:
+    rows = alloc.report("f", GREG, LREG, ASM, {"$s5": Counter({"$s4": 9}), "$s4": Counter({"$s6": 2})})
+    assert rows and all(row["edit"] for row in rows)
+    free = next(row for row in rows if row["candidate"]["pseudo"] is None)
+    assert "never uses $s6" in free["edit"] and "live across a call" in free["edit"]
+    beaten = next(row for row in rows if row["flip"])
+    assert "more time(s)" in beaten["edit"]

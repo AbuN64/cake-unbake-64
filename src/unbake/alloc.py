@@ -25,6 +25,47 @@ def flip(refs: int, length: int, beat: float) -> Json:
     return {"more_refs": more, "shorter_by": length - longest if 0 < longest < length else None}
 
 
+def _edit(ours: Json, theirs: Json, flipped: Json | None) -> str:
+    """The C edit that moves register `ours["register"]` from the candidate's pseudo to the target's, or why none
+    exists: every differing register gets one sentence naming what to change."""
+    reg, o, t = ours["register"], ours["name"], theirs["name"]
+    where = " ".join(f"line {r['line']}" for r in theirs["lines"][:3])
+    if ours["pseudo"] is None:
+        saved = reg.startswith("$s")
+        return f"the candidate never uses {reg}; the target keeps `{t}` there. " + (
+            "A saved register means one more value live across a call: hold a value in a local before the "
+            "first call and use it after the last."
+            if saved
+            else f"Keep `{t}` in a variable of its own so it gets {reg} (split or merge a temporary around {where})."
+        )
+    if theirs["pseudo"] is None:
+        return (
+            f"the target leaves {reg} to `{o}` only as a hard register (argument or return value): "
+            f"no C edit moves `{o}` itself; change how its value reaches the call (an extra temporary or cast)."
+        )
+    if flipped:
+        by = [f"use `{t}` {flipped['more_refs']} more time(s) (re-read it instead of re-deriving the value)"]
+        if flipped["shorter_by"]:
+            by.append(f"shorten its life by {flipped['shorter_by']} insns (assign it later or end its last use sooner)")
+        return f"raise `{t}` over `{o}`: " + ", or ".join(by) + f"; or give `{o}` one reference less."
+    if ours["allocator"] != theirs["allocator"]:
+        wide = theirs["allocator"] == "global"
+        return (
+            f"`{o}` is placed by {ours['allocator']}-alloc, `{t}` by {theirs['allocator']}-alloc: "
+            + (
+                f"make `{t}` live across basic blocks (assign it before the branch or loop, use it after)"
+                if not wide
+                else f"confine `{t}` to one basic block (declare it in the inner block where it is used)"
+            )
+            + f", or the reverse for `{o}`."
+        )
+    return (
+        f"`{t}` already outranks `{o}` (priority {theirs['priority']} vs {ours['priority']}), so it lost {reg} on a "
+        f"conflict with a value live at the same time: split `{t}` into two temporaries around {where or 'its uses'}"
+        f", or reorder so `{o}` ends before `{t}` starts."
+    )
+
+
 def _part(text: str, name: str) -> str:
     return next((p for p in re.split(r"(?m)^;; Function ", text) if p.startswith(name + "\n")), "")
 
@@ -131,13 +172,15 @@ def report(function: str, greg: str, lreg: str, asm: str, votes: dict[str, Count
             and ours["allocator"] == theirs["allocator"]  # one allocator's priority order decides between them
             and theirs["priority"] < ours["priority"]
         )
+        lifted = flip(theirs["refs"], theirs["length"], ours["priority"]) if beaten else None
         rows.append(
             {
                 "register": ours["register"],
                 "candidate": ours,
                 "target": theirs,
                 "votes": count,
-                "flip": flip(theirs["refs"], theirs["length"], ours["priority"]) if beaten else None,
+                "flip": lifted,
+                "edit": _edit(ours, theirs, lifted),
             }
         )
     return rows

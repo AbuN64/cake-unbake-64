@@ -157,6 +157,7 @@ def _score(result: Json) -> list[str]:
             f"first difference at word {d['index']}: built {d['built']}, target {d['target']}; aligned "
             f"{a['exact']} exact, {a['register_blind']} register-blind of {result['words']['target']}"
         )
+    lines.extend(x for x in (shift.get("frame"), shift.get("folded")) if x)
     lines.extend(f"source rule {f['key']} at line {f['line']}: {f['reason']}" for f in result.get("source", ()))
     for row in result.get("alloc", ()):
         won, lost, flip = row["candidate"], row["target"], row["flip"]
@@ -166,6 +167,7 @@ def _score(result: Json) -> list[str]:
             f"{lost['length']}, priority {lost['priority']})"
             + (f"; flips at +{flip['more_refs']} refs or -{flip['shorter_by']} insns live" if flip else "")
         )
+        lines.extend([f"  edit: {row['edit']}"] if row.get("edit") else [])
         for side in (won, lost):  # where each pseudo's weighted references come from: line:refs*depth
             if side.get("lines"):
                 spread = " ".join(

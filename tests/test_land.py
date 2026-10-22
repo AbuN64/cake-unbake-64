@@ -68,3 +68,26 @@ def test_the_request_compare_builds_passes_the_submission_schema(world, monkeypa
     intake = land._intake(world.config, request, [_proof(True), _proof(True)], None)
     entry = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)  # validates "submission"
     assert entry.overrides == {"add": [], "omit": []}
+
+
+def test_a_pre_provenance_inbox_entry_is_replaced_by_the_resubmission_not_refused_again(world, monkeypatch):
+    import json
+
+    from unbake import compare
+
+    monkeypatch.setattr(land, "process", SimpleNamespace(git=lambda *a: SimpleNamespace(stdout=b"abc\n")))
+    monkeypatch.setattr(land.effort, "invocation", lambda: "unbake submit")
+    request = compare._request("func_80000010", world.root / "cand.c", None)
+    intake = land._intake(world.config, request, [_proof(True), _proof(True)], None)
+    entry = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)
+    path = world.root / ".unbake/inbox" / f"{entry.id}.json"
+    old = json.loads(path.read_text())
+    old.pop("extra_bases")
+    old["member"] = "func_80000010"
+    path.write_text(json.dumps(old))
+    with pytest.raises(Refusal) as stale:
+        land._read(path)
+    assert stale.value.findings[0].action == "recipe try func_80000010"
+    again = land._entered(world.config, request, b"s32 f(void) {}\n", (), "compare", intake)
+    assert again.id == entry.id and "extra_bases" in json.loads(path.read_text())
+    assert (world.root / ".unbake/inbox/stale" / f"{entry.id}.json").is_file()

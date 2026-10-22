@@ -706,7 +706,11 @@ def _score_one(config: Config, params: Json) -> Json:
         "exact": all(p.exact for p in proofs),
         "score": proof.score,
         "words": _words(built, target),
-        "shift": symptoms.shift(built, target),
+        "shift": {
+            **symptoms.shift(built, target),
+            "frame": symptoms.frame_hint(built, target),
+            "folded": symptoms.folded_hint(built, target),
+        },
         "source": [asdict(f) for f in source_findings],
         "diff": shown,
         "proofs": [asdict(p) for p in proofs],

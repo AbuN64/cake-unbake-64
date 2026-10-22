@@ -293,3 +293,29 @@ def test_literals_make_a_float_load_of_the_same_value_at_another_address_equal()
     assert symptoms.literals(lui + other, lui + same, read, read) == lui + same
     differ = lambda a, n: b"B" * 8 if a == 0x80003EB0 else values.get(a, b"")  # noqa: E731
     assert symptoms.literals(lui + other, lui + same, read, differ) == lui + other
+
+
+def _store(rt: int, base: int, offset: int) -> int:
+    return 0xAC000000 | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+def test_frame_hint_names_the_extra_saved_register_as_a_local_held_across_a_call() -> None:
+    built = _words(_addiu(29, 29, -0x60), _store(20, 29, 0x20), _store(31, 29, 0x24))
+    target = _words(_addiu(29, 29, -0x68), _store(20, 29, 0x20), _store(21, 29, 0x24), _store(31, 29, 0x28))
+    hint = symptoms.frame_hint(built, target)
+    assert "target 0x68" in hint and "$s5" in hint and "live across a call" in hint and "Edit:" in hint
+    assert symptoms.frame_hint(built, built) == ""
+
+
+def test_frame_hint_without_extra_saved_registers_names_locals() -> None:
+    built = _words(_addiu(29, 29, -0x20), _store(31, 29, 0x1C))
+    target = _words(_addiu(29, 29, -0x28), _store(31, 29, 0x24))
+    assert "same saved registers" in symptoms.frame_hint(built, target)
+
+
+def test_folded_hint_names_the_address_add_one_side_keeps() -> None:
+    folded = _words(_load(2, 4, 0x24), _load(3, 4, 0x28))
+    kept = _words(_addiu(5, 4, 0x24), _load(2, 5, 0), _load(3, 5, 4))
+    assert "target keeps 1 address add" in symptoms.folded_hint(folded, kept)
+    assert "build keeps 1 address add" in symptoms.folded_hint(kept, folded)
+    assert symptoms.folded_hint(kept, kept) == ""

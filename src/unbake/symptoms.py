@@ -76,6 +76,77 @@ def _frame(lines: list[tuple[str, list[str]]]) -> int | None:
     return None
 
 
+def _saved(lines: list[tuple[str, list[str]]]) -> list[str]:
+    """The registers the prologue stores to the stack before the first call or branch."""
+    found: list[str] = []
+    for mnemonic, operands in lines[:40]:
+        if mnemonic.startswith(("j", "b")):
+            break
+        stored = mnemonic in ("sw", "sd", "swc1", "sdc1") and len(operands) == 2 and operands[1].endswith("($sp)")
+        if stored and re.fullmatch(r"\$(?:s[0-7]|fp|ra|f(?:2[0-9]|3[01]))", operands[0]) and operands[0] not in found:
+            found.append(operands[0])
+    return found
+
+
+def frame_hint(built: bytes, target: bytes) -> str:
+    """What a differing stack frame says about the source, or "": the extra saved registers and locals, as C edits."""
+    b, t = _lines(built), _lines(target)
+    bf, tf = _frame(b), _frame(t)
+    if bf is None or tf is None or bf == tf:
+        return ""
+    bs, ts = _saved(b), _saved(t)
+    bigger, mine, other = ("target", ts, bs) if tf > bf else ("built", bs, ts)
+    extra = [r for r in mine if r not in other]
+    size = abs(tf - bf)
+    head = f"frame: built 0x{bf:X}, target 0x{tf:X} (the {bigger} is {size} bytes bigger)"
+    if extra:
+        what = f"the {bigger} saves {', '.join(extra)} too: one more value live across a call."
+        if bigger == "target":
+            return (
+                f"{head}; {what} Edit: hold a field read or pointer in a local (declared at function scope) before "
+                "the first call and use it after the last call, or merge two temporaries so one lives across calls."
+            )
+        return f"{head}; {what} Edit: drop a local live across a call (re-read the value after it), or split it."
+    words = f"the {bigger} has {size // 4} more word(s) of locals or outgoing arguments."
+    if bigger == "target":
+        return (
+            f"{head}, same saved registers; {words} Edit: add a local the compiler keeps in memory (a double, a "
+            "struct or array, or one whose address is taken), or make a call pass more than four argument words."
+        )
+    return f"{head}, same saved registers; {words} Edit: remove an addressed or aggregate local or a call's arguments."
+
+
+def _address_adds(lines: list[tuple[str, list[str]]], rows: list[tuple[int, int]]) -> list[str]:
+    """The `addiu rd, rs, imm` instructions (no stack, no %lo) of the given index ranges."""
+    return [
+        f"{m} {', '.join(o)}"
+        for i1, i2 in rows
+        for m, o in lines[i1:i2]
+        if m == "addiu" and len(o) == 3 and "$sp" not in o[:2] and o[0] != "$zero" and re.fullmatch(_INTEGER, o[2])
+    ]
+
+
+def folded_hint(built: bytes, target: bytes) -> str:
+    """When one side keeps address additions the other folds into load/store displacements, the C edit that moves it."""
+    b, t = _lines(built), _lines(target)
+    ops = SequenceMatcher(None, [m for m, _ in b], [m for m, _ in t], autojunk=False).get_opcodes()
+    kept = _address_adds(t, [(j1, j2) for op, _, _, j1, j2 in ops if op in ("insert", "replace")])
+    mine = _address_adds(b, [(i1, i2) for op, i1, i2, _, _ in ops if op in ("delete", "replace")])
+    if len(kept) > len(mine):
+        return (
+            f"address folding: the target keeps {len(kept) - len(mine)} address add(s) (`{kept[0]}`) that the build "
+            "folds into load/store displacements. Edit: make the base a pointer the compiler must keep (a "
+            "loop-carried or escaping pointer, `p = &a[i]` read through for every access) instead of indexing again."
+        )
+    if len(mine) > len(kept):
+        return (
+            f"address folding: the build keeps {len(mine) - len(kept)} address add(s) (`{mine[0]}`) that the target "
+            "folds into displacements. Edit: index the array or struct at each access (`a[i].f`) instead of through "
+            "a cached pointer, or stop carrying the pointer across the loop."
+        )
+    return ""
+
+
 def measure(built: bytes, target: bytes, section: str) -> Json:
     facts: dict[str, bool | int] = {"bytes_differ": built != target}
     if len(built) != len(target):

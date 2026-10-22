@@ -25,6 +25,7 @@ def _read(path: Path) -> Submission:
                 "land.rebase",
                 "Submission lacks measured extra-input provenance; resubmit against the current tree.",
                 path=str(path),
+                action=f"recipe try {value.get('member', 'ITEM')}",
             )
         )
     configuration.validate("submission", value, str(path))
@@ -63,7 +64,12 @@ def _enqueue(
     for directory in (inbox_path, inbox_path / "done"):  # a refused entry is tried again: its refusal may be stale
         path = directory / f"{identity}.json"
         if path.is_file():
-            return _read(path)
+            try:
+                return _read(path)
+            except Refusal as stale:
+                if not any(f.key == "land.rebase" for f in stale.findings):
+                    raise
+                _move(config, identity, "stale")  # a pre-provenance entry: measured again below, not refused forever
     source_path = f".unbake/inbox/{identity}.c"
     entry = Submission(
         identity,
