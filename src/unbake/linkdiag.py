@@ -1,65 +1,58 @@
-"""Where a link goes wrong: the first object of a segment whose bytes start off the ROM address its first name has."""
+"""Where a link goes wrong: the first object whose bytes the linker starts off the ROM address its first name has."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
-from pathlib import Path
+from collections.abc import Mapping, Sequence
 
-from elftools.elf.elffile import ELFFile
-
-from unbake import symbols, tree
+from unbake import process, symbols, tree
 from unbake.contracts import Config
 
-_SEGMENT = re.compile(r"^\s*(\.\w+)\s+(0x[0-9a-fA-F]+)\s*:\s*AT\((0x[0-9a-fA-F]+)\)", re.M)
-_ROW = re.compile(r"^\s*(\S+)\.o\((\.\w+)\);\s*$", re.M)
+_ENTRY = re.compile(r"^ (\.\S+)(?:[ \t]+|\n[ \t]+)0x([0-9a-f]+)[ \t]+0x([0-9a-f]+)[ \t]+(\S+\.o)$", re.M)
+_KIND = {".rdata": ".rodata"}
+
+
+def parse(map_text: str) -> list[tuple[str, str, int]]:
+    """(object, section, address) of each nonempty input section of an ld map, in link order; .rdata is .rodata."""
+    return [
+        (m[4], _KIND.get(m[1], m[1]), int(m[2], 16))
+        for m in _ENTRY.finditer(map_text)
+        if int(m[3], 16) and m[1] != ".bss"
+    ]
 
 
 def walk(
-    link: str, size: Callable[[str, str], int | None], expected: Mapping[tuple[str, str], int]
+    placed: Sequence[tuple[str, str, int]], expected: Mapping[tuple[str, str], int]
 ) -> tuple[str, int, int] | None:
-    """The first (object, expected address, address the link gives it) of a link script text: objects follow each
-    other without padding (SUBALIGN(1)) from their segment's start, `size(object, section)` is the bytes an object
-    holds there (None: not built) and `expected` the address of the first name each (object, section) owns."""
-    segments = list(_SEGMENT.finditer(link))
-    for n, found in enumerate(segments):
-        cursor = int(found[2], 16)
-        end = segments[n + 1].start() if n + 1 < len(segments) else len(link)
-        for row in _ROW.finditer(link, found.end(), end):
-            wanted = expected.get((row[1], row[2]))
-            if wanted is not None and wanted != cursor and wanted >= int(found[2], 16):
-                return row[1], wanted, cursor
-            cursor += size(row[1], row[2]) or 0
+    """The first (object, address its first name has, address the link gave it): an object that starts with bytes no
+    name owns is off alone, so a shift is real when the next object with a name is off by the same amount."""
+    seen, got = [], set()
+    for obj, section, address in placed:
+        if (obj, section) in expected and (obj, section) not in got:
+            got.add((obj, section))
+            seen.append((obj, expected[obj, section], address))
+    for k, (obj, want, have) in enumerate(seen):
+        later = seen[k + 1 :]
+        if want != have and (not later or later[0][1] - later[0][2] == want - have):
+            return obj, want, have
     return None
 
 
-def _sizes(root: Path, version: str) -> Callable[[str, str], int | None]:
-    def size(obj: str, section: str) -> int | None:
-        try:
-            with (root / "build" / version / f"{obj}.o").open("rb") as handle:
-                found = ELFFile(handle).get_section_by_name(section)
-                return int(found["sh_size"]) if found is not None else 0
-        except OSError:
-            return None
-
-    return size
-
-
 def first_off(config: Config, version: str) -> str:
-    """One sentence naming the first object of `version`'s link script that sits off the address of the first name it
-    owns (an object of the wrong size, a pad, a missing object before it), or "" when every object is where its names
-    say, or when it cannot be told: a diagnostic never replaces the refusal it explains."""
+    """One sentence naming the first object of `version`'s link that the linker places off the address of the first
+    name it owns (an object before it too long or too short), or "" when every object is where its names say or when
+    it cannot be told: a diagnostic never replaces the refusal it explains. The link runs again with a map."""
     try:
         found = _find(config, version)
     except Exception:
         return ""
     if found is None:
         return ""
-    obj, want, got = found
+    obj, want, have = found
     return (
-        f"{version}: the first object off its ROM address is {obj}: its first name sits at 0x{want:X} but the link "
-        f"places the object at 0x{got:X} ({got - want:+d} bytes): an object before it is {abs(got - want)} bytes "
-        f"{'too long' if got > want else 'too short'}"
+        f"{version}: the first object off its ROM address is {obj}: its first name is at 0x{want:X} but the link "
+        f"placed the object at 0x{have:X} ({have - want:+d} bytes): an object before it is {abs(have - want)} bytes "
+        f"{'too long' if have > want else 'too short'}"
     )
 
 
@@ -70,7 +63,16 @@ def _find(config: Config, version: str) -> tuple[str, int, int] | None:
     for module in held.modules:
         for name in module.owns.get(version, ()):
             if name in table:
-                key = (module.path, module.sections.get(version, {}).get(name) or ".text")
+                section = module.sections.get(version, {}).get(name) or ".text"
+                key = (f"{module.path}.o", _KIND.get(section, section))
                 expected[key] = min(table[name][0], expected.get(key, table[name][0]))
-    link = (root / "build" / version / "link.ld").read_text()
-    return walk(link, _sizes(root, version), expected)
+    scratch = process.scratch(root)
+    scratch.mkdir(parents=True, exist_ok=True)
+    out = scratch / f"linkdiag-{version}.map"
+    elf = scratch / f"linkdiag-{version}.elf"
+    argv = [process.tool(config, "mips_ld"), "-T", "link.ld", f"-Map={out}", "-o", str(elf)]
+    process.run("linkdiag", argv, root / "build" / version, tmp=scratch)
+    text = out.read_text(errors="replace") if out.is_file() else ""
+    out.unlink(missing_ok=True)
+    elf.unlink(missing_ok=True)
+    return walk(parse(text), expected)
