@@ -180,7 +180,9 @@ def build_credits(
         owners = {name: tree.owner(v, name) for name, _ in held}
         sizes = (extents or {}).get(v, {})
         end, container = -1, None  # end of the bytes credited so far; the C object whose compiled size covers here
-        for name, (_vram, rom, size, kind) in sorted(held, key=lambda i: (i[1][1], owners[i[0]] is None, i[0])):
+        for name, (_vram, rom, size, kind) in sorted(
+            held, key=lambda i: (i[1][1], owners[i[0]] is None, -(i[1][2] or 0), i[0])
+        ):
             path = owners[name]
             module = modules.get(path) if path else None
             stand_in = module is None or name in module.stand_ins.get(v, ())

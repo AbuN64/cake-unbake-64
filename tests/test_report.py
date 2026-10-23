@@ -363,6 +363,15 @@ def test_c1_an_owned_name_wins_over_an_unowned_alias_at_one_address():
     assert (by["zz_owned"].code, by["aa_alias"].code) == (0x10, 0)
 
 
+def test_c1_the_longest_owned_name_at_one_address_takes_the_bytes():
+    tree, _ = _owned_tree(["a_short", "literals_pool", "tail"])
+    facts = _facts(
+        a_short=(0x2000, 4, "data"), literals_pool=(0x2000, 0x18, "data"), tail=(0x2018, 8, "data")
+    )  # the 4-byte name sorts first by name; the pool still owns its whole 0x18 bytes
+    by = {r.name: r for r in _credits(tree, facts)}
+    assert (by["literals_pool"].data, by["a_short"].data, by["tail"].data) == (0x18, 0, 8)
+
+
 def test_c2_a_label_inside_a_c_objects_compiled_size_is_credited_to_it():
     tree, _ = _owned_tree(["obj"])
     facts = _facts(
