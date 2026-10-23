@@ -14,7 +14,8 @@ A table or pool that other functions also read is placed with the function asked
 reader links by the symbol's address and a C reader declares the symbol `extern`, so both keep reading the same bytes;
 the plan's note names them. What it refuses (nothing is written then): a table or pool another file defines in C
 (the data would no longer be the function's own), leftover bytes with no file after them to hold a stand-in,
-and, when the version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment, content).
+and, when the version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes
+(size, alignment, content).
 """
 
 from __future__ import annotations
