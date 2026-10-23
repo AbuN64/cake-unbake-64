@@ -861,8 +861,15 @@ def _stall_run(tmp_path, monkeypatch, cpu, awaits=lambda pid, executor: True):
 
     drops, rounds = [], []
     monkeypatch.setattr(pool, "_get_executor", lambda config, needed=(), work=0: Executor())
-    real = pool.psutil.Process
-    monkeypatch.setattr(pool.psutil, "Process", lambda pid: Proc(pid) if pid in (1, 2) else real(pid))
+    real_psutil = pool.psutil
+
+    class Psutil:  # pool's own view of psutil: patching psutil.Process itself breaks psutil's isinstance checks
+        Process = staticmethod(lambda pid: Proc(pid) if pid in (1, 2) else real_psutil.Process(pid))
+
+        def __getattr__(self, name):
+            return getattr(real_psutil, name)
+
+    monkeypatch.setattr(pool, "psutil", Psutil())
     monkeypatch.setattr(pool, "_drop_executor", lambda: drops.append(True))
     monkeypatch.setattr(pool, "_awaits_work", awaits)
 
