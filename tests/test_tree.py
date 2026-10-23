@@ -214,6 +214,11 @@ def test_scanner_reads_depth_zero_only() -> None:
     assert defined == ["hook", "placed", "label", "arr", "one", "two", "run"] and stand_ins == ["later"]
 
 
+def test_scanner_names_a_variable_of_an_anonymous_aggregate() -> None:
+    text = "struct { int a; int b; } pair = {1, 2};\nconst union { int i; float f; } both = {1};\nstruct Tag { int x; } tagged = {3};\n"
+    assert tree._scan(text) == (["pair", "both", "tagged"], [])
+
+
 def test_scanner_reads_functions_returning_aggregates() -> None:
     text = """
     struct Point *at(unsigned id) { return 0; }
