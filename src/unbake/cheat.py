@@ -257,6 +257,16 @@ def _duplicate_names(config: Config, git: _Git, base: str, head: str) -> dict[st
     return out
 
 
+def _tree_findings(config: Config) -> tuple[Finding, ...]:
+    """What the head tree refuses to capture (a `literals_` row no file owns, an unparsable source, ...): the check
+    every command that reads the tree makes, so a change the tree cannot hold is refused here, before it lands."""
+    try:
+        tree.capture(config)
+    except Refusal as refused:
+        return refused.findings
+    return ()
+
+
 def cheat_command(config: Config, params: Json) -> Json:
     """Refuse what `head` (default HEAD) adds over `against` that could fake a match. The facts read are the working
     tree's, so it must be checked out at `head`."""
@@ -321,6 +331,8 @@ def cheat_command(config: Config, params: Json) -> Json:
                 action="give each address its own name (rename the new row, e.g. suffix _2)",
             )
         )
+    if head == "HEAD":  # the facts and sources captured are the working tree's: the head only when it is checked out
+        findings.extend(_tree_findings(config))
     if findings:
         raise Refusal(*findings)
     return {"against": base, "head": head, "makefile": makefile, "stand_ins": sorted(set(stand_ins))}

@@ -167,7 +167,7 @@ Tracked generated files (`unbake sync`; each starts with the stamp `generated fr
 - snsym: 320
 - build: 492
 - ci: 30
-- cheat: 320
+- cheat: 345
 - cli: 174
 - compare: 512
 - compilers: 800

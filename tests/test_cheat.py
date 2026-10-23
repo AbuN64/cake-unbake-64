@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from unbake import api, cheat, symbols
-from unbake.contracts import Refusal
+from unbake import api, cheat, symbols, tree
+from unbake.contracts import Finding, Refusal
 
 STAND_IN = 'INCLUDE_RODATA("data_800C", D_auto_rodata_func_8040BB40_de_800DD07C);\n'
 FACTS = {
@@ -47,6 +47,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=("de",)), host=None)
     monkeypatch.setattr(api, "symbols", lambda cfg, v: FACTS)
     monkeypatch.setattr(symbols, "segment_at", lambda cfg, v, rom: "data_800C")
+    monkeypatch.setattr(cheat, "_tree_findings", lambda cfg: ())
     monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: False)
     base = _git(tmp_path, "rev-parse", "HEAD")
 
@@ -169,7 +170,9 @@ def test_a_name_added_twice_to_the_facts_fails(repo: SimpleNamespace) -> None:
 
 
 def test_a_name_in_both_fact_files_fails(repo: SimpleNamespace) -> None:
-    keys = _refused(repo, **{"versions/de/symbol_addrs.txt": "lit_y = 0x1;\n", "versions/de/aliases.txt": "lit_y = 0x2;\n"})
+    keys = _refused(
+        repo, **{"versions/de/symbol_addrs.txt": "lit_y = 0x1;\n", "versions/de/aliases.txt": "lit_y = 0x2;\n"}
+    )
     assert keys == {"cheat.duplicate-name"}
 
 
@@ -186,3 +189,22 @@ def test_a_duplicate_already_at_base_is_not_new(repo: SimpleNamespace) -> None:
     (repo.root / "src/a.c").write_text(A + "int g;\n")
     _git(repo.root, "commit", "-qam", "c")
     assert cheat.cheat_command(repo.config, {"against": base})["head"] == "HEAD"
+
+
+LITERALS = Finding("tree.literals", "literals_f_2 in de places literals for f_2, which no file owns")
+
+
+def test_a_tree_that_cannot_be_captured_fails(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `literals_` row for a function no file owns: tree capture refuses it, so the gate must too."""
+    monkeypatch.setattr(cheat, "_tree_findings", lambda cfg: (LITERALS,))
+    assert _refused(repo, src__a_c="int f(void) { return 2; }\n") == {"tree.literals"}
+
+
+def test_tree_findings_are_the_capture_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(cfg: object) -> None:
+        raise Refusal(LITERALS)
+
+    monkeypatch.setattr(tree, "capture", refuse)
+    assert cheat._tree_findings(SimpleNamespace()) == (LITERALS,)
+    monkeypatch.setattr(tree, "capture", lambda cfg: None)
+    assert cheat._tree_findings(SimpleNamespace()) == ()
