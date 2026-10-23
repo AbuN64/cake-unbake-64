@@ -108,18 +108,19 @@ def test_literals_row_supersedes_a_data_stand_in_at_its_address(tmp_path: Path) 
         "literals_c_func": ("main", 0x20, "data"),
         "chunk": ("main", 0x20, "data"),
         "pool_float": ("main", 0x28, "data"),
+        "pool_pad": ("main", 0x2C, "data"),
         "other": ("main", 0x60, "data"),
     }
     text = fixture.symbol_file("a", rows)
     sources = {
         "src/main/c.c": "s32 c_func(void) { return 1; }\n",
         "src/main/d.c": "const unsigned int chunk[2] = {\n    0x1, 0x2,\n};\nconst unsigned int pool_float[1] = {0};\n"
-        "const unsigned int other[1] = {0};\n",
+        "unsigned int pool_pad[1] = {0};\nconst unsigned int other[1] = {0};\n",
     }
     held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
     data = next(m for m in held.modules if m.path == "src/main/d.c")
     # a name inside the row's size (0x10 here) is the function's too: the old pool named its float on its own
-    assert data.owns["a"] == ("other",) and data.stale["a"] == ("chunk", "pool_float")
+    assert data.owns["a"] == ("other",) and data.stale["a"] == ("chunk", "pool_float", "pool_pad")
     assert held.owner("a", "literals_c_func") == "src/main/c.c"
 
 

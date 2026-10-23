@@ -510,6 +510,37 @@ def test_sync_drops_a_word_array_a_literals_row_supersedes_and_the_file_that_hel
     assert (world.root / "src/main/keep.c").read_text() == "int f_keep(void) { return 1; }\n"
 
 
+def test_sync_keeps_a_stand_in_a_literals_row_supersedes_in_one_version_only_for_the_others(world, monkeypatch):
+    # one word array stands for the bytes in a and b; a literals row takes them in b only: b leaves it, a keeps it
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_chunk": (0x80100000, 0x2000, 8, "data")})
+    array = "const unsigned int d_chunk[2] = {\n    0x00000001, 0x00000002,\n};\n"
+    _write(world.root, "src/main/keep.c", "int f_keep(void) { return 1; }\n" + array)
+    world.tree = _tree(
+        {"src/main/keep.c": {"a": ("f_keep", "d_chunk"), "b": ("f_keep",)}},
+        stale={"src/main/keep.c": {"b": ("d_chunk",)}},
+        sections={"d_chunk": ".rodata"},
+    )
+    monkeypatch.setattr(repo, "_PASSES", 0)  # the stub tree never reflects the first pass
+    repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/keep.c").read_text() == (
+        "int f_keep(void) { return 1; }\n#if !(defined(VERSION_B))\n" + array + "#endif\n"
+    )
+
+
+def test_sync_drops_a_data_word_array_a_literals_row_supersedes(world, monkeypatch):
+    # a pad the extractor wrote as .data (no const) inside a literals row's bytes goes as a const array does
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_pad": (0x80100000, 0x2000, 4, "data")})
+    pad = "unsigned int d_pad[1] = {\n    0x00000000,\n};\n"
+    _write(world.root, "src/main/keep.c", "int f_keep(void) { return 1; }\n" + pad)
+    world.tree = _tree(
+        {"src/main/keep.c": {"a": ("f_keep",), "b": ("f_keep",)}},
+        stale={"src/main/keep.c": {"a": ("d_pad",), "b": ("d_pad",)}},
+    )
+    monkeypatch.setattr(repo, "_PASSES", 0)  # the stub tree never reflects the first pass
+    repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/keep.c").read_text() == "int f_keep(void) { return 1; }\n"
+
+
 def test_sync_shrinks_a_word_array_to_the_words_before_a_literals_row(world, monkeypatch):
     words = "    0x00000000, 0x00000001, 0x00000002, 0x00000003, 0x00000004,\n"
     _write(world.root, "src/main/chunk.c", "const unsigned int d_chunk[5] = {\n" + words + "};\n")

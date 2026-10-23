@@ -986,8 +986,9 @@ def _absorbed(
 ) -> None:
     """A `literals_<function>` row hands the read-only bytes from its address over its size (one byte when it has no
     size) to the file that owns the function: a stand-in of another file for a name inside them (a data chunk, an
-    array of words, a float the old pool named on its own) no longer stands for anything and is superseded, as a
-    stand-in a C body replaces is. Only a source file can hold a stand-in."""
+    array of words, a float or pad the old pool named on its own, in whatever data section the extractor gave it)
+    no longer stands for anything and is superseded, as a stand-in a C body replaces is.
+    Only a source file can hold a stand-in."""
     for version, table in tables.items():
         spans = sorted(
             (rom, rom + (table[n][2] or 1))
@@ -1008,7 +1009,7 @@ def _absorbed(
                 for n in names
                 if not n.startswith(LITERALS)
                 and inside(table[n][1])
-                and sections[path][version].get(n, "").startswith(".rodata")
+                and sections[path][version].get(n, ".text") != ".text"
             ]
             if not gone:
                 continue

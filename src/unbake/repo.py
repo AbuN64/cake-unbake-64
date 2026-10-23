@@ -298,8 +298,8 @@ def _head(lines: Sequence[str]) -> int:
 
 def _array_of(lines: Sequence[str], name: str) -> tuple[int, int] | None:
     """(first, last) line index of the word array `name` as the extractor writes it (`const unsigned int NAME[N] = {`
-    to the closing `};`), if the file defines it so."""
-    head = re.compile(rf"^\s*const\s+(?:unsigned\s+int|u32|s32|int)\s+{re.escape(name)}\s*\[\s*\d*\s*\]\s*=\s*\{{")
+    to the closing `};`; without `const` for a .data stand-in), if the file defines it so."""
+    head = re.compile(rf"^\s*(?:const\s+)?(?:unsigned\s+int|u32|s32|int)\s+{re.escape(name)}\s*\[\s*\d*\s*\]\s*=\s*\{{")
     first = next((i for i, line in enumerate(lines) if head.match(line)), None)
     if first is None:
         return None
@@ -324,6 +324,24 @@ def _drop(lines: list[str], names: Iterable[str]) -> None:
         closed = _CONDITIONAL.match(lines[end + 1]) if end + 1 < len(lines) else None
         guarded = bool(opened and opened[1] != "endif" and closed and closed[1] == "endif")
         del lines[at - 1 if guarded else at : end + 2 if guarded else end + 1]
+
+
+def _exclude(lines: list[str], name: str, versions: Sequence[str]) -> bool:
+    """Keep the stand-in of `name` out of `versions` only (a literals row supersedes it there, other versions still
+    own it): its INCLUDE line or word array gets an `#if !(defined(...))` of its own. False when it is not found."""
+    pattern = _line_of(name)
+    at = next((i for i, line in enumerate(lines) if pattern.match(line)), None)
+    end = at
+    if at is None:
+        found = _array_of(lines, name)
+        if found is None:
+            return False
+        at, end = found
+    assert end is not None
+    spelled = " || ".join(f"defined({_macro(v)})" for v in versions)
+    lines[end + 1 : end + 1] = ["#endif"]
+    lines[at:at] = [f"#if !({spelled})"]
+    return True
 
 
 _WORDS = re.compile(r"0[xX][0-9A-Fa-f]+")
@@ -408,15 +426,26 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes | None]:
         if headless and not configuration.is_assembly(module.path) and any(module.stand_ins.values()):
             touched.add(module.path)  # its stand-ins were read with the header, which the write below puts on top
         every = {n for names in module.stale.values() for n in names}
-        if every:
-            _drop(lines(module.path), sorted(every))
+        kept = {  # data stand-ins stale in some versions only: another version still owns the bytes through them
+            n
+            for v, names in module.owns.items()
+            for n in names
+            if n in every and n not in module.stale.get(v, ()) and module.sections.get(v, {}).get(n, ".text") != ".text"
+        }
+        if every - kept:
+            _drop(lines(module.path), sorted(every - kept))
             touched.add(module.path)
             if any(
                 n in api.symbols(config, v) and api.symbols(config, v)[n][3] != "func"
                 for v, names in module.stale.items()
                 for n in names
+                if n not in kept
             ):
                 data_dropped.add(module.path)
+        for name in sorted(kept):
+            gone = [v for v in config.project.versions if name in module.stale.get(v, ())]
+            if _exclude(lines(module.path), name, gone):
+                touched.add(module.path)
     touched |= _narrowed(config, current, lines)
     library = libasm.homes(config, current)  # library routines kept out of game files
     sections = {(v, n): s for m in current.modules for v, names in m.sections.items() for n, s in names.items()}
