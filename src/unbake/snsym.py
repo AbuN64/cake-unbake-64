@@ -333,11 +333,31 @@ def stream_start(data: bytes | memoryview, first: int, floor: int) -> int:
     return first
 
 
-def stream_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, object]:
+def object_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, object]:
+    """The tiling proof of an object-file stream (the "LNK" dialect, whose records come back normalised and cannot be
+    re-emitted): `data[start:end]` is cut into whole well-formed records from its first byte to its last, none of them
+    running past `end`, and a stream with fewer than 50 records proves nothing. The receipt holds the record count, the
+    tag census and the sha256 of the slice. Raises SymError when the records do not reach `end` exactly."""
+    recs, stop = records(data, start, end, "obj")
+    if len(recs) < 50:
+        raise SymError(f"only {len(recs)} object records parse in {start:#x}..{end:#x}")
+    if stop != end:
+        raise SymError(f"object records stop at {stop:#x}, short of {end:#x}")
+    raw = bytes(data[start:end])
+    return {
+        "start": start, "end": end, "bytes": end - start, "dialect": "obj", "records": len(recs),
+        "records_at": start, "records_end": stop, "slice_sha256": hashlib.sha256(raw).hexdigest(),
+        "tags": {f"{tag:#04x}": n for tag, n in sorted(Counter(r.tag for r in recs).items())},
+    }  # fmt: skip
+
+
+def stream_receipt(data: bytes | memoryview, start: int, end: int, dialect: str = "sym") -> dict[str, object]:
     """The round-trip proof of the stream in `data[start:end]`: the whole records, the head bytes of a record a 4 KiB
     write cut at the front (`cut_head`), the tail of a record cut at the back (`cut_tail`), and the sha256 of the
     slice against the sha256 of head + `emit(records)` + tail. Raises SymError when the re-emit differs, a head or tail
     is no record prefix/suffix, or no record parses. The head is the offset (0..15) whose records reach furthest."""
+    if dialect == "obj":
+        return object_receipt(data, start, end)
     best = max(range(16), key=lambda d: records(data, start + d, end)[1] if start + d < end else -1)
     recs, stop = records(data, start + best, end)
     if not recs:

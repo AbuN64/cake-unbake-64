@@ -131,7 +131,7 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         body = rnc.unpack(rom[a:b])
         return {**owner, "decoded_size": len(body), "strings": string_leaf(body)}
     if reader == "sn-debug":
-        return snsym.stream_receipt(rom, start, end)
+        return snsym.stream_receipt(rom, start, end, row.get("dialect", "sym"))
     if reader == "copy":
         source = row["source"]
         if type(source) is not int or not 0 <= source < source + end - start <= len(rom):

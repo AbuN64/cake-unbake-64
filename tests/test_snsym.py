@@ -211,3 +211,13 @@ def test_stream_receipt_proves_the_round_trip_of_a_cut_stream() -> None:
     )
     with pytest.raises(snsym.SymError):
         snsym.stream_receipt(b"\xff" * 64, 0, 64)
+
+
+def test_object_receipt_proves_the_tiling_of_an_object_stream() -> None:
+    body = b"".join(b"\x4c" + struct.pack("<HII", 2, i, 5) for i in range(60))
+    receipt = snsym.stream_receipt(b"\xff" * 3 + body + b"\x00" * 4, 3, 3 + len(body), "obj")
+    assert receipt["records"] == 60 and receipt["dialect"] == "obj" and receipt["bytes"] == len(body)
+    with pytest.raises(snsym.SymError):
+        snsym.stream_receipt(body + b"\xff", 0, len(body) + 1, "obj")  # a byte no record owns
+    with pytest.raises(snsym.SymError):
+        snsym.stream_receipt(body[:200], 0, 200, "obj")  # fewer than fifty records
