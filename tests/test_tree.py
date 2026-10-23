@@ -783,3 +783,18 @@ def test_a_header_edit_of_unnamed_types_parses_nothing_again(tmp_path: Path) -> 
     edit(config, "include/t.h", "typedef int T;\nstruct Fresh { int q; };\nint g(void) { return 2; }\n")
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) > before  # a function in the header can define a name: the source parses again
+
+
+def test_an_address_named_file_binds_its_unlisted_definition_to_the_fact_at_that_address(tmp_path: Path) -> None:
+    """DATA_<ADDR> defines a renamed table no fact lists: it owns the stand-in fact at its address, so sync keeps the
+    piece (it dropped the fact from splat.yaml and the link script, 95901 bytes of us-rev1 fell out of the ROM)."""
+    rows = {"c_func": ("main", 0x0, "func"), "D_auto_data_unresolved_80000420": ("main", 0x20, "data")}
+    text = fixture.symbol_file("a", rows)
+    sources = {
+        "src/main/c.c": "s32 c_func(void) { return 1; }\n",
+        "src/main/DATA_80000420.CPP": "unsigned short g_renamed[2] = {0, 1};\n",
+        "src/main/other.c": "unsigned short g_other[2] = {0, 1};\n",
+    }
+    held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
+    assert held.owner("a", "D_auto_data_unresolved_80000420") == "src/main/DATA_80000420.CPP"
+    assert "D_auto_data_unresolved_80000420" not in held.unowned("a")

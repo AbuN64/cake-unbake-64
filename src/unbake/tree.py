@@ -131,6 +131,29 @@ class Tree:
         return tuple(out)
 
 
+_ADDRESS_STEM = re.compile(r"_([0-9A-F]{8})(?:_\d+)?$", re.IGNORECASE)
+
+
+def _renamed_at_address(
+    path: str,
+    table: Mapping[str, symbols.Symbol],
+    defs: Iterable[str],
+    defined: Collection[tuple[str, str]],
+    version: str,
+) -> str | None:
+    """The fact a file named by an address binds its one unlisted definition to. A data file `DATA_800E59E8.CPP` whose
+    only definition has no fact (the C name was changed and no alias written) owned nothing, so sync dropped the
+    stand-in fact at that address from splat.yaml and the link script and the bytes fell out of the ROM. The one fact
+    at the address that no file defines is the name of those bytes."""
+    names = list(defs)
+    found = _ADDRESS_STEM.search(Path(path).stem)
+    if len(names) != 1 or names[0] in table or found is None:
+        return None
+    vram = int(found[1], 16)
+    same = [n for n, fact in table.items() if fact[0] == vram and fact[3] != "func" and (version, n) not in defined]
+    return same[0] if len(same) == 1 else None
+
+
 def _rom(table: Mapping[str, symbols.Symbol], name: str) -> int:
     rom = table[name][1] if name in table else None
     return rom if rom is not None else 1 << 62
@@ -1032,6 +1055,9 @@ def _build(
         if old or set(ins) & mine:
             stale[path][version] = [n for n in dict.fromkeys(ins) if n in table and (n in mine or n in old)]
         names = [n for n in dict.fromkeys([*defs, *ins]) if n in table and n not in old]
+        if not names and (stood := _renamed_at_address(path, table, defs, defined, version)):
+            names = [stood]
+            kinds = {**kinds, stood: kinds.get(defs[0], ".data")}
         if lost := [
             n for n in dict.fromkeys(nm) if kinds.get(n) == ".text" and not any(n in t for t in tables.values())
         ]:

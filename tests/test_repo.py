@@ -544,6 +544,8 @@ def test_sync_fences_a_stand_in_once_however_often_it_runs(world, monkeypatch):
         repo.sync(world.cfg, {"check": False})
     assert (world.root / "src/main/keep.c").read_text() == once
     assert once.count("#if !(") == 1
+
+
 def test_sync_drops_a_data_word_array_a_literals_row_supersedes(world, monkeypatch):
     # a pad the extractor wrote as .data (no const) inside a literals row's bytes goes as a const array does
     monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_pad": (0x80100000, 0x2000, 4, "data")})
