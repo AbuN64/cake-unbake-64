@@ -52,6 +52,7 @@ def process_config(tmp_path):
         asflags=(),
         readme_map=None,
         readme_map_link=None,
+        readme_map_repo=None,
         versions=(),
         version={},
         files={},

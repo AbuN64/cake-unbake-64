@@ -248,6 +248,7 @@ libraries = ["src/libgcc/", "src/sdk/libgultra/"]
 cppflags = ["-DF3DEX_GBI_2"]
 readme_map = "us-rev1"
 readme_map_link = "https://example.test/map/"
+readme_map_repo = "game-decomp"
 
 [version.us]
 sha1 = "{HASH_A}"
@@ -364,7 +365,7 @@ def test_defaults_are_derived(tmp_path: Path) -> None:
     project = _load(tmp_path, BT, [])
     assert project.toolchain == "gcc-2.7.2-kmc" and project.title == "BattleTanx"
     assert (project.cppflags, project.cflags, project.asflags, project.libraries) == ((), (), (), ())
-    assert project.readme_map is None and project.readme_map_link is None
+    assert project.readme_map is None and project.readme_map_link is None and project.readme_map_repo is None
     facts = project.version["us"]
     assert facts.segments == (contracts.Segment("main", 0x1000, None, "code"),)
     assert facts.meta == {} and configuration.rom_meta(project, "us") == {

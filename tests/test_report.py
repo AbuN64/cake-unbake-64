@@ -39,6 +39,7 @@ def _config(root, versions=("a",), **project):
             names_from=versions[0],
             readme_map=project.get("readme_map"),
             readme_map_link=project.get("readme_map_link"),
+            readme_map_repo=project.get("readme_map_repo"),
             toolchain="gcc-2.8.1-sn64",
             file={},
         )
@@ -217,11 +218,12 @@ def test_readme_block_exact(tmp_path):
 
 @pytest.mark.parametrize(
     ("link", "href"),
-    [(None, None), ("https://site.example/attic/tool/", "https://site.example/attic/tool/#nus-nrwe-0")],
+    [(None, None), ("https://site.example/attic/tool/", "https://site.example/attic/tool/#game-decomp-us")],
 )
 def test_readme_embeds_the_overview_of_the_readme_map(tmp_path, link, href):
     config, current = _readme_case(tmp_path)
     config.project.readme_map, config.project.readme_map_link = "us", link
+    config.project.readme_map_repo = "game-decomp"
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
     image = '<img src="docs/overview-us.svg" width="720">'
     assert (f'<a href="{href}">{image}</a>' if href else image) in out

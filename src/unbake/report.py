@@ -680,11 +680,8 @@ def readme(text: str, config: Any, report: Json) -> str:
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]
         if project.readme_map:
             image = f'<img src="{present.overview_path(project.readme_map)}" width="{settings["map_width"]}">'
-            link, cartridge = (
-                project.readme_map_link,
-                configuration.rom_meta(project, project.readme_map).get("cartridge_id"),
-            )
-            anchor = f"#{cartridge.lower()}" if cartridge else ""  # the site names each ROM by its cartridge id
+            link = project.readme_map_link
+            anchor = f"#{project.readme_map_repo}-{project.readme_map}" if project.readme_map_repo else ""
             blocks.append(f'<a href="{link}{anchor}">{image}</a>' if link else image)
         for v in project.version:
             meta = configuration.rom_meta(project, v)

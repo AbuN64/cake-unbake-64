@@ -71,7 +71,12 @@
   "readme_map_link": {
    "type": "string",
    "minLength": 1,
-   "description": "the page the README memory map links to, at the anchor of the version's lower-cased cartridge id"
+   "description": "the page the README memory map links to, at the anchor <readme_map_repo>-<readme_map> when readme_map_repo is set"
+  },
+  "readme_map_repo": {
+   "type": "string",
+   "minLength": 1,
+   "description": "the hosted repository name that, with the readme_map version, names the anchor on the readme_map_link page"
   },
   "version": {
    "type": "object",

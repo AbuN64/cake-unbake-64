@@ -367,7 +367,8 @@ class Project:
     cflags: tuple[str, ...]
     asflags: tuple[str, ...]
     readme_map: str | None  # the version whose memory map the README progress block shows
-    readme_map_link: str | None  # the image links to this page at the anchor of the version's lower-cased cartridge id
+    readme_map_link: str | None  # the image links to this page
+    readme_map_repo: str | None  # with the readme_map version: the link's anchor `#<repo>-<version>`
     versions: tuple[str, ...]  # the sorted [version] keys
     version: Mapping[str, VersionFacts]
     files: Mapping[str, FileFacts]  # [file] rows by path or "dir/" prefix

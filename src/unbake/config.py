@@ -503,6 +503,7 @@ def load_project(
         asflags=tuple(document.get("asflags", ())),
         readme_map=readme_map,
         readme_map_link=document.get("readme_map_link"),
+        readme_map_repo=document.get("readme_map_repo"),
         versions=versions,
         version=version,
         files=files,
