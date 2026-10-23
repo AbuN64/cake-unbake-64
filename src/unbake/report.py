@@ -489,11 +489,13 @@ def _rom_size(config: Any, v: str) -> int | None:
 
 def partitions(config: Any, tree: Any) -> dict[str, Json]:
     """The partition of every version whose ROM is present, once per tree, blobs file and ROM size.
-    A byte counted twice, a range beyond the ROM or parts not summing to the ROM size: blocking `report.partition`."""
+    Uses the same source extents as credit reporting without measuring fuzzy scores: scores never change byte
+    ownership. A byte counted twice, a range beyond the ROM or parts not summing to the ROM size: blocking
+    `report.partition`."""
 
     def build() -> dict[str, Json]:
         tables: dict[str, dict[str, Any]] = {v: {} for v in config.project.version}
-        for row in credits(config, tree):  # the rows the report counts, so the partition shows what it sums
+        for row in _rows(config, tree, frozenset(), {}):  # source extents, independent of exactness and scores
             kind = "func" if row.member.kind == "function" else "data"
             tables[row.version][row.name] = (0, row.member.rom, row.code + row.data, kind)
         out = {}

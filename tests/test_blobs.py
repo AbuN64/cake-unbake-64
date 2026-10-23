@@ -262,7 +262,7 @@ def _credits(monkeypatch, **rows):
         code, data = (size, 0) if kind == "func" else (0, size)
         return report.Credit(name, member, None, "unknown", "v", code, data, 0, False, 0.0)
 
-    monkeypatch.setattr(report, "credits", lambda config, tree: tuple(row(n, *r) for n, r in rows.items()))
+    monkeypatch.setattr(report, "_rows", lambda config, tree, exact, scored: tuple(row(n, *r) for n, r in rows.items()))
 
 
 def test_scan_proves_catalogued_streams_and_lists_streams_in_unknown_bytes(tmp_path, monkeypatch):
@@ -607,3 +607,42 @@ def test_import_preserves_existing_duplicate_pairs_but_refuses_a_new_claim(tmp_p
     packet["blob"]["new"] = packet["blob"].pop("level.0")
     findings = blobs.import_plan(config, packet).blocking
     assert len(findings) == 2 and all(f.key == "blobs.range" for f in findings)
+
+
+@pytest.mark.parametrize("score", [0.0, 0.5, 1.0])
+def test_partition_preserves_scored_extents_without_measuring_bodies(tmp_path, monkeypatch, score):
+    config = _config(tmp_path)
+    module = N(
+        path="src/game.c",
+        segment="main",
+        owns={"v": ("boot", "exact", "draft", "data")},
+        stand_ins={"v": ("draft",)},
+        fuzzy=("draft",),
+    )
+    tree = N(
+        digest="partition-unscored",
+        modules=(module,),
+        owner=lambda version, name: module.path if name in module.owns[version] else None,
+    )
+    facts = {
+        "v": {
+            "boot": (0x80000FF0, 0xFF0, 0x10, "func"),
+            "exact": (0x80001000, 0x1000, 0x20, "func"),
+            "draft": (0x80001020, 0x1020, 0x40, "func"),
+            "data": (0x80001060, 0x1060, 0x20, "data"),
+            "label": (0x80001070, 0x1070, 0x10, "data"),
+        }
+    }
+    monkeypatch.setattr(report, "facts", lambda config: facts)
+    monkeypatch.setattr(report, "_extents", lambda config, tree: {"v": {"data": 0x20}})
+    monkeypatch.setattr(report, "_broken", lambda config, tree: frozenset())
+    scored = report._rows(config, tree, frozenset({"v"}), {"draft": {"v": score}})
+    table = {r.name: (0, r.member.rom, r.code + r.data, "func" if r.code else "data") for r in scored}
+    expected = report.partition(config, "v", table, ROM)
+    monkeypatch.setattr(report.rescore, "rows", lambda *a: pytest.fail("partition requested fuzzy compilation"))
+    monkeypatch.setattr(report, "credits", lambda *a: pytest.fail("partition requested scored credits"))
+    actual = report.partitions(config, tree)["v"]
+    assert actual == expected
+    assert actual["code"] == 0x60 and actual["data"] == 0x20
+    assert actual["platform"] == 0x1000 and actual["unknown"] == ROM - 0x1080
+    assert actual["overlap"] == actual["outside"] == 0
