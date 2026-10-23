@@ -8,11 +8,13 @@ alone (a comment is no content: `_meaning`), so an edit reparses the edited file
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import re
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,9 @@ from unbake.contracts import Config, Finding, Refusal, sha256
 from unbake.resources import cc_cache
 
 KIND = "tree.file"
+EXPANDED = "tree.expanded"  # a file's expansion in one version: the shas of its texts (plain, NON_MATCHING)
+TEXT = "tree.text"  # one such text by its sha, kept once however many files and versions expand to it
+SCANNED = "tree.scan"  # the row of names scanned out of one expansion: versions that expand alike share it
 TREE = "tree.captured"  # a whole captured tree, keyed by its inputs
 LITERALS = "literals_"  # a fact `literals_<function>` places that function's file's compiler-emitted rodata
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".s")
@@ -146,9 +151,12 @@ def _argv(
     """The build's preprocess command of `path` for `version`, as the Makefile spells it: the toolchain row's template
     with the row's, the project's and the [file] row's preprocessor flags, the version macro, `include` and the file's
     folder; `extra` flags follow the flags. With `markers`, a row's -P is dropped so line markers stay."""
-    recipe = recipes.of(config, path)
+    project = _project(config).digest
+    recipe = effort.memo(("tree.recipe", project, path), lambda: recipes.of(config, path))
     directory = path.rpartition("/")[0] or "."
-    return adapters.toolchain(config, recipe.toolchain).argv(
+    id = recipe.toolchain
+    tool = effort.memo(("tree.toolchain", project, id), lambda: adapters.toolchain(config, id))
+    return tool.argv(
         "preprocess",
         cppflags=[*(f for f in recipe.cppflags if not (markers and f == "-P")), *extra],
         defines=[f"-D{macro(version)}"],
@@ -535,20 +543,50 @@ def _closure(
     return sorted(found)
 
 
+_TREE_SECTION = b"# " + b"-" * 64 + b" the tree"  # the line that opens the section below the parse
+
+
 @functools.cache
 def _code() -> str:
-    """The bytes of this module, the one place a file's parse is made (preprocessing, scanning)."""
-    return sha256(Path(__file__).read_bytes())
+    """The identity of what scans a file: this module's bytes above its tree section, where a file's parse is made
+    (key, preprocessing, scanning). The section below builds the tree out of the rows and changes no row, so an edit
+    there keeps every file's parse."""
+    return sha256(Path(__file__).read_bytes().partition(_TREE_SECTION)[0])
+
+
+@functools.cache
+def _expansion_code() -> str:
+    """The identity of what preprocesses a file: the source of the functions that make the command and read its
+    output. A scanner edit leaves it alone, so a fix to the scan reads every expansion from the cache and runs no
+    preprocessor."""
+    functions = (macro, _argv, _materialize, _expand, _preprocess, _mentions, _expand_both)
+    basis = [inspect.getsource(f) for f in functions] + [_OPENED.pattern, _UNEXPANDED.pattern, _FUZZY_WORD.decode()]
+    return sha256("\0".join(basis).encode())
+
+
+def _inputs(
+    config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None] | _Headers
+) -> str:
+    """Every input of a file's parse but the code: the text, the preprocessor command and its flags, the version, the
+    headers it reaches. The text and every header count by `_meaning`: an edit of their comments alone keeps it."""
+    directory = path.rpartition("/")[0]
+    argv = _argv(config, path, version, "-")
+    basis = [sha256(_meaning(text)), argv, _closure(read, directory, version, text, argv)]
+    return sha256(json.dumps(basis, sort_keys=True).encode())
+
+
+def _row_key(inputs: str) -> str:
+    return sha256(json.dumps(["sections", _code(), _expansion_code(), inputs]).encode())
+
+
+def _expansion_key(inputs: str) -> str:
+    return sha256(json.dumps(["expansion", _expansion_code(), inputs]).encode())
 
 
 def _key(config: Config, path: str, text: bytes, version: str, read: Callable[[str], bytes | None] | _Headers) -> str:
-    """A file's parse key names every input of the parse: the text, the version, the preprocessor and its flags, the
-    headers it reaches, and this module's code (never the rest of the tool, so another tool edit keeps it). The text and
-    every header count by `_meaning`: an edit of their comments alone keeps the key."""
-    directory = path.rpartition("/")[0]
-    argv = _argv(config, path, version, "-")
-    basis = ["sections", _code(), sha256(_meaning(text)), argv, _closure(read, directory, version, text, argv)]
-    return sha256(json.dumps(basis, sort_keys=True).encode())
+    """A file's parse key names every input of the parse (`_inputs`) and the code that preprocesses and scans it (never
+    the rest of the tool, so another tool edit keeps it)."""
+    return _row_key(_inputs(config, path, text, version, read))
 
 
 def preprocess(config: Config, path: str, version: str, text: bytes | None = None, markers: bool = False) -> str:
@@ -790,31 +828,84 @@ def _parsed(
     read: Callable[[str], bytes | None] | None = None,
     key: str | None = None,
     overlays: Mapping[str, bytes | None] | None = None,
+    inputs: str | None = None,
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
     """`parse` and the linker section of each defined or stand-in name, kept together in one cache entry. A caller that
-    already made the key (`_key` over the reader the entry is looked up with) passes it, so both name one entry."""
+    already made the key (`_key` over the reader the entry is looked up with) passes it, with the `inputs` it came
+    from, so both name one entry."""
     if configuration.is_assembly(path):
         kinds = libasm.scan(text.decode())
         return list(kinds), [], [], kinds
-    key = key or _key(config, path, text, version, read or _read_from(config))
+    inputs = inputs or _inputs(config, path, text, version, read or _read_from(config))
+    key = key or _row_key(inputs)
 
     def produce() -> bytes:
-        kinds: dict[str, str] = {}
-        with store.work(config) as home:
-            ahead = _materialize(home, overlays)
-            source = text
+        shas = _expansion(config, path, text, version, inputs, overlays)
+        return _scanned(config, shas, lambda: _expand_both(config, path, text, version, overlays))
+
+    first, second, third, kinds = json.loads(store.cached(config, KIND, key, produce))
+    return first, second, third, kinds
+
+
+def _keep(config: Config, text: str) -> str:
+    """The sha of `text`, which the cache now holds under it."""
+    sha = sha256(text.encode())
+    if store.get(config, TEXT, sha) is None:
+        store.put(config, TEXT, sha, text.encode())
+    return sha
+
+
+def _expansion(
+    config: Config, path: str, text: bytes, version: str, inputs: str, overlays: Mapping[str, bytes | None] | None
+) -> list[str | None]:
+    """The shas of what the preprocessor makes of the file and of what it makes with NON_MATCHING defined (None when
+    that is the same text), kept by the file's `inputs` and the code that preprocesses: a fix to the scan costs no
+    preprocessor run."""
+
+    def produce() -> bytes:
+        expanded, variant = _expand_both(config, path, text, version, overlays)
+        return json.dumps([_keep(config, expanded), None if variant is None else _keep(config, variant)]).encode()
+
+    shas: list[str | None] = json.loads(store.cached(config, EXPANDED, _expansion_key(inputs), produce))
+    return shas
+
+
+def _expand_both(
+    config: Config, path: str, text: bytes, version: str, overlays: Mapping[str, bytes | None] | None
+) -> tuple[str, str | None]:
+    with store.work(config) if overlays else nullcontext(Path()) as home:
+        ahead = _materialize(home, overlays) if overlays else ()
+        source = text
+        expanded, opened = _expand(config, path, source, version, ("-P", *ahead))
+        if _UNEXPANDED.search(expanded):  # no header yet: read the file as sync will write it
+            source = b'#include "include_asm.h"\n' + text
             expanded, opened = _expand(config, path, source, version, ("-P", *ahead))
-            if _UNEXPANDED.search(expanded):  # no header yet: read the file as sync will write it
-                source = b'#include "include_asm.h"\n' + text
-                expanded, opened = _expand(config, path, source, version, ("-P", *ahead))
-            plain = _scan_expanded(expanded, kinds)
-            fuzzy_kinds: dict[str, str] = {}
-            root = config.project.root
-            if _FUZZY_WORD in source or any(_mentions(root, h) for h in opened):
-                other = _preprocess(config, path, source, version, ("-P", "-DNON_MATCHING", *ahead))
-                fuzzy = plain if other == expanded else _scan_expanded(other, fuzzy_kinds)
-            else:  # nothing the preprocessor read can tell the macro: the second expansion is the first
-                fuzzy = plain
+        root = config.project.root
+        if _FUZZY_WORD in source or any(_mentions(root, h) for h in opened):
+            other = _preprocess(config, path, source, version, ("-P", "-DNON_MATCHING", *ahead))
+            return expanded, None if other == expanded else other
+        return expanded, None  # nothing the preprocessor read can tell the macro: the second expansion is the first
+
+
+def _scanned(config: Config, shas: list[str | None], redo: Callable[[], tuple[str, str | None]]) -> bytes:
+    """The row (C names, stand-in names, NON_MATCHING-only names, kinds) of an expansion pair. Two files of two versions
+    that expand to the same text share it: the key is the text, not the file."""
+    basis = [_code(), *shas]
+
+    def produce() -> bytes:
+        held = [None if sha is None else store.get(config, TEXT, sha) for sha in shas]
+        variant: str | None
+        if held[0] is None or (shas[1] is not None and held[1] is None):  # a text the cache let go: expand again
+            expanded, variant = redo()
+            _keep(config, expanded)
+            if variant is not None:
+                _keep(config, variant)
+        else:
+            expanded, variant = held[0].decode(), None if held[1] is None else held[1].decode()
+        kinds: dict[str, str] = {}
+        plain = _scan_expanded(expanded, kinds)
+        fuzzy_kinds: dict[str, str] = {}
+        fuzzy = plain if variant is None else _scan_expanded(variant, fuzzy_kinds)
         for name in fuzzy[0]:  # a NON_MATCHING body's kind too, so a body of nothing can be told from a data row
             if name in fuzzy_kinds:
                 kinds.setdefault(name, fuzzy_kinds[name])
@@ -822,8 +913,7 @@ def _parsed(
         row = [plain[0], plain[1], [n for n in dict.fromkeys(fuzzy[0]) if n not in mine], kinds]
         return json.dumps(row).encode()
 
-    first, second, third, kinds = json.loads(store.cached(config, KIND, key, produce))
-    return first, second, third, kinds
+    return store.cached(config, SCANNED, sha256(json.dumps(basis).encode()), produce)
 
 
 # ---------------------------------------------------------------- the tree
@@ -875,8 +965,8 @@ def _reader(
 
 
 def _parse_job(item: tuple[Any, ...]) -> tuple[list[str], list[str], list[str], dict[str, str]]:
-    config, path, text, version, key, second = item
-    row = _parsed(config, path, text, version, key=key)
+    config, path, text, version, key, second, inputs = item
+    row = _parsed(config, path, text, version, key=key, inputs=inputs)
     if second and (stored := store.get(config, KIND, key)) is not None:
         store.put(config, KIND, second, stored)  # the same row under the skeleton key, for the next header edit
     return row
@@ -898,9 +988,10 @@ def _captured(config: Config, blobs: Mapping[str, bytes], digest: str, overlay: 
     """The tree of these files: a pure function of them, the parse keys (headers read off disk included) and the
     tool's code, so a later command finds it in the durable cache and builds nothing."""
     jobs = _jobs(config, blobs)
-    keys = _keys(config, blobs, jobs, overlay)
+    inputs = _inputs_of(config, blobs, jobs, overlay)
+    keys = [_row_key(i) for i in inputs]
     key = sha256(json.dumps([store.code(), digest, keys]).encode())
-    return store.cached_object(config, TREE, key, lambda: _build(config, blobs, jobs, keys, overlay))
+    return store.cached_object(config, TREE, key, lambda: _build(config, blobs, jobs, inputs, overlay))
 
 
 def _jobs(config: Config, blobs: Mapping[str, bytes]) -> list[tuple[str, str]]:
@@ -912,7 +1003,7 @@ def _build(
     config: Config,
     blobs: Mapping[str, bytes],
     jobs: Sequence[tuple[str, str]],
-    keys: Sequence[str],
+    inputs: Sequence[str],
     overlay: Mapping[str, bytes | None],
 ) -> Tree:
     project = _project(config)
@@ -926,7 +1017,7 @@ def _build(
         )
         for v in versions
     }
-    parsed = _parse_all(config, blobs, jobs, keys, overlay)
+    parsed = _parse_all(config, blobs, jobs, inputs, overlay)
     owned: dict[str, dict[str, list[str]]] = defaultdict(dict)
     stand: dict[str, dict[str, list[str]]] = defaultdict(dict)
     fuzzy: dict[str, set[str]] = defaultdict(set)
@@ -1050,41 +1141,50 @@ def _absorbed(
                 sections[path].pop(version, None)
 
 
-def _keys(
+def _inputs_of(
     config: Config,
     blobs: Mapping[str, bytes],
     jobs: Sequence[tuple[str, str]],
     overlay: Mapping[str, bytes | None],
     skeleton: bool = False,
 ) -> list[str]:
-    """The parse key of each (file, version): the one key function, whichever process parses or looks it up. With
-    `skeleton` the second key, where each header counts without its type definitions and static inline functions."""
+    """The parse inputs of each (file, version): the one function, whichever process parses or looks it up. With
+    `skeleton` each header counts without its type definitions and static inline functions."""
     read = _Headers(_reader(config, blobs, overlay), skeleton)
-    keys = [_key(config, p, blobs[p], v, read) for p, v in jobs]
-    return [sha256(b"skeleton " + k.encode()) for k in keys] if skeleton else keys
+    return [_inputs(config, p, blobs[p], v, read) for p, v in jobs]
 
 
 def _parse_all(
     config: Config,
     blobs: Mapping[str, bytes],
     jobs: Sequence[tuple[str, str]],
-    keys: Sequence[str],
+    inputs: Sequence[str],
     overlay: Mapping[str, bytes | None] = {},
 ) -> list[tuple[list[str], list[str], list[str], dict[str, str]]]:
     """Every (file, version) result: hits of the cache are read here, only the misses are parsed (in the pool). A miss
     is looked up again under its skeleton key (the headers without their type definitions and static inline functions):
-    an edit of those leaves every including source's names alone, and the preprocessor does not run for any of them."""
+    an edit of those leaves every including source's names alone, and the preprocessor does not run for any of them.
+    The expansions of every job are kept reachable (read here, and `store.touch` for their texts), hit or miss: a scan
+    fix reads them, never reruns the preprocessor."""
+    keys = [_row_key(i) for i in inputs]
+    pointers = (store.get(config, EXPANDED, _expansion_key(i)) for i in inputs)
+    store.touch(config, TEXT, {sha for p in pointers if p for sha in json.loads(p) if sha})
     hits = {k: store.get(config, KIND, k) for k in set(keys)}
     todo = [i for i, k in enumerate(keys) if hits[k] is None]
-    seconds = dict(zip(todo, _keys(config, blobs, [jobs[i] for i in todo], overlay, skeleton=True), strict=True))
+    skeletons = _inputs_of(config, blobs, [jobs[i] for i in todo], overlay, skeleton=True)
+    seconds = {i: sha256(b"skeleton " + _row_key(s).encode()) for i, s in zip(todo, skeletons, strict=True)}
     found = {s: store.get(config, KIND, s) for s in set(seconds.values())}
     for i in todo:
-        if found[seconds[i]] is not None and hits[keys[i]] is None:
-            hits[keys[i]] = found[seconds[i]]
-            store.put(config, KIND, keys[i], found[seconds[i]])  # a later run finds it under the first key
+        if (kept := found[seconds[i]]) is not None and hits[keys[i]] is None:
+            hits[keys[i]] = kept
+            store.put(config, KIND, keys[i], kept)  # a later run finds it under the first key
     todo = [i for i in todo if hits[keys[i]] is None]
-    items = [(config, jobs[i][0], blobs[jobs[i][0]], jobs[i][1], keys[i], seconds[i]) for i in todo]
-    done = dict(zip(todo, pool.map(config, "tree.parse", _parse_job, items), strict=True)) if items else {}
+    # a file's versions mostly expand alike and share one scan: version after version, so the first scan is stored
+    # before the next version of the file needs it, not scanned five times side by side
+    rank = {v: n for n, v in enumerate(_project(config).versions)}
+    order = sorted(todo, key=lambda i: (rank[jobs[i][1]], i))
+    items = [(config, jobs[i][0], blobs[jobs[i][0]], jobs[i][1], keys[i], seconds[i], inputs[i]) for i in order]
+    done = dict(zip(order, pool.map(config, "tree.parse", _parse_job, items), strict=True)) if items else {}
     out = []
     for i, k in enumerate(keys):
         if i in done:

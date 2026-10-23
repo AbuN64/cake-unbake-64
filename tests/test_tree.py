@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import fixture
@@ -347,20 +348,85 @@ def test_a_header_found_through_a_project_include_flag_keys_the_file() -> None:
     assert plain == [("inc.c", "")] and flagged == [("inc.c", tree.sha256(b"int x;\n"))]
 
 
-def test_another_tool_edit_keeps_the_parse_cache_and_a_tree_edit_drops_it(
+def test_another_tool_edit_keeps_the_parse_cache_and_a_scan_edit_rescans_without_preprocessing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = fixture.config(tmp_path)
-    tree.capture(config)
+    first = tree.capture(config)
     runs = fixture.cpp_runs(tmp_path)
     monkeypatch.setattr(store, "code", lambda: "another tool build")
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) == runs  # every file parse is a hit
-    monkeypatch.setattr(tree, "_code", lambda: "another tree.py")
+    scans = []
+    real = tree._scan_expanded
+    monkeypatch.setattr(tree, "_scan_expanded", lambda *a: scans.append(1) or real(*a))
+    monkeypatch.setattr(tree, "_code", lambda: "another scanner")
+    monkeypatch.setattr(effort, "_memo", {})
+    again = tree.capture(config)
+    assert scans and fixture.cpp_runs(tmp_path) == runs  # the rows are made again from the kept expansions
+    assert again == first and [m.owns for m in again.modules] == [m.owns for m in first.modules]
+    monkeypatch.setattr(tree, "_expansion_code", lambda: "another preprocessor step")
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) > runs
+
+
+def test_the_scan_code_stops_where_the_tree_section_starts() -> None:
+    """An edit below the section keeps every file's parse; so the parse functions all sit above it and the tree's
+    construction below."""
+    marker = Path(tree.__file__).read_bytes().partition(tree._TREE_SECTION)
+    assert marker[1], "tree.py lost the line that opens its tree section"
+    above = marker[0].count(b"\n") + 1
+    for parse in (tree._parsed, tree._expand_both, tree._scanned, tree._scan_expanded, tree._key, tree._closure):
+        assert inspect.getsourcelines(parse)[1] < above, parse.__name__
+    for build in (tree._build, tree._module, tree._yield_to_source):
+        assert inspect.getsourcelines(build)[1] > above, build.__name__
+    assert tree._code() == tree.sha256(marker[0])
+
+
+def test_versions_that_expand_alike_share_one_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    scans: list[str] = []
+    real = tree._scan_expanded
+    monkeypatch.setattr(tree, "_scan_expanded", lambda text, *a: scans.append(text) or real(text, *a))
+    held = tree.capture(fixture.config(tmp_path))
+    jobs = [m for m in held.modules for _ in m.owns]
+    assert scans and len(scans) < 2 * len(jobs)  # two versions per file, the same expansion for most
+    assert len({s for s in scans}) == len(scans)  # no text scanned twice
+
+
+def test_a_command_keeps_every_expansion_reachable_though_all_its_parses_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = fixture.config(tmp_path)
+    tree.capture(config)
+    cache = store.content(config)._inner
+    cache._touched.clear()
+    monkeypatch.setattr(store, "code", lambda: "another tool build")  # the tree is built again from hits alone
+    monkeypatch.setattr(effort, "_memo", {})
+    tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) > 0
+    touched = {t for t in cache._touched if t.startswith(tree.EXPANDED + ":")}
+    assert len(touched) == len(tree._jobs(config, tree._files(config, {})))
+    assert any(t.startswith(tree.TEXT + ":") for t in cache._touched)  # and the texts those point to
+
+
+def test_a_cold_tree_and_a_tree_made_from_kept_expansions_are_the_same_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = fixture.config(tmp_path)
+    cold = tree.capture(config)
+    cache = store.content(config)._inner._cache
+    for name in [k for k in cache.iterkeys() if str(k).startswith((tree.KIND, tree.SCANNED))]:
+        cache.delete(name)  # the rows and scans are gone, the expansions stay
+    runs = fixture.cpp_runs(tmp_path)
+    monkeypatch.setattr(store, "code", lambda: "another tool build")
+    monkeypatch.setattr(effort, "_memo", {})
+    warm = tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) == runs and warm == cold
+    assert [(m.path, m.owns, m.fuzzy, m.stand_ins, m.sections) for m in warm.modules] == [
+        (m.path, m.owns, m.fuzzy, m.stand_ins, m.sections) for m in cold.modules
+    ]
 
 
 def test_a_static_inline_copy_does_not_own_the_name_its_real_definition_owns() -> None:
@@ -627,7 +693,8 @@ def _fuzzy_runs(config: Config, monkeypatch: pytest.MonkeyPatch, opened: list[st
     real_pre, real_scan = tree._preprocess, tree._scan_expanded
     monkeypatch.setattr(tree, "_preprocess", lambda *a, **k: seconds.append(1) or real_pre(*a, **k))
     monkeypatch.setattr(tree, "_scan_expanded", lambda *a, **k: scans.append(1) or real_scan(*a, **k))
-    tree._parsed(config, path, (config.project.root / path).read_bytes(), "a", key=f"k-{path}-{opened}")
+    name = f"k-{path}-{opened}"
+    tree._parsed(config, path, (config.project.root / path).read_bytes(), "a", key=name, inputs=name)
     return len(seconds), len(scans)
 
 
@@ -644,9 +711,10 @@ def test_a_header_that_holds_the_word_brings_the_second_expansion_back(
     (config.project.root / "include" / "plain.h").write_text("int plain;\n")
     (config.project.root / "include" / "fuzzy.h").write_text("#ifdef NON_MATCHING\nint x;\n#endif\n")
     assert _fuzzy_runs(config, monkeypatch, ["include/plain.h"], "src/main/c_func.c") == (0, 1)
-    # the header holds the word but the expansion does not change: the second expansion is made, its scan is not
-    assert _fuzzy_runs(config, monkeypatch, ["include/plain.h", "include/fuzzy.h"], "src/main/c_func.c") == (1, 1)
-    assert _fuzzy_runs(config, monkeypatch, ["include/missing.h"], "src/main/c_func.c") == (1, 1)
+    # the header holds the word but the expansion does not change: the second expansion is made, no scan is (the first
+    # call's scan of the same text is kept)
+    assert _fuzzy_runs(config, monkeypatch, ["include/plain.h", "include/fuzzy.h"], "src/main/c_func.c") == (1, 0)
+    assert _fuzzy_runs(config, monkeypatch, ["include/missing.h"], "src/main/c_func.c") == (1, 0)
 
 
 def test_a_file_holding_the_word_is_expanded_both_ways_and_scanned_for_each(

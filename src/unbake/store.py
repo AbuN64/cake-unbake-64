@@ -23,7 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from abucache.store import CacheFull, ContentCache, everything, open_cache
+from abucache.store import CacheFull, ContentCache, absorb_touched, everything, open_cache
 
 from unbake import effort, process
 from unbake.contracts import Config, Finding, Json, Refusal, pickled, sha256
@@ -138,9 +138,13 @@ def _refusing() -> Iterator[None]:
 
 # a tool's output named by all its inputs: every unbake build shares it. A view is named by its reads, the preprocessor
 # command, the tool bytes and view.py's own bytes (never the rest of the tool), its chunks by content; a file's parse
-# (tree.file) by its text, flags, headers, preprocessor and tree.py's own bytes
+# (tree.file) by its text, flags, headers, preprocessor and tree.py's own bytes above its tree section; the
+# preprocessor's output (tree.expanded, its texts tree.text by content) by the same inputs and the preprocessing
+# functions' source alone, a scan of it (tree.scan) by its text
 # the compiled extents of a module's data (report) by its text and version, so a tool update keeps them
-_NAMED = frozenset({"unit", "object", "bytes", "view", "view.chunk", "tree.file", "extents"})
+_NAMED = frozenset(
+    {"unit", "object", "bytes", "view", "view.chunk", "tree.file", "tree.expanded", "tree.text", "tree.scan", "extents"}
+)
 
 
 class Packed(ContentCache):
@@ -307,6 +311,13 @@ def get(config: Config, kind: str, key: str, named: bool = False) -> bytes | Non
 
 def put(config: Config, kind: str, key: str, value: bytes, named: bool = False) -> None:
     content(config, named).put(kind, key, value)
+
+
+def touch(config: Config, kind: str, keys: Iterable[str], named: bool = False) -> None:
+    """Keep these entries reachable for this command's manifest without reading them: a value this command may not need
+    (a preprocessor output behind a parse that hits) must outlive the install whose command last used it."""
+    cache = content(config, named)
+    absorb_touched({str(cache.directory): [f"{kind}:{cache._key(kind, key)}" for key in keys]})
 
 
 def put_many(config: Config, kind: str, rows: Iterable[tuple[str, bytes]], named: bool = False) -> None:
