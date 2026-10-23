@@ -1147,10 +1147,9 @@ def extract_job(job: tuple[Config, str]) -> bool:
     config, v = job
     key = _extract_key(config, v)
     asm = config.project.root / "asm" / v
-    if asm.is_dir():
-        _prune_superseded(config, v)
     damaged = _asm_damaged(config, v) if asm.is_dir() else []  # what the last extraction wrote, still as written?
     if asm.is_dir() and _extracted_key(config, v) == key and not damaged:
+        _prune_superseded(config, v)  # facts the stamp names cannot leave a file of an earlier name: one put there does
         if not (_facts_snapshot(config, v).exists() and _yaml_snapshot(config, v).exists()):
             _snapshot_inputs(config, v)  # the key says these facts and pieces made this extraction
         return False
@@ -1175,6 +1174,7 @@ def extract_job(job: tuple[Config, str]) -> bool:
         shutil.rmtree(aside, ignore_errors=True)
     stamp.parent.mkdir(parents=True, exist_ok=True)
     _keep_unchanged(config, v, before)
+    _prune_superseded(config, v)  # a rename extraction only renames what the old tree held; files the facts left go
     _write_asm_manifest(config, v)
     _snapshot_inputs(config, v)
     store.write(stamp, key.encode())
