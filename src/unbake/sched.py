@@ -12,6 +12,7 @@ from unbake.alloc import HARD
 from unbake.contracts import Json
 
 _ASM = re.compile(r"(l|s)[a-z]*[0-9a-z]* (\$\w+), (-?(?:0x[0-9A-Fa-f]+|\d+))\((\$\w+)\)")
+_MOVE = re.compile(r"(?:addu|or) (\$\w+), (\$\w+), \$zero")
 _BLOCK = re.compile(r";;\t -- basic block number (\d+) from \d+ to \d+ --")
 _READY = re.compile(r";; ready list at T-(\d+): (.*?)(?:, now (.*))?$")
 _PRIORITY = re.compile(r";; insn\[\s*(\d+)\]: priority =\s*(-?\d+), ref_count =\s*(-?\d+)")
@@ -23,6 +24,8 @@ _KINDS = {None: "true", "ANTI": "anti", "OUTPUT": "output"}
 
 def memory_key(text: str) -> tuple[str, int, int, int] | None:
     """(direction, register, offset, base) of a load or store line `sw $zero, 0x2C($v0)`; None for any other line."""
+    if (move := _MOVE.fullmatch(text.strip())) is not None:  # a register copy: the argument setup around a load
+        return ("m", HARD[move[1]], HARD[move[2]], 0) if move[1] in HARD and move[2] in HARD else None
     found = _ASM.fullmatch(text.strip())
     if not found or found[2] not in HARD or found[4] not in HARD:
         return None
@@ -40,6 +43,8 @@ def _rtl_key(rtl: str) -> tuple[str, int, int, int] | None:
     one = re.match(r"\((?:jump_|call_)?insn \d+ \d+ \d+ \(set (.*?) \d+ \{", flat)
     if not one:
         return None
+    if (m := re.fullmatch(_REG + " " + _REG, one[1])) is not None and m[1] and m[2]:
+        return "m", int(m[1]), int(m[2]), 0
     if (m := _STORE.fullmatch(one[1])) is not None:
         return "s", int(m[4] or 0), int(m[2] or 0), int(m[1] or m[3])
     if (m := _LOAD.fullmatch(one[1])) is not None:
@@ -139,6 +144,9 @@ def hint(words: int, pick: Json, own: int) -> str:
     """What decides the move: the insn picked just before (it must be picked before this one to land later) or just
     after it (it must be picked after to land earlier); priority is the longest dependency path to the block end."""
     side = pick["before"][-1:] if words > 0 else pick["after"][:1]
+    if not side and (other := pick["after"][:1] if words > 0 else pick["before"][-1:]):
+        near = _rival(other[0], pick["priority"], own)
+        return f"no rival sits on the side that would move it; the nearest on the other side: {near}"
     if not side:
         return "nothing else was ready: the order is fixed by its dependencies"
     way = "before" if words > 0 else "after"  # the pass runs backward: picked first means placed last

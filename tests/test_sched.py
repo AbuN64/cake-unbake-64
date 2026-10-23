@@ -109,3 +109,13 @@ def test_a_diverging_insn_no_pass_moved_names_the_input_order() -> None:
     diff = ["+800BAE9C: sw $zero, 0x2C($v0)", "-800BAE98: sw $zero, 0x2C($v0)"]
     row = sched.report("f", {"sched2": DUMP}, listing, diff)[0]
     assert row["first_pass"] == "input" and row["sched2"]["displaced"] == 0
+
+
+def test_a_register_copy_moved_around_a_load_gets_a_row_too() -> None:
+    assert sched.memory_key("addu $a2, $s1, $zero") == ("m", 6, 17, 0)
+    assert sched.memory_key("addu $a2, $s1, $s2") is None
+    copy = DUMP + "\n(insn 9 8 10 (set (reg:SI 6 a2)\n        (reg:SI 17 s1)) 159 {move} (nil)\n    (nil))\n"
+    assert sched.Pass(copy, "f").key[9] == ("m", 6, 17, 0)
+    listing = ["800BAE98: addu $a2, $s1, $zero", "800BAE9C: lw $a1, 0x5EC($s0)"]
+    diff = ["+800BAE98: addu $a2, $s1, $zero", "-800BAE9C: addu $a2, $s1, $zero"]
+    assert [r["insn"] for r in sched.report("f", {"sched2": copy}, listing, diff)] == [9]
