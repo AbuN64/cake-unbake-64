@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from unbake import blob_archive, blob_decode, blob_stale, blobs, objcode, rnc, snsym
 from unbake.contracts import Config, Json, sha256
@@ -15,6 +18,7 @@ READERS = frozenset(
         "string-leaf",
         "c-string",
         "sn-debug",
+        "sn-head",
         "copy",
         "segment-fill",
         "obj-code",
@@ -22,6 +26,40 @@ READERS = frozenset(
     }
 )
 _CORPUS: dict[object, objcode.Corpus] = {}  # the known bodies of a project, once per Config digest
+_SESSION: dict[object, object] | None = None  # while a request is proved: what its rows share
+
+
+@contextmanager
+def session() -> Iterator[None]:
+    """A request of thousands of rows (copies of accounted bytes of other versions) reads each ROM and captures each
+    version's accounted spans once, not once per row."""
+    global _SESSION
+    previous, _SESSION = _SESSION, {}
+    try:
+        yield
+    finally:
+        _SESSION = previous
+
+
+def _shared(key: object, make: Callable[[], Any]) -> Any:
+    if _SESSION is None:
+        return make()
+    if key not in _SESSION:
+        _SESSION[key] = make()
+    return _SESSION[key]
+
+
+def _accounted(config: Config, version: str) -> list[tuple[int, int]]:
+    """`blob_stale.source_spans` of a version."""
+    spans: list[tuple[int, int]] = _shared(("spans", version), lambda: blob_stale.source_spans(config, version))
+    return spans
+
+
+def _baserom(config: Config, version: str) -> bytes:
+    """One version's ROM bytes."""
+    path = Path(config.project.root) / "roms" / f"baserom.{version}.z64"
+    rom: bytes = _shared(("rom", version), path.read_bytes)
+    return rom
 
 
 def interval(rom: bytes, span: list[int]) -> tuple[int, int]:
@@ -84,11 +122,7 @@ def _copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end
     version = row.get("source_version", row["version"])
     if version not in config.project.version:
         raise ValueError(f"copy source version {version} is unknown")
-    other = (
-        rom
-        if version == row["version"]
-        else (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
-    )
+    other = rom if version == row["version"] else _baserom(config, version)
     source = row["source"]
     if type(source) is not int or not 0 <= source < source + end - start <= len(other):
         raise ValueError("copy source outside ROM")
@@ -101,7 +135,7 @@ def _copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end
             [(source, source_end)], blobs.merge(owner.get("rom", {}).get(version, []))
         ):
             raise ValueError("copy source is not covered by its decoded owner")
-    elif blobs.subtract([(source, source_end)], blob_stale.source_spans(config, version)):
+    elif blobs.subtract([(source, source_end)], _accounted(config, version)):
         raise ValueError("copy source is not code, data or a decoded blob of its version")
     if other[source:source_end] != rom[start:end]:
         raise ValueError("stale copy differs from decoded source")
@@ -113,16 +147,27 @@ def _copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end
     return out
 
 
+def _sn_head(config: Config, row: Json, rom: bytes, start: int, end: int) -> Json:
+    """`rom[start:end]` is the end of the debug record that a 4 KiB write cut from the stream starting at `end`: the
+    bytes before it are zeros or another write, so the record is proven whole by a witness, in this ROM or another
+    version's, that holds the same bytes and then the same following record inside a whole record."""
+    size = end - start
+    if not 0 < size <= 255:
+        raise ValueError("a stream head is 1 to 255 bytes")
+    others = {v: _baserom(config, v) for v in sorted(config.project.version) if v != row["version"]}
+    try:
+        cut = snsym.cut_head(rom, start, size, others)
+    except snsym.SymError as error:
+        raise ValueError(str(error)) from error
+    return {**cut, "hex": rom[start:end].hex(), "sha256": sha256(rom[start:end])}
+
+
 def _rnc_copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end: int) -> Json:
     """Two complete CRC-checked streams decode equally, and the source has a decoded blob owner."""
     version = row["source_version"]
     if version not in config.project.version:
         raise ValueError("RNC copy source version is unknown")
-    other = (
-        rom
-        if version == row["version"]
-        else (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
-    )
+    other = rom if version == row["version"] else _baserom(config, version)
     source = row["source"]
     if type(source) is not int or source < 0:
         raise ValueError("RNC copy source needs a nonnegative offset")
@@ -239,6 +284,8 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         return {**owner, "decoded_size": len(body), "strings": string_leaf(body)}
     if reader == "sn-debug":
         return snsym.stream_receipt(rom, start, end, row.get("dialect", "sym"))
+    if reader == "sn-head":
+        return _sn_head(config, row, rom, start, end)
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":

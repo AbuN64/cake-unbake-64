@@ -165,22 +165,23 @@ def run(config: Config, request_path: str, receipt_path: str) -> Json:
         raise Refusal(Finding("blobs.proof", "proof request needs schema 1 and nonempty rows"))
     document = blobs.load(config)
     roms, fills, results = {}, {}, []
-    for row in rows:
-        wall, cpu = time.monotonic(), time.process_time()
-        version = row["version"]
-        if version not in config.project.version:
-            raise Refusal(Finding("blobs.proof", f"unknown ROM version {version}"))
-        if version not in roms:
-            rom = (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
-            if sha256(rom) != request["rom_sha256"][version]:
-                raise Refusal(Finding("blobs.proof", f"ROM sha256 mismatch: {version}"))
-            roms[version] = rom
-            fills[version] = fill_spans(config, version, rom, document)
-        try:
-            proof = prove_one(config, row, roms[version], document, fills[version])
-        except (ValueError, KeyError, TypeError, OSError) as error:
-            raise Refusal(Finding("blobs.proof", f"{row.get('id')}: {error}")) from error
-        results.append({**proof, "wall_s": time.monotonic() - wall, "cpu_s": time.process_time() - cpu})
+    with blob_formats.session():
+        for row in rows:
+            wall, cpu = time.monotonic(), time.process_time()
+            version = row["version"]
+            if version not in config.project.version:
+                raise Refusal(Finding("blobs.proof", f"unknown ROM version {version}"))
+            if version not in roms:
+                rom = (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
+                if sha256(rom) != request["rom_sha256"][version]:
+                    raise Refusal(Finding("blobs.proof", f"ROM sha256 mismatch: {version}"))
+                roms[version] = rom
+                fills[version] = fill_spans(config, version, rom, document)
+            try:
+                proof = prove_one(config, row, roms[version], document, fills[version])
+            except (ValueError, KeyError, TypeError, OSError) as error:
+                raise Refusal(Finding("blobs.proof", f"{row.get('id')}: {error}")) from error
+            results.append({**proof, "wall_s": time.monotonic() - wall, "cpu_s": time.process_time() - cpu})
     receipt = {
         "schema": 1,
         "request_sha256": sha256(raw),

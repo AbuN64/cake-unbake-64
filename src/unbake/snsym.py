@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import struct
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 BASES = (
@@ -285,7 +286,9 @@ def cut_tail(data: bytes | memoryview, at: int, end: int) -> dict[str, int | str
     raise SymError(f"tail at {at:#x} is not the start of any record")
 
 
-def cut_head(data: bytes | memoryview, start: int, size: int) -> dict[str, int | str]:
+def cut_head(
+    data: bytes | memoryview, start: int, size: int, others: Mapping[str, bytes] | None = None
+) -> dict[str, int | str]:
     """Prove `data[start:start+size]`, the first bytes of a stream that a 4 KiB write cut from the previous page, is the
     end of the record that straddles `start`: some earlier record start (at most 2 KiB back) chains whole records
     onto exactly `start + size`, and the last of them begins before `start`. Returns where that record begins."""
@@ -299,25 +302,27 @@ def cut_head(data: bytes | memoryview, start: int, size: int) -> dict[str, int |
     following, _ = records(data, start + size, min(len(data), start + size + 2048))
     if following:
         witness = bytes(data[start : following[0].end])
-        raw = bytes(data)
-        at = raw.find(witness)
-        while at >= 0:
-            if at != start:
-                for back in range(at - 1, max(-1, at - 0x800), -1):
-                    try:
-                        rec = record(data, back)
-                    except SymError:
-                        continue
-                    if rec.end == at + size and encode(rec) == raw[back : rec.end]:
-                        return {
-                            "at": start,
-                            "bytes": size,
-                            "record": back,
-                            "tag": rec.tag,
-                            "source": at,
-                            "witness_end": at + len(witness),
-                        }
-            at = raw.find(witness, at + 1)
+        # The same ROM first, then the other versions' (`others`, by name): a record another ROM holds whole.
+        for name, raw in (("", bytes(data)), *sorted((others or {}).items())):
+            at = raw.find(witness)
+            while at >= 0:
+                if at != start or name:
+                    for back in range(at - 1, max(-1, at - 0x800), -1):
+                        try:
+                            rec = record(raw, back)
+                        except SymError:
+                            continue
+                        if rec.end == at + size and encode(rec) == raw[back : rec.end]:
+                            return {
+                                "at": start,
+                                "bytes": size,
+                                "record": back,
+                                "tag": rec.tag,
+                                "source": at,
+                                "witness_end": at + len(witness),
+                                **({"source_version": name} if name else {}),
+                            }
+                at = raw.find(witness, at + 1)
     raise SymError(f"head at {start:#x} is no record's end")
 
 

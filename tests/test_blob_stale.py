@@ -30,8 +30,10 @@ def test_a_copy_stops_where_the_source_stops_being_accounted_and_where_the_targe
     spans = {"a": [(0x100, 0x180)], "b": []}
     found = blob_stale.find(roms, spans, blob_stale.index(roms, spans), "b", [(0x400, 0x500)], ["a", "b"])
     assert [(f["region"], f["source"]) for f in found] == [([0x400, 0x480], 0x100)]  # 0x80 accounted bytes, no more
-    found = blob_stale.find(roms, spans, blob_stale.index(roms, spans), "b", [(0x410, 0x44F)], ["a", "b"])
-    assert found == []  # 63 bytes left in the target span: under a copy
+    found = blob_stale.find(roms, spans, blob_stale.index(roms, spans), "b", [(0x410, 0x42F)], ["a", "b"])
+    assert found == []  # 31 bytes left in the target span: under a copy
+    found = blob_stale.find(roms, spans, blob_stale.index(roms, spans), "b", [(0x410, 0x430)], ["a", "b"])
+    assert [(f["region"], f["source"]) for f in found] == [([0x410, 0x430], 0x110)]  # 32 bytes are a copy
 
 
 def test_a_run_of_few_values_is_no_copy():
@@ -89,3 +91,20 @@ def test_text_source_choice_is_deterministic_prefers_same_rom_and_never_self():
     (found,) = blob_stale.text_copies(data, sources, "b", [(0x100, 0x200)], ["a", "z", "b"])
     assert (found["source_version"], found["source"]) == ("a", 0x400)
     assert blob_stale.text_copies(data, {text: [("b", 0x100)]}, "b", [(0x100, 0x200)]) == []
+
+
+def _definition(name):
+    return struct.pack("<IBHHI", 0, 0x94, 8, 5, 0) + bytes([len(name)]) + name
+
+
+def test_a_cut_stream_head_is_listed_only_when_the_page_bytes_are_unknown_and_a_witness_holds_the_record():
+    first, following = _definition(b"paramSamples"), _definition(b"next")
+    page = rom((0x1000 - 0x40, b"\xff" * 0x40), (0x1000, b"amSamples" + following), size=0x2000)
+    other = rom((0x10, first + following))
+    roms = {"a": page, "b": other}
+    start = 0x1000 + 9
+    found = blob_stale.heads(roms, "a", [(0xFC0, 0x1009)], [start], ["a", "b"])
+    assert found == [{"version": "a", "region": [0x1000, 0x1009], "reader": "sn-head"}]
+    assert blob_stale.heads(roms, "a", [(0xFC0, 0x1008)], [start], ["a", "b"]) == []  # a head byte is accounted
+    assert blob_stale.heads(roms, "a", [(0xFC0, 0x1009)], [start], ["a"]) == []  # no witness anywhere
+    assert blob_stale.heads(roms, "a", [(0xFC0, 0x1009)], [0x1000], ["a", "b"]) == []  # a stream at the page start

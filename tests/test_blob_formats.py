@@ -128,6 +128,34 @@ def test_cut_debug_head_requires_a_real_record_and_following_record_witness():
         snsym.cut_head(bad, start, 9)
 
 
+def test_cut_debug_head_can_take_its_witness_from_another_versions_rom():
+    first, following = definition(b"paramSamples"), definition(b"next")
+    other = first + following
+    rom = b"\xff" * 64 + b"amSamples" + following
+    with pytest.raises(snsym.SymError, match="no record"):
+        snsym.cut_head(rom, 64, 9)
+    got = snsym.cut_head(rom, 64, 9, {"b": other})
+    assert got["source_version"] == "b" and got["source"] == len(first) - 9 and got["record"] == 0
+    assert "source_version" not in snsym.cut_head(other + rom, len(other) + 64, 9)  # the same ROM is tried first
+    with pytest.raises(snsym.SymError, match="no record"):
+        snsym.cut_head(rom, 64, 9, {"b": b"\xff" * len(first) + b"amSamples" + following})
+
+
+def test_sn_head_reader_proves_a_cut_head_by_a_witness_in_another_version(tmp_path):
+    first, following = definition(b"paramSamples"), definition(b"next")
+    rom = b"\xff" * 64 + b"amSamples" + following
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms" / "baserom.b.z64").write_bytes(first + following)
+    (tmp_path / "roms" / "baserom.v.z64").write_bytes(rom)
+    config = N(project=N(root=tmp_path, version={"v": None, "b": None}))
+    spec = row("sn-head", [64, 73])
+    got = blob_formats.prove(config, spec, rom, {"blob": {}})
+    assert (got["source_version"], got["bytes"], got["hex"]) == ("b", 9, rom[64:73].hex())
+    for wrong in (dict(spec, region=[64, 72]), dict(spec, region=[63, 73]), dict(spec, region=[0, 300])):
+        with pytest.raises(ValueError):
+            blob_formats.prove(config, wrong, rom, {"blob": {}})
+
+
 def test_copy_needs_decoded_source_and_byte_equality():
     rom = b"abcdefabcdef"
     doc = {"blob": {"source": {"state": "decoded", "rom": {"v": [[0, 6]]}}}}

@@ -18,8 +18,8 @@ from typing import Any
 from unbake import blobs, objcode, snsym
 from unbake.contracts import Config, Json
 
-MIN_COPY = 64  # the fewest bytes of one copy
-WINDOW = 32  # source bytes hashed at multiples of WINDOW; any copy of MIN_COPY bytes holds one
+MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
+WINDOW = 16  # source bytes hashed at multiples of WINDOW; any copy of MIN_COPY bytes holds one
 TEXT = re.compile(rb"[\x20-\x7e\t\r\n]{7,}\x00")  # terminated text, at least eight bytes
 MIN_DISTINCT = 4  # a window of fewer distinct byte values (fill, a repeated word) names no source
 Spans = list[tuple[int, int]]
@@ -126,7 +126,7 @@ def text_copies(
 ) -> list[Json]:
     """Exact short text copies missed by the binary window floor; every byte still needs an accounted source."""
     rank = {v: i for i, v in enumerate(order)}
-    rows = []
+    rows: list[Json] = []
     for low, high in targets:
         for match in TEXT.finditer(rom, low, high):
             choices = [
@@ -147,6 +147,30 @@ def text_copies(
                 }
             )
     return rows
+
+
+PAGE = 0x1000  # the write size that cut an SN debug stream: a record's front bytes sit at the page start
+
+
+def heads(
+    roms: Mapping[str, bytes], version: str, targets: Spans, starts: Sequence[int], order: Sequence[str] = ()
+) -> list[Json]:
+    """The cut heads of the debug streams that start at `starts` in `version`: the unknown bytes from the page start
+    to a stream's first whole record (at most 255), when `snsym.cut_head` proves them the end of one record with a
+    witness in this ROM or another version's. The proof is the reader `sn-head`."""
+    rom = roms[version]
+    others = {v: roms[v] for v in order if v != version and v in roms}
+    found = []
+    for start in sorted(set(starts)):
+        low = start - start % PAGE
+        if not 0 < start - low <= 255 or blobs.subtract([(low, start)], targets):
+            continue
+        try:
+            snsym.cut_head(rom, low, start - low, others)
+        except snsym.SymError:
+            continue
+        found.append({"version": version, "region": [low, start], "reader": "sn-head"})
+    return found
 
 
 def objects(rom: bytes, targets: Spans) -> list[Json]:
@@ -173,9 +197,17 @@ def scan(config: Config) -> Json:
     windows = index(roms, spans)
     text_sources = text_index(roms, spans)
     bodies = objcode.corpus(config, roms=roms)
+    document = blobs.load(config)["blob"]
     out: dict[str, Any] = {}
     for v, p in parts.items():
         targets = unknown(p)
+        starts = [
+            row["rom"][v][0][0]
+            for row in document.values()
+            if row.get("format") == "sn-debug" and row["state"] == "decoded" and row.get("rom", {}).get(v)
+        ]
+        cuts = heads(roms, v, targets, starts, list(parts))
+        targets = blobs.subtract(targets, blobs.merge([tuple(c["region"]) for c in cuts]))
         streams = [{**s, "version": v} for s in objects(roms[v], targets)]
         left_over = blobs.subtract(targets, blobs.merge([tuple(s["region"]) for s in streams]))
         code = bodies.regions(roms[v], v, left_over)
@@ -193,6 +225,7 @@ def scan(config: Config) -> Json:
                 for r in code
             ],
             "copies": copies,
+            "heads": cuts,
             "left": blobs.length(left),
         }
     return out
