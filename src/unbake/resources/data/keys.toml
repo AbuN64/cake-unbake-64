@@ -598,7 +598,7 @@ sentence = "a change raises the number of INCLUDE_ASM stand-ins"
 
 [key."cheat.non-c"]
 owner = "cheat"
-sentence = "a change adds a non-C file under the source roots"
+sentence = "a change adds a non-C file under the source roots (but handwritten assembly in an asm home)"
 
 [key."cheat.duplicate-name"]
 owner = "cheat"

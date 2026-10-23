@@ -138,6 +138,34 @@ def test_a_non_c_file_under_src_fails(repo: SimpleNamespace) -> None:
     assert _refused(repo, src__x_s="nop\n") == {"cheat.non-c"}
 
 
+def _handwritten(monkeypatch: pytest.MonkeyPatch, names: set[str]) -> None:
+    monkeypatch.setattr(symbols, "handwritten", lambda config, version, name: name in names)
+
+
+ASM = ".globl func_a_de\nfunc_a_de:\n    .word 0x40845800\n    jr $ra\n"
+
+
+def test_a_handwritten_only_new_asm_file_in_an_asm_home_passes(repo: SimpleNamespace, monkeypatch) -> None:
+    _handwritten(monkeypatch, {"func_a_de"})
+    assert repo.check(**{"src/sdk/x.s": ASM})["against"] == repo.base
+
+
+def test_a_new_asm_file_with_a_compiled_function_fails(repo: SimpleNamespace, monkeypatch) -> None:
+    _handwritten(monkeypatch, {"func_a_de"})
+    both = ASM + ".globl func_b_de\nfunc_b_de:\n    jr $ra\n"
+    assert "cheat.non-c" in _refused(repo, **{"src/sdk/x.s": both})
+
+
+def test_a_new_asm_file_in_the_game_dir_fails(repo: SimpleNamespace, monkeypatch) -> None:
+    _handwritten(monkeypatch, {"func_a_de"})
+    assert "cheat.non-c" in _refused(repo, **{"src/game/x.s": ASM})
+
+
+def test_a_new_asm_file_defining_no_global_fails(repo: SimpleNamespace, monkeypatch) -> None:
+    _handwritten(monkeypatch, set())
+    assert _refused(repo, **{"src/sdk/x.s": "nop\n"}) == {"cheat.non-c"}
+
+
 def test_infrastructure_edits_fail(repo: SimpleNamespace) -> None:
     assert _refused(repo, local_mk="X=1\n") == {"cheat.infra"}
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -182,10 +182,10 @@ class _Git:
         return result.stdout.decode(errors="replace")
 
 
-def _added(git: _Git, base: str, head: str, roots: Sequence[str]) -> list[str]:
+def _added(git: _Git, base: str, head: str, roots: Sequence[str], skip: Collection[str] = ()) -> list[str]:
     """The lines `head` adds under the source roots over `base` (a renamed file shows only the lines it changes),
     without those inside a NON_MATCHING-only branch (dead without NON_MATCHING, live with it). A file whose branches
-    cannot be read keeps every added line in scope."""
+    cannot be read keeps every added line in scope. Files in `skip` (proven handwritten assembly) are not scanned."""
     diff = git("diff", "-M", "-l0", "-U0", base, head, "--", *roots)
     out: list[str] = []
     path: str | None = None
@@ -197,6 +197,8 @@ def _added(git: _Git, base: str, head: str, roots: Sequence[str]) -> list[str]:
         elif m := _HUNK.match(line):
             cur = int(m.group(1))
         elif line.startswith("+"):
+            if path in skip:
+                continue
             if path is not None and path not in exempt:
                 try:
                     exempt[path] = non_matching_lines(git("show", f"{head}:{path}"))
@@ -205,6 +207,26 @@ def _added(git: _Git, base: str, head: str, roots: Sequence[str]) -> list[str]:
             if not (path is not None and cur in exempt[path]):
                 out.append(line[1:])
             cur += 1
+    return out
+
+
+_GLOBAL = re.compile(r"^\s*(?:\.globl|\.global|glabel)\s+(\w+)", re.M)
+
+
+def _handwritten_homes(config: Config, git: _Git, head: str, rules: Json, added: Sequence[str]) -> dict[str, str]:
+    """Of the files `head` adds, the candidates for assembly: a `.s` in a directory the project marks as an asm home.
+    Each maps to '' when every global symbol it defines is handwritten in some version (splat's marker above its
+    extracted assembly), else to why not (a compiled function, or no symbol to judge)."""
+    homes = tuple(rules["asm_home"])
+    out: dict[str, str] = {}
+    for path in added:
+        if not path.endswith(".s") or not path.startswith(homes):
+            continue
+        names = _GLOBAL.findall(git("show", f"{head}:{path}"))
+        loose = [n for n in names if not any(symbols.handwritten(config, v, n) for v in config.project.versions)]
+        out[path] = (
+            "defines no global symbol" if not names else f"not handwritten: {', '.join(loose[:4])}" if loose else ""
+        )
     return out
 
 
@@ -308,7 +330,13 @@ def cheat_command(config: Config, params: Json) -> Json:
     scan = re.compile("|".join(rules["added"]))
     stand_ins: list[str] = []
     hits: list[str] = []
-    for line in _added(git, base, head, roots):
+    new = [
+        p
+        for p in git("diff", "-M", "-l0", "--name-only", "--diff-filter=A", base, head, "--", *roots).splitlines()
+        if p
+    ]
+    homes = _handwritten_homes(config, git, head, rules, new)
+    for line in _added(git, base, head, roots, skip={p for p, why in homes.items() if not why}):
         if not scan.search(line):
             continue
         found = _STAND_IN.match(line)
@@ -327,13 +355,16 @@ def cheat_command(config: Config, params: Json) -> Json:
     if after > before:
         findings.append(Finding("cheat.include-asm", f"INCLUDE_ASM count rose {before} -> {after}"))
     suffix = re.compile(rules["source_suffix"])
-    odd = [
-        p
-        for p in git("diff", "-M", "-l0", "--name-only", "--diff-filter=A", base, head, "--", *roots).splitlines()
-        if p and not suffix.search(p)
-    ]
+    odd = [p for p in new if not suffix.search(p) and homes.get(p) != ""]
     if odd:
-        findings.append(Finding("cheat.non-c", "non-C files added under the source roots", missing=tuple(odd[:8])))
+        findings.append(
+            Finding(
+                "cheat.non-c",
+                "non-C files added under the source roots (assembly is allowed only as a `.s` in an asm home directory"
+                " whose every global symbol is handwritten)",
+                missing=tuple(f"{p}: {homes[p]}" if homes.get(p) else p for p in odd[:8]),
+            )
+        )
     for v, names in _duplicate_names(config, git, base, head).items():
         findings.append(
             Finding(
