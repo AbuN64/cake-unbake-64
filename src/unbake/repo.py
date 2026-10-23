@@ -328,7 +328,8 @@ def _drop(lines: list[str], names: Iterable[str]) -> None:
 
 def _exclude(lines: list[str], name: str, versions: Sequence[str]) -> bool:
     """Keep the stand-in of `name` out of `versions` only (a literals row supersedes it there, other versions still
-    own it): its INCLUDE line or word array gets an `#if !(defined(...))` of its own. False when it is not found."""
+    own it): its INCLUDE line or word array gets an `#if !(defined(...))` of its own. False when it is not found or already
+    fenced exactly so (a second sync changes nothing); a fence naming other versions is rewritten in place."""
     pattern = _line_of(name)
     at = next((i for i, line in enumerate(lines) if pattern.match(line)), None)
     end = at
@@ -339,8 +340,15 @@ def _exclude(lines: list[str], name: str, versions: Sequence[str]) -> bool:
         at, end = found
     assert end is not None
     spelled = " || ".join(f"defined({_macro(v)})" for v in versions)
+    wanted = f"#if !({spelled})"
+    if at > 0 and lines[at - 1].startswith("#if !(") and end + 1 < len(lines) and lines[end + 1] == "#endif":
+        # already fenced by an earlier sync: a second run must not stack another wrapper (it was not idempotent)
+        if lines[at - 1] == wanted:
+            return False
+        lines[at - 1] = wanted
+        return True
     lines[end + 1 : end + 1] = ["#endif"]
-    lines[at:at] = [f"#if !({spelled})"]
+    lines[at:at] = [wanted]
     return True
 
 

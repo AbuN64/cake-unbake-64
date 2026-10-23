@@ -527,6 +527,23 @@ def test_sync_keeps_a_stand_in_a_literals_row_supersedes_in_one_version_only_for
     )
 
 
+def test_sync_fences_a_stand_in_once_however_often_it_runs(world, monkeypatch):
+    # 800E2328_2.CPP gained one more `#if !(defined(...))` wrapper per sync run
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_chunk": (0x80100000, 0x2000, 8, "data")})
+    array = "const unsigned int d_chunk[2] = {\n    0x00000001, 0x00000002,\n};\n"
+    _write(world.root, "src/main/keep.c", "int f_keep(void) { return 1; }\n" + array)
+    world.tree = _tree(
+        {"src/main/keep.c": {"a": ("f_keep", "d_chunk"), "b": ("f_keep",)}},
+        stale={"src/main/keep.c": {"b": ("d_chunk",)}},
+        sections={"d_chunk": ".rodata"},
+    )
+    monkeypatch.setattr(repo, "_PASSES", 0)  # the stub tree never reflects the first pass
+    repo.sync(world.cfg, {"check": False})
+    once = (world.root / "src/main/keep.c").read_text()
+    for _ in range(2):
+        repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/keep.c").read_text() == once
+    assert once.count("#if !(") == 1
 def test_sync_drops_a_data_word_array_a_literals_row_supersedes(world, monkeypatch):
     # a pad the extractor wrote as .data (no const) inside a literals row's bytes goes as a const array does
     monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_pad": (0x80100000, 0x2000, 4, "data")})
