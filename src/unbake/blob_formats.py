@@ -10,7 +10,7 @@ from unbake.contracts import Config, Json, sha256
 READERS = frozenset(
     {"archive-fill", "archive-header", "rnc-slack", "string-leaf", "sn-debug", "copy", "segment-fill", "obj-code"}
 )
-_CORPUS: dict[int, objcode.Corpus] = {}  # the known bodies of a project, once per Config
+_CORPUS: dict[object, objcode.Corpus] = {}  # the known bodies of a project, once per Config digest
 
 
 def interval(rom: bytes, span: list[int]) -> tuple[int, int]:
@@ -176,11 +176,12 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
     if reader == "copy":
         return _copy(config, row, rom, document, start, end)
     if reader == "obj-code":
-        if id(config) not in _CORPUS:
+        key = getattr(config, "digest", id(config))
+        if key not in _CORPUS:
             _CORPUS.clear()
-            _CORPUS[id(config)] = objcode.corpus(config)
+            _CORPUS[key] = objcode.corpus(config)
         try:
-            return _CORPUS[id(config)].prove(rom, row["version"], start, end)
+            return _CORPUS[key].prove(rom, row["version"], start, end)
         except objcode.ObjError as error:
             raise ValueError(str(error)) from error
     raise ValueError(f"unknown container reader {reader}")
