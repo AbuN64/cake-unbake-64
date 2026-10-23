@@ -12,10 +12,10 @@ names it owns from the leftover on move to a new sibling file (`<stem>_<n>`) tha
 
 A table or pool that other functions also read is placed with the function asked for, its first owner: an assembly
 reader links by the symbol's address and a C reader declares the symbol `extern`, so both keep reading the same bytes;
-the plan's note names them. What it refuses (nothing is written then): a table or pool another file defines in C
-(the data would no longer be the function's own), leftover bytes with no file after them to hold a stand-in,
-and, when the version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes
-(size, alignment, content).
+the plan's note names them; a word array of another file for the same bytes is superseded by the row (sync drops it).
+What it refuses (nothing is written then): leftover bytes with no file after them to hold a stand-in, and, when the
+version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment,
+content).
 """
 
 from __future__ import annotations
@@ -134,11 +134,6 @@ def _is_rodata(pieces: Sequence[tuple[int, str, str]], rom: int) -> bool:
     return at >= 0 and pieces[at][1] == "rodata"
 
 
-def _defines(module: Any, v: str, names: Collection[str]) -> bool:
-    """Whether `module` defines any of `names` in C (not as a stand-in) in version `v`."""
-    return any(n in names and n not in module.stand_ins.get(v, ()) for n in module.owns.get(v, ()))
-
-
 def _asm_names(root: Path, config: Config, v: str, function: str, table: Mapping[str, Any]) -> set[str]:
     """The symbol names the extracted assembly of `function` in version `v` mentions (none: no such file)."""
     try:
@@ -220,19 +215,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             readers = _readers(root, v, {m for ms in aka.values() for m in ms}, f"{function}.s", left)
             for n in names:
                 readers[n] = sorted({r for m in aka[n] for r in readers.get(m, ())})
-                if defined := next(  # a C definition of the bytes elsewhere: they are that file's, not this function's
-                    (m.path for m in current.modules if m.path != module.path and _defines(m, v, aka[n])), ""
-                ):
-                    refused.append(
-                        Finding(
-                            "place.shared",
-                            f"{v}: {n} is defined in C by {defined}, not the data of {function}: it stays there",
-                            path=module.path,
-                            unit=function,
-                            versions=(v,),
-                        )
-                    )
-                elif readers[n]:  # an assembly reader links by the symbol's address; a C one declares it extern
+                if readers[n]:  # an assembly reader links by the symbol's address; a C one declares it extern
                     seen = [f"{r} ({'C: extern' if r in compiled else 'assembly'})" for r in readers[n][:3]]
                     shared.append(f"{n} also read by {', '.join(seen)}")
             note, bad = _object(root, v, module.path, image, rom, end, vram)

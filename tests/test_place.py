@@ -72,22 +72,6 @@ def test_the_literal_pool_a_function_reads_is_placed_too(monkeypatch, tmp_path):
     assert root.is_file()
 
 
-def test_data_another_file_defines_in_c_is_not_the_functions_own(monkeypatch, tmp_path):
-    config = _world(monkeypatch, tmp_path)
-    other = SimpleNamespace(
-        path="src/other.c",
-        owns={"a": ("jtbl_800E1500",)},
-        stand_ins={"a": ()},
-        sections={"a": {"jtbl_800E1500": ".rodata"}},
-    )
-    held = _tree()
-    held.modules = (*held.modules, other)
-    with pytest.raises(Refusal) as refused:
-        place.plan(config, held, [F])
-    (finding,) = refused.value.findings
-    assert finding.key == "place.shared" and "src/other.c" in finding.reason and finding.unit == F
-
-
 def test_a_c_reader_of_the_table_keeps_its_extern_and_the_table_is_placed(monkeypatch, tmp_path):
     # G is C and reads the table through `extern char jtbl_800E1500;`: the symbol resolves by address after the move
     config = _world(monkeypatch, tmp_path, asm={G: "lw $v0, %lo(jtbl_800E1500)($at)\n"})
