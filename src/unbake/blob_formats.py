@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from unbake import blob_archive, blob_decode, blobs, rnc, snsym
+from pathlib import Path
+
+from unbake import blob_archive, blob_decode, blob_stale, blobs, objcode, rnc, snsym
 from unbake.contracts import Config, Json, sha256
 
-READERS = frozenset({"archive-fill", "archive-header", "rnc-slack", "string-leaf", "sn-debug", "copy", "segment-fill"})
+READERS = frozenset(
+    {"archive-fill", "archive-header", "rnc-slack", "string-leaf", "sn-debug", "copy", "segment-fill", "obj-code"}
+)
+_CORPUS: dict[int, objcode.Corpus] = {}  # the known bodies of a project, once per Config
 
 
 def interval(rom: bytes, span: list[int]) -> tuple[int, int]:
@@ -59,6 +64,42 @@ def string_leaf(data: bytes) -> Json:
         "slot_slack_hex": [tail.hex() for tail in tails],
         "reemit_sha256": sha256(again),
     }
+
+
+def _copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end: int) -> Json:
+    """`rom[start:end]` is a byte-for-byte copy of `source` in the ROM of `source_version` (default: the row's own),
+    and those source bytes are already accounted: covered by the decoded blob `source_blob`, or, with none named, code,
+    data or a decoded or identified blob of that version."""
+    version = row.get("source_version", row["version"])
+    if version not in config.project.version:
+        raise ValueError(f"copy source version {version} is unknown")
+    other = (
+        rom
+        if version == row["version"]
+        else (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
+    )
+    source = row["source"]
+    if type(source) is not int or not 0 <= source < source + end - start <= len(other):
+        raise ValueError("copy source outside ROM")
+    source_end = source + end - start
+    if version == row["version"] and source < end and start < source_end:
+        raise ValueError("copy source overlaps its copy")
+    if "source_blob" in row:
+        owner = document["blob"][row["source_blob"]]
+        if owner["state"] != "decoded" or blobs.subtract(
+            [(source, source_end)], blobs.merge(owner.get("rom", {}).get(version, []))
+        ):
+            raise ValueError("copy source is not covered by its decoded owner")
+    elif blobs.subtract([(source, source_end)], blob_stale.source_spans(config, version)):
+        raise ValueError("copy source is not code, data or a decoded blob of its version")
+    if other[source:source_end] != rom[start:end]:
+        raise ValueError("stale copy differs from decoded source")
+    out: Json = {"source": [source, source_end], "sha256": sha256(rom[start:end])}
+    if "source_blob" in row:
+        out = {**out, "source_blob": row["source_blob"]}
+    if version != row["version"]:
+        out = {**out, "source_version": version}
+    return out
 
 
 def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
@@ -133,16 +174,13 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
     if reader == "sn-debug":
         return snsym.stream_receipt(rom, start, end, row.get("dialect", "sym"))
     if reader == "copy":
-        source = row["source"]
-        if type(source) is not int or not 0 <= source < source + end - start <= len(rom):
-            raise ValueError("copy source outside ROM")
-        source_end = source + end - start
-        owner = document["blob"][row["source_blob"]]
-        if owner["state"] != "decoded" or blobs.subtract(
-            [(source, source_end)], blobs.merge(owner.get("rom", {}).get(row["version"], []))
-        ):
-            raise ValueError("copy source is not covered by its decoded owner")
-        if rom[source:source_end] != rom[start:end]:
-            raise ValueError("stale copy differs from decoded source")
-        return {"source": [source, source_end], "source_blob": row["source_blob"], "sha256": sha256(rom[start:end])}
+        return _copy(config, row, rom, document, start, end)
+    if reader == "obj-code":
+        if id(config) not in _CORPUS:
+            _CORPUS.clear()
+            _CORPUS[id(config)] = objcode.corpus(config)
+        try:
+            return _CORPUS[id(config)].prove(rom, row["version"], start, end)
+        except objcode.ObjError as error:
+            raise ValueError(str(error)) from error
     raise ValueError(f"unknown container reader {reader}")

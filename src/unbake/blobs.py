@@ -21,7 +21,11 @@ from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha25
 
 FILE = "blobs.toml"
 Spans = list[tuple[int, int]]
-LEFTOVER_FORMATS = ("sn-debug", "earlier-link")  # what a `leftover` row (build residue read by a native reader) may be
+LEFTOVER_FORMATS = (
+    "sn-debug",
+    "earlier-link",
+    "copy",
+)  # what a `leftover` row (build residue read by a native reader) may be
 CONTENT = (
     "graphics",
     "model",
@@ -89,7 +93,7 @@ def check(config: Config, document: Json, file: str = FILE) -> tuple[Finding, ..
                 )
         if row.get("type") == "leftover" and row.get("format") not in LEFTOVER_FORMATS:
             found.append(
-                Finding("blobs.schema", f"leftover blob {name} needs format sn-debug or earlier-link", path=file)
+                Finding("blobs.schema", f"leftover blob {name} needs format sn-debug, earlier-link or copy", path=file)
             )
         for v, spans in row.get("rom", {}).items():
             size = _rom_size(config, v) if v in config.project.version else None
@@ -618,6 +622,10 @@ def run(config: Config, params: Json) -> Json:
             return blob_proof.run(config, action[1], action[2])
         if action == ["scan"]:
             return _result(config, {"scanned": scan(config)}, bool(params.get("json")))
+        if action == ["scan", "stale"]:
+            return _result(
+                config, {"scanned": import_module("unbake.blob_stale").scan(config)}, bool(params.get("json"))
+            )
         if action == ["migrate"]:
             from unbake import blob_migration
 
@@ -641,7 +649,8 @@ def run(config: Config, params: Json) -> Json:
             raise Refusal(
                 Finding(
                     "blobs.packet",
-                    f"unknown {action[0]}; use prove REQUEST RECEIPT, import PACKET, land PACKET, scan or migrate",
+                    f"unknown {action[0]}; use prove REQUEST RECEIPT, import PACKET, land PACKET, scan [stale] or "
+                    "migrate",
                 )
             )
         return _result(config, {}, bool(params.get("json")))

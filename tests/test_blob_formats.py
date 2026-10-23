@@ -5,7 +5,7 @@ from types import SimpleNamespace as N
 
 import pytest
 
-from unbake import blob_archive, blob_formats, blob_proof, blobs, snsym
+from unbake import blob_archive, blob_formats, blob_proof, blob_stale, blobs, objcode, snsym
 
 
 def words(*values):
@@ -148,3 +148,46 @@ def test_retired_unclassified_observation_can_be_removed_without_fake_credit():
     assert before == blobs.ranges({"blob": {}}, "v") == ([], [])
     document["blob"]["old"]["state"] = "decoded"
     assert blobs.supersede_findings(document, packet, {"old"})
+
+
+def copy_config(tmp_path, other):
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms" / "baserom.w.z64").write_bytes(other)
+    segments = (
+        N(name="reserved", rom=0, vram=None, kind="bin"),
+        N(name="program", rom=8, vram=0x80000000, kind="code"),
+    )
+    return N(project=N(root=tmp_path, version={v: N(segments=segments, size=96) for v in "vw"}))
+
+
+def test_copy_takes_its_source_from_the_accounted_bytes_of_another_version(tmp_path, monkeypatch):
+    source = bytes(range(64))
+    config = copy_config(tmp_path, bytes(20) + source + bytes(12))
+    rom = bytes(10) + source + bytes(22)
+    monkeypatch.setattr(blob_stale, "source_spans", lambda config, version: [(20, 84)] if version == "w" else [])
+    spec = row("copy", [10, 74], source=20, source_version="w")
+    done = blob_proof.prove_one(config, spec, rom, {"blob": {}}, [])["decoded"]
+    assert done == {"source": [20, 84], "sha256": blobs.sha256(source), "source_version": "w"}
+    monkeypatch.setattr(blob_stale, "source_spans", lambda config, version: [(20, 83)])
+    with pytest.raises(ValueError, match="not code, data or a decoded blob"):
+        blob_proof.prove_one(config, spec, rom, {"blob": {}}, [])
+    monkeypatch.setattr(blob_stale, "source_spans", lambda config, version: [(0, 96)])
+    with pytest.raises(ValueError, match="differs"):
+        blob_proof.prove_one(config, row("copy", [10, 74], source=21, source_version="w"), rom, {"blob": {}}, [])
+    with pytest.raises(ValueError, match="overlaps"):
+        blob_proof.prove_one(config, row("copy", [10, 74], source=20), rom, {"blob": {}}, [])
+    with pytest.raises(ValueError, match="unknown"):
+        blob_proof.prove_one(config, row("copy", [10, 74], source=20, source_version="x"), rom, {"blob": {}}, [])
+
+
+def test_obj_code_proves_a_range_that_whole_tiles_cover(monkeypatch):
+    from test_objcode import body, corpus, pack
+
+    monkeypatch.setattr(objcode, "corpus", lambda config: corpus(("v", body())))
+    blob_formats._CORPUS.clear()
+    window = pack(body(hi=0x8030))
+    rom = bytes(8) + window + bytes(8)
+    done = prove(row("obj-code", [8, 8 + len(window)]), rom)["decoded"]
+    assert done["bytes"] == len(window) and done["tiles"][0]["sites"]["hi"] == 1
+    with pytest.raises(ValueError, match="match no known body"):
+        prove(row("obj-code", [4, 8 + len(window)]), rom)
