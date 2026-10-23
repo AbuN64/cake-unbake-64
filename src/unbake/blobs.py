@@ -415,6 +415,7 @@ def import_plan(config: Config, packet: Json) -> Plan:
     kept = {n: row for n, row in document["blob"].items() if n not in superseded}
     merged = {"schema": 1, "blob": {**kept, **packet["blob"]}}
     blocking += check(config, merged)
+    blocking += _overlap_findings(merged, document)
     writes = {FILE: emit(merged)}
     added = sum(n not in document["blob"] for n in packet["blob"])
     message = f"Add {added} blobs to blobs.toml" if added else "Update blobs.toml"
@@ -463,10 +464,10 @@ def land(config: Config, packet: Json) -> Json:
     all or nothing. Returns the git commands, the counts and the per-version credit delta."""
     with effort.stage("blobs.land"):
         old = _read(config)
-        before = _partitions(config)
         plan = import_plan(config, packet)
         if plan.blocking:
             raise Refusal(*plan.blocking)
+        before = _partitions(config)
         have = load(config)["blob"]
         counts = _counts(have, packet)
         text = plan.writes[FILE]
@@ -545,6 +546,21 @@ def _overlaps(document: Json) -> dict[tuple[str, str, str], tuple[int, int, int,
     return out
 
 
+def _overlap_findings(document: Json, previous: Json) -> list[Finding]:
+    """Import and post-write verification refuse the same new duplicate claims, before any capture or write."""
+    known = _overlaps(previous)
+    return [
+        Finding(
+            "blobs.range",
+            f"{v}: {one} {a:#x}..{b:#x} and {other} {c:#x}..{d:#x} claim the same bytes",
+            path=FILE,
+            versions=(v,),
+        )
+        for (v, one, other), (a, b, c, d) in _overlaps(document).items()
+        if (v, one, other) not in known
+    ]
+
+
 def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
     """The checks `land` makes on the blobs.toml of the working tree, for a change that did not come through `land`
     (a hand-written or merged file): the schema and ranges, the canonical form (the file is what `emit` writes for its
@@ -569,19 +585,10 @@ def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
         if row["state"] in ("decoded", "identified") and "parent" not in row and not row.get("evidence"):
             found.append(Finding("blobs.evidence", f"blob {name} is {row['state']} without evidence", path=FILE))
     try:
-        old = _overlaps(parse(config, base)) if base else {}
+        previous = parse(config, base) if base else {"blob": {}}
     except Refusal:
-        old = {}
-    for (v, one, other), (a, b, c, d) in _overlaps(document).items():
-        if (v, one, other) not in old:
-            found.append(
-                Finding(
-                    "blobs.range",
-                    f"{v}: {one} {a:#x}..{b:#x} and {other} {c:#x}..{d:#x} claim the same bytes",
-                    path=FILE,
-                    versions=(v,),
-                )
-            )
+        previous = {"blob": {}}
+    found.extend(_overlap_findings(document, previous))
     if found:
         return tuple(found)
     parts = import_module("unbake.report").partitions(config, import_module("unbake.tree").capture(config))

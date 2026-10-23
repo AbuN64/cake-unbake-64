@@ -580,3 +580,30 @@ def test_verify_refuses_a_file_that_is_not_the_canonical_emit(tmp_path, monkeypa
 def test_verify_refuses_a_partition_that_does_not_sum_or_overlaps(tmp_path, monkeypatch):
     assert "blobs.land" in _verify(tmp_path, monkeypatch, _good(), partition={"unknown": 5})
     assert "blobs.land" in _verify(tmp_path, monkeypatch, _good(), partition={"shadowed": 4})
+
+
+def test_land_refuses_new_duplicate_claims_before_capture_or_write(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    initial = blobs.emit(_good())
+    path = tmp_path / "blobs.toml"
+    path.write_bytes(initial)
+    packet = _packet(config)
+    packet["blob"]["duplicate"] = packet["blob"].pop("level.0")
+    monkeypatch.setattr(blobs, "_partitions", lambda c: pytest.fail("capture before duplicate refusal"))
+    with pytest.raises(Refusal) as error:
+        blobs.land(config, packet)
+    assert [(f.key, f.versions) for f in error.value.findings] == [("blobs.range", ("v",))]
+    assert "duplicate" in error.value.findings[0].reason
+    assert path.read_bytes() == initial
+
+
+def test_import_preserves_existing_duplicate_pairs_but_refuses_a_new_claim(tmp_path):
+    config = _config(tmp_path)
+    document = _good()
+    document["blob"]["prior"] = json.loads(json.dumps(document["blob"]["level.0"]))
+    (tmp_path / "blobs.toml").write_bytes(blobs.emit(document))
+    packet = _packet(config)
+    assert not blobs.import_plan(config, packet).blocking
+    packet["blob"]["new"] = packet["blob"].pop("level.0")
+    findings = blobs.import_plan(config, packet).blocking
+    assert len(findings) == 2 and all(f.key == "blobs.range" for f in findings)
