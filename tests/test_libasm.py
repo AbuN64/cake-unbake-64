@@ -238,7 +238,7 @@ def test_lost_library_routine_without_roms_refuses_naming_it(lost):
     assert "`f`" in raised.value.findings[0].reason
 
 
-def test_report_shows_matched_library_assembly_apart(library, monkeypatch):
+def test_report_counts_matched_library_assembly(library, monkeypatch):
     repo.sync(library, {})
     held = tree.capture(library)
     rows = report.build_credits(
@@ -247,8 +247,7 @@ def test_report_shows_matched_library_assembly_apart(library, monkeypatch):
     monkeypatch.setattr(report, "credits", lambda config, tree: rows)
     totals = report._tallies(library, held)[0]
     assert totals["a"]["code_asm"] == totals["a"]["code_matched"] == 16 and totals["a"]["functions_asm"] == 1
-    assert report._line("code", totals["a"], 20, "code").endswith("16 of 16 (16 asm)")
-    assert not report._line("data", totals["a"], 20, "data").endswith("asm)")
+    assert report._line("code", totals["a"], 20, "code").endswith("16 of 16")
 
 
 @pytest.mark.parametrize("toolchain", ["gcc-2.7.2-kmc", "gcc-2.8.1-sn64"])

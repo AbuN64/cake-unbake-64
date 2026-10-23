@@ -589,9 +589,8 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     parts = ("code", "data") if kind == "bytes" else (kind,)
     matched = sum(bucket[p + "_matched"] for p in parts)
     total = sum(bucket[p + "_total"] for p in parts)
-    asm = bucket.get(kind + "_asm", 0)  # matched library assembly, shown apart from matched C
     none = sum(bucket.get(p + "_none", 0) for p in parts)
-    suffix = (f" ({asm:,} asm)" if asm else "") + (f" ({none:,} none)" if none else "")
+    suffix = f" ({none:,} none)" if none else ""
     return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells) + suffix
 
 
