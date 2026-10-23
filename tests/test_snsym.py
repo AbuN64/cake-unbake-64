@@ -221,3 +221,14 @@ def test_object_receipt_proves_the_tiling_of_an_object_stream() -> None:
         snsym.stream_receipt(body + b"\xff", 0, len(body) + 1, "obj")  # a byte no record owns
     with pytest.raises(snsym.SymError):
         snsym.stream_receipt(body[:200], 0, 200, "obj")  # fewer than fifty records
+
+
+def test_object_receipt_names_the_magic_that_opens_an_object_file() -> None:
+    body = b"".join(b"\x4c" + struct.pack("<HII", 2, i, 5) for i in range(60))
+    receipt = snsym.stream_receipt(b"LNK\x02" + body, 0, 4 + len(body), "obj")
+    assert receipt["magic"] == "4c4e4b02" and receipt["records_at"] == 4 and receipt["records"] == 60
+    assert "magic" not in snsym.stream_receipt(body, 0, len(body), "obj")
+    with pytest.raises(snsym.SymError):
+        snsym.stream_receipt(
+            b"LNK\x03" + body, 0, 4 + len(body), "obj"
+        )  # not the object magic: four bytes no record owns

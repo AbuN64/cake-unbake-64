@@ -333,12 +333,18 @@ def stream_start(data: bytes | memoryview, first: int, floor: int) -> int:
     return first
 
 
+OBJ_MAGIC = b"LNK\x02"  # the first four bytes of an object file
+
+
 def object_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, object]:
     """The tiling proof of an object-file stream (the "LNK" dialect, whose records come back normalised and cannot be
     re-emitted): `data[start:end]` is cut into whole well-formed records from its first byte to its last, none of them
-    running past `end`, and a stream with fewer than 50 records proves nothing. The receipt holds the record count, the
-    tag census and the sha256 of the slice. Raises SymError when the records do not reach `end` exactly."""
-    recs, stop = records(data, start, end, "obj")
+    running past `end`, and a stream with fewer than 50 records proves nothing. A stream that starts an object file
+    begins with its four-byte magic, which is no record and is named in the receipt. The receipt holds the record
+    count, the tag census and the sha256 of the slice. Raises SymError when the records do not reach `end` exactly."""
+    magic = bytes(data[start : start + 4]) == OBJ_MAGIC
+    first = start + 4 if magic else start
+    recs, stop = records(data, first, end, "obj")
     if len(recs) < 50:
         raise SymError(f"only {len(recs)} object records parse in {start:#x}..{end:#x}")
     if stop != end:
@@ -346,8 +352,9 @@ def object_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, 
     raw = bytes(data[start:end])
     return {
         "start": start, "end": end, "bytes": end - start, "dialect": "obj", "records": len(recs),
-        "records_at": start, "records_end": stop, "slice_sha256": hashlib.sha256(raw).hexdigest(),
+        "records_at": first, "records_end": stop, "slice_sha256": hashlib.sha256(raw).hexdigest(),
         "tags": {f"{tag:#04x}": n for tag, n in sorted(Counter(r.tag for r in recs).items())},
+        **({"magic": OBJ_MAGIC.hex()} if magic else {}),
     }  # fmt: skip
 
 
