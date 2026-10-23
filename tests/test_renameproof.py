@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -207,3 +208,69 @@ def test_steps_judge_each_patch_over_the_state_the_earlier_ones_leave(repo: Path
     result = _prove(repo, patch=[str(p) for p in patches], steps=True)
     assert [row["pure"] for row in result["steps"]] == [True, False]
     assert result["map"] == [["func_80100000_de", "Game_Init"]]
+
+
+LOCALS = (
+    "int Grow(int step) {\n    int range = step + 1;\n    return range * 2;\n}\n"
+    "int Other(int step) {\n    int range = 3;\n    return step + range + Util;\n}\n"
+)
+
+
+def _locals(repo: Path, extra: str = "") -> None:
+    (repo / "src/loc.c").write_text(LOCALS + extra)
+    (repo / "include/g.h").write_text("extern int Util;\n#define SCALE(v) ((v) * 2)\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "locals")
+
+
+def _grow(repo: Path, old: str, new: str) -> None:
+    text = (repo / "src/loc.c").read_text()
+    head, tail = text.split("int Other", 1)
+    (repo / "src/loc.c").write_text(re.sub(rf"\b{old}\b", new, head) + "int Other" + tail)
+
+
+def test_a_local_rename_to_a_name_another_function_uses_is_proved(repo: Path) -> None:
+    _locals(repo)
+    _grow(repo, "step", "growStep")
+    _grow(repo, "range", "influenceRange")
+    result = _prove(repo)
+    assert result["map"] == [["range", "influenceRange"], ["step", "growStep"]]
+
+
+def test_a_local_rename_to_a_name_the_function_already_uses_is_refused(repo: Path) -> None:
+    _locals(repo)
+    _grow(repo, "step", "range")
+    assert "already used in the function" in _refused(repo) or "both renamed" in _refused(repo)
+
+
+def test_a_local_rename_shadowing_a_global_the_function_uses_is_refused(repo: Path) -> None:
+    _locals(repo)
+    text = (repo / "src/loc.c").read_text().replace("return range * 2;", "return range * Util;", 1)
+    (repo / "src/loc.c").write_text(text)
+    _git(repo, "commit", "-q", "-am", "Grow uses Util")
+    _grow(repo, "step", "Util")
+    assert "already used in the function" in _refused(repo)
+
+
+def test_a_local_rename_meeting_a_macro_free_name_is_refused(repo: Path) -> None:
+    _locals(repo)
+    (repo / "include/g.h").write_text("extern int Util;\n#define SCALE(v) ((v) * growStep)\n")
+    _git(repo, "commit", "-q", "-am", "macro")
+    _grow(repo, "step", "growStep")
+    assert "preprocessor directive" in _refused(repo)
+
+
+def test_a_local_rename_left_half_done_in_its_function_is_refused(repo: Path) -> None:
+    _locals(repo)
+    (repo / "src/loc.c").write_text(
+        (repo / "src/loc.c").read_text().replace("int Grow(int step)", "int Grow(int growStep)", 1)
+    )
+    assert "left in another" in _refused(repo)
+
+
+def test_a_global_rename_to_a_name_that_is_another_functions_local_is_proved(repo: Path) -> None:
+    (repo / "src/loc.c").write_text("int Other(int step) { return step; }\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-am", "loc")
+    _rename(repo, "func_80100000_de", "step", only=("include/api.h", "src/a.c", "versions/de/symbol_addrs.txt"))
+    assert _prove(repo)["map"] == [["func_80100000_de", "step"]]

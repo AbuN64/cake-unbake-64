@@ -156,6 +156,84 @@ def _asm_flags(tokens: Sequence[str]) -> list[bool]:
     return flags
 
 
+NOT_TYPES = frozenset(
+    {"return", "goto", "case", "else", "do", "sizeof", "typeof", "defined", "if", "while", "for", "switch", "default"}
+)
+DECL_END = frozenset({";", "=", ",", ")", "["})
+
+
+def _spans(tokens: Sequence[str]) -> tuple[list[int], list[tuple[int, int]]]:
+    """The function definitions of a C token list: for each token the index of the function whose parameters or body
+    holds it (-1 for none), and each function's (first, last) token. A function is a `{` at file level that follows a
+    `)`; directive lines are skipped."""
+    owner = [-1] * len(tokens)
+    spans: list[tuple[int, int]] = []
+    depth, start, directive = 0, -1, False
+    for n, token in enumerate(tokens):
+        if directive:
+            directive = token != "\n"
+            continue
+        if token == "#":
+            directive = True
+        elif token == "{":
+            if depth == 0 and n and tokens[n - 1] == ")":
+                close, j = 0, n - 1
+                while j >= 0:
+                    close += (tokens[j] == ")") - (tokens[j] == "(")
+                    if not close:
+                        break
+                    j -= 1
+                start = max(j, 0)
+            depth += 1
+        elif token == "}" and depth:
+            depth -= 1
+            if not depth and start >= 0:
+                spans.append((start, n))
+                owner[start : n + 1] = [len(spans) - 1] * (n + 1 - start)
+                start = -1
+    return owner, spans
+
+
+def _member(tokens: Sequence[str], n: int) -> bool:
+    """A name after `.` or `->` is a member, which has its own namespace."""
+    return n > 0 and (tokens[n - 1] == "." or (n > 1 and tokens[n - 1] == ">" and tokens[n - 2] == "-"))
+
+
+def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
+    """True when the identifier at `n` is declared there (a parameter or a local): it follows a type word or `*`
+    inside a statement or parameter list that starts with two words, and is followed by `;`, `=`, `,`, `)` or `[`."""
+    if n + 1 >= len(tokens) or tokens[n + 1] not in DECL_END or _member(tokens, n):
+        return False
+    depth, j, comma = 0, n - 1, n
+    while j > lo:
+        token = tokens[j]
+        if token in (")", "]"):
+            depth += 1
+        elif token in ("(", "["):
+            if not depth:
+                break
+            depth -= 1
+        elif not depth and token in (";", "{", "}"):
+            break
+        elif not depth and token == "=":
+            return False
+        elif not depth and token == "," and comma == n:
+            comma = j
+        j -= 1
+    first = j + 1
+    if comma != n and any(t not in ("*", "const", "volatile") for t in tokens[comma + 1 : n]):
+        return False
+    stop = first
+    while stop < n and tokens[stop] not in (",", "=", "[") and (_is_id(tokens[stop]) or tokens[stop] == "*"):
+        stop += 1
+    lead = tokens[first:stop]
+    if not lead or not _is_id(lead[0]) or lead[0] in NOT_TYPES:
+        return False
+    if comma == n:
+        return stop == n and any(_is_id(t) for t in lead)
+    return sum(_is_id(t) for t in lead) >= 2
+
+
 Macros = dict[str, list[tuple[list[str], list[str]]]]
 
 
@@ -208,7 +286,10 @@ class _Proof:
         commit = repo.run("rev-parse", "--verify", "--end-of-options", f"{against}^{{commit}}", ok=(0, 128), own=False)
         self.commit = commit.decode().strip() or self.base
         self.reasons: list[Finding] = []
-        self.map: dict[str, str] = {}
+        self.map: dict[str, str] = {}  # names renamed everywhere they are visible
+        self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
+        self.owner: dict[str, list[int]] = {}
+        self.spans: dict[str, list[tuple[int, int]]] = {}
         self.texts: dict[str, tuple[str, str]] = {}
         self.old: dict[str, list[str]] = {}
         self.new: dict[str, list[str]] = {}
@@ -251,6 +332,9 @@ class _Proof:
     def derive(self, line_sensitive: bool) -> None:
         pairs: dict[str, str] = {}
         sources: dict[str, str] = {}
+        local: dict[tuple[str, int, str], str] = {}
+        local_sources: dict[tuple[str, int, str], str] = {}
+        declared: dict[tuple[str, int, str], bool] = {}
         for path, (before, after) in self.texts.items():
             c = _is_c(path)
             a_at: list[int] | None = [] if line_sensitive else None
@@ -260,12 +344,28 @@ class _Proof:
             if len(a) != len(b):
                 self.refuse(f"the token count changed ({len(a)} -> {len(b)})", path)
                 continue
+            owner, spans = _spans(a) if c else ([-1] * len(a), [])
+            self.owner[path], self.spans[path] = owner, spans
             for n, (x, y) in enumerate(zip(a, b, strict=True)):
                 if x == y or (x[:1] == ASM_MARK and y[:1] == ASM_MARK):
                     continue  # equal, or an assembly string judged under the finished map
                 if not (_is_id(x) and _is_id(y)):
                     self.refuse(f"token {n} changed from {x[:40]!r} to {y[:40]!r}, which is not an identifier", path)
                     break
+                fn = owner[n]
+                if fn >= 0 and not _member(a, n):
+                    key = (path, fn, x)
+                    if key not in declared:
+                        lo, hi = spans[fn]
+                        declared[key] = any(
+                            _declares(a, lo, k) for k in range(lo, hi) if a[k] == x and not _member(a, k)
+                        )
+                    if declared[key]:  # a local or parameter: its rename belongs to this function alone
+                        if local.setdefault(key, y) != y:
+                            self.refuse(f"{x} is renamed to both {local[key]} and {y} in one function", path)
+                        elif local_sources.setdefault((path, fn, y), x) != x:
+                            self.refuse(f"{local_sources[(path, fn, y)]} and {x} are both renamed to {y}", path)
+                        continue
                 if pairs.setdefault(x, y) != y:
                     self.refuse(f"{x} is renamed to both {pairs[x]} and {y}", path)
                 elif sources.setdefault(y, x) != x:
@@ -279,6 +379,10 @@ class _Proof:
                 ):
                     self.refuse("a token moved to another line where the tree reads __LINE__", path)
         self.map = pairs
+        self.local = local
+
+    def pairs(self) -> list[tuple[str, str]]:
+        return sorted({*self.map.items(), *((key[2], new) for key, new in self.local.items())})
 
     def apply(self) -> None:
         """The map over every old file must give the new file: a partial rename and an asm string both end here."""
@@ -288,7 +392,15 @@ class _Proof:
             return ASM_MARK + _WORD.sub(lambda m: names.get(m.group(), m.group()), token[1:])
 
         for path, before in self.old.items():
-            mapped = [text(t) if t[:1] == ASM_MARK else names.get(t, t) for t in before]
+            owner = self.owner[path]
+            mapped = [
+                text(t)
+                if t[:1] == ASM_MARK
+                else self.local.get((path, owner[n], t), names.get(t, t))
+                if owner[n] >= 0 and not _member(before, n)
+                else names.get(t, t)
+                for n, t in enumerate(before)
+            ]
             if mapped != self.new[path]:
                 at = next(n for n, (x, y) in enumerate(zip(mapped, self.new[path], strict=True)) if x != y)
                 self.refuse(
@@ -324,9 +436,85 @@ class _Proof:
                 data = blobs[spec + path]
                 if data is None or b"\0" in data:
                     continue
-                found = names & set(_tokens(data.decode("latin-1"), _is_c(path)))
+                tokens = _tokens(data.decode("latin-1"), _is_c(path))
+                found = names & set(tokens)
+                if found and rev:
+                    found = self.visible(tokens, found, keys) if _is_c(path) else found
                 if found:
                     self.refuse(f"{sorted(found)[0]} is {what}", path)
+
+    def visible(self, tokens: list[str], names: set[str], keys: set[str]) -> set[str]:
+        """The new names a file uses where a renamed global could be captured: a use that is not a member and not in
+        a function which declares the name itself and uses no renamed global is another scope's name."""
+        owner, spans = _spans(tokens)
+        free = self.directive_names(keys) if keys else set()
+        clash: set[str] = set()
+        inside: dict[int, bool] = {}
+        for n, token in enumerate(tokens):
+            if token not in names or token in clash or _member(tokens, n):
+                continue
+            fn = owner[n]
+            if fn < 0 or keys & free:
+                clash.add(token)
+                continue
+            lo, hi = spans[fn]
+            if fn not in inside:
+                inside[fn] = bool(keys & set(tokens[lo : hi + 1]))
+            if inside[fn] or not any(
+                _declares(tokens, lo, k) for k in range(lo, hi) if tokens[k] == token and not _member(tokens, k)
+            ):
+                clash.add(token)
+        return clash
+
+    def directive_names(self, names: set[str]) -> set[str]:
+        """The names among `names` that a preprocessor directive of the old tree uses as a macro, in a macro body or
+        in a condition (not as a macro parameter): inside a function they could mean the local."""
+        if not names:
+            return set()
+        alt = "|".join(re.escape(n) for n in sorted(names))
+        word = rf"\<({alt})\>"
+        args = ["grep", "-I", "-l", "-z", "-E", "-e", rf"^[[:space:]]*#.*{word}", "-e", rf"{word}.*\\[[:space:]]*$"]
+        out = self.repo.run(*args, self.base, "--", ".", ok=(0, 1), own=False)
+        paths = [f.split(":", 1)[1] for f in out.decode("latin-1").split("\0") if f]
+        blobs = self.repo.blobs([f"{self.base}:{p}" for p in paths])
+        used: set[str] = set()
+        for path in paths:
+            if not _is_c(path):
+                continue
+            tokens = _tokens((blobs[f"{self.base}:{path}"] or b"").decode("latin-1"), True)
+            n = 0
+            while n < len(tokens):
+                if tokens[n] != "#":
+                    n += 1
+                    continue
+                end = tokens.index("\n", n) if "\n" in tokens[n:] else len(tokens)
+                row = tokens[n + 1 : end]
+                params: set[str] = set()
+                if row[:1] == ["define"] and row[2:3] == ["("] and ")" in row:
+                    params = set(row[3 : row.index(")")])
+                    row = row[:2] + row[row.index(")") + 1 :]
+                used |= (set(row) - params) & names
+                n = end + 1
+        return used
+
+    def scoped(self) -> None:
+        """A local or parameter rename meets only its own function: the new name must not be used there, and neither
+        name may be a macro or a macro's free name anywhere (a macro expands inside the function)."""
+        if not self.local:
+            return
+        values = set(self.map.values())
+        for (path, fn, old), new in sorted(self.local.items()):
+            tokens = self.old[path]
+            lo, hi = self.spans[path][fn]
+            used = {t for k, t in enumerate(tokens[lo : hi + 1], lo) if not _member(tokens, k)}
+            swapped = any(key[:2] == (path, fn) and key[2] == new for key in self.local)
+            if new in used and not swapped:
+                self.refuse(f"{new} is already used in the function that renames {old} to it", path)
+            elif new in values:
+                self.refuse(f"{new} is also the new name of a renamed global", path)
+        names = {key[2] for key in self.local} | set(self.local.values())
+        for name in sorted(self.directive_names(names)):
+            self.refuse(f"{name} is a macro name or appears in a preprocessor directive, where it could mean the local")
 
     def builtins(self) -> None:
         """A name the compiler knows as a builtin must not enter or leave the map, unless the project's flags turn
@@ -334,7 +522,8 @@ class _Proof:
         config = self.repo.blobs([f"{self.base}:config.toml"])[f"{self.base}:config.toml"] or b""
         if b"-fno-builtin" in config:
             return
-        crossing = sorted(n for n in {*self.map, *self.map.values()} if n in BUILTINS or n.startswith("__builtin_"))
+        every = {name for pair in self.pairs() for name in pair}
+        crossing = sorted(n for n in every if n in BUILTINS or n.startswith("__builtin_"))
         if crossing:
             self.refuse(f"{', '.join(crossing[:5])} is a name the compiler expands itself, so a rename changes code")
 
@@ -345,7 +534,7 @@ class _Proof:
     def calls(self) -> dict[tuple[str, int], str]:
         """(macro, argument position) of every call in a changed C file that holds a renamed name as an argument,
         with the file it is in; a paste of a renamed name refuses here."""
-        keys = set(self.map)
+        keys = {old for old, _ in self.pairs()}
         found: dict[tuple[str, int], str] = {}
         for path, tokens in self.old.items():
             if not _is_c(path) or not keys & set(tokens):
@@ -453,6 +642,7 @@ def _check(
     if not proof.reasons:
         proof.builtins()
         proof.capture()
+        proof.scoped()
         proof.stringified()
     if not changed and not skipped and not proof.reasons:
         proof.refuse("the change touches no file the build reads")
@@ -477,7 +667,7 @@ def prove(root: Path, against: str, patches: Sequence[Path], inert: Sequence[str
         proof, changed, skipped = _check(repo, against, patches, inert)
         if proof.reasons:
             raise _refusal(proof)
-        names = sorted(proof.map.items())
+        names = proof.pairs()
         return {
             "against": against,
             "base": proof.commit,
@@ -496,19 +686,19 @@ def _steps(repo: _Repo, against: str, patches: Sequence[Path], inert: Sequence[s
     """Each patch over the state every patch before it leaves (the whole stack, as it will land): its verdict says
     whether the build may skip it; a refused patch still moves the state on, and one that does not apply stops it."""
     rows: list[dict[str, Any]] = []
-    state, base, files, renames = against, "", 0, {}
+    state, base, files, renames = against, "", 0, set()
     for patch in patches:
         step = _Repo(repo.root)
         row: dict[str, Any] = {"patch": str(patch), "pure": False, "files": 0, "renames": 0, "inert": [], "reasons": []}
         try:
             proof, changed, skipped = _check(step, state, [patch], inert)
             base = base or proof.commit
-            row.update(files=len(changed), renames=len(proof.map), inert=skipped)
+            row.update(files=len(changed), renames=len(proof.pairs()), inert=skipped)
             row["reasons"] = [f.reason for f in proof.reasons[:SHOWN]]
             if not proof.reasons:
                 row["pure"] = True
                 files += len(changed)
-                renames.update(proof.map)
+                renames.update(proof.pairs())
             state = step.run("write-tree").decode().strip()
         except Refusal as refusal:
             row["reasons"] = [f.reason for f in refusal.findings[:SHOWN]]
@@ -522,7 +712,7 @@ def _steps(repo: _Repo, against: str, patches: Sequence[Path], inert: Sequence[s
         "patches": [str(p) for p in patches],
         "files": files,
         "renames": len(renames),
-        "map": [list(pair) for pair in sorted(renames.items())],
+        "map": [list(pair) for pair in sorted(renames)],
         "inert": [],
         "steps": rows,
     }
