@@ -1,0 +1,19 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.buildproof",
+ "type": "object",
+ "properties": {
+  "against": {"type": "string", "minLength": 1},
+  "patches": {"type": "array", "items": {"type": "string"}},
+  "versions": {"type": "array", "items": {"type": "string"}},
+  "compared": {"type": "integer", "minimum": 1},
+  "identical": {"type": "integer", "minimum": 0},
+  "differ": {"type": "array", "items": {"type": "string"}},
+  "missing": {"type": "array", "items": {"type": "string"}},
+  "extra": {"type": "array", "items": {"type": "string"}},
+  "added": {"type": "integer", "minimum": 0},
+  "absent": {"type": "integer", "minimum": 0}
+ },
+ "required": ["against", "patches", "versions", "compared", "identical", "differ", "missing", "extra", "added", "absent"],
+ "additionalProperties": false
+}

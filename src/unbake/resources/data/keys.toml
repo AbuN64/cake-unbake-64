@@ -540,6 +540,26 @@ sentence = "types has no extracted assembly or no readable requests file to read
 owner = "renameproof"
 sentence = "the change is not a pure identifier rename, so only a build proves it"
 
+[key."buildproof.tree"]
+owner = "buildproof"
+sentence = "the tree is not the clean checkout of REV that a build proof starts from"
+
+[key."buildproof.make"]
+owner = "buildproof"
+sentence = "a make run of the build proof ended with an error, so no object comparison can be trusted"
+
+[key."buildproof.set"]
+owner = "buildproof"
+sentence = "the objects built after the change are not the objects built before it, apart from what the patches add"
+
+[key."buildproof.differs"]
+owner = "buildproof"
+sentence = "an object differs in section bytes or relocations after the change"
+
+[key."buildproof.empty"]
+owner = "buildproof"
+sentence = "the build proof compared no object, so it proves nothing"
+
 [key."blobs.proof"]
 owner = "blobs"
 sentence = "a pinned blob proof input or typed byte coverage failed; no decoded credit was granted"
