@@ -161,6 +161,7 @@ link_sections = "per-object"
 include_asm = "inline"
 stand_in_as = "{as}"
 data_split = "subsegment"
+jump_table_base = 0x80000000  # a jump table entry holds its label address less this (libsn tables in the ROM do)
 title = "GCC 2.7.2 (SN64 970404)"
 dependency = { name = "SN64 GCC 2.7.2", repository = "https://github.com/decompals/SN64-gcc" }
 family = "gcc"
