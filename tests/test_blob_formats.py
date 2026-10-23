@@ -191,3 +191,50 @@ def test_obj_code_proves_a_range_that_whole_tiles_cover(monkeypatch):
     assert done["bytes"] == len(window) and done["tiles"][0]["sites"]["hi"] == 1
     with pytest.raises(ValueError, match="match no known body"):
         prove(row("obj-code", [4, 8 + len(window)]), rom)
+
+
+def test_rnc_copy_proves_different_encodings_only_with_a_decoded_owner(tmp_path):
+    from test_rnc import _abcabc
+    from test_rnc2 import Writer
+
+    source = _abcabc()
+    writer = Writer()
+    writer.literals(b"abcabcabc")
+    target = writer.stream(b"abcabcabc")
+    rom = source + bytes(7) + target
+    start = len(source) + 7
+    config = cfg(len(rom))
+    config.project.root = tmp_path
+    doc = {"blob": {"asset": {"state": "decoded", "rom": {"v": [[0, len(source)]]}}}}
+    spec = row("rnc-copy", [start, len(rom)], source=0, source_version="v", source_blob="asset")
+    result = blob_formats.prove(config, spec, rom, doc)
+    assert result["codec"] == "rnc2" and result["source_codec"] == "rnc1"
+    assert result["decoded_size"] == 9
+    for wrong, message in [
+        (dict(spec, region=[start, len(rom) - 1]), "complete target"),
+        (dict(spec, source=start), "overlaps"),
+        (dict(spec, source=-1), "nonnegative"),
+        (dict(spec, source_version="absent"), "version"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            blob_formats.prove(config, wrong, rom, doc)
+    damaged = bytearray(rom)
+    damaged[14] ^= 1
+    with pytest.raises(ValueError, match="CRC"):
+        blob_formats.prove(config, spec, damaged, doc)
+    writer = Writer()
+    writer.literals(b"abcdefghi")
+    changed = writer.stream(b"abcdefghi")
+    with pytest.raises(ValueError, match="decoded bytes differ"):
+        blob_formats.prove(config, dict(spec, region=[start, start + len(changed)]), rom[:start] + changed, doc)
+    doc["blob"]["asset"]["state"] = "observed"
+    with pytest.raises(ValueError, match="decoded owner"):
+        blob_formats.prove(config, spec, rom, doc)
+    doc["blob"]["asset"] = {"state": "decoded", "rom": {"v": [[0, len(source) - 1]]}}
+    with pytest.raises(ValueError, match="decoded owner"):
+        blob_formats.prove(config, spec, rom, doc)
+    doc["blob"]["asset"]["rom"] = {"other": [[0, len(source)]]}
+    config.project.version["other"] = config.project.version["v"]
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms" / "baserom.other.z64").write_bytes(source)
+    assert blob_formats.prove(config, dict(spec, source_version="other"), rom, doc)["source_version"] == "other"

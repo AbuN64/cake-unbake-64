@@ -657,8 +657,8 @@ def run(config: Config, params: Json) -> Json:
 
 
 def scan(config: Config) -> Json:
-    """`unbake blobs scan`: per version, decode every catalogued RNC1 stream (both CRCs and `decoded_size` must hold)
-    and list the RNC1 streams that decode whole inside unknown bytes as candidates for typed rows (start, stored and
+    """`unbake blobs scan`: per version, decode every catalogued RNC stream (both CRCs and `decoded_size` must hold)
+    and list the RNC streams that decode whole inside unknown bytes as candidates for typed rows (start, stored and
     unpacked size, sha256 of the decoded bytes: facts, never bytes). Replaces the lane-side stream scripts."""
     tree = import_module("unbake.tree").capture(config)
     parts = import_module("unbake.report").partitions(config, tree)
@@ -668,11 +668,13 @@ def scan(config: Config) -> Json:
         rom = (Path(config.project.root) / "roms" / f"baserom.{v}.z64").read_bytes()
         checked, failed = 0, []
         for name, row in sorted(document.items()):
-            if row.get("codec") != "rnc1" or "parent" in row or v not in row.get("rom", {}):
+            if row.get("codec") not in {"rnc1", "rnc2"} or "parent" in row or v not in row.get("rom", {}):
                 continue
             start = row["rom"][v][0][0]
             checked += 1
             try:
+                if row["codec"] != f"rnc{rnc.header(rom, start).method}":
+                    raise rnc.RncError("RNC method differs from declared codec")
                 size = len(rnc.unpack(rom, start))
             except rnc.RncError as error:
                 failed.append({"blob": name, "reason": str(error)})
@@ -692,12 +694,13 @@ def scan(config: Config) -> Json:
                     {
                         "rom": [at, at + head.stored],
                         "stored_size": head.stored,
+                        "codec": f"rnc{head.method}",
                         "decoded_size": len(body),
                         "sha256": sha256(body),
                     }
                 )
         out[v] = {
-            "rnc1": {"checked": checked, "failed": failed},
+            "rnc": {"checked": checked, "failed": failed},
             "candidates": candidates,
             "candidate_bytes": sum(c["stored_size"] for c in candidates),
             "fill": p["blobs_fill"],

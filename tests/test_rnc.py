@@ -78,8 +78,8 @@ def test_crc_and_size_mismatches_refuse():
         rnc.unpack(bytes(stream))
     with pytest.raises(rnc.RncError, match="sizes outside"):
         rnc.header(bytes(stream[:-1]))
-    with pytest.raises(rnc.RncError, match="no RNC1 header"):
-        rnc.header(b"RNC\x02" + bytes(14))
+    with pytest.raises(rnc.RncError, match="no RNC header"):
+        rnc.header(b"RNC\x03" + bytes(14))
 
 
 def test_find_lists_whole_streams_only():

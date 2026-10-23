@@ -8,7 +8,17 @@ from unbake import blob_archive, blob_decode, blob_stale, blobs, objcode, rnc, s
 from unbake.contracts import Config, Json, sha256
 
 READERS = frozenset(
-    {"archive-fill", "archive-header", "rnc-slack", "string-leaf", "sn-debug", "copy", "segment-fill", "obj-code"}
+    {
+        "archive-fill",
+        "archive-header",
+        "rnc-slack",
+        "string-leaf",
+        "sn-debug",
+        "copy",
+        "segment-fill",
+        "obj-code",
+        "rnc-copy",
+    }
 )
 _CORPUS: dict[object, objcode.Corpus] = {}  # the known bodies of a project, once per Config digest
 
@@ -102,6 +112,49 @@ def _copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end
     return out
 
 
+def _rnc_copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end: int) -> Json:
+    """Two complete CRC-checked streams decode equally, and the source has a decoded blob owner."""
+    version = row["source_version"]
+    if version not in config.project.version:
+        raise ValueError("RNC copy source version is unknown")
+    other = (
+        rom
+        if version == row["version"]
+        else (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
+    )
+    source = row["source"]
+    if type(source) is not int or source < 0:
+        raise ValueError("RNC copy source needs a nonnegative offset")
+    target_header, source_header = rnc.header(rom, start), rnc.header(other, source)
+    source_end = source + source_header.stored
+    if end != start + target_header.stored:
+        raise ValueError("RNC copy must be one complete target stream")
+    if version == row["version"] and source < end and start < source_end:
+        raise ValueError("RNC copy source overlaps target")
+    owner = document["blob"][row["source_blob"]]
+    if owner["state"] != "decoded" or blobs.subtract(
+        [(source, source_end)], blobs.merge(owner.get("rom", {}).get(version, []))
+    ):
+        raise ValueError("RNC copy source is not covered by its decoded owner")
+    if max(target_header.unpacked, source_header.unpacked) > 16 << 20:
+        raise ValueError("RNC decoded size exceeds proof bound")
+    if target_header.unpacked != source_header.unpacked:
+        raise ValueError("RNC copy decoded sizes differ")
+    target_body, source_body = rnc.unpack(rom, start), rnc.unpack(other, source)
+    if target_body != source_body:
+        raise ValueError("RNC copy decoded bytes differ")
+    return {
+        "source_version": version,
+        "source_blob": row["source_blob"],
+        "source": [source, source_end],
+        "source_sha256": sha256(other[source:source_end]),
+        "source_codec": f"rnc{source_header.method}",
+        "codec": f"rnc{target_header.method}",
+        "decoded_size": len(target_body),
+        "decoded_sha256": sha256(target_body),
+    }
+
+
 def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
     start, end = interval(rom, row["region"])
     reader = row["reader"]
@@ -173,6 +226,8 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         return {**owner, "decoded_size": len(body), "strings": string_leaf(body)}
     if reader == "sn-debug":
         return snsym.stream_receipt(rom, start, end, row.get("dialect", "sym"))
+    if reader == "rnc-copy":
+        return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":
         return _copy(config, row, rom, document, start, end)
     if reader == "obj-code":

@@ -290,12 +290,13 @@ def test_scan_proves_catalogued_streams_and_lists_streams_in_unknown_bytes(tmp_p
     _credits(monkeypatch)
     monkeypatch.setattr(tree, "capture", lambda config: _tree("scan"))
     out = blobs.scan(config)["v"]
-    assert out["rnc1"]["checked"] == 2
-    assert out["rnc1"]["failed"] == [{"blob": "short", "reason": "decodes to 9 bytes, the row says 8"}]
+    assert out["rnc"]["checked"] == 2
+    assert out["rnc"]["failed"] == [{"blob": "short", "reason": "decodes to 9 bytes, the row says 8"}]
     assert out["candidates"] == [
         {
             "rom": [0x9000, 0x9000 + len(stream)],
             "stored_size": len(stream),
+            "codec": "rnc1",
             "decoded_size": 9,
             "sha256": sha256(b"abcabcabc"),
         }
@@ -529,7 +530,17 @@ def _verify(tmp_path, monkeypatch, document, partition=None, text=None):
     config = _config(tmp_path)
     (tmp_path / "blobs.toml").write_bytes(text if text is not None else blobs.emit(document))
     monkeypatch.setattr("unbake.tree.capture", lambda cfg, *a, **k: None)
-    sums = {"rom_size": ROM, "code": 0, "data": 0, "platform": 0, "blobs": 0, "unknown": ROM, "overlap": 0, "outside": 0, "shadowed": 0}
+    sums = {
+        "rom_size": ROM,
+        "code": 0,
+        "data": 0,
+        "platform": 0,
+        "blobs": 0,
+        "unknown": ROM,
+        "overlap": 0,
+        "outside": 0,
+        "shadowed": 0,
+    }
     monkeypatch.setattr(report, "partitions", lambda cfg, tree: {"v": {**sums, **(partition or {})}})
     return {f.key: f.reason for f in blobs.verify(config)}
 

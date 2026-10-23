@@ -62,7 +62,7 @@ def observe(rom: bytes, start: int, end: int) -> Json:
         "distinct_values": len(set(data)),
     }
     # Only inspect the immediately preceding signature, at most 64 KiB back. A candidate is not a typed proof.
-    at = rom.rfind(rnc.MAGIC, max(0, start - 65536), end)
+    at = max(rom.rfind(magic, max(0, start - 65536), end) for magic in rnc.MAGICS)
     if at >= 0:
         try:
             header = rnc.header(rom, at)
@@ -124,8 +124,10 @@ def prove_one(config: Config, row: Json, rom: bytes, document: Json, fills: list
             raise ValueError("layout id must select exactly one existing layout")
         layout = selected[0]
         codec = row.get("codec", "none")
-        if codec == "rnc1":
+        if codec in {"rnc1", "rnc2"}:
             header = rnc.header(data)
+            if codec != f"rnc{header.method}":
+                raise ValueError("RNC method differs from declared codec")
             if header.unpacked > 16 << 20:
                 raise ValueError("RNC decoded size exceeds proof bound")
             blob_decode.aligned_zero(data, header.stored, len(data), row["stored_alignment"])

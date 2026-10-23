@@ -202,7 +202,7 @@ def test_packed_padding_is_relative_to_the_stored_record(tmp_path, monkeypatch):
         "codec": "rnc1",
         "stored_alignment": 8,
     }
-    monkeypatch.setattr(blob_proof.rnc, "header", lambda _: N(stored=7, unpacked=4))
+    monkeypatch.setattr(blob_proof.rnc, "header", lambda _: N(stored=7, unpacked=4, method=1))
     monkeypatch.setattr(blob_proof.rnc, "unpack", lambda _: words(123))
     rom = rom[:11] + b"\0" + rom[12:]
     assert blob_proof.prove_one(cfg, row, rom, {"blob": {}}, [])["status"] == "decoded"

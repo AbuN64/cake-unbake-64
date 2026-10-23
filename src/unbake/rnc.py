@@ -1,4 +1,4 @@
-"""RNC method 1 (Rob Northen ProPack) streams: the header, its two CRCs and the decoder, from the public format.
+"""RNC methods 1 and 2 (Rob Northen ProPack) streams: the header, its two CRCs and the decoder, from the public format.
 A stream is an 18-byte big-endian header ("RNC", method 1, unpacked size, packed size, unpacked CRC, packed CRC, leeway,
 chunk count) and the packed bits. The bits are read low bit first from 16-bit little-endian words, one word of
 lookahead kept above the unread bits. Each pack chunk starts with three Huffman tables (literal run, match distance,
@@ -13,10 +13,11 @@ from dataclasses import dataclass
 
 HEADER = 18
 MAGIC = b"RNC\x01"
+MAGICS = (MAGIC, b"RNC\x02")
 
 
 class RncError(ValueError):
-    """A stream that is not a well-formed RNC1 stream, or whose bytes do not match its header."""
+    """A stream that is not a well-formed RNC stream, or whose bytes do not match its header."""
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class Header:
     packed_crc: int
     leeway: int
     chunks: int
+    method: int = 1
 
     @property
     def stored(self) -> int:
@@ -55,10 +57,10 @@ def crc16(data: bytes | memoryview) -> int:
 
 
 def header(data: bytes | memoryview, at: int = 0) -> Header:
-    """The header at `at`; refuses anything but method 1 with sizes that fit the data."""
+    """The header at `at`; accepts methods 1 and 2 with sizes that fit the data."""
     raw = bytes(data[at : at + HEADER])
-    if len(raw) < HEADER or raw[:4] != MAGIC:
-        raise RncError(f"no RNC1 header at {at:#x}")
+    if at < 0 or len(raw) < HEADER or raw[:4] not in MAGICS:
+        raise RncError(f"no RNC header at {at:#x}")
     out = Header(
         int.from_bytes(raw[4:8], "big"),
         int.from_bytes(raw[8:12], "big"),
@@ -66,9 +68,10 @@ def header(data: bytes | memoryview, at: int = 0) -> Header:
         int.from_bytes(raw[14:16], "big"),
         raw[16],
         raw[17],
+        raw[3],
     )
     if not out.unpacked or not out.packed or at + out.stored > len(data):
-        raise RncError(f"RNC1 header at {at:#x} has sizes outside the data")
+        raise RncError(f"RNC header at {at:#x} has sizes outside the data")
     return out
 
 
@@ -159,7 +162,17 @@ def unpack(data: bytes | memoryview, at: int = 0, check: bool = True) -> bytes:
     head = header(data, at)
     packed = bytes(data[at + HEADER : at + head.stored])
     if check and crc16(packed) != head.packed_crc:
-        raise RncError(f"RNC1 stream at {at:#x}: packed CRC mismatch")
+        raise RncError(f"RNC{head.method} stream at {at:#x}: packed CRC mismatch")
+    if head.method == 2:
+        from unbake import rnc2
+
+        try:
+            decoded = rnc2.unpack(packed, head.unpacked)
+        except ValueError as error:
+            raise RncError(str(error)) from error
+        if check and crc16(decoded) != head.unpacked_crc:
+            raise RncError(f"RNC2 stream at {at:#x}: unpacked CRC mismatch")
+        return decoded
     reader = _Bits(packed)
     reader.take(2)
     out = bytearray()
@@ -199,11 +212,11 @@ def unpack(data: bytes | memoryview, at: int = 0, check: bool = True) -> bytes:
 
 
 def find(data: bytes | memoryview, start: int = 0, end: int | None = None) -> list[tuple[int, Header]]:
-    """Every RNC1 header in `[start, end)` whose stream lies inside it (CRCs not yet checked)."""
+    """Every RNC header in `[start, end)` whose stream lies inside it (CRCs not yet checked)."""
     end = len(data) if end is None else end
     raw = bytes(data[:end])
     out = []
-    at = raw.find(MAGIC, start)
+    at = raw.find(b"RNC", start)
     while at != -1:
         try:
             head = header(raw, at)
@@ -211,5 +224,5 @@ def find(data: bytes | memoryview, start: int = 0, end: int | None = None) -> li
             pass
         else:
             out.append((at, head))
-        at = raw.find(MAGIC, at + 1)
+        at = raw.find(b"RNC", at + 1)
     return out
