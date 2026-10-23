@@ -174,7 +174,7 @@ def _recipe(id: str) -> str:
         # the alignment the ROM's start of the data does not meet is dropped (data packed at the byte, or off 8)
         lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)')
         if row.get("jump_table_base"):
-            entry = r"^([ \t]*\.word[ \t]+\.L[0-9]+)[ \t]*$$"
+            entry = r"^([ \t]*\.word[ \t]+[.$$]L[0-9]+)[ \t]*$$"
             lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
         template, _ = adapters.assemble_template(row)
         assemble = [_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]}))]

@@ -979,7 +979,7 @@ def test_data_starting_word_aligned_but_off_eight_loses_only_the_eight_alignment
 def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     """jump_table_base and rdata_alloc of a toolchain row become recipe lines around its assembler."""
     lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
-    sed = next(i for i, line in enumerate(lines) if "\\.L[0-9]+" in line)
+    sed = next(i for i, line in enumerate(lines) if "[.$$]L[0-9]+" in line)
     asm = next(i for i, line in enumerate(lines) if "asn64" in line)
     assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
     assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@; fi"
