@@ -589,9 +589,7 @@ def _line(label: str, bucket: Json, cells: int, kind: str = "bytes") -> str:
     parts = ("code", "data") if kind == "bytes" else (kind,)
     matched = sum(bucket[p + "_matched"] for p in parts)
     total = sum(bucket[p + "_total"] for p in parts)
-    none = sum(bucket.get(p + "_none", 0) for p in parts)
-    suffix = f" ({none:,} none)" if none else ""
-    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells) + suffix
+    return _bar(label, matched, matched + sum(bucket[p + "_fuzzy"] for p in parts), total, cells)
 
 
 def _rom_line(label: str, bucket: Json, cells: int) -> str:
@@ -599,8 +597,7 @@ def _rom_line(label: str, bucket: Json, cells: int) -> str:
     blobs, against the exact ROM size."""
     sure = bucket["code_matched"] + bucket["data_matched"] + bucket["blobs_decoded"] + bucket["platform_total"]
     reach = sure + bucket["code_fuzzy"] + bucket["data_fuzzy"] + bucket["blobs_identified"]
-    none = bucket.get("code_none", 0) + bucket.get("data_none", 0)
-    return _bar(label, sure, reach, bucket["rom_size"], cells) + (f" ({none:,} none)" if none else "")
+    return _bar(label, sure, reach, bucket["rom_size"], cells)
 
 
 def _bar(label: str, matched: int, reach: int, total: int, cells: int) -> str:
