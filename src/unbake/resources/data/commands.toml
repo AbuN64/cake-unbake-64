@@ -30,6 +30,7 @@ handler = "repo.sync"
 params = [
   { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "write nothing; refuse naming the files that would change" },
   { name = "settle", kind = "flag", type = "str", required = false, multiple = false, help = "write, then refuse as --check would unless a second sync would write nothing (sync and sync --check in one run)" },
+  { name = "place", kind = "option", type = "str", required = false, multiple = true, help = "a function whose read-only data (jump tables, literal pools) its own file now compiles: add the literals_ row per version that places it there (refuses data other functions read); with --check only list the rows" },
 ]
 
 [command.symbols]

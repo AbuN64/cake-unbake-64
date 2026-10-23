@@ -1,0 +1,298 @@
+"""place.py: the rows that put a C function's jump tables and literal pools in the function's own file."""
+
+from __future__ import annotations
+
+import struct
+from types import SimpleNamespace
+
+import pytest
+
+from unbake import place, repo
+from unbake.contracts import Refusal
+
+pytestmark = pytest.mark.usefixtures("plain_roms")
+
+F, G = "func_80400000_de", "func_80400100_de"
+TABLE = (0x800E1500, 0x2000)  # vram, rom
+WORDS = (0x00400010, 0x00400018, 0x00400020, 0x00400028)  # a jump table: every case inside F
+
+
+def _facts(extra=None):
+    facts = {
+        F: (0x80400000, 0x1000, 0x100, "func"),
+        G: (0x80400100, 0x1100, 0x100, "func"),
+        "jtbl_800E1500": (TABLE[0], TABLE[1], None, "data"),
+        "D_800E1510": (0x800E1510, 0x2010, None, "data"),
+    }
+    return {**facts, **(extra or {})}
+
+
+def _tree(owned=(), compiled=(F,), literals=None):
+    module = SimpleNamespace(
+        path="src/m.c",
+        owns={"a": (*compiled, *([literals] if literals else []))},
+        stand_ins={"a": ()},
+        sections={"a": {**{n: ".text" for n in compiled}, **({literals: ".rodata"} if literals else {})}},
+    )
+    names = {n: "src/m.c" for n in module.owns["a"]}
+    return SimpleNamespace(modules=(module,), owned=lambda v, n: names.get(n))
+
+
+def _world(monkeypatch, tmp_path, facts=None, words=WORDS, asm=None):
+    root = tmp_path / "proj"
+    (root / "asm/a/nonmatchings/seg").mkdir(parents=True)
+    (root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text(
+        "lui $at, %hi(jtbl_800E1500)\nlw $v0, %lo(jtbl_800E1500)($at)\n"
+    )
+    for name, text in (asm or {}).items():
+        (root / "asm/a/nonmatchings/seg" / f"{name}.s").write_text(text)
+    rom = bytearray(0x3000)
+    rom[0x2000 : 0x2000 + 4 * len(words)] = b"".join(w.to_bytes(4, "big") for w in words)
+    (tmp_path / "rom").write_bytes(bytes(rom))
+    monkeypatch.setattr(place.api, "symbols", lambda config, v: facts or _facts())
+    monkeypatch.setattr(place.api, "asm_path", lambda config, v, n: f"asm/a/nonmatchings/seg/{n}.s")
+    monkeypatch.setattr(place.configuration, "rom", lambda project, v: tmp_path / "rom")
+    return SimpleNamespace(project=SimpleNamespace(versions=("a",), root=root))
+
+
+def test_a_c_functions_jump_table_becomes_its_literals_row(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row == f"literals_{F} = 0x800E1500; // rom:0x2000 size:0x10" and found.file == "versions/a/aliases.txt"
+    assert found.names == ("jtbl_800E1500",) and found.path == "src/m.c"
+
+
+def test_the_literal_pool_a_function_reads_is_placed_too(monkeypatch, tmp_path):
+    # no jump table: the words are floats; the function's assembly names the pool, so it is the function's
+    facts = _facts({"D_800E1520": (0x800E1520, 0x2020, None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts, words=(0x3F800000, 0x40000000))
+    (root := config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("lwc1 $f0, %lo(D_800E1520)($at)\n")
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row.startswith(f"literals_{F} = 0x800E1520;") and found.names == ("D_800E1520",)
+    assert root.is_file()
+
+
+def test_data_another_function_reads_is_not_the_functions_own(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path, asm={G: "lw $v0, %lo(jtbl_800E1500)($at)\n"})
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    (finding,) = refused.value.findings
+    assert finding.key == "place.shared" and G in finding.reason and finding.unit == F
+
+
+def test_a_second_name_of_the_same_bytes_counts_as_a_reader(monkeypatch, tmp_path):
+    facts = _facts({"D_alias": (TABLE[0], TABLE[1], None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts, asm={G: "lw $v0, %lo(D_alias)($at)\n"})
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert refused.value.findings[0].key == "place.shared"
+
+
+def test_a_file_that_already_places_its_data_gets_no_row_and_is_no_refusal(monkeypatch, tmp_path):
+    facts = _facts({f"literals_{F}": (TABLE[0], TABLE[1], None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    assert place.plan(config, _tree(literals=f"literals_{F}"), [F]) == []
+
+
+def test_a_function_with_nothing_to_place_is_refused(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path, words=(0, 0, 0, 0))
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("jr $ra\n")
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert refused.value.findings[0].key == "place.none"
+
+
+def test_assembly_only_versions_are_left_alone(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(compiled=()), [F])  # F is not C in this version: nothing to place anywhere
+    assert refused.value.findings[0].key == "place.none"
+
+
+def _object(path, data, align=4, reloc=()):
+    """A big-endian ELF32 with a .rodata (`data`) and a .rel.rodata naming the offsets in `reloc`."""
+    shstr = b"\0.rodata\0.rel.rodata\0.shstrtab\0"
+    rel = b"".join(struct.pack(">II", off, 2) for off in reloc)
+    body = bytearray(52)
+    off_ro = len(body)
+    body += data
+    off_rel = len(body)
+    body += rel
+    off_str = len(body)
+    body += shstr
+    shoff = len(body)
+    sh = [
+        bytes(40),
+        struct.pack(">10I", 1, 1, 2, 0, off_ro, len(data), 0, 0, align, 0),
+        struct.pack(">10I", 9, 9, 0, 0, off_rel, len(rel), 0, 1, 4, 8),
+        struct.pack(">10I", 19, 3, 0, 0, off_str, len(shstr), 0, 0, 1, 0),
+    ]
+    body += b"".join(sh)
+    body[0:16] = b"\x7fELF\x01\x02\x01" + bytes(9)
+    struct.pack_into(">HHIIII", body, 16, 1, 8, 1, 0, 0, shoff)
+    struct.pack_into(">HHHHHH", body, 0x28, 52, 0, 0, 40, 4, 3)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(body))
+
+
+def _built(config, data, **kw):
+    src = config.project.root / "src/m.c"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("x")
+    _object(config.project.root / "build/a/src/m.c.o", data, **kw)
+
+
+def test_a_built_object_whose_rodata_is_the_roms_proves_the_move(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    data = b"".join(
+        w.to_bytes(4, "big") for w in (0, 0x00400018, 0, 0x00400028)
+    )  # words 0 and 2 are relocated, the rest is ROM's
+    _built(config, data, reloc=(0, 8))
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.note == "compiled .rodata == ROM bytes"
+
+
+def test_an_object_whose_rodata_differs_or_is_too_long_refuses(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    _built(config, b"".join(w.to_bytes(4, "big") for w in (0, 0x99, 0, 0x28)), reloc=(0, 8))
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert (
+        refused.value.findings[0].key == "place.object"
+        and "differs from the ROM at 0x2004" in refused.value.findings[0].reason
+    )
+    _built(config, bytes(0x40))
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert "0x40 bytes" in refused.value.findings[0].reason
+
+
+def test_an_eight_aligned_rodata_cannot_sit_on_a_four_aligned_address(monkeypatch, tmp_path):
+    facts = _facts({"jtbl_800E1500": (0x800E1504, TABLE[1], None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    _built(config, b"".join(w.to_bytes(4, "big") for w in (0, 0x00400018, 0, 0x00400028)), align=8, reloc=(0, 8))
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert "8-aligned" in refused.value.findings[0].reason
+
+
+def test_a_stale_object_is_not_trusted_the_link_proves_the_bytes(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    _built(config, bytes(0x40))
+    import os
+
+    os.utime(config.project.root / "build/a/src/m.c.o", (1, 1))  # older than the source
+    (found,) = place.plan(config, _tree(), [F])
+    assert "link proves" in found.note
+
+
+def test_rows_are_added_once_and_keep_the_files_other_lines():
+    p = place.Placement("a", F, "src/m.c", TABLE[0], TABLE[1], 0x2010, ("jtbl_800E1500",))
+    out = place.rows([p, p], {p.file: "x = 0x80000000;"})
+    assert out == {p.file: f"x = 0x80000000;\n{p.row}\n".encode()}
+    assert place.rows([p], {p.file: f"{p.row}\n"}) == {}  # already there: nothing to write
+
+
+def test_sync_place_puts_the_aliases_back_when_the_sync_after_it_refuses(monkeypatch, tmp_path):
+    root = tmp_path
+    (root / "versions/a").mkdir(parents=True)
+    (root / "versions/a/aliases.txt").write_text("x = 0x80000000;\n")
+    p = place.Placement("a", F, "src/m.c", TABLE[0], TABLE[1], 0x2010, ("jtbl_800E1500",))
+    monkeypatch.setattr(repo.place, "plan", lambda config, current, functions: [p])
+    monkeypatch.setattr(repo.tree, "capture", lambda config: None)
+    seen = []
+
+    def failing(config, params):
+        seen.append((root / p.file).read_text())
+        raise Refusal(repo.Finding("sync.literals", "x"))
+
+    monkeypatch.setattr(repo, "sync", failing)
+    config = SimpleNamespace(project=SimpleNamespace(root=root))
+    with pytest.raises(Refusal):
+        repo._sync_placing(config, {"place": [F]})
+    assert p.row in seen[0] and (root / p.file).read_text() == "x = 0x80000000;\n"
+
+
+def test_sync_place_check_lists_the_rows_and_writes_nothing(monkeypatch, tmp_path):
+    p = place.Placement("a", F, "src/m.c", TABLE[0], TABLE[1], 0x2010, ("jtbl_800E1500",), "n")
+    monkeypatch.setattr(repo.place, "plan", lambda config, current, functions: [p])
+    monkeypatch.setattr(repo.tree, "capture", lambda config: None)
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    result = repo._sync_placing(config, {"place": [F], "check": True})
+    assert result["placed"] == [{"version": "a", "function": F, "row": p.row, "file": p.file, "note": "n"}]
+    assert not (tmp_path / "versions").exists()
+
+
+def test_bytes_after_the_table_stay_behind_a_stand_in_at_the_top_of_the_file_after_them(monkeypatch, tmp_path):
+    # the compiled .rodata of a file is one section: bytes of the old table's piece that it does not hold (here a
+    # foreign word) are a stand-in of their own, in the file that starts after them, never in the one before
+    config = _world(monkeypatch, tmp_path, words=(*WORDS[:3], 0x00999999))
+    (config.project.root / "versions/a").mkdir(parents=True)
+    (config.project.root / "versions/a/splat.yaml").write_text("  - [0x2000, rodata, data_x/jtbl_800E1500]\n")
+    later = SimpleNamespace(
+        path="src/next.c",
+        owns={"a": ("D_800E1510",)},
+        stand_ins={"a": ("D_800E1510",)},
+        sections={"a": {"D_800E1510": ".rodata"}},
+    )
+    current = _tree()
+    current.modules = (*current.modules, later)
+    (found,) = place.plan(config, current, [F])
+    assert found.row.endswith("rom:0x2000 size:0xC")
+    assert found.leftover == f"D_auto_rodata_{F}_800E150C = 0x800E150C; // rom:0x200C"
+    assert (found.after, found.segment) == ("src/next.c", "data_x")
+
+
+def test_the_stand_in_goes_at_the_top_after_the_includes_once():
+    p = place.Placement(
+        "a", F, "src/m.c", TABLE[0], TABLE[1], 0x200C, ("jtbl_800E1500",), "", 0x2010, "src/next.c", "data_x"
+    )
+    line = f'INCLUDE_RODATA("data_x", D_auto_rodata_{F}_800E150C);'
+    top = f'#include "include_asm.h"\n#if defined(VERSION_A)\n{line}\n#endif\nint a;\n'.encode()
+    assert place.sources([p], {"src/next.c": '#include "include_asm.h"\nint a;\n'}) == {"src/next.c": top}
+    assert place.sources([p], {"src/next.c": top.decode()}) == {}  # already there
+    bare = place.sources([p], {"src/next.c": "int a;\n"})["src/next.c"].decode()
+    assert bare.startswith('#include "include_asm.h"\n#if defined(VERSION_A)\n') and bare.endswith("int a;\n")
+
+
+def test_leftover_bytes_with_no_file_after_them_are_refused(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path, words=(*WORDS[:3], 0x00999999))
+    (config.project.root / "versions/a").mkdir(parents=True)
+    (config.project.root / "versions/a/splat.yaml").write_text("  - [0x2000, rodata, data_x/jtbl_800E1500]\n")
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert refused.value.findings[0].key == "place.leftover"
+
+
+def test_a_file_on_both_sides_of_the_table_is_split_and_the_new_file_takes_the_stand_in(monkeypatch, tmp_path):
+    # one object's .rodata is listed at its first byte: a file owning data before the table and after the leftover
+    # would pull the leftover in front of the table, so its names from the leftover on move to a sibling
+    config = _world(
+        monkeypatch,
+        tmp_path,
+        words=(*WORDS[:3], 0x00999999),
+        facts=_facts({"D_800E14F0": (0x800E14F0, 0x1FF0, None, "data")}),
+    )
+    (config.project.root / "versions/a").mkdir(parents=True)
+    (config.project.root / "versions/a/splat.yaml").write_text("  - [0x2000, rodata, data_x/jtbl_800E1500]\n")
+    both = SimpleNamespace(
+        path="src/d.c",
+        owns={"a": ("D_800E14F0", "D_800E1510")},
+        stand_ins={"a": ("D_800E14F0", "D_800E1510")},
+        sections={"a": {"D_800E14F0": ".rodata", "D_800E1510": ".rodata"}},
+    )
+    current = _tree()
+    current.modules = (*current.modules, both)
+    (found,) = place.plan(config, current, [F])
+    assert (found.split_from, found.after, found.split) == ("src/d.c", "src/d_2.c", ("D_800E1510",))
+    text = (
+        '#include "include_asm.h"\n'
+        "#if defined(VERSION_A)\nconst unsigned int D_800E14F0[1] = {\n    0x00000000,\n};\n#endif\n"
+        '#if defined(VERSION_A)\nINCLUDE_RODATA("data_x", D_800E1510);\n#endif\n'
+    )
+    out = place.sources([found], {"src/d.c": text})
+    kept, new = out["src/d.c"].decode(), out["src/d_2.c"].decode()
+    assert "D_800E14F0" in kept and "D_800E1510" not in kept and "D_800E14F0" not in new
+    assert kept.count("#if") == kept.count("#endif") == 1  # no empty #if left where D_800E1510 was
+    stand_in = f'INCLUDE_RODATA("data_x", D_auto_rodata_{F}_800E150C);'
+    assert new.index(stand_in) < new.index("D_800E1510") and new.startswith('#include "include_asm.h"')

@@ -389,6 +389,22 @@ sentence = "a function's literals sit in the ROM after other files' data, apart 
 owner = "repo"
 sentence = "a jump table of a function its file defines in C is held by no file, and the file owns no read-only data, so the link would leave its compiled .rodata out of the ROM; add the literals_<function> row named"
 
+[key."place.shared"]
+owner = "repo"
+sentence = "read-only data another function reads as well is not the function's own, so it is not placed in its file"
+
+[key."place.object"]
+owner = "repo"
+sentence = "the built object's .rodata does not fit the ROM bytes a literals_ row would give it (size, alignment or content)"
+
+[key."place.none"]
+owner = "repo"
+sentence = "the function has no read-only data of its own to place in any version"
+
+[key."place.leftover"]
+owner = "repo"
+sentence = "bytes after a function's own data have no other file before them to hold their stand-in"
+
 [key."sync.literals-span"]
 owner = "repo"
 sentence = "the piece a literals_<function> row places runs to the next row over another function's jump table, so the file's compiled .rodata would end before it and the ROM come out short; add the row named that splits the table off"

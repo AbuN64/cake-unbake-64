@@ -19,7 +19,7 @@ from typing import Any
 import rabbitizer
 import yaml
 
-from unbake import adapters, api, build, ci, effort, journal, libasm, pool, process, report, store, tree
+from unbake import adapters, api, build, ci, effort, journal, libasm, place, pool, process, report, store, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, NativeResult, Refusal, digest, sha1
 
@@ -534,6 +534,45 @@ def jump_table_of(config: Config, version: str, rom: int) -> str | None:
     return _jump_target([int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data) - 3, 4)], code)
 
 
+def _sync_placing(config: Config, params: Json) -> Json:
+    """`sync` after the rows that place the read-only data of the functions named by `place` are added to each
+    version's aliases.txt (see place.py): the plan is refused whole before anything is written, and a sync that refuses
+    afterwards puts the aliases back. With check: the rows it would add, nothing written."""
+    root = config.project.root
+    found = place.plan(config, tree.capture(config), list(params["place"]))
+    wanted = {*(p.file for p in found), *(p.after for p in found if p.after), *(p.split_from for p in found if p.split)}
+    texts = {path: (_read(root / path) or b"").decode() for path in wanted}
+    writes = {**place.rows(found, texts), **place.sources(found, texts)}
+    shown = [
+        {
+            "version": p.version,
+            "function": p.function,
+            "row": p.row,
+            "file": p.file,
+            "note": p.note + (f"; {', '.join(p.split)} move from {p.split_from} to {p.after}" if p.split else ""),
+        }
+        for p in found
+    ]
+    if params.get("check"):
+        return {"written": [], "stand_ins": {}, "placed": shown}
+    old: dict[str, bytes | None] = {path: _read(root / path) for path in writes}
+    for path, data in writes.items():
+        (root / path).write_bytes(data)
+    try:
+        result = sync(config, {k: v for k, v in params.items() if k != "place"})
+    except BaseException:
+        for path, before in old.items():
+            if before is None:
+                (root / path).unlink(missing_ok=True)
+            else:
+                (root / path).write_bytes(before)
+        raise
+    out = {**result, "placed": shown, "written": sorted({*result["written"], *writes})}
+    if any(p.leftover for p in found):
+        out["next"] = "run `make extract`: the leftover bytes have a new stand-in whose assembly is not extracted yet"
+    return out
+
+
 _PASSES = 8  # most passes one sync makes before it stops at a state it keeps rewriting
 
 
@@ -544,6 +583,8 @@ def sync(config: Config, params: Json) -> Json:
     would unless a second sync would write nothing: when it wrote generated or stand-in files the check runs again in
     this process on the tree it left; the README files it writes are not read by the capture, so their fixed point is
     the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
+    if params.get("place"):
+        return _sync_placing(config, params)
     result, current = _sync(config, params)
     root = config.project.root
     for _ in range(0 if params.get("check") else _PASSES):
@@ -590,24 +631,10 @@ def _read(path: Path) -> bytes | None:
     return path.read_bytes() if path.is_file() else None
 
 
-_TABLE_MAX = 0x400  # bytes: longer runs are no jump table
+_TABLE_MAX = place.TABLE_MAX
 
 
-def _jump_target(words: Sequence[int], code: Sequence[tuple[int, int, str]]) -> str | None:
-    """The function every word of `words` points into (a jump table's cases are addresses inside its own function),
-    by the (vram start, vram end, name) runs of `code` (as the ROM's `text_mask` spells code addresses); None when the
-    words are not all inside one."""
-    if len(words) < 2:
-        return None
-    found = set()
-    for word in words:
-        if word % 4:
-            return None
-        at = bisect.bisect_right(code, (word, 1 << 40, "")) - 1
-        if at < 0 or not code[at][0] <= word < code[at][1]:
-            return None
-        found.add(code[at][2])
-    return next(iter(found)) if len(found) == 1 else None
+_jump_target = place.jump_target
 
 
 def _unplaced_tables(config: Config, current: Any) -> list[Finding]:

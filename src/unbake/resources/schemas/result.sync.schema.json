@@ -19,6 +19,40 @@
      "minLength": 1
     }
    }
+  },
+  "placed": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "version": {
+      "type": "string"
+     },
+     "function": {
+      "type": "string"
+     },
+     "row": {
+      "type": "string"
+     },
+     "file": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "version",
+     "function",
+     "row",
+     "file",
+     "note"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "next": {
+   "type": "string"
   }
  },
  "required": [

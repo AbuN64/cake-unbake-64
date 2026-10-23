@@ -28,6 +28,7 @@ and `make check` prove the result.
 ```sh
 unbake sync                                          # write the extraction yaml, linker script, Makefile and CI files
 unbake sync --check                                  # fail if a committed generated file would change (no ROM needed)
+unbake sync --place FUNCTION [--place ...]            # add the literals_ row that puts FUNCTION's own read-only data in its file, then sync
 unbake report                                        # progress per version, kind and segment
 unbake compare src/code_80200610.c --function NAME   # measure a source against every version (writes nothing)
 unbake score src/code_80200610.c --function NAME     # one version and the instruction diff, nothing written
@@ -40,6 +41,15 @@ unbake map                                           # write the layout map to .
 ```
 
 A function that is exact in every version lands at once with a ROM proof and a commit.
+A C function compiles its own read-only data (jump tables, float and string literals), so that data belongs to the
+function's file, not to the INCLUDE_RODATA stand-in or word array that held it while the body was assembly.
+`unbake sync --place FUNCTION` writes the one row that says so per version (`literals_FUNCTION` in `aliases.txt`, at
+the address of the function's data) and lets `sync` drop the superseded stand-ins and regenerate the link script and
+yamls; what is committed is what `unbake sync` writes. The data is the rows the function's extracted assembly reads
+plus the rows whose words are its jump table. It refuses, writing nothing, data any other function reads (it is not
+the function's own), and a built object whose `.rodata` does not fit the ROM bytes it takes the place of (size,
+alignment or content); with no built object the link proves the bytes. `--place` with `--check` lists the rows and
+writes nothing.
 The commands are `init`, `setup`, `sync`, `check`, `audit`, `compare`, `score`, `submit`, `land`, `report`, `map`,
 `symbols` and `compilers`.
 
