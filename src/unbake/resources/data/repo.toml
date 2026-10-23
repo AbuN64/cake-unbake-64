@@ -94,3 +94,17 @@ bar = 20
 dependencies_begin = "<!-- dependencies -->"  # the build tools the Makefile fetches, each a link to its source repository
 dependencies_end = "<!-- /dependencies -->"
 map_width = 720  # px: the memory map in the README is a thumbnail of the full render
+
+# The no-cheat check (cheat.py): what a change over a base may not add. `infra` and `facts` are git pathspecs, `source`
+# the roots whose added lines are scanned, `added` regexes over one added source line (a stand-in line that is what
+# sync generates is exempt), `makefile_row` the one Makefile line shape that may change by hand (a unit's own compiler).
+[cheat]
+infra = ["local.mk", "include/include_asm.h", "rom.toml", "blobs.toml", "roms", "tools", "ci", "asm"]
+facts = ["config.toml", "versions"]
+source = ["src", "include"]
+source_suffix = '\.(c|C|CPP|cpp|h|H|inc)$'
+makefile_row = '^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/src/[^ ]+\.o\): (TC|CPPFLAGS|CFLAGS) :='
+added = [
+  '\basm\s*\(', '__asm', 'GLOBAL_ASM', 'INCLUDE_RODATA', '\.incbin', '^\s*\.word\b', '"\s*\.word\b', ';\s*\.word\b',
+  '#\s*(un)?define\s+NON_MATCHING', '#\s*pragma', '__attribute__\s*\(\(\s*section',
+]

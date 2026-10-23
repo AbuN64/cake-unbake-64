@@ -579,3 +579,27 @@ sentence = "two files move to one path, or a file moves onto one that stays"
 [key."layout.split"]
 owner = "folders"
 sentence = "a directory row, library or flag names a directory whose files move to different places"
+
+[key."cheat.infra"]
+owner = "cheat"
+sentence = "a change edits the build or compare infrastructure, which could fake a match"
+
+[key."cheat.makefile"]
+owner = "cheat"
+sentence = "a Makefile change is neither a per-object compiler row nor the generated Makefile"
+
+[key."cheat.added"]
+owner = "cheat"
+sentence = "a change adds assembly, raw words, pragmas or section attributes to the source"
+
+[key."cheat.include-asm"]
+owner = "cheat"
+sentence = "a change raises the number of INCLUDE_ASM stand-ins"
+
+[key."cheat.non-c"]
+owner = "cheat"
+sentence = "a change adds a non-C file under the source roots"
+
+[key."cheat.dirty"]
+owner = "cheat"
+sentence = "the tree's facts differ from the revision to check"

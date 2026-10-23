@@ -36,6 +36,7 @@ unbake submit src/code_80200610.c                    # put an exact source in th
 unbake land                                          # land every inbox submission, one commit each
 unbake check                                         # census the source rules over the whole project
 unbake audit --against REV                           # refuse the rule rows a change adds over REV
+unbake cheat --against REV                           # refuse what a change adds over REV that could fake a match
 unbake symbols                                       # the symbol table of a version
 unbake map                                           # write the layout map to .unbake/map.json
 ```
@@ -50,7 +51,7 @@ plus the rows whose words are its jump table. It refuses, writing nothing, data 
 the function's own), and a built object whose `.rodata` does not fit the ROM bytes it takes the place of (size,
 alignment or content); with no built object the link proves the bytes. `--place` with `--check` lists the rows and
 writes nothing.
-The commands are `init`, `setup`, `sync`, `check`, `audit`, `compare`, `score`, `submit`, `land`, `report`, `map`,
+The commands are `init`, `setup`, `sync`, `check`, `audit`, `cheat`, `compare`, `score`, `submit`, `land`, `report`, `map`,
 `symbols` and `compilers`.
 
 ## Compilers

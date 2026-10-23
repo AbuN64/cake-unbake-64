@@ -128,6 +128,14 @@ params = [
   { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the working tree is compared with" },
 ]
 
+[command.cheat]
+help = "Refuse what a change adds over REV that could fake a match: assembly, raw words, pragmas, sections, a new INCLUDE_ASM, non-C source files, infrastructure edits, a Makefile change that is not a unit's compiler row or the generated one. A stand-in line sync itself writes passes."
+handler = "cheat.cheat_command"
+params = [
+  { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "base revision the change is compared with" },
+  { name = "head", kind = "option", type = "str", required = false, multiple = false, help = "revision checked out in the tree, default HEAD" },
+]
+
 [command.renameproof]
 configured = false
 help = "Prove a change that only renames identifiers by its rename map (no build): the working tree, or PATCHes applied in order, over REV."

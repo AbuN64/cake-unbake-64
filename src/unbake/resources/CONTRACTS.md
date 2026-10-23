@@ -29,7 +29,7 @@ one `[version.<id>]` table per ROM, optional `[file."path or dir/"]` rows). Ther
 types.toml or version_differences. A file owns the names it defines or keeps behind `INCLUDE_ASM(SEG, NAME)`,
 `INCLUDE_DATA`, `INCLUDE_RODATA` and `INCLUDE_BSS(SEG, NAME, SIZE)`; `tree.capture(config, overlay)` reads it and
 `Tree.owner(version, name)` answers who owns a name. Fuzzy C sits in `#ifdef NON_MATCHING`; a per-version difference sits
-in `#if VERSION_X`. The commands are `init`, `setup [--no-make]`, `sync [--check|--settle] [--place FUNCTION]...`, `check`, `audit`, `compare`, `score`, `probe`, `submit`,
+in `#if VERSION_X`. The commands are `init`, `setup [--no-make]`, `sync [--check|--settle] [--place FUNCTION]...`, `check`, `audit`, `cheat --against REV [--head REV]`, `compare`, `score`, `probe`, `submit`,
 `land`, `report`, `map`, `symbols` and `names`. CI is `ci/run` (forge-neutral, the repository's own `make check CHECK=tree` only: a game repository never installs or calls unbake) with thin GitHub and GitLab wrappers. Policy keeps
 the source rules and the `unclean` pool, and adds a header lint: each `extern` is declared at most once across `include/`
 and a name has the same declaration everywhere (cached in the `header.names` kind by header text).
@@ -51,6 +51,7 @@ and a name has the same declaration everywhere (cached in the `header.names` kin
 | snsym | `BASES: constant`; `CLASSES: constant`; `EOS: constant`; `TYPEDEF: constant`; `SymError(...)`; `Record(...)`; `record(data: bytes \| memoryview, at: int) -> Record`; `object_record(data: bytes \| memoryview, at: int) -> Record`; `records(data: bytes \| memoryview, at: int=0, end: int \| None=None, dialect: str="sym") -> tuple[list[Record], int]`; `find(data: bytes \| memoryview, start: int=0, end: int \| None=None, minimum: int=50, dialect: str="sym") -> list[tuple[int, int]]`; `type_text(code: int, tag: str="", dims: tuple[int, ...]=()) -> str`; `types(recs: list[Record]) -> list[dict[str, object]]`; `functions(recs: list[Record]) -> list[dict[str, object]]`; `encode(rec: Record) -> bytes`; `emit(recs: list[Record]) -> bytes`; `cut_tail(data: bytes | memoryview, at: int, end: int) -> dict[str, int | str]`; `cut_head(data: bytes | memoryview, start: int, size: int) -> dict[str, int | str]`; `stream_start(data: bytes | memoryview, first: int, floor: int) -> int`; `stream_receipt(data: bytes | memoryview, start: int, end: int) -> dict[str, object]` |
 | build | `install_toolchains(config: Config, ids: Sequence[str]) -> list[Path]`; `install_toolchain(config: Config, id: str) -> Path`; `makefile(config: Config) -> bytes`; `linker(config: Config, held: Tree) -> bytes`; `splat_yaml(config: Config, v: str, held: Tree) -> bytes`; `make(config: Config, targets: Sequence[str]) -> NativeResult`; `text_sizes(config: Config, held: Tree, v: str) -> bytes`; `local_mk(config: Config) -> bytes`; `extract(config: Config, version: str \| None=None) -> NativeResult`; `inputs(config: Config) -> str`; `make_check(config: Config, held: Tree \| None=None) -> Json`; `rule_text(text: str, target: str) -> str \| None`; `drop_including(config: Config, version: str, names: set[str]) -> int`; `drop_reflagged(config: Config, new: bytes \| None=None) -> int`; `project_inputs(project: Project) -> str`; `verify(params: Json) -> Json` |
 | ci | `RUN: constant`; `files() -> dict[str, bytes]` |
+| cheat | `non_matching_lines(text: str) -> set[int]`; `cheat_command(config: Config, params: Json) -> Json` |
 | cli | `main(argv: Sequence[str] \| None=None) -> int` |
 | compilers | `parse(listing: str) -> dict[str, list[tuple[str, str, str | None, str]]]`; `features(ins: Sequence[Ins]) -> Json`; `shape(record: Mapping[str, Any]) -> str`; `shapes(record: Mapping[str, Any]) -> dict[str, set[str]]`; `allows(fingerprint: Mapping[str, Any], seen: Mapping[str, Iterable[str]]) -> bool`; `smallest_rows(exact: Mapping[str, frozenset[str]], default: str, current: Mapping[str, str]) -> list[tuple[str, str]]`; `dead_rows(config: Config) -> list[str]`; `proposal(config: Config, version: str, fp: Sequence[Json], cen: Sequence[Json]) -> Json`; `fingerprint(config: Config, params: Json) -> Json`; `census(config: Config, params: Json) -> Json`; `propose(config: Config, params: Json) -> Json`; `run(config: Config, params: Json) -> Json` |
 | compare | `score_functions(config: Config, path: str, names: Sequence[str], version: str) -> dict[str, float]`; `gaps(name: str, held: Sequence[str], proofs: Sequence[Proof]) -> tuple[Finding, ...]`; `run(config: Config, params: Json) -> Json`; `submit_command(config: Config, params: Json) -> Json`; `score_command(config: Config, params: Json) -> Json`; `probe_command(config: Config, params: Json) -> Json` |
@@ -166,6 +167,7 @@ Tracked generated files (`unbake sync`; each starts with the stamp `generated fr
 - snsym: 320
 - build: 492
 - ci: 30
+- cheat: 320
 - cli: 174
 - compare: 512
 - compilers: 800

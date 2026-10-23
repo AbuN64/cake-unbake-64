@@ -241,6 +241,60 @@
     "type": "string",
     "minLength": 1
    }
+  },
+  "cheat": {
+   "type": "object",
+   "properties": {
+    "infra": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "facts": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "source": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "added": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "source_suffix": {
+     "type": "string",
+     "minLength": 1
+    },
+    "makefile_row": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "required": [
+    "infra",
+    "facts",
+    "source",
+    "added",
+    "source_suffix",
+    "makefile_row"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [
@@ -251,7 +305,8 @@
   "ignore",
   "splat",
   "layout",
-  "splat_pip"
+  "splat_pip",
+  "cheat"
  ],
  "additionalProperties": false
 }
