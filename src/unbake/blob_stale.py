@@ -7,6 +7,7 @@ unknown bytes of every version and lists the requests `unbake blobs prove` takes
 
 from __future__ import annotations
 
+import re
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from unbake.contracts import Config, Json
 
 MIN_COPY = 64  # the fewest bytes of one copy
 WINDOW = 32  # source bytes hashed at multiples of WINDOW; any copy of MIN_COPY bytes holds one
+TEXT = re.compile(rb"[\x20-\x7e\t\r\n]{7,}\x00")  # terminated text, at least eight bytes
 MIN_DISTINCT = 4  # a window of fewer distinct byte values (fill, a repeated word) names no source
 Spans = list[tuple[int, int]]
 _ACCOUNTED = ("code", "data", "decoded", "identified")
@@ -104,6 +106,49 @@ def find(
     return found
 
 
+def text_index(roms: Mapping[str, bytes], spans: Mapping[str, Spans]) -> dict[bytes, list[tuple[str, int]]]:
+    """Terminated text wholly inside accounted spans. These are copy sources, not a new data classification."""
+    found: defaultdict[bytes, list[tuple[str, int]]] = defaultdict(list)
+    for version, rom in roms.items():
+        for low, high in spans[version]:
+            for match in TEXT.finditer(rom, low, high):
+                if len(set(match[0])) >= MIN_DISTINCT:
+                    found[match[0]].append((version, match.start()))
+    return found
+
+
+def text_copies(
+    rom: bytes,
+    sources: Mapping[bytes, Sequence[tuple[str, int]]],
+    version: str,
+    targets: Spans,
+    order: Sequence[str] = (),
+) -> list[Json]:
+    """Exact short text copies missed by the binary window floor; every byte still needs an accounted source."""
+    rank = {v: i for i, v in enumerate(order)}
+    rows = []
+    for low, high in targets:
+        for match in TEXT.finditer(rom, low, high):
+            choices = [
+                (v, at)
+                for v, at in sources.get(match[0], ())
+                if v != version or at + len(match[0]) <= match.start() or at >= match.end()
+            ]
+            if not choices:
+                continue
+            source_version, source = min(choices, key=lambda p: (p[0] != version, rank.get(p[0], len(rank)), p))
+            rows.append(
+                {
+                    "version": version,
+                    "region": [match.start(), match.end()],
+                    "reader": "copy",
+                    "source": source,
+                    "source_version": source_version,
+                }
+            )
+    return rows
+
+
 def objects(rom: bytes, targets: Spans) -> list[Json]:
     """The object files inside `targets` whose records tile from the magic to where they stop (the proof is the
     sn-debug reader of the object dialect)."""
@@ -126,6 +171,7 @@ def scan(config: Config) -> Json:
     roms = {v: (Path(config.project.root) / "roms" / f"baserom.{v}.z64").read_bytes() for v in parts}
     spans = {v: accounted(p) for v, p in parts.items()}
     windows = index(roms, spans)
+    text_sources = text_index(roms, spans)
     bodies = objcode.corpus(config, roms=roms)
     out: dict[str, Any] = {}
     for v, p in parts.items():
@@ -136,6 +182,9 @@ def scan(config: Config) -> Json:
         rest = blobs.subtract(left_over, blobs.merge([tuple(r["rom"]) for r in code]))
         copies = find(roms, spans, windows, v, rest, list(parts))
         left = blobs.subtract(rest, blobs.merge([tuple(c["region"]) for c in copies]))
+        short = text_copies(roms[v], text_sources, v, left, list(parts))
+        copies.extend(short)
+        left = blobs.subtract(left, blobs.merge([tuple(c["region"]) for c in short]))
         out[v] = {
             "unknown": blobs.length(targets),
             "streams": streams,

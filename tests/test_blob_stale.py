@@ -52,3 +52,40 @@ def test_objects_are_found_by_their_magic_and_their_whole_records():
     data = rom((0x100, snsym.OBJ_MAGIC + body), (0x800, snsym.OBJ_MAGIC + body[:60]), size=0x1000)
     found = blob_stale.objects(data, [(0x80, 0x1000)])
     assert found == [{"version": "", "region": [0x100, 0x100 + 4 + len(body)], "reader": "sn-debug", "dialect": "obj"}]
+
+
+def test_short_terminated_text_can_copy_from_accounted_bytes_at_any_byte_phase():
+    text = b"pThis != NULL\0"
+    roms = {"a": rom((0x103, text)), "b": rom((0x407, text))}
+    spans = {"a": [(0x103, 0x103 + len(text))], "b": []}
+    sources = blob_stale.text_index(roms, spans)
+    assert blob_stale.text_copies(roms["b"], sources, "b", [(0x400, 0x500)]) == [
+        {"version": "b", "region": [0x407, 0x407 + len(text)], "reader": "copy", "source": 0x103, "source_version": "a"}
+    ]
+
+
+def test_text_needs_a_whole_accounted_source_and_a_whole_terminated_target():
+    text = b"pThis != NULL\0"
+    roms = {"a": rom((0x100, text)), "b": rom((0x400, text), (0x500, b"different text\0"))}
+    short = blob_stale.text_index(roms, {"a": [(0x100, 0x100 + len(text) - 1)], "b": []})
+    assert blob_stale.text_copies(roms["b"], short, "b", [(0x400, 0x600)]) == []
+    sources = blob_stale.text_index(roms, {"a": [(0x100, 0x100 + len(text))], "b": []})
+    assert blob_stale.text_copies(roms["b"], sources, "b", [(0x400, 0x400 + len(text) - 1)]) == []
+    assert blob_stale.text_copies(roms["b"], sources, "b", [(0x500, 0x600)]) == []
+
+
+def test_tiny_and_uniform_text_cannot_supply_copy_evidence():
+    data = rom((0x100, b"pThis\0aaaaaaaaaaaa\0"))
+    assert blob_stale.text_index({"a": data}, {"a": [(0x100, 0x200)]}) == {}
+
+
+def test_text_source_choice_is_deterministic_prefers_same_rom_and_never_self():
+    text = b"pThis != NULL\0"
+    data = rom((0x100, text), (0x300, text))
+    sources = {text: [("z", 0x200), ("b", 0x300), ("a", 0x400), ("b", 0x100)]}
+    (found,) = blob_stale.text_copies(data, sources, "b", [(0x100, 0x200)], ["a", "z", "b"])
+    assert (found["source_version"], found["source"]) == ("b", 0x300)
+    sources[text] = [("z", 0x200), ("b", 0x100), ("a", 0x400)]
+    (found,) = blob_stale.text_copies(data, sources, "b", [(0x100, 0x200)], ["a", "z", "b"])
+    assert (found["source_version"], found["source"]) == ("a", 0x400)
+    assert blob_stale.text_copies(data, {text: [("b", 0x100)]}, "b", [(0x100, 0x200)]) == []
