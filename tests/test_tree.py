@@ -219,6 +219,11 @@ def test_scanner_names_a_variable_of_an_anonymous_aggregate() -> None:
     assert tree._scan(text) == (["pair", "both", "tagged"], [])
 
 
+def test_scanner_names_a_variable_with_an_attribute_group() -> None:
+    text = "struct { short h; int w[2]; } __attribute__((packed)) blob = {0, {1, 2}};\nint x __attribute__((aligned(8))) = 1;\n"
+    assert tree._scan(text) == (["blob", "x"], [])
+
+
 def test_scanner_reads_functions_returning_aggregates() -> None:
     text = """
     struct Point *at(unsigned id) { return 0; }

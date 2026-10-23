@@ -331,9 +331,33 @@ def _unquote(token: str) -> str:
 _AGGREGATE = {"struct", "union", "enum"}
 
 
+_ATTRIBUTES = {"__attribute__", "__attribute"}
+
+
+def _without_attributes(tokens: Sequence[str]) -> list[str]:
+    """`tokens` without its `__attribute__ ((...))` groups: `struct {} __attribute__((packed)) name` declares `name`,
+    its parentheses are not a function declarator."""
+    out: list[str] = []
+    depth, waiting = 0, False
+    for token in tokens:
+        if token in _ATTRIBUTES:
+            waiting = True
+        elif waiting and token == "(":
+            depth += 1
+        elif depth:
+            depth += token == "(" or -(token == ")")
+            waiting = depth > 0
+        elif waiting:
+            waiting = False
+            out.append(token)
+        else:
+            out.append(token)
+    return out
+
+
 def _data_name(piece: Sequence[str], first: bool) -> str:
     """The declared name of one declarator, "" for a prototype, a bare type or a tag."""
-    tokens = list(piece[: piece.index("=")] if "=" in piece else piece)
+    tokens = _without_attributes(piece[: piece.index("=")] if "=" in piece else piece)
     if "(" in tokens:
         at = tokens.index("(")
         # a function pointer variable names itself after the star; any other parenthesis is a prototype
