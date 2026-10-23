@@ -72,12 +72,27 @@ def test_the_literal_pool_a_function_reads_is_placed_too(monkeypatch, tmp_path):
     assert root.is_file()
 
 
-def test_data_a_c_function_reads_too_is_not_the_functions_own(monkeypatch, tmp_path):
-    config = _world(monkeypatch, tmp_path, asm={G: "lw $v0, %lo(jtbl_800E1500)($at)\n"})
+def test_data_another_file_defines_in_c_is_not_the_functions_own(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    other = SimpleNamespace(
+        path="src/other.c",
+        owns={"a": ("jtbl_800E1500",)},
+        stand_ins={"a": ()},
+        sections={"a": {"jtbl_800E1500": ".rodata"}},
+    )
+    held = _tree()
+    held.modules = (*held.modules, other)
     with pytest.raises(Refusal) as refused:
-        place.plan(config, _tree(compiled=(F, G)), [F])
+        place.plan(config, held, [F])
     (finding,) = refused.value.findings
-    assert finding.key == "place.shared" and G in finding.reason and finding.unit == F
+    assert finding.key == "place.shared" and "src/other.c" in finding.reason and finding.unit == F
+
+
+def test_a_c_reader_of_the_table_keeps_its_extern_and_the_table_is_placed(monkeypatch, tmp_path):
+    # G is C and reads the table through `extern char jtbl_800E1500;`: the symbol resolves by address after the move
+    config = _world(monkeypatch, tmp_path, asm={G: "lw $v0, %lo(jtbl_800E1500)($at)\n"})
+    (found,) = place.plan(config, _tree(compiled=(F, G)), [F])
+    assert found.row.startswith(f"literals_{F} = 0x800E1500;") and f"{G} (C: extern)" in found.note
 
 
 def test_a_table_an_assembly_function_also_reads_is_placed_with_its_first_owner(monkeypatch, tmp_path):
@@ -98,9 +113,8 @@ def test_the_assembly_an_earlier_name_left_behind_is_no_second_reader(monkeypatc
 def test_a_second_name_of_the_same_bytes_counts_as_a_reader(monkeypatch, tmp_path):
     facts = _facts({"D_alias": (TABLE[0], TABLE[1], None, "data")})
     config = _world(monkeypatch, tmp_path, facts=facts, asm={G: "lw $v0, %lo(D_alias)($at)\n"})
-    with pytest.raises(Refusal) as refused:
-        place.plan(config, _tree(compiled=(F, G)), [F])
-    assert refused.value.findings[0].key == "place.shared"
+    (found,) = place.plan(config, _tree(), [F])
+    assert f"{G} (assembly)" in found.note
 
 
 def test_a_file_that_already_places_its_data_gets_no_row_and_is_no_refusal(monkeypatch, tmp_path):
