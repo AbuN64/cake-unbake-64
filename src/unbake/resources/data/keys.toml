@@ -600,6 +600,10 @@ sentence = "a change raises the number of INCLUDE_ASM stand-ins"
 owner = "cheat"
 sentence = "a change adds a non-C file under the source roots"
 
+[key."cheat.duplicate-name"]
+owner = "cheat"
+sentence = "a change spells one symbol name on more than one fact row"
+
 [key."cheat.dirty"]
 owner = "cheat"
 sentence = "the tree's facts differ from the revision to check"

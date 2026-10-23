@@ -125,6 +125,19 @@ def parse(text: str, where: str = "symbol_addrs.txt") -> dict[str, Symbol]:
     return out
 
 
+def duplicates(*texts: str) -> set[str]:
+    """The names that more than one row spells across these fact texts (a version's symbol_addrs.txt and aliases.txt):
+    `merged` keeps one row per name and drops the rest silently, so the dropped address is a hole in the image."""
+    seen: set[str] = set()
+    out: set[str] = set()
+    for text in texts:
+        for line in text.splitlines():
+            found = _LINE.match(line)
+            if found:
+                (out if found[2] in seen else seen).add(found[2])
+    return out
+
+
 def load(config: Config, version: str) -> dict[str, Symbol]:
     """symbol_addrs.txt and aliases.txt of one version (either may be absent)."""
     texts = []

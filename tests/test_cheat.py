@@ -161,3 +161,28 @@ def test_a_dirty_fact_tree_is_refused(repo: SimpleNamespace) -> None:
 def test_a_renamed_file_adds_only_its_changed_lines(repo: SimpleNamespace) -> None:
     _git(repo.root, "mv", "src/a.c", "src/b.c")
     assert repo.check()["stand_ins"] == []
+
+
+def test_a_name_added_twice_to_the_facts_fails(repo: SimpleNamespace) -> None:
+    rows = "lit_x = 0x800E16C8; // rom:0xE22C8\nlit_x = 0x800E173C; // rom:0xE233C\n"
+    assert _refused(repo, **{"versions/de/aliases.txt": rows}) == {"cheat.duplicate-name"}
+
+
+def test_a_name_in_both_fact_files_fails(repo: SimpleNamespace) -> None:
+    keys = _refused(repo, **{"versions/de/symbol_addrs.txt": "lit_y = 0x1;\n", "versions/de/aliases.txt": "lit_y = 0x2;\n"})
+    assert keys == {"cheat.duplicate-name"}
+
+
+def test_unique_names_pass(repo: SimpleNamespace) -> None:
+    assert repo.check(**{"versions/de/aliases.txt": "lit_a = 0x1;\nlit_b = 0x2;\n"})["head"] == "HEAD"
+
+
+def test_a_duplicate_already_at_base_is_not_new(repo: SimpleNamespace) -> None:
+    (repo.root / "versions/de").mkdir(parents=True)
+    (repo.root / "versions/de/aliases.txt").write_text("dup = 0x1;\ndup = 0x2;\n")
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "old")
+    base = _git(repo.root, "rev-parse", "HEAD")
+    (repo.root / "src/a.c").write_text(A + "int g;\n")
+    _git(repo.root, "commit", "-qam", "c")
+    assert cheat.cheat_command(repo.config, {"against": base})["head"] == "HEAD"

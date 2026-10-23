@@ -241,6 +241,22 @@ def _generated(config: Config, git: _Git, base: str, segment: str, name: str, ro
     return False
 
 
+def _fact_text(git: _Git, rev: str, version: str) -> list[str]:
+    """A version's symbol_addrs.txt and aliases.txt at `rev` ("" for one that is absent there)."""
+    return [git("show", f"{rev}:{p}", ok=(0, 128)) for p in (symbols.path(version), symbols.aliases_path(version))]
+
+
+def _duplicate_names(config: Config, git: _Git, base: str, head: str) -> dict[str, list[str]]:
+    """version -> the names `head` spells on more than one fact row that `base` did not (one name, two rows: the
+    second address never reaches the link image or the port's boot image)."""
+    out: dict[str, list[str]] = {}
+    for v in config.project.versions:
+        new = symbols.duplicates(*_fact_text(git, head, v)) - symbols.duplicates(*_fact_text(git, base, v))
+        if new:
+            out[v] = sorted(new)
+    return out
+
+
 def cheat_command(config: Config, params: Json) -> Json:
     """Refuse what `head` (default HEAD) adds over `against` that could fake a match. The facts read are the working
     tree's, so it must be checked out at `head`."""
@@ -296,6 +312,15 @@ def cheat_command(config: Config, params: Json) -> Json:
     ]
     if odd:
         findings.append(Finding("cheat.non-c", "non-C files added under the source roots", missing=tuple(odd[:8])))
+    for v, names in _duplicate_names(config, git, base, head).items():
+        findings.append(
+            Finding(
+                "cheat.duplicate-name",
+                f"{v}: a symbol name is spelled on more than one fact row",
+                missing=tuple(names[:8]),
+                action="give each address its own name (rename the new row, e.g. suffix _2)",
+            )
+        )
     if findings:
         raise Refusal(*findings)
     return {"against": base, "head": head, "makefile": makefile, "stand_ins": sorted(set(stand_ins))}
