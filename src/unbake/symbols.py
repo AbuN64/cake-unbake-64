@@ -511,3 +511,23 @@ def names_command(params: Json) -> Json:
         return {**result, "symbol_files": changed}
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise Refusal(Finding("names.input", str(error))) from error
+
+
+_FIRST_WORD = re.compile(r"/\*\s*([0-9A-Fa-f]+)\s+[0-9A-Fa-f]{8}\s+[0-9A-Fa-f]{8}\s*\*/")
+
+
+def superseded_asm(root: Path, version: str, facts: Mapping[str, Symbol]) -> list[Path]:
+    """The extracted assembly files of `version` that an earlier name of a function left behind: asm/<v>/nonmatchings
+    /<segment>/<old>.s whose name no fact has any more while its first word's rom address belongs to a function the
+    facts call by another name. An auto-named function (no fact) and a file whose address no fact holds stay."""
+    by_rom = {row[1]: n for n, row in facts.items() if row[3] == "func" and row[1] is not None}
+    found = []
+    for file in sorted((root / "asm" / version / "nonmatchings").rglob("*.s")):
+        if file.stem in facts:
+            continue
+        with file.open(errors="replace") as handle:
+            head = handle.read(4096)
+        first = _FIRST_WORD.search(head)
+        if first and by_rom.get(int(first[1], 16), file.stem) != file.stem:
+            found.append(file)
+    return found

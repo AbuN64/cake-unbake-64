@@ -962,6 +962,7 @@ def test_a_rename_of_facts_renames_the_last_extraction_and_runs_no_splat(tmp_pat
 
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
     _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {})  # no fact names a leftover file
     monkeypatch.setattr(
         repo,
         "_extract_key",
@@ -1016,6 +1017,7 @@ def test_a_name_already_in_the_text_makes_the_rename_extraction_run_splat(tmp_pa
 
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
     _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {})  # no fact names a leftover file
     monkeypatch.setattr(
         repo,
         "_extract_key",
@@ -1067,6 +1069,7 @@ def _drop_job(tmp_path, monkeypatch, text):
     from types import SimpleNamespace
 
     config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {})  # no fact names a leftover file
     _write(tmp_path, "versions/us/symbol_addrs.txt", DROP_FACTS)
     _write(tmp_path, "versions/us/splat.yaml", YAML_OLD)
     monkeypatch.setattr(
@@ -1150,3 +1153,43 @@ def test_an_extraction_change_reaches_the_files_that_include_it_through_others()
     reach = repo._including({"data/a.s"}, includes)
     assert {"data/a.s", "data/b.s", "nonmatchings/s/f.s"} <= reach and "nonmatchings/s/g.s" not in reach
     assert repo._including({"nonmatchings/s/g.s"}, includes) >= {"nonmatchings/s/g.s", "g.s"}
+
+
+def test_sync_fences_a_stand_in_out_of_every_version_that_does_not_own_the_name(world, monkeypatch):
+    # a owns d_chunk; b knows the bytes under another name (no stale row, no ownership): only a may emit the pair
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: {**FACTS, "d_chunk": (0x80100000, 0x2000, 8, "data")})
+    array = "const unsigned int d_chunk[2] = {\n    0x00000001, 0x00000002,\n};\n"
+    _write(world.root, "src/main/keep.c", "int f_keep(void) { return 1; }\n" + array)
+    world.cfg.project.versions = ("a", "b", "c")
+    world.tree = _tree(
+        {"src/main/keep.c": {"a": ("f_keep", "d_chunk"), "b": ("f_keep",), "c": ("f_keep",)}},
+        stale={"src/main/keep.c": {"c": ("d_chunk",)}},
+        sections={"d_chunk": ".rodata"},
+    )
+    monkeypatch.setattr(repo, "_PASSES", 0)  # the stub tree never reflects the first pass
+    repo.sync(world.cfg, {"check": False})
+    text = (world.root / "src/main/keep.c").read_text()
+    assert "#if !(defined(VERSION_B) || defined(VERSION_C))\n" + array in text
+
+
+def test_extraction_removes_the_assembly_an_earlier_name_left_behind(world, monkeypatch):
+    seg = world.root / "asm/a/nonmatchings/main"
+    _write(
+        world.root,
+        "asm/a/nonmatchings/main/f_old.s",
+        "glabel f_old\n    /* 1000 80000400 27BDFFE8 */  addiu $sp, $sp, -0x18\n",
+    )
+    _write(
+        world.root,
+        "asm/a/nonmatchings/main/f_main.s",
+        "glabel f_main\n    /* 1000 80000400 27BDFFE8 */  addiu $sp, $sp, -0x18\n",
+    )
+    _write(
+        world.root,
+        "asm/a/nonmatchings/main/func_80009999.s",
+        "glabel func_80009999\n    /* 9999 80009999 27BDFFE8 */  nop\n",
+    )
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: FACTS)
+    assert repo._prune_superseded(world.cfg, "a")
+    assert sorted(p.name for p in seg.iterdir()) == ["f_main.s", "func_80009999.s"]  # an auto-named function stays
+    assert not repo._prune_superseded(world.cfg, "a")

@@ -10,8 +10,10 @@ writes. Bytes the old piece held after the function's own data (a pad or foreign
 When that file also owns data before the table (its one .rodata section would be linked in front of the table), the
 names it owns from the leftover on move to a new sibling file (`<stem>_<n>`) that takes the stand-in instead.
 
-What it refuses (nothing is written then): a table or pool any other function of the version reads (the data would
-no longer be the function's own), leftover bytes with no file after them to hold a stand-in, and, when the version's
+A table or pool that other functions also read stays with the function that is placed when those are still assembly
+(a stand-in): their symbol keeps resolving by address, and the plan's note names them. What it refuses (nothing is
+written then): a table or pool a function that is C in the version reads (that body needs an `extern` for it, or its
+own table), leftover bytes with no file after them to hold a stand-in, and, when the version's
 object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment, content).
 """
 
@@ -25,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from unbake import api, tree
+from unbake import api, symbols, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Refusal
 
@@ -143,14 +145,17 @@ def _asm_names(root: Path, config: Config, v: str, function: str, table: Mapping
     return {n for n in _NAME.findall(text) if n in table}
 
 
-def _readers(root: Path, v: str, names: Collection[str], skip: str) -> dict[str, list[str]]:
-    """name -> the functions of version `v` (other than `skip`) whose extracted assembly mentions it."""
+def _readers(
+    root: Path, v: str, names: Collection[str], skip: str, left: Collection[Path] = ()
+) -> dict[str, list[str]]:
+    """name -> the functions of version `v` (other than `skip`) whose extracted assembly mentions it. `left` are the
+    files an earlier name of a function left behind (symbols.superseded_asm): the same function, not a second reader."""
     if not names:
         return {}
     pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, names))) + r")\b")
     found: dict[str, list[str]] = {}
     for file in sorted((root / "asm" / v / "nonmatchings").rglob("*.s")):
-        if file.name == skip:
+        if file.name == skip or file in left:
             continue
         for n in set(pattern.findall(file.read_text(errors="replace"))):
             found.setdefault(n, []).append(file.stem)
@@ -204,21 +209,27 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             end = (table[last][1] or 0) + rows[-1][1]
             rest = _after(roms, table[last][1] or 0)
             aka = {n: [m for m, f in table.items() if f[0] == table[n][0]] for n in names}  # second names, same bytes
-            readers = _readers(root, v, {m for ms in aka.values() for m in ms}, f"{function}.s")
+            left = set(symbols.superseded_asm(root, v, table))
+            shared: list[str] = []
+            readers = _readers(root, v, {m for ms in aka.values() for m in ms}, f"{function}.s", left)
             for n in names:
                 readers[n] = sorted({r for m in aka[n] for r in readers.get(m, ())})
-                if readers.get(n):
+                if c_readers := [r for r in readers[n] if r in compiled]:
                     refused.append(
                         Finding(
                             "place.shared",
-                            f"{v}: {n} is read by {', '.join(sorted(readers[n])[:3])} as well as {function}: it is "
-                            "not the function's own data, so it stays where it is",
+                            f"{v}: {n} is read by {', '.join(c_readers[:3])}, C here, as well as {function}: "
+                            f"it keeps one table in {module.path}; declare `extern` for {n} in the reader's file and "
+                            "drop the reader's own table, or leave the data where it is",
                             path=module.path,
                             unit=function,
                             versions=(v,),
                         )
                     )
+                elif readers[n]:
+                    shared.append(f"{n} also read by {', '.join(readers[n][:3])} (assembly: it links by address)")
             note, bad = _object(root, v, module.path, image, rom, end, vram)
+            note = "; ".join([note, *shared]) if shared else note
             if bad:
                 refused.append(
                     Finding("place.object", f"{v}: {function}: {bad}", path=module.path, unit=function, versions=(v,))

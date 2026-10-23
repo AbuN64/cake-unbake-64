@@ -19,7 +19,7 @@ from typing import Any
 import rabbitizer
 import yaml
 
-from unbake import adapters, api, build, ci, effort, journal, libasm, place, pool, process, report, store, tree
+from unbake import adapters, api, build, ci, effort, journal, libasm, place, pool, process, report, store, symbols, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, NativeResult, Refusal, digest, sha1
 
@@ -451,7 +451,13 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes | None]:
             ):
                 data_dropped.add(module.path)
         for name in sorted(kept):
-            gone = [v for v in config.project.versions if name in module.stale.get(v, ())]
+            # live only where this file owns the name and no literals row supersedes it: a version that knows the bytes
+            # under another name (or not at all) must not emit the pair a second time (the link overlapped in .data)
+            gone = [
+                v
+                for v in config.project.versions
+                if name in module.stale.get(v, ()) or name not in module.owns.get(v, ())
+            ]
             if _exclude(lines(module.path), name, gone):
                 touched.add(module.path)
     touched |= _narrowed(config, current, lines)
@@ -1108,6 +1114,24 @@ def _is_drop_row(names: Collection[bytes], line: bytes) -> bool:
     return bool(eq) and head.strip() in names
 
 
+def _prune_superseded(config: Config, v: str) -> bool:
+    """Remove the extracted assembly an earlier name of a function left behind (asm/<v>/nonmatchings/<seg>/<old>.s
+    when the facts call that address by another name): readers of the assembly (sync --place) took it for a second
+    function reading the same tables. True when a file went."""
+    root = config.project.root
+    if not (root / f"versions/{v}/symbol_addrs.txt").is_file() or not (root / "asm" / v / "nonmatchings").is_dir():
+        return False
+    gone = symbols.superseded_asm(root, v, api.symbols(config, v))
+    for file in gone:
+        file.unlink(missing_ok=True)
+    rows = _manifest_rows(config, v)
+    if gone and rows is not None:  # the record no longer lists them (not damage); other differences still count
+        for file in gone:
+            rows.pop(str(file.relative_to(root)), None)
+        store.write(_asm_manifest_path(config, v), json.dumps(rows, sort_keys=True).encode())
+    return bool(gone)
+
+
 def extract_job(job: tuple[Config, str]) -> bool:
     """One splat run unless asm/<v>/ already holds the extraction of this input; true when splat ran.
 
@@ -1123,6 +1147,8 @@ def extract_job(job: tuple[Config, str]) -> bool:
     config, v = job
     key = _extract_key(config, v)
     asm = config.project.root / "asm" / v
+    if asm.is_dir():
+        _prune_superseded(config, v)
     damaged = _asm_damaged(config, v) if asm.is_dir() else []  # what the last extraction wrote, still as written?
     if asm.is_dir() and _extracted_key(config, v) == key and not damaged:
         if not (_facts_snapshot(config, v).exists() and _yaml_snapshot(config, v).exists()):

@@ -72,19 +72,34 @@ def test_the_literal_pool_a_function_reads_is_placed_too(monkeypatch, tmp_path):
     assert root.is_file()
 
 
-def test_data_another_function_reads_is_not_the_functions_own(monkeypatch, tmp_path):
+def test_data_a_c_function_reads_too_is_not_the_functions_own(monkeypatch, tmp_path):
     config = _world(monkeypatch, tmp_path, asm={G: "lw $v0, %lo(jtbl_800E1500)($at)\n"})
     with pytest.raises(Refusal) as refused:
-        place.plan(config, _tree(), [F])
+        place.plan(config, _tree(compiled=(F, G)), [F])
     (finding,) = refused.value.findings
     assert finding.key == "place.shared" and G in finding.reason and finding.unit == F
+
+
+def test_a_table_an_assembly_function_also_reads_is_placed_with_its_first_owner(monkeypatch, tmp_path):
+    # G stays assembly: its %lo(jtbl_800E1500) links by the symbol's address, so the table moves with F alone
+    config = _world(monkeypatch, tmp_path, asm={G: "lw $v0, %lo(jtbl_800E1500)($at)\n"})
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row.startswith(f"literals_{F} = 0x800E1500;") and G in found.note
+
+
+def test_the_assembly_an_earlier_name_left_behind_is_no_second_reader(monkeypatch, tmp_path):
+    # F was old_name once: asm/.../old_name.s is F's own text under a name the facts dropped
+    old = "/* 1000 80400000 27BDFE70 */  addiu $sp, $sp, -8\nlw $v0, %lo(jtbl_800E1500)($at)\n"
+    config = _world(monkeypatch, tmp_path, asm={"old_name": old})
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.names == ("jtbl_800E1500",) and "old_name" not in found.note
 
 
 def test_a_second_name_of_the_same_bytes_counts_as_a_reader(monkeypatch, tmp_path):
     facts = _facts({"D_alias": (TABLE[0], TABLE[1], None, "data")})
     config = _world(monkeypatch, tmp_path, facts=facts, asm={G: "lw $v0, %lo(D_alias)($at)\n"})
     with pytest.raises(Refusal) as refused:
-        place.plan(config, _tree(), [F])
+        place.plan(config, _tree(compiled=(F, G)), [F])
     assert refused.value.findings[0].key == "place.shared"
 
 
