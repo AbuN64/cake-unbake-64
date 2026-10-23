@@ -51,6 +51,9 @@ plus the rows whose words are its jump table. It refuses, writing nothing, data 
 the function's own), and a built object whose `.rodata` does not fit the ROM bytes it takes the place of (size,
 alignment or content); with no built object the link proves the bytes. `--place` with `--check` lists the rows and
 writes nothing.
+`unbake cheat` treats `ci/`, `tools/`, `asm/`, `roms/`, `rom.toml`, `local.mk` and `include/include_asm.h` as build and
+compare infrastructure and refuses any change to them (`cheat.infra`). A project's own data files (findings, notes,
+feeds, rules tables) belong in `docs/`, which the rule does not guard.
 The commands are `init`, `setup`, `sync`, `check`, `audit`, `cheat`, `compare`, `score`, `submit`, `land`, `report`, `map`,
 `symbols` and `compilers`.
 

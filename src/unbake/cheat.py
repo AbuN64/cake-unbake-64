@@ -280,7 +280,14 @@ def cheat_command(config: Config, params: Json) -> Json:
     findings: list[Finding] = []
     infra = [p for p in git("diff", "--name-only", base, head, "--", *rules["infra"]).splitlines() if p]
     if infra:
-        findings.append(Finding("cheat.infra", "build/compare infrastructure changed", missing=tuple(infra)))
+        findings.append(
+            Finding(
+                "cheat.infra",
+                "build/compare infrastructure changed (ci/, tools/, asm/, roms/, rom.toml, local.mk, include_asm.h are"
+                " infrastructure; a project data file, such as findings, notes or a feed, lives in docs/)",
+                missing=tuple(infra),
+            )
+        )
     if git("diff", "--name-only", base, head, "--", *rules["blobs"]).strip():
         findings.extend(
             import_module("unbake.blobs").verify(config, git("show", f"{base}:blobs.toml", ok=(0, 128)).encode())

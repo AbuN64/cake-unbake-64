@@ -582,7 +582,7 @@ sentence = "a directory row, library or flag names a directory whose files move 
 
 [key."cheat.infra"]
 owner = "cheat"
-sentence = "a change edits the build or compare infrastructure, which could fake a match"
+sentence = "a change edits the build or compare infrastructure (ci/, tools/, asm/, roms/ ...), which could fake a match; project data files belong in docs/"
 
 [key."cheat.makefile"]
 owner = "cheat"
