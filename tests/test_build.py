@@ -334,7 +334,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(text.splitlines()) < 340
+    assert len(text.splitlines()) < 360
     assert "src/f1.c" not in text
 
 
@@ -984,6 +984,29 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
     assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@; fi"
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")
+
+
+def test_a_file_row_pads_hilo_hazards_the_way_the_rom_assembler_did(tmp_path):
+    """A file row's hilo_nops: two nops between an mfhi/mflo and an adjacent mult/div (gas pads only the gap of one)."""
+    import subprocess
+    import sys
+
+    lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
+    hazard = next(i for i, line in enumerate(lines) if "$$HILO_HAZARD" in line)
+    assert lines[hazard].startswith("$(if $(HILO),") and hazard < next(i for i, l in enumerate(lines) if "asn64" in l)
+    code = build.makefile(make_config(tmp_path)).decode().split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0]
+    source = tmp_path / "x.s"
+    source.write_text(
+        "f:\n\tmfhi\t$3\n\tmult\t$4,$5\n\tmflo\t$6\n\tandi\t$2,$3,1\n\tdivu\t$4,$5\n"  # adjacent; gap of one
+        "\t.set\tnoreorder\n\tmflo\t$6\n\tmult\t$4,$5\n\t.set\treorder\n"  # noreorder: untouched
+        "\tmfhi\t$3 # c\n$L1:\n\t#nop\n\tmthi\t$4\n\tmfhi\t$3\n\tdivu\t$2,$4,$5\n"  # a label does not count; 3-operand div
+    )
+    subprocess.run([sys.executable, "-I", "-c", code, str(source)], check=True)
+    assert source.read_text() == (
+        "f:\n\tmfhi\t$3\n\tnop\n\tnop\n\tmult\t$4,$5\n\tmflo\t$6\n\tandi\t$2,$3,1\n\tdivu\t$4,$5\n"
+        "\t.set\tnoreorder\n\tmflo\t$6\n\tmult\t$4,$5\n\t.set\treorder\n"
+        "\tmfhi\t$3 # c\n$L1:\n\t#nop\n\tnop\n\tnop\n\tmthi\t$4\n\tmfhi\t$3\n\tdivu\t$2,$4,$5\n"
+    )
 
 
 def test_undefined_syms_provide_the_aliases_too(tmp_path):

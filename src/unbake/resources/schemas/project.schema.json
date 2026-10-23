@@ -164,6 +164,9 @@
        "type": "string",
        "minLength": 1
       }
+     },
+     "hilo_nops": {
+      "type": "boolean"
      }
     },
     "additionalProperties": false
@@ -191,6 +194,9 @@
        "type": "string",
        "minLength": 1
       }
+     },
+     "hilo_nops": {
+      "type": "boolean"
      }
     },
     "additionalProperties": false

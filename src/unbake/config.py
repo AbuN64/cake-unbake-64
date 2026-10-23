@@ -406,11 +406,11 @@ def dead_paths(files: Mapping[str, FileFacts], default: str, keep: Iterable[str]
     excepts nothing (rows in `keep` stay: a library row marks a boundary). A row's toolchain falls back to the
     project's, and only the deepest row applies."""
 
-    def facts(row: FileFacts | None) -> tuple[str, frozenset[str], frozenset[str]]:
+    def facts(row: FileFacts | None) -> tuple[str, frozenset[str], frozenset[str], bool]:
         return (
-            (row.toolchain or default, frozenset(row.cflags), frozenset(row.omit))
+            (row.toolchain or default, frozenset(row.cflags), frozenset(row.omit), row.hilo_nops)
             if row
-            else (default, frozenset(), frozenset())
+            else (default, frozenset(), frozenset(), False)
         )
 
     return sorted(p for p, row in files.items() if p not in set(keep) and facts(row) == facts(_above(files, p)))
@@ -453,7 +453,7 @@ def load_project(
     spelled: dict[str, str] = {}  # row path -> the table it was written in
     for kind in ("file", "dir", "library"):
         for path, row in document.get(kind, {}).items():
-            facts = FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())))
+            facts = FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())), bool(row.get("hilo_nops")))
             if path in files:
                 problems.append(bad(f"{kind}.{path}", f"{path} is also a [{spelled[path]}] row"))
             elif kind != "file" and not _folder(path):

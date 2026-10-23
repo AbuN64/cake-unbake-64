@@ -173,6 +173,7 @@ def _recipe(id: str) -> str:
         lines.append("test -s $(@:.o=.s)")  # a compiler that exited 0 without assembly has not compiled
         # the alignment the ROM's start of the data does not meet is dropped (data packed at the byte, or off 8)
         lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)')
+        lines.append('$(if $(HILO),python3 -I -c "$$HILO_HAZARD" $(@:.o=.s),true)')
         if row.get("jump_table_base"):
             entry = r"^([ \t]*\.word[ \t]+[.$$]L[0-9]+)[ \t]*$$"
             lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
@@ -209,6 +210,8 @@ def _file_blocks(config: Config, tree: str = "") -> list[str]:
             f"{target}: CPPFLAGS := {' '.join([*row.get('cppflags', []), *project.cppflags, *cpp])}",
             f"{target}: CFLAGS := {' '.join(_flags(row, config, cc, facts.omit))}",
         ]
+        if facts.hilo_nops:
+            rows.append(f"{target}: HILO := 1")
     return rows
 
 

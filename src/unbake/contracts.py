@@ -353,6 +353,7 @@ class FileFacts:
     toolchain: str | None = None
     cflags: tuple[str, ...] = ()
     omit: tuple[str, ...] = ()
+    hilo_nops: bool = False  # the ROM assembler put two nops between an mfhi/mflo and an adjacent mult/div
 
 
 @dataclass(frozen=True)
