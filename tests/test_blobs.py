@@ -516,3 +516,56 @@ def test_the_land_command_returns_the_land_record_not_nested(tmp_path, monkeypat
     out = blobs.run(config, {"action": ["land", str(packet)]})
     assert out["files"] == ["blobs.toml"] and out["message"] and "landed" not in out
     assert human._written("blobs", out)[0] == "Written, not committed. To commit:"
+
+
+def _good():
+    document = json.loads(json.dumps(DOC))
+    document["blob"]["sprite.1"]["evidence"] = [{"artifact": "s.json", "sha256": "cd" * 32}]
+    return document
+
+
+def _verify(tmp_path, monkeypatch, document, partition=None, text=None):
+    """blobs.verify on a written blobs.toml, the tree and the partition mocked."""
+    config = _config(tmp_path)
+    (tmp_path / "blobs.toml").write_bytes(text if text is not None else blobs.emit(document))
+    monkeypatch.setattr("unbake.tree.capture", lambda cfg, *a, **k: None)
+    sums = {"rom_size": ROM, "code": 0, "data": 0, "platform": 0, "blobs": 0, "unknown": ROM, "overlap": 0, "outside": 0, "shadowed": 0}
+    monkeypatch.setattr(report, "partitions", lambda cfg, tree: {"v": {**sums, **(partition or {})}})
+    return {f.key: f.reason for f in blobs.verify(config)}
+
+
+def test_verify_passes_the_facts_land_would_accept(tmp_path, monkeypatch):
+    assert _verify(tmp_path, monkeypatch, _good()) == {}
+
+
+def test_verify_refuses_a_malformed_or_missing_evidence_sha256(tmp_path, monkeypatch):
+    bad = _good()
+    bad["blob"]["level.0"]["evidence"] = [{"artifact": "a.json", "sha256": "not-a-sha"}]
+    assert "blobs.schema" in _verify(tmp_path, monkeypatch, bad)  # the schema pins the shape of a sha256
+    bare = _good()
+    bare["blob"]["level.0"].pop("evidence", None)
+    assert "blobs.evidence" in _verify(tmp_path, monkeypatch, bare)
+
+
+def test_verify_refuses_two_credited_rows_over_the_same_bytes(tmp_path, monkeypatch):
+    twin = _good()
+    twin["blob"]["level.1"] = json.loads(json.dumps(twin["blob"]["level.0"]))
+    assert "blobs.range" in _verify(tmp_path, monkeypatch, twin)
+
+
+def test_verify_accepts_an_overlap_the_base_already_had_and_refuses_a_new_one(tmp_path, monkeypatch):
+    nested = _good()
+    nested["blob"]["level.1"] = json.loads(json.dumps(nested["blob"]["level.0"]))
+    assert "blobs.range" in _verify(tmp_path, monkeypatch, nested)
+    config = _config(tmp_path)
+    assert {f.key for f in blobs.verify(config, blobs.emit(nested))} == set()  # the base had the pair
+    assert {f.key for f in blobs.verify(config, blobs.emit(_good()))} == {"blobs.range"}
+
+
+def test_verify_refuses_a_file_that_is_not_the_canonical_emit(tmp_path, monkeypatch):
+    assert "blobs.land" in _verify(tmp_path, monkeypatch, _good(), text=blobs.emit(_good()) + b"# hand edit\n")
+
+
+def test_verify_refuses_a_partition_that_does_not_sum_or_overlaps(tmp_path, monkeypatch):
+    assert "blobs.land" in _verify(tmp_path, monkeypatch, _good(), partition={"unknown": 5})
+    assert "blobs.land" in _verify(tmp_path, monkeypatch, _good(), partition={"shadowed": 4})

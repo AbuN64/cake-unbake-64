@@ -69,7 +69,7 @@ def _refused(repo: SimpleNamespace, **files: str | None) -> set[str]:
     return {f.key for f in refused.value.findings}
 
 
-PATHS = {"src__a_c": "src/a.c", "src__x_s": "src/x.s", "local_mk": "local.mk"}
+PATHS = {"blobs_toml": "blobs.toml", "src__a_c": "src/a.c", "src__x_s": "src/x.s", "local_mk": "local.mk"}
 A = '#include "include_asm.h"\nint f(void) { return 1; }\nINCLUDE_ASM("seg", func_80000000);\n'
 
 
@@ -208,3 +208,27 @@ def test_tree_findings_are_the_capture_refusal(monkeypatch: pytest.MonkeyPatch) 
     assert cheat._tree_findings(SimpleNamespace()) == (LITERALS,)
     monkeypatch.setattr(tree, "capture", lambda cfg: None)
     assert cheat._tree_findings(SimpleNamespace()) == ()
+
+
+def test_blobs_toml_is_a_fact_not_infrastructure_and_is_verified_when_it_changes(
+    repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unbake import blobs
+
+    seen: list[int] = []
+    monkeypatch.setattr(blobs, "verify", lambda cfg, base=None: seen.append(1) or ())
+    repo.check(blobs_toml="schema = 1\n")
+    assert seen == [1]
+    base = _git(repo.root, "rev-parse", "HEAD")
+    (repo.root / "src/a.c").write_text("int f(void) { return 3; }\n")
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "c only")
+    cheat.cheat_command(repo.config, {"against": base})
+    assert seen == [1]  # blobs.toml did not differ: no verification
+
+
+def test_a_blobs_toml_that_fails_verification_is_refused(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unbake import blobs
+
+    monkeypatch.setattr(blobs, "verify", lambda cfg, base=None: (Finding("blobs.evidence", "bad sha"),))
+    assert _refused(repo, blobs_toml="schema = 1\n") == {"blobs.evidence"}

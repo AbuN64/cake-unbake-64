@@ -519,6 +519,83 @@ def land(config: Config, packet: Json) -> Json:
         return {**counts, **done, "audit": {"paths": audit["paths"]}, "delta": delta, "partition": after}
 
 
+_SHA = re.compile(r"[0-9a-f]{64}")
+
+
+def _overlaps(document: Json) -> dict[tuple[str, str, str], tuple[int, int, int, int]]:
+    """(version, row, row) -> the two ranges, for every pair of credited rows of a version that claim a common byte
+    (a container and the rows inside it are such pairs; the project has them and `verify` only refuses new ones)."""
+    claimed: dict[str, list[tuple[int, int, str]]] = {}
+    for name, row in document["blob"].items():
+        if row["state"] in ("decoded", "identified") and "parent" not in row:
+            for v, spans in row.get("rom", {}).items():
+                claimed.setdefault(v, []).extend((a, b, name) for a, b in spans)
+    out: dict[tuple[str, str, str], tuple[int, int, int, int]] = {}
+    for v, spans in claimed.items():
+        spans.sort()
+        for i, (a, b, one) in enumerate(spans):
+            for c, d, other in spans[i + 1 :]:
+                if c >= b:
+                    break
+                out[(v, *sorted((one, other)))] = (a, b, c, d)  # type: ignore[misc]
+    return out
+
+
+def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
+    """The checks `land` makes on the blobs.toml of the working tree, for a change that did not come through `land`
+    (a hand-written or merged file): the schema and ranges, the canonical form (the file is what `emit` writes for its
+    own facts), a well-formed sha256 on every piece of evidence and evidence on every credited row, no pair of credited
+    rows that claim a common byte and did not at `base` (the blobs.toml bytes of the base revision), and the partition
+    of every version (the classes sum to the ROM, with no overlap, no byte outside the ROM and none both credited and
+    shadowed). Never builds or reads an artifact."""
+    data = _read(config)
+    if data is None:
+        return ()
+    try:
+        document = parse(config, data)
+    except Refusal as refused:
+        return refused.findings
+    found: list[Finding] = []
+    if emit(document) != data:
+        found.append(Finding("blobs.land", "blobs.toml is not the canonical emit of its own facts", path=FILE))
+    for name, row in document["blob"].items():
+        for item in row.get("evidence", ()):
+            if not _SHA.fullmatch(str(item.get("sha256", ""))):
+                found.append(Finding("blobs.evidence", f"blob {name} cites a malformed sha256", path=FILE))
+        if row["state"] in ("decoded", "identified") and "parent" not in row and not row.get("evidence"):
+            found.append(Finding("blobs.evidence", f"blob {name} is {row['state']} without evidence", path=FILE))
+    try:
+        old = _overlaps(parse(config, base)) if base else {}
+    except Refusal:
+        old = {}
+    for (v, one, other), (a, b, c, d) in _overlaps(document).items():
+        if (v, one, other) not in old:
+            found.append(
+                Finding(
+                    "blobs.range",
+                    f"{v}: {one} {a:#x}..{b:#x} and {other} {c:#x}..{d:#x} claim the same bytes",
+                    path=FILE,
+                    versions=(v,),
+                )
+            )
+    if found:
+        return tuple(found)
+    parts = import_module("unbake.report").partitions(config, import_module("unbake.tree").capture(config))
+    for v, p in parts.items():
+        held = sum(p[k] for k in ("code", "data", "platform", "blobs", "unknown"))
+        if held != p["rom_size"] or p["overlap"] or p["outside"] or p["shadowed"]:
+            found.append(
+                Finding(
+                    "blobs.land",
+                    f"{v}: partition sums to {held} of {p['rom_size']} (overlap {p['overlap']}, "
+                    f"outside {p['outside']}, shadowed {p['shadowed']})",
+                    path=FILE,
+                    versions=(v,),
+                )
+            )
+    return tuple(found)
+
+
 # ---------------------------------------------------------------- the command
 def _packet(path: str) -> Json:
     try:

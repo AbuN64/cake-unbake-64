@@ -99,8 +99,9 @@ map_width = 720  # px: the memory map in the README is a thumbnail of the full r
 # the roots whose added lines are scanned, `added` regexes over one added source line (a stand-in line that is what
 # sync generates is exempt), `makefile_row` the one Makefile line shape that may change by hand (a unit's own compiler).
 [cheat]
-infra = ["local.mk", "include/include_asm.h", "rom.toml", "blobs.toml", "roms", "tools", "ci", "asm"]
-facts = ["config.toml", "versions"]
+infra = ["local.mk", "include/include_asm.h", "rom.toml", "roms", "tools", "ci", "asm"]
+facts = ["config.toml", "versions", "blobs.toml"]
+blobs = ["blobs.toml"]  # a facts file that changes the counting: when it differs, `blobs.verify` must pass
 source = ["src", "include"]
 source_suffix = '\.(c|C|CPP|cpp|h|H|inc)$'
 makefile_row = '^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/src/[^ ]+\.o\): (TC|CPPFLAGS|CFLAGS) :='

@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import shutil
 from collections.abc import Sequence
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +281,8 @@ def cheat_command(config: Config, params: Json) -> Json:
     infra = [p for p in git("diff", "--name-only", base, head, "--", *rules["infra"]).splitlines() if p]
     if infra:
         findings.append(Finding("cheat.infra", "build/compare infrastructure changed", missing=tuple(infra)))
+    if git("diff", "--name-only", base, head, "--", *rules["blobs"]).strip():
+        findings.extend(import_module("unbake.blobs").verify(config, git("show", f"{base}:blobs.toml", ok=(0, 128)).encode()))
     rows = re.compile(rules["makefile_row"])
     changed = [
         ln
