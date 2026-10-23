@@ -13,6 +13,7 @@ READERS = frozenset(
         "archive-header",
         "rnc-slack",
         "string-leaf",
+        "c-string",
         "sn-debug",
         "copy",
         "segment-fill",
@@ -214,6 +215,17 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             "slack": [packed_end, b],
             "slack_sha256": sha256(rom[packed_end:b]),
         }
+    if reader == "c-string":
+        # The request supplies an independently reviewed C initializer, not a printable-run guess.
+        text = row["text"]
+        if not isinstance(text, str) or not text:
+            raise ValueError("C string needs nonempty text")
+        if any(not (32 <= ord(char) <= 126 or char in "\t\n\r") for char in text):
+            raise ValueError("C string contains a nontext character")
+        encoded = text.encode("ascii") + b"\0"
+        if encoded != rom[start:end]:
+            raise ValueError("C string initializer does not exactly re-emit its terminated extent")
+        return {"text": text, "encoding": "ascii", "terminator": 0, "reencoded_sha256": sha256(encoded)}
     if reader == "string-leaf":
         owner = entry(rom, row["container"], row["entry_path"])
         a, b = owner["rom"]

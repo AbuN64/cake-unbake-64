@@ -238,3 +238,33 @@ def test_rnc_copy_proves_different_encodings_only_with_a_decoded_owner(tmp_path)
     (tmp_path / "roms").mkdir()
     (tmp_path / "roms" / "baserom.other.z64").write_bytes(source)
     assert blob_formats.prove(config, dict(spec, source_version="other"), rom, doc)["source_version"] == "other"
+
+
+def test_c_string_preserves_initializer_and_exact_terminator():
+    text = "ASSERTION FAILED!\nexpression=%s\tline=%d\r"
+    encoded = text.encode("ascii") + b"\0"
+    result = prove(row("c-string", [3, 3 + len(encoded)], text=text), b"abc" + encoded + b"tail")
+    assert result["decoded"] == {
+        "text": text,
+        "encoding": "ascii",
+        "terminator": 0,
+        "reencoded_sha256": blobs.sha256(encoded),
+    }
+
+
+@pytest.mark.parametrize(
+    "text,body",
+    [
+        ("", b"\0"),
+        (None, b"text\0"),
+        ("a\0b", b"a\0b\0"),
+        ("a\x01b", b"a\x01b\0"),
+        ("caf\u00e9", b"caf\xe9\0"),
+        ("text", b"text"),
+        ("text", b"text\0\0"),
+        ("text", b"other\0"),
+    ],
+)
+def test_c_string_refuses_opaque_or_inexact_data(text, body):
+    with pytest.raises(ValueError):
+        prove(row("c-string", [0, len(body)], text=text), body)
