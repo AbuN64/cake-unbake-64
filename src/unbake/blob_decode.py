@@ -133,6 +133,36 @@ class Graph:
             self.record(target, low, high, sections)
         return at
 
+    def tagged(self, spec: Json, start: int, end: int, sections: Sequence[tuple[int, int]]) -> None:
+        """A terminated byte-tagged record stream; the project supplies disjoint tag masks and record types."""
+        terminal, cases, alignment = spec["terminator"], spec["cases"], spec["alignment"]
+        if type(terminal) is not int or not 0 <= terminal <= 255 or not cases:
+            raise ValueError("invalid tagged stream definition")
+        for case in cases:
+            mask, value = case["mask"], case["value"]
+            if (
+                type(mask) is not int
+                or type(value) is not int
+                or not 0 <= value <= mask <= 255
+                or value & mask != value
+            ):
+                raise ValueError("invalid tagged record mask")
+            if self.tokens(case["type"])[0] != (1, None):
+                raise ValueError("tagged record must begin with a byte field")
+        at = start
+        while at < end:
+            tag = self.data[at]
+            if tag == terminal:
+                self.write(at, bytes([tag]))
+                self.records.append({"type": "terminator", "offset": at, "fields": [[1, tag]]})
+                self.pad(at + 1, end, alignment)
+                return
+            matching = [case for case in cases if tag & case["mask"] == case["value"]]
+            if len(matching) != 1:
+                raise ValueError(f"tag {tag:#x} needs exactly one record definition")
+            at = self.record(matching[0]["type"], at, end, sections)
+        raise ValueError("tagged stream lacks its terminator")
+
     def walk(self, name: str, start: int, end: int, sections: Sequence[tuple[int, int]] = ()) -> None:
         if not 0 <= start <= end <= len(self.data):
             raise ValueError("graph node outside extent")
@@ -140,7 +170,9 @@ class Graph:
         if len(body) != 1:
             raise ValueError("a graph type needs exactly one shape")
         shape, value = next(iter(body.items()))
-        if shape == "fields":
+        if shape == "tagged":
+            self.tagged(value, start, end, sections)
+        elif shape == "fields":
             stop = self.record(name, start, end, sections)
             self.pad(stop, end, 8)
         elif shape == "leaf":
