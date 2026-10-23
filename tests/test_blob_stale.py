@@ -108,3 +108,17 @@ def test_a_cut_stream_head_is_listed_only_when_the_page_bytes_are_unknown_and_a_
     assert blob_stale.heads(roms, "a", [(0xFC0, 0x1008)], [start], ["a", "b"]) == []  # a head byte is accounted
     assert blob_stale.heads(roms, "a", [(0xFC0, 0x1009)], [start], ["a"]) == []  # no witness anywhere
     assert blob_stale.heads(roms, "a", [(0xFC0, 0x1009)], [0x1000], ["a", "b"]) == []  # a stream at the page start
+
+
+def test_code_streams_fill_the_unknown_spans_a_stream_covers_and_name_the_stream_whole():
+    from test_mipsstream import function, pack
+
+    words = function(size=14) + function(size=20, frame=48)
+    data = rom((0x203, pack(words)), size=0x800)
+    end = 0x203 + 4 * len(words)
+    rows = blob_stale.code_streams(data, [(0x1F0, 0x240), (0x300, 0x400), (end - 8, end + 0x20)])
+    assert rows == [
+        {"version": "", "reader": "mips-stream", "region": [0x203, 0x240], "stream": [0x203, end]},
+        {"version": "", "reader": "mips-stream", "region": [end - 8, end], "stream": [0x203, end]},
+    ]
+    assert blob_stale.code_streams(rom((0, NOISE)), [(0, 0x1000)]) == []

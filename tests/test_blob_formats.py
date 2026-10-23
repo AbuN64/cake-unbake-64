@@ -309,3 +309,19 @@ def test_c_string_reemits_reviewed_latin1_initializers(text):
     decoded = result["decoded"]
     assert decoded["text"] == text and decoded["encoding"] == "latin-1"
     assert decoded["terminator"] == 0 and decoded["reencoded_sha256"] == blobs.sha256(raw)
+
+
+def test_mips_stream_proves_a_region_of_whole_functions_and_refuses_what_is_not():
+    from test_mipsstream import function, pack
+
+    code = pack(function(size=14) + function(size=20, frame=48))
+    rom = bytes([0x40]) * 3 + code + bytes([0x40]) * 5
+    stream = [3, 3 + len(code)]
+    result = prove(row("mips-stream", [0x40, 0x80], stream=stream), rom)["decoded"]
+    assert result["stream"] == stream and result["phase"] == 3 and len(result["returns"]) == 2
+    with pytest.raises(ValueError, match=r"mips-stream: .*inside its stream"):
+        prove(row("mips-stream", [0, 0x20], stream=stream), rom)
+    with pytest.raises(ValueError, match=r"mips-stream: .*prologue"):
+        prove(row("mips-stream", [0x40, 0x80], stream=[7, stream[1]]), rom)
+    with pytest.raises(ValueError, match="mips-stream"):
+        prove(row("mips-stream", [0x40, 0x80]), rom)

@@ -25,6 +25,7 @@ LEFTOVER_FORMATS = (
     "sn-debug",
     "earlier-link",
     "copy",
+    "mips-stream",
 )  # what a `leftover` row (build residue read by a native reader) may be
 CONTENT = (
     "graphics",
@@ -93,7 +94,9 @@ def check(config: Config, document: Json, file: str = FILE) -> tuple[Finding, ..
                 )
         if row.get("type") == "leftover" and row.get("format") not in LEFTOVER_FORMATS:
             found.append(
-                Finding("blobs.schema", f"leftover blob {name} needs format sn-debug, earlier-link or copy", path=file)
+                Finding(
+                    "blobs.schema", f"leftover blob {name} needs sn-debug, earlier-link, copy or mips-stream", path=file
+                )
             )
         for v, spans in row.get("rom", {}).items():
             size = _rom_size(config, v) if v in config.project.version else None

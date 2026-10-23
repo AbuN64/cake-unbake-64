@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from unbake import blob_archive, blob_decode, blob_stale, blobs, objcode, rnc, snsym
+from unbake import blob_archive, blob_decode, blob_stale, blobs, mipsstream, objcode, rnc, snsym
 from unbake.contracts import Config, Json, sha256
 
 READERS = frozenset(
@@ -22,6 +22,7 @@ READERS = frozenset(
         "copy",
         "segment-fill",
         "obj-code",
+        "mips-stream",
         "rnc-copy",
     }
 )
@@ -286,6 +287,11 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         return snsym.stream_receipt(rom, start, end, row.get("dialect", "sym"))
     if reader == "sn-head":
         return _sn_head(config, row, rom, start, end)
+    if reader == "mips-stream":
+        try:
+            return mipsstream.prove(rom, start, end, row["stream"])
+        except (mipsstream.StreamError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"mips-stream: {error}") from error
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":

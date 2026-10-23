@@ -15,12 +15,13 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import blobs, objcode, snsym
+from unbake import blobs, mipsstream, objcode, snsym
 from unbake.contracts import Config, Json
 
 MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
 WINDOW = 16  # source bytes hashed at multiples of WINDOW; any copy of MIN_COPY bytes holds one
 TEXT = re.compile(rb"[\x20-\x7e\t\r\n]{7,}\x00")  # terminated text, at least eight bytes
+STREAM_REACH = 16384  # how far past an unknown span a code stream is searched (a function is under 16 KiB)
 MIN_DISTINCT = 4  # a window of fewer distinct byte values (fill, a repeated word) names no source
 Spans = list[tuple[int, int]]
 _ACCOUNTED = ("code", "data", "decoded", "identified")
@@ -187,9 +188,23 @@ def objects(rom: bytes, targets: Spans) -> list[Json]:
     return found
 
 
+def code_streams(rom: bytes, targets: Spans) -> list[Json]:
+    """The rows of code streams (`mipsstream`: whole functions of canonical instructions, no body to compare to) that
+    fill `targets`: each credits the part of a stream inside the spans, the stream named whole for its proof."""
+    windows: Spans = []
+    for low, high in targets:
+        lo, hi = max(0, low - STREAM_REACH), min(len(rom), high + STREAM_REACH)
+        if windows and lo <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], hi))
+        else:
+            windows.append((lo, hi))
+    found = sorted({s for low, high in windows for s in mipsstream.find(rom, low, high)})
+    return [{"version": "", "reader": "mips-stream", **row} for row in mipsstream.spans(found, targets)]
+
+
 def scan(config: Config) -> Json:
-    """`unbake blobs scan stale`: per version, the object-code regions and the exact copies that fill unknown bytes,
-    as the rows `unbake blobs prove` takes (without an id or its evidence), and the bytes left."""
+    """`unbake blobs scan stale`: per version, the object-code regions, the code streams and the exact copies that
+    fill unknown bytes, as the rows `unbake blobs prove` takes (without an id or its evidence), and the bytes left."""
     tree = import_module("unbake.tree").capture(config)
     parts = import_module("unbake.report").partitions(config, tree)
     roms = {v: (Path(config.project.root) / "roms" / f"baserom.{v}.z64").read_bytes() for v in parts}
@@ -211,7 +226,9 @@ def scan(config: Config) -> Json:
         streams = [{**s, "version": v} for s in objects(roms[v], targets)]
         left_over = blobs.subtract(targets, blobs.merge([tuple(s["region"]) for s in streams]))
         code = bodies.regions(roms[v], v, left_over)
-        rest = blobs.subtract(left_over, blobs.merge([tuple(r["rom"]) for r in code]))
+        left_code = blobs.subtract(left_over, blobs.merge([tuple(r["rom"]) for r in code]))
+        mips = [{**r, "version": v} for r in code_streams(roms[v], left_code)]
+        rest = blobs.subtract(left_code, blobs.merge([tuple(r["region"]) for r in mips]))
         copies = find(roms, spans, windows, v, rest, list(parts))
         left = blobs.subtract(rest, blobs.merge([tuple(c["region"]) for c in copies]))
         short = text_copies(roms[v], text_sources, v, left, list(parts))
@@ -224,6 +241,7 @@ def scan(config: Config) -> Json:
                 {"version": v, "region": r["rom"], "reader": "obj-code", "tiles": r["tiles"], "bodies": r["bodies"]}
                 for r in code
             ],
+            "code_streams": mips,
             "copies": copies,
             "heads": cuts,
             "left": blobs.length(left),
