@@ -984,25 +984,30 @@ def _absorbed(
     sections: dict[str, dict[str, dict[str, str]]],
     stale: dict[str, dict[str, list[str]]],
 ) -> None:
-    """A `literals_<function>` row hands the read-only bytes at its address to the file that owns the function: a
-    stand-in of another file for a name at that same address (a data chunk, an array of words) no longer stands for
-    anything and is superseded, as a stand-in a C body replaces is. Only a source file can hold a stand-in."""
+    """A `literals_<function>` row hands the read-only bytes from its address over its size (one byte when it has no
+    size) to the file that owns the function: a stand-in of another file for a name inside them (a data chunk, an
+    array of words, a float the old pool named on its own) no longer stands for anything and is superseded, as a
+    stand-in a C body replaces is. Only a source file can hold a stand-in."""
     for version, table in tables.items():
-        rows = {
-            table[n][1]
+        spans = sorted(
+            (rom, rom + (table[n][2] or 1))
             for by_version in owned.values()
             for n in by_version.get(version, ())
-            if n.startswith(LITERALS) and table[n][1] is not None
-        }
-        if not rows:
+            if n.startswith(LITERALS) and (rom := table[n][1]) is not None
+        )
+        if not spans:
             continue
+
+        def inside(rom: int | None, spans: Sequence[tuple[int, int]] = spans) -> bool:
+            return rom is not None and any(start <= rom < end for start, end in spans)
+
         for path in [p for p in owned if not configuration.is_assembly(p)]:
             names = owned[path].get(version, [])
             gone = [
                 n
                 for n in names
                 if not n.startswith(LITERALS)
-                and table[n][1] in rows
+                and inside(table[n][1])
                 and sections[path][version].get(n, "").startswith(".rodata")
             ]
             if not gone:
