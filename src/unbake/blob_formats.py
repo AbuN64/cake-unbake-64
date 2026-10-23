@@ -220,12 +220,13 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         text = row["text"]
         if not isinstance(text, str) or not text:
             raise ValueError("C string needs nonempty text")
-        if any(not (32 <= ord(char) <= 126 or char in "\t\n\r") for char in text):
+        if any(not (32 <= ord(char) <= 126 or 160 <= ord(char) <= 255 or char in "\t\n\r") for char in text):
             raise ValueError("C string contains a nontext character")
-        encoded = text.encode("ascii") + b"\0"
+        encoding = "ascii" if text.isascii() else "latin-1"
+        encoded = text.encode(encoding) + b"\0"
         if encoded != rom[start:end]:
             raise ValueError("C string initializer does not exactly re-emit its terminated extent")
-        return {"text": text, "encoding": "ascii", "terminator": 0, "reencoded_sha256": sha256(encoded)}
+        return {"text": text, "encoding": encoding, "terminator": 0, "reencoded_sha256": sha256(encoded)}
     if reader == "string-leaf":
         owner = entry(rom, row["container"], row["entry_path"])
         a, b = owner["rom"]

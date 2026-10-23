@@ -304,3 +304,10 @@ RNC streams: methods 1 and 2 share bounded header and CRC validation. Method 2 r
 Typed graphs accept `tagged` streams whose project layout declares a byte terminator, alignment, and cases (`mask`, `value`, scalar record `type`). Each encountered tag must select exactly one record; the first field is its tag byte. Every record re-emits exactly, the terminator is mandatory, and only bounded zero alignment may follow. No game opcodes or layout facts live in the reader.
 
 `blobs prove` reader `c-string` accepts a project-evidenced, explicitly supplied nonempty ASCII C string initializer (`text`). It permits printable ASCII plus tab, LF and CR, requires exactly one final NUL and exact re-encoding of the requested ROM extent, and retains the text and re-encoded hash. Embedded NUL, control bytes, non-ASCII, missing termination and trailing bytes refuse. This reader does not discover strings or establish ownership from printable runs; the project evidence must identify the data and its boundaries.
+
+
+`blobs prove` reader `c-string` accepts an independently reviewed nonempty byte-string initializer and its exact
+NUL-terminated ROM extent. Printable ASCII and Latin-1 characters plus tab, newline and carriage return re-emit as
+one byte per character; DEL, C1 controls, embedded NUL, other Unicode and a mismatching encoding/extent refuse.
+The receipt records the text, encoding, terminator and re-encoded hash. Printable bytes alone are not evidence of
+a string: the request must establish its source initializer, reference or containing text pool.

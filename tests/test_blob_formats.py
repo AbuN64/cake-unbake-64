@@ -259,7 +259,11 @@ def test_c_string_preserves_initializer_and_exact_terminator():
         (None, b"text\0"),
         ("a\0b", b"a\0b\0"),
         ("a\x01b", b"a\x01b\0"),
-        ("caf\u00e9", b"caf\xe9\0"),
+        ("caf\u00e9", b"caf\xc3\xa9\0"),
+        ("a\x7fb", b"a\x7fb\0"),
+        ("a\x80b", b"a\x80b\0"),
+        ("a\x9fb", b"a\x9fb\0"),
+        ("a\u0100b", b"a\x00b\0"),
         ("text", b"text"),
         ("text", b"text\0\0"),
         ("text", b"other\0"),
@@ -268,3 +272,12 @@ def test_c_string_preserves_initializer_and_exact_terminator():
 def test_c_string_refuses_opaque_or_inexact_data(text, body):
     with pytest.raises(ValueError):
         prove(row("c-string", [0, len(body)], text=text), body)
+
+
+@pytest.mark.parametrize("text", ["accès au", "santé complète", "\u00a0ÿ"])
+def test_c_string_reemits_reviewed_latin1_initializers(text):
+    raw = bytes(ord(char) for char in text) + b"\0"
+    result = prove(row("c-string", [2, 2 + len(raw)], text=text), b"xx" + raw + b"tail")
+    decoded = result["decoded"]
+    assert decoded["text"] == text and decoded["encoding"] == "latin-1"
+    assert decoded["terminator"] == 0 and decoded["reencoded_sha256"] == blobs.sha256(raw)
