@@ -306,13 +306,14 @@ def test_makefile_variable_blocks(tmp_path):
     assert "VMACRO_eu-1 := VERSION_EU_1" in text
     assert f"SHA1_us := {'a' * 40}" in text
     assert "ROM0_us := 4096" in text
+    assert "ROM_SECTIONS_us :=\n" in text
     block = "$(foreach v,$(VERSIONS),build/$(v)/src/lib/%.o)"
     lines = [line for line in text.splitlines() if line.startswith(block)]
     assert [line.split(": ")[1].split(" ")[0] for line in lines] == ["TC", "CPPFLAGS", "CFLAGS"]
     assert lines[2].endswith("-mno-fix4300 -O1") and " -O2 " not in lines[2]
     assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
     assert (
-        "sed -nE" in text and text.count("sed ") == 5
+        "sed -nE" in text and sum(line.count("sed ") for line in text.splitlines() if not line.startswith("#")) == 5
     )  # PROVIDE lines (facts, .L labels); data files; code files; jump tables
     assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
@@ -993,13 +994,15 @@ def test_a_file_row_pads_hilo_hazards_the_way_the_rom_assembler_did(tmp_path):
 
     lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
     hazard = next(i for i, line in enumerate(lines) if "$$HILO_HAZARD" in line)
-    assert lines[hazard].startswith("$(if $(HILO),") and hazard < next(i for i, l in enumerate(lines) if "asn64" in l)
+    assert lines[hazard].startswith("$(if $(HILO),") and hazard < next(
+        i for i, line in enumerate(lines) if "asn64" in line
+    )
     code = build.makefile(make_config(tmp_path)).decode().split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
     source.write_text(
         "f:\n\tmfhi\t$3\n\tmult\t$4,$5\n\tmflo\t$6\n\tandi\t$2,$3,1\n\tdivu\t$4,$5\n"  # adjacent; gap of one
         "\t.set\tnoreorder\n\tmflo\t$6\n\tmult\t$4,$5\n\t.set\treorder\n"  # noreorder: untouched
-        "\tmfhi\t$3 # c\n$L1:\n\t#nop\n\tmthi\t$4\n\tmfhi\t$3\n\tdivu\t$2,$4,$5\n"  # a label does not count; 3-operand div
+        "\tmfhi\t$3 # c\n$L1:\n\t#nop\n\tmthi\t$4\n\tmfhi\t$3\n\tdivu\t$2,$4,$5\n"  # label ignored; 3-operand div
     )
     subprocess.run([sys.executable, "-I", "-c", code, str(source)], check=True)
     assert source.read_text() == (
@@ -1022,9 +1025,11 @@ def test_undefined_syms_provide_the_aliases_too(tmp_path):
         (tmp_path / "build/us" / name).write_text("")
     (tmp_path / "asm/us").mkdir(parents=True)
     (tmp_path / "asm/us/.extracted").write_text("")
+    (tmp_path / "build/us/caller.CPP.i").write_text("extern short D_auto_800CAB8E[];\n")
     subprocess.run(["make", "-s", "build/us/undefined_syms.ld"], cwd=tmp_path, check=True, capture_output=True)
     rows = (tmp_path / "build/us/undefined_syms.ld").read_text().splitlines()
     assert "PROVIDE(f = 0x80200400);" in rows and "PROVIDE(g = 0x80200400);" in rows
+    assert "PROVIDE(D_auto_800CAB8E = 0x800CAB8E);" in rows
 
 
 def test_segments_sharing_a_name_are_pieces_of_one_tag(tmp_path):
@@ -1604,3 +1609,51 @@ def test_a_padded_nm_object_keeps_its_relocations(tmp_path):
     assert "draft-padded" in (tmp_path / "out.o.pick").read_text()
     rel = subprocess.run([readelf, "-r", "out.o"], cwd=tmp_path, capture_output=True, text=True).stdout
     assert "R_MIPS_26" in rel
+
+
+def test_distinct_images_keep_physical_bounds_and_extraction_namespaces(tmp_path):
+    config = make_config(tmp_path)
+    config.project.version["us"].segments = (
+        Segment("main", 0x1000, 0x80200400, "code"),
+        Segment("old", 0x2000, 0x80200410, "code", "earlier"),
+        Segment("old_tail", 0x2100, 0x80200510, "code", "earlier"),
+        Segment("assets", 0x2200, None, "bin"),
+    )
+    held = make_tree()
+    script = build.linker(config, held).decode()
+    assert ".old 0x80200410 (INFO) : AT(0x2000)" in script
+    assert ".main 0x80200400 : AT(0x1000)" in script
+    assert 'ASSERT(SIZEOF(.main) <= 0x1000, "ROM extent: main")' in script
+    assert 'ASSERT(SIZEOF(.old) <= 0x100, "ROM extent: old")' in script
+    assert '"VMA overlap: old, old_tail"' in script
+    assert '"VMA overlap: main, old"' not in script
+    yaml = build.splat_yaml(config, "us", held).decode()
+    assert yaml.count('exclusive_ram_id: "earlier"') == 2
+    main = yaml.split("  - name: old\n")[0]
+    assert 'exclusive_ram_id: "main"' in main
+    make = build.makefile(config).decode()
+    assert "--set-section-flags .old=alloc,load,readonly,code,contents --change-section-lma .old=0x2000" in make
+    assert "$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary" in make
+    assert "--no-check-sections" not in make
+    assert "--allow-multiple-definition" not in make
+
+
+def test_distinct_image_emission_also_applies_to_nonmatching_rom(tmp_path):
+    config = make_config(tmp_path)
+    config.project.non_matching = "NON_MATCHING"
+    config.project.version["us"].segments = (Segment("old", 0x1000, 0x80200400, "code", "old"),)
+    text = build.makefile(config).decode()
+    assert text.count("$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary --gap-fill 0 $< $@") == 2
+
+
+def test_separate_images_at_same_vma_do_not_share_namespace(tmp_path):
+    config = make_config(tmp_path)
+    config.project.version["us"].segments = (
+        Segment("first", 0x1000, 0x80200400, "code", "first"),
+        Segment("second", 0x2000, 0x80200400, "code", "second"),
+    )
+    script = build.linker(config, make_tree()).decode()
+    assert "VMA overlap: first, second" not in script
+    assert "ROM extent: first" in script and "ROM extent: second" in script
+    yaml = build.splat_yaml(config, "us", make_tree()).decode()
+    assert 'exclusive_ram_id: "first"' in yaml and 'exclusive_ram_id: "second"' in yaml

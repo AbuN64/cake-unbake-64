@@ -446,15 +446,26 @@ def load_project(
     version: dict[str, VersionFacts] = {}
     for vid, row in table.items():
         segments = tuple(
-            Segment(s["name"], s["rom"], s.get("vram"), s.get("kind", "code")) for s in row.get("segments", ())
+            Segment(s["name"], s["rom"], s.get("vram"), s.get("kind", "code"), s.get("address_space", "main"))
+            for s in row.get("segments", ())
         ) or (Segment("main", 0x1000, None, "code"),)
+        for segment in segments:
+            if segment.address_space != "main" and (segment.kind != "code" or segment.vram is None):
+                problems.append(
+                    bad(f"version.{vid}.segments", "a separate address space needs code and an explicit vram")
+                )
         meta = {k: row[k] for k in ("cartridge_id", "region", "description") if k in row}
         version[vid] = VersionFacts(row["sha1"], row["size"], segments, meta)
     files: dict[str, FileFacts] = {}
     spelled: dict[str, str] = {}  # row path -> the table it was written in
     for kind in ("file", "dir", "library"):
         for path, row in document.get(kind, {}).items():
-            facts = FileFacts(row.get("toolchain"), tuple(row.get("cflags", ())), tuple(row.get("omit", ())), bool(row.get("hilo_nops")))
+            facts = FileFacts(
+                row.get("toolchain"),
+                tuple(row.get("cflags", ())),
+                tuple(row.get("omit", ())),
+                bool(row.get("hilo_nops")),
+            )
             if path in files:
                 problems.append(bad(f"{kind}.{path}", f"{path} is also a [{spelled[path]}] row"))
             elif kind != "file" and not _folder(path):

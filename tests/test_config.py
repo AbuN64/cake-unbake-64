@@ -541,3 +541,23 @@ def test_a_row_equal_to_the_project_default_is_debt_and_a_library_row_is_never_d
 def test_dead_rows_lists_what_the_lint_refuses(tmp_path: Path) -> None:
     project = _load(tmp_path, ROWS, ROWS_TRACKED)
     assert configuration.dead_rows(project) == []
+
+
+def test_segment_address_space_is_a_project_fact(tmp_path):
+    text = RW.replace("vram = 0x80200400", 'vram = 0x80200400, address_space = "earlier"')
+    loaded = _load(tmp_path, text)
+    assert loaded.version["us"].segments[0].address_space == "earlier"
+    assert loaded.version["us-rev1"].segments[0].address_space == "main"
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        'address_space = "earlier"',
+        'vram = 0x80200400, kind = "bin", address_space = "earlier"',
+        'vram = 0x80200400, address_space = "bad name"',
+    ],
+)
+def test_segment_address_space_rejects_ambiguous_or_unsafe_facts(tmp_path, replacement):
+    with pytest.raises(Refusal):
+        _load(tmp_path, RW.replace("vram = 0x80200400", replacement))

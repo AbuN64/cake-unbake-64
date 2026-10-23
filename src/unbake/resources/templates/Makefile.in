@@ -298,16 +298,17 @@ build/%/link.ld: $$(NAME).ld
 # Every fact of symbol_addrs.txt and aliases.txt and every name splat left undefined, PROVIDEd: what no object defines (data outside
 # the ROM). So is every name splat made up that the extracted assembly spells, at the address the name carries: a .L
 # label the assembler keeps out of the object, or a label inside bytes a C file compiles.
-build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(wildcard versions/$$$$*/aliases.txt)
+# Preprocessed sources retain auto-address references even when a new extraction no longer spells that label.
+build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(OBJS_$$$$*) $$$$(wildcard versions/$$$$*/aliases.txt)
 	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$^ > $$@
-	$$(Q)grep -rhoE --include='*.s' '${label}[0-9A-F]{8}\b' asm/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
+	$$(Q)grep -rhoE --include='*.s' --include='*.i' '${label}[0-9A-F]{8}\b' asm/$$* build/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
 # splat writes these while it extracts the version.
 build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt: | asm/%/.extracted
 	$$(Q)test -f $$@ || { echo "$$@ is missing: run make extract-$$*" >&2; exit 1; }
 build/%/$$(NAME).elf: $$$$(OBJS_$$$$*) build/%/link.ld build/%/undefined_syms.ld
 	$$(Q)cd build/$$* && $$(LD) -T link.ld -o $$(NAME).elf
 build/%/$$(NAME).bin: build/%/$$(NAME).elf
-	$$(Q)$$(OBJCOPY) -O binary --gap-fill 0 $$< $$@
+	$$(Q)$$(OBJCOPY) $$(ROM_SECTIONS_$$*) -O binary --gap-fill 0 $$< $$@
 build/%/$$(NAME).z64: build/%/$$(NAME).bin roms/baserom.%.z64
 	$$(Q){ head -c $$(ROM0_$$*) roms/baserom.$$*.z64; cat $$<; } > $$@
 	$$(Q)truncate -s $$$$(wc -c < roms/baserom.$$*.z64) $$@

@@ -337,6 +337,7 @@ class Segment:
     rom: int  # start; the end is the next row's rom (or the end of the ROM)
     vram: int | None  # None = not given (a bin segment, or splat detects it)
     kind: str  # "code" | "bin" (default "code")
+    address_space: str = "main"  # separately linked image; ROM offsets remain global
 
 
 @dataclass(frozen=True)

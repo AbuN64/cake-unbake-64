@@ -313,3 +313,7 @@ NUL-terminated ROM extent. Printable ASCII and Latin-1 characters plus tab, newl
 one byte per character; DEL, C1 controls, embedded NUL, other Unicode and a mismatching encoding/extent refuse.
 The receipt records the text, encoding, terminator and re-encoded hash. Printable bytes alone are not evidence of
 a string: the request must establish its source initializer, reference or containing text pool.
+
+Code segments may declare `address_space` (default `main`) with an explicit VMA. A distinct image has its own Splat symbol namespace; its ELF section is INFO, relocated at that VMA without loading into the main image. The generated ROM objcopy rule restores its load flags and declared LMA. Generated assertions bound **every** physical section by the next ROM boundary and reject VMA overlaps within each non-main address space (including BSS). Main image linker checks remain enabled. Separate spaces require code, never bin segments, and globally unique symbol names; no physical bytes are shared or omitted.
+
+The generated undefined-symbol script depends on the linked objects and scans their preprocessed sources as well as extraction assembly for encoded-address auto labels. Regeneration cannot erase an address still referenced by compiled C when the extraction no longer emits that label.

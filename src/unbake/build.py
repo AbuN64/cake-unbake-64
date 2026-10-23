@@ -348,7 +348,7 @@ $(VERSIONS:%=build/nm/%/$(NAME).elf): build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) bu
 	|| $(LD) -T link.ld --allow-multiple-definition -o $(NAME).elf 2>> link.err; } \
 	|| { cat build/nm/$*/link.err >&2; exit 1; }
 $(VERSIONS:%=build/nm/%/$(NAME).bin): build/nm/%/$(NAME).bin: build/nm/%/$(NAME).elf
-	$(Q)$(OBJCOPY) -O binary --gap-fill 0 $< $@
+	$(Q)$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary --gap-fill 0 $< $@
 $(VERSIONS:%=build/nm/%/$(NAME).z64): build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin roms/baserom.%.z64
 	$(Q){ head -c $(ROM0_$*) roms/baserom.$*.z64; cat $<; } > $@
 	$(Q)truncate -s $$(wc -c < roms/baserom.$*.z64) $@
@@ -399,6 +399,7 @@ def makefile(config: Config) -> bytes:
                 f"VMACRO_{v} := {macro(v)}",
                 f"SHA1_{v} := {project.version[v].sha1}",
                 f"ROM0_{v} := {project.version[v].segments[0].rom}",
+                f"ROM_SECTIONS_{v} := {' '.join(_image_sections(config, v))}".rstrip(),
             ]
         text = Template(configuration.template("Makefile.in")).substitute(
             title=project.title,
@@ -613,12 +614,50 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     return out
 
 
+def _image_sections(config: Config, v: str) -> list[str]:
+    """Non-main image sections relocate at their real VMA but are not loaded with the main executable.
+    objcopy includes them in the ROM at their independently declared physical offsets."""
+    return [
+        flag
+        for segment, (piece, *_) in zip(config.project.version[v].segments, versions.pieces(config, v), strict=True)
+        if segment.address_space != "main"
+        for flag in (
+            f"--set-section-flags .{piece}=alloc,load,readonly,code,contents",
+            f"--change-section-lma .{piece}=0x{segment.rom:X}",
+        )
+    ]
+
+
+def _image_bounds(config: Config, v: str) -> list[str]:
+    """All ROM ranges remain disjoint; independent images also retain their own VMA overlap checks."""
+    segments = config.project.version[v].segments
+    if all(s.address_space == "main" for s in segments):
+        return []
+    pieces = versions.pieces(config, v)
+    out = []
+    for piece, start, end, _ in pieces:
+        out.append(f'    ASSERT(SIZEOF(.{piece}) <= 0x{end - start:X}, "ROM extent: {piece}")')
+    for i, a in enumerate(segments):
+        if a.address_space == "main":
+            continue
+        ap = pieces[i][0]
+        for j, b in enumerate(segments[i + 1 :], i + 1):
+            if b.address_space != a.address_space:
+                continue
+            bp = pieces[j][0]
+            ae = f"ADDR(.{ap}.bss) + SIZEOF(.{ap}.bss)"
+            be = f"ADDR(.{bp}.bss) + SIZEOF(.{bp}.bss)"
+            out.append(f'    ASSERT({ae} <= ADDR(.{bp}) || {be} <= ADDR(.{ap}), "VMA overlap: {ap}, {bp}")')
+    return out
+
+
 def _header(name: str, by: Mapping[str, Segment], names: Sequence[str]) -> list[str]:
     """`.seg vram : AT(rom)` and the brace: one line, or an `#if` ladder when versions place the segment apart."""
     groups: dict[str, list[str]] = {}
     for v in names:
         s = by[v]
-        at = f"0x{s.rom if s.vram is None else s.vram:08X} : AT(0x{s.rom:X}) SUBALIGN(1)"  # the files hold every byte
+        kind = " (INFO)" if s.address_space != "main" else ""
+        at = f"0x{s.rom if s.vram is None else s.vram:08X}{kind} : AT(0x{s.rom:X}) SUBALIGN(1)"
         groups.setdefault(f"    .{name} {at}", []).append(v)
     if len(groups) == 1:
         return [next(iter(groups)), "    {"]
@@ -657,8 +696,25 @@ def linker(config: Config, held: Tree) -> bytes:
             if not binary:
                 files = {v: list(dict.fromkeys(i.rpartition(".o(")[0] for i in orders[v] if ".o(" in i)) for v in names}
                 bss = _blocks({v: [f"{f}.o(.bss .sbss COMMON)" for f in files[v]] for v in names})
-                out += [f"    .{name}.bss (NOLOAD) :", "    {", *_pass(bss, names), "    }"]
+                if all(by[v].address_space == "main" for v in names):
+                    out += [f"    .{name}.bss (NOLOAD) :", "    {", *_pass(bss, names), "    }"]
+                else:
+                    for v in names:
+                        guard = _guard([v], names)
+                        out += [f"#if {guard}"] if guard else []
+                        kind = "INFO" if by[v].address_space != "main" else "NOLOAD"
+                        out += [
+                            f"    .{name}.bss ADDR(.{name}) + SIZEOF(.{name}) ({kind}) :",
+                            "    {",
+                            *_pass(_blocks({v: [f"{f}.o(.bss .sbss COMMON)" for f in files[v]]}), [v]),
+                            "    }",
+                        ]
+                        out += ["#endif"] if guard else []
             out += ["#endif"] if whole else []
+        for v in project.versions:
+            bounds = _image_bounds(config, v)
+            if bounds:
+                out += [f"#if defined({macro(v)})", *bounds, "#endif"]
         text = Template(configuration.template("link.ld.in")).substitute(generated=_GENERATED, segments="\n".join(out))
         return text.encode()
 
@@ -734,6 +790,8 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
             if segment.kind == "bin":
                 continue
             out += [f"    vram: 0x{segment.vram:08X}"] if segment.vram is not None else []
+            if any(s.address_space != "main" for s in project.version[v].segments):
+                out += [f"    exclusive_ram_id: {_scalar(segment.address_space)}"]
             cells: list[tuple[int, str, str]] = [(start, _C, segment.name)]
             for r in rows:
                 if not start <= (r.rom or 0) < end or r.kind in _NOT_DATA:
