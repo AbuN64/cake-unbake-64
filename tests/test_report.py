@@ -395,13 +395,16 @@ def test_c2_without_a_measured_extent_or_behind_a_stand_in_a_label_stays_unowned
 
 def _extent_cache(monkeypatch):
     held = {}
-    monkeypatch.setattr(report.store, "put", lambda config, kind, key, value, named=False: held.__setitem__((kind, key), value))
+    monkeypatch.setattr(
+        report.store, "put", lambda config, kind, key, value, named=False: held.__setitem__((kind, key), value)
+    )
     monkeypatch.setattr(report.store, "get", lambda config, kind, key, named=False: held.get((kind, key)))
     return held
 
 
 def test_c2_extents_come_from_the_built_objects_symbols(tmp_path, monkeypatch):
     from unbake import versions
+
     _extent_cache(monkeypatch)
     module = _module("src/a.c", ["sized", "bare", "last", "gone", "outside"], ["gone"])
     (tmp_path / "src").mkdir()
@@ -429,6 +432,7 @@ def test_c2_extents_come_from_the_built_objects_symbols(tmp_path, monkeypatch):
 
 def test_extents_follow_the_module_text_to_a_new_path_without_an_object(tmp_path, monkeypatch):
     from unbake import versions
+
     _extent_cache(monkeypatch)
     (tmp_path / "src/DATA").mkdir(parents=True)
     (tmp_path / "src/DATA/a.c").write_text("int tab[8];")

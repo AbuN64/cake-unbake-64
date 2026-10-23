@@ -227,7 +227,9 @@ def test_blobs_toml_is_a_fact_not_infrastructure_and_is_verified_when_it_changes
     assert seen == [1]  # blobs.toml did not differ: no verification
 
 
-def test_a_blobs_toml_that_fails_verification_is_refused(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_blobs_toml_that_fails_verification_is_refused(
+    repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from unbake import blobs
 
     monkeypatch.setattr(blobs, "verify", lambda cfg, base=None: (Finding("blobs.evidence", "bad sha"),))

@@ -370,7 +370,9 @@ def _data_name(piece: Sequence[str], first: bool) -> str:
             flat.append(token)
     if first and flat and flat[0] in _AGGREGATE:
         anonymous = tokens[tokens.index(flat[0]) + 1 : tokens.index(flat[0]) + 2] == ["{}"]  # struct { ... } name
-        flat = flat[2:] if len(flat) > 1 and _ident(flat[1]) and flat[1] not in _AGGREGATE and not anonymous else flat[1:]
+        flat = (
+            flat[2:] if len(flat) > 1 and _ident(flat[1]) and flat[1] not in _AGGREGATE and not anonymous else flat[1:]
+        )
         needed = 1
     else:
         needed = 2 if first else 1

@@ -215,12 +215,19 @@ def test_scanner_reads_depth_zero_only() -> None:
 
 
 def test_scanner_names_a_variable_of_an_anonymous_aggregate() -> None:
-    text = "struct { int a; int b; } pair = {1, 2};\nconst union { int i; float f; } both = {1};\nstruct Tag { int x; } tagged = {3};\n"
+    text = (
+        "struct { int a; int b; } pair = {1, 2};\n"
+        "const union { int i; float f; } both = {1};\n"
+        "struct Tag { int x; } tagged = {3};\n"
+    )
     assert tree._scan(text) == (["pair", "both", "tagged"], [])
 
 
 def test_scanner_names_a_variable_with_an_attribute_group() -> None:
-    text = "struct { short h; int w[2]; } __attribute__((packed)) blob = {0, {1, 2}};\nint x __attribute__((aligned(8))) = 1;\n"
+    text = (
+        "struct { short h; int w[2]; } __attribute__((packed)) blob = {0, {1, 2}};\n"
+        "int x __attribute__((aligned(8))) = 1;\n"
+    )
     assert tree._scan(text) == (["blob", "x"], [])
 
 

@@ -339,7 +339,8 @@ $(VERSIONS:%=build/nm/%/undefined_syms.ld): build/nm/%/undefined_syms.ld: build/
 	$(Q)cp $< $@
 # A draft may define a name that this version's ROM keeps as data, or the other way round: the first definition in link
 # order wins and link.err lists every such name; any other link error stops the build.
-$(VERSIONS:%=build/nm/%/$(NAME).elf): build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld build/nm/%/undefined_syms.ld
+$(VERSIONS:%=build/nm/%/$(NAME).elf): build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld \
+	build/nm/%/undefined_syms.ld
 	$(Q)cd build/nm/$* && { $(LD) -T link.ld -o $(NAME).elf 2> link.err \
 	|| $(LD) -T link.ld --allow-multiple-definition -o $(NAME).elf 2>> link.err; } \
 	|| { cat build/nm/$*/link.err >&2; exit 1; }

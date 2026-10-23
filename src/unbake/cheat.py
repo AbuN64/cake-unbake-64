@@ -282,7 +282,9 @@ def cheat_command(config: Config, params: Json) -> Json:
     if infra:
         findings.append(Finding("cheat.infra", "build/compare infrastructure changed", missing=tuple(infra)))
     if git("diff", "--name-only", base, head, "--", *rules["blobs"]).strip():
-        findings.extend(import_module("unbake.blobs").verify(config, git("show", f"{base}:blobs.toml", ok=(0, 128)).encode()))
+        findings.extend(
+            import_module("unbake.blobs").verify(config, git("show", f"{base}:blobs.toml", ok=(0, 128)).encode())
+        )
     rows = re.compile(rules["makefile_row"])
     changed = [
         ln
