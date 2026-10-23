@@ -10,7 +10,18 @@ import pytest
 from abucache.compile import Step
 
 from unbake import effort, native, store
-from unbake.contracts import Finding, Placement, Recipe, Refusal, Snapshot, SourceView, UnitSpec, digest, sha256
+from unbake.contracts import (
+    FileFacts,
+    Finding,
+    Placement,
+    Recipe,
+    Refusal,
+    Snapshot,
+    SourceView,
+    UnitSpec,
+    digest,
+    sha256,
+)
 
 ZEROS = bytes(0x20)
 
@@ -139,6 +150,16 @@ def test_include_directories_key_the_object_only_when_the_text_names_a_file(case
     native.objects(snapshot, unit, "a", recipe, work)
     includes = native.adapters.chain_steps.call_args.args[3]
     assert bool(includes) is named
+
+
+def test_a_units_file_row_hilo_nops_reaches_the_cached_chain(case, monkeypatch, toolchains):
+    case, _, _ = _tools(case, monkeypatch, toolchains)
+    snapshot, unit, recipe, _, work, _ = case
+    native.objects(snapshot, unit, "a", recipe, work)
+    assert native.adapters.chain_steps.call_args.args[5:] == (0, False)
+    monkeypatch.setattr(native, "file_facts", lambda project, path: FileFacts(hilo_nops=path == unit.path))
+    native.objects(snapshot, unit, "a", recipe, work / "hot")
+    assert native.adapters.chain_steps.call_args.args[5:] == (0, True)
 
 
 def test_stamp_names_the_text_the_recipe_and_the_tools_and_nothing_else(case, monkeypatch, toolchains):

@@ -75,6 +75,10 @@
     "keep_commits": {
      "type": "integer",
      "minimum": 1
+    },
+    "gc_bytes": {
+     "type": "integer",
+     "minimum": 1
     }
    },
    "required": [

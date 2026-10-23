@@ -296,6 +296,12 @@ def _asflags(row: Json, recipe: Recipe, includes: Sequence[str]) -> list[str]:
     return [*recipe.asflags, *(() if "{includes}" in row["assemble"] else includes)]
 
 
+def hilo_hazard_script() -> str:
+    """The python of the generated Makefile's HILO_HAZARD: the one text both builds run."""
+    text = configuration.template("Makefile.in")
+    return text.split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0] + "\n"
+
+
 def strip_align_script() -> str:
     """The python of the generated Makefile's STRIP_ALIGN: the one text both builds run, so what a measure assembles is
     what the build assembles."""
@@ -304,11 +310,12 @@ def strip_align_script() -> str:
 
 
 def chain_steps(
-    config: Config, id: str, recipe: Recipe, include: Sequence[Path], stem: str, align: int = 0
+    config: Config, id: str, recipe: Recipe, include: Sequence[Path], stem: str, align: int = 0, hilo: bool = False
 ) -> tuple[Step, ...]:
     """The compile and assemble commands of a unit with {in} and {out} for their files, for abucache's compile cache.
     `align` is the address mod 8 the ROM puts the unit's data at (the Makefile's NOALIGN): the assembly drops the
-    alignment that start does not meet before it is assembled."""
+    alignment that start does not meet before it is assembled. `hilo` is the unit's file row hilo_nops: the Makefile's
+    HILO_HAZARD pass puts two nops between an mfhi/mflo and an adjacent mult/div before the assembly is assembled."""
     chain = toolchain(config, id)
     row, includes = chain.row, [f"-I{p}" for p in include]
     steps = [
@@ -323,6 +330,8 @@ def chain_steps(
             steps.append(
                 Step("align", "source.s", (sys.executable, "-I", "-c", strip_align_script(), "{in}", str(align)))
             )
+        if hilo:
+            steps.append(Step("hilo", "source.s", (sys.executable, "-I", "-c", hilo_hazard_script(), "{in}")))
         argv = (
             chain.argv(
                 "assemble",

@@ -112,7 +112,10 @@ def _compile_inputs(
     # directories (absolute paths of this checkout) are not an input, so they stay out of the key and every
     # worktree of the project shares its objects.
     reads = re.search(r"\.(?:include|incbin)\b", text) is not None
-    steps = adapters.chain_steps(snapshot.config, recipe.toolchain, recipe, include if reads else (), _INPUT, align)
+    hilo = file_facts(snapshot.config.project, unit.path).hilo_nops
+    steps = adapters.chain_steps(
+        snapshot.config, recipe.toolchain, recipe, include if reads else (), _INPUT, align, hilo
+    )
     tools = str(
         effort.memo(
             ("tool-identity", recipe.toolchain), lambda: adapters.tool_identity(snapshot.config, recipe.toolchain)

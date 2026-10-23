@@ -26,7 +26,7 @@ from typing import Any
 from abucache.store import CacheFull, ContentCache, absorb_touched, everything, open_cache
 
 from unbake import effort, process
-from unbake.contracts import Config, Finding, Json, Refusal, pickled, sha256
+from unbake.contracts import Config, Finding, Host, Json, Refusal, pickled, sha256
 
 
 def write(path: Path, content: bytes) -> bool:
@@ -197,12 +197,15 @@ class Packed(ContentCache):
         return value
 
 
+def content_directory(host: Host) -> Path:
+    """The host content cache's folder, beside cache.dir and named for the entry format."""
+    return host.cache_dir.with_name(f"{host.cache_dir.name}.v{_PACKED[0]}")
+
+
 def content(config: Config, named: bool = False) -> Packed:
     """The host content cache beside cache.dir, in a folder named for the entry format: older installs never read it.
     `named`: the caller's keys name its code (pool jobs), so they are kept as given."""
-    folder = config.host.cache_dir
-    sibling = folder.with_name(f"{folder.name}.v{_PACKED[0]}")
-    return Packed(open_cache(sibling, config.host.cache_max_bytes, effort.count), named)
+    return Packed(open_cache(content_directory(config.host), config.host.cache_max_bytes, effort.count), named)
 
 
 _CLOCK: Callable[[], float] = time.monotonic  # replaced by tests so a deadline passes without waiting
