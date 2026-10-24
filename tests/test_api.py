@@ -29,6 +29,7 @@ EXPECTED = [
     "load",
     "memo",
     "name_issues",
+    "naming_debt",
     "naming_findings",
     "pool_map",
     "preprocess",

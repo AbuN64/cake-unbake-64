@@ -9,7 +9,7 @@ import tomllib
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from unbake import (
     delta,
     effort,
     lookalike,
+    naming_baseline,
     native,
     offsets,
     pool,
@@ -26,6 +27,7 @@ from unbake import (
     store,
     symbol_names,
     tree,
+    treelock,
     versions,
 )
 from unbake import view as _view
@@ -935,7 +937,13 @@ def evaluate(
             return ()  # vendored source idioms; compile and ROM proof are still mandatory
         if config.is_assembly(path):
             return text_findings(path, text, False)
-        return _findings(snapshot, path, text, view, sdk_group, only)
+        found = _findings(snapshot, path, text, view, sdk_group, only)
+        if only is not None and "symbol-name" not in only:
+            return found
+        names, debt = naming_baseline.split(
+            symbol_names.source(path, text), naming_baseline.read(snapshot.config.project.root)
+        )
+        return (*(f for f in found if f.key != "source.symbol-name"), *names, *debt)
 
 
 _IDENT = re.compile(r"[A-Za-z_]\w*")
@@ -1027,7 +1035,10 @@ def fresh(snapshot: Snapshot, path: str, findings: Sequence[Finding], sdk_group:
             )
         except Refusal:  # the old text has no view: its view rules found nothing
             viewed = None
-    return scope(evaluate(snapshot, path, old.decode(), viewed, sdk_group), findings, {path})[0]
+    # Naming admission uses reviewed debt, never arbitrary old source as its baseline.
+    names = tuple(f for f in findings if f.key == "source.symbol-name")
+    others = tuple(f for f in findings if f.key != "source.symbol-name")
+    return (*names, *scope(evaluate(snapshot, path, old.decode(), viewed, sdk_group), others, {path})[0])
 
 
 _VIEWED = frozenset({"shared-declarations", "volatile-storage"})  # the checks that read a source view (`_hits`)
@@ -1053,6 +1064,8 @@ def _census_unit(item: tuple[Snapshot, tree.Module]) -> tuple[Finding, ...]:
             text,
             sdk,
             config.load_resource("rules.toml"),
+            config.load_resource("symbol-names.toml"),
+            naming_baseline.read(snapshot.config.project.root),
             snapshot.config.project.digest,
             code_identity(
                 evaluate, _view_uses, _stand_in_body, _duplicate_records, _offset_names, offsets.sites, *_DEBT.values()
@@ -1117,6 +1130,8 @@ def _census_key(item: tuple[Snapshot, tree.Module]) -> str:
             reads,
             _sdk(snapshot.config, module.path),
             config.load_resource("rules.toml"),
+            config.load_resource("symbol-names.toml"),
+            naming_baseline.read(snapshot.config.project.root),
             snapshot.config.project.digest,
             code_identity(_census_unit, _stand_in_body, _duplicate_records, *_DEBT.values()),
         )
@@ -1136,6 +1151,8 @@ def _header_key(item: tuple[Snapshot, str, bool]) -> str:
             path,
             sdk,
             config.load_resource("rules.toml"),
+            config.load_resource("symbol-names.toml"),
+            naming_baseline.read(snapshot.config.project.root),
             snapshot.config.project.digest,
             code_identity(_census_header, *_DEBT.values()),
         )
@@ -1492,6 +1509,13 @@ def _offset_audit(
 
 
 def audit_command(params: Json) -> Json:
+    """Audit and shrink naming debt under the existing project writer lock."""
+    root = Path(params["project"] or ".")
+    with treelock.hold(root, exclusive=True, who="audit"):
+        return _audit(params)
+
+
+def _audit(params: Json) -> Json:
     """Refuse the source rule rows the working tree adds over a revision. Reads text and git only: no ROM, host or
     snapshot, so CI runs it with nothing but the checkout."""
     root, against = Path(params["project"] or "."), params["against"]
@@ -1533,7 +1557,7 @@ def audit_command(params: Json) -> Json:
     def new_file(path: str) -> bytes | None:
         return (root / path).read_bytes() if (root / path).is_file() else None
 
-    tracked = run("ls-files", "-z").decode().split("\0")
+    tracked = run("ls-files", "-z", "--cached", "--others", "--exclude-standard").decode().split("\0")
     source_files = {
         p: (root / p).read_text(errors="replace")
         for p in tracked
@@ -1543,7 +1567,8 @@ def audit_command(params: Json) -> Json:
         and (root / p).is_file()
         and not any(Path(p).is_relative_to(d) for d in library)
     }
-    naming = symbol_names.findings(source_files)
+    baseline = naming_baseline.read(root)
+    naming, naming_debt = naming_baseline.split(symbol_names.findings(source_files), baseline)
     if naming:
         raise Refusal(*naming)
     before: list[Finding] = []
@@ -1551,7 +1576,11 @@ def audit_command(params: Json) -> Json:
     for path in paths:
         for found, data in ((before, old_file(path)), (after, new_file(path))):
             if data is not None:
-                found.extend(text_findings(path, data.decode(errors="replace"), False))
+                found.extend(
+                    f
+                    for f in text_findings(path, data.decode(errors="replace"), False)
+                    if f.key != "source.symbol-name"
+                )
     blocking, _ = scope(before, after, paths, _renames(_placements(old_file), _placements(new_file)))
     laid_before, laid_after = _offset_audit(root, against, git, tmp, paths, library)
     laid, _ = scope(laid_before, laid_after, {f.path for f in laid_after})
@@ -1580,4 +1609,12 @@ def audit_command(params: Json) -> Json:
                 action="restore the C that earned the credit, or run make check and unbake sync",
             )
         )
-    return {"against": against, "paths": paths, "counts_before": counts(before), "counts_after": counts(after)}
+    naming_baseline.shrink(root, baseline, naming_debt)
+    return {
+        "against": against,
+        "paths": paths,
+        "counts_before": counts(before),
+        "counts_after": counts(after),
+        "notes": [asdict(f) for f in naming_debt],
+        "naming_debt": naming_baseline.by_file(naming_debt),
+    }

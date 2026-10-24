@@ -26,6 +26,15 @@
     "type": "integer",
     "minimum": 0
    }
+  },
+  "notes": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "naming_debt": {
+   "type": "object"
   }
  },
  "required": [

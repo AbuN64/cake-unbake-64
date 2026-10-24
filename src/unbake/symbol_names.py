@@ -24,11 +24,14 @@ def _table() -> Json:
 
 
 @cache
-def _issues(name: str, kind: str, global_scope: bool) -> tuple[str, ...]:
+def _issues(name: str, kind: str, global_scope: bool, implementation: bool = False) -> tuple[str, ...]:
     """Target-qualified reasons a symbol, section, or relative file path cannot be emitted."""
     if kind not in ("symbol", "section", "file"):
         raise ValueError(f"unknown name kind: {kind}")
     out: dict[str, list[str]] = {}
+    sdk = implementation and any(
+        re.fullmatch(pattern, name) for pattern in _table()["implementation_reserved"]["symbol_patterns"]
+    )
     for target, row in _table()["target"].items():
         why: list[str] = []
         field = "identifier" if kind == "symbol" else kind
@@ -45,7 +48,9 @@ def _issues(name: str, kind: str, global_scope: bool) -> tuple[str, ...]:
             words = _keywords(target)
             if name in words:
                 why.append("compiler keyword")
-            if re.search(row["reserved"], name) or (global_scope and re.search(row["reserved_global"], name)):
+            if not sdk and (
+                re.search(row["reserved"], name) or (global_scope and re.search(row["reserved_global"], name))
+            ):
                 why.append("reserved identifier")
         for reason in dict.fromkeys(why):
             out.setdefault(reason, []).append(target)
@@ -212,7 +217,7 @@ def source(path: str, text: str) -> tuple[Finding, ...]:
     declarations += [(m[1], m.start(1), True) for m in re.finditer(rf"^\s*#\s*define\s+({_WORD})", literal, re.M)]
     seen: set[tuple[int, str]] = set()
     for name, at, global_scope in declarations:
-        for why in issues(name, global_scope=global_scope):
+        for why in _issues(name, "symbol", global_scope, implementation=True):
             key = (text.count("\n", 0, at), why)
             if key not in seen:
                 findings.append(_finding(path, text, at, why))

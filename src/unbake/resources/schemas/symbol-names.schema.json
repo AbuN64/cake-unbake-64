@@ -5,7 +5,8 @@
   "required": [
     "schema",
     "keywords",
-    "target"
+    "target",
+    "implementation_reserved"
   ],
   "additionalProperties": false,
   "properties": {
@@ -162,6 +163,27 @@
           "explicit_asm_labels": {
             "const": false
           }
+        }
+      }
+    },
+    "implementation_reserved": {
+      "type": "object",
+      "required": [
+        "symbol_patterns",
+        "configured_library_roots"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "symbol_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "configured_library_roots": {
+          "const": true
         }
       }
     }

@@ -8,7 +8,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from unbake import adapters, effort, human, pool, process, recipes, store, symbol_names, tree
+from unbake import adapters, effort, human, naming_baseline, pool, process, recipes, store, symbol_names, tree
 from unbake import config as _config
 from unbake import symbols as _symbols
 from unbake import versions as _versions
@@ -32,6 +32,7 @@ __all__ = [
     "load",
     "memo",
     "name_issues",
+    "naming_debt",
     "naming_findings",
     "pool_map",
     "preprocess",
@@ -197,3 +198,8 @@ def name_issues(name: str, kind: str = "symbol", taken: Sequence[str] = ()) -> t
 def naming_findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
     """Portable source and path names, without a host, compiler or ROM."""
     return symbol_names.findings(files)
+
+
+def naming_debt(root: Path) -> Json:
+    """Per-file reviewed naming debt, refreshed by successful unbake audits."""
+    return (naming_baseline.read(root) or {}).get("files", {})

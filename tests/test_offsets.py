@@ -100,11 +100,12 @@ def test_a_type_that_cannot_be_sized_ends_the_judging_there():
 
 
 @pytest.fixture
-def snapshot(monkeypatch):
+def snapshot(monkeypatch, tmp_path):
     monkeypatch.setattr(policy.effort, "stage", Mock(side_effect=lambda name: nullcontext()))
     result = Mock(spec=Snapshot)
     result.config = Mock(spec=Config)
     result.config.project = Mock(spec=Project)
+    result.config.project.root = tmp_path
     result.config.project.names_from = "a"
     result.config.project.libraries = ()
     result.config.project.digest = "project"
