@@ -146,6 +146,10 @@ def test_build_context_holds_what_the_permuter_needs(tmp_path: Path, toolchains)
     assert f"-I{root / 'asm/a/include'}" in found["assemble"]
     candidate = api.build_context(config, "fuzzy", "a", b"#ifdef GAME\nint fuzzy(void) { return 2; }\n#endif\n")
     assert candidate["source"].strip() == "int fuzzy(void) { return 2; }"  # a candidate preprocessed as the module
+    asm.unlink()  # matched: the version keeps no assembly, the module still has a context to build a candidate in
+    matched = api.build_context(config, "fuzzy", "a")
+    assert matched["asm"] is None and matched["asm_path"] == "asm/a/nonmatchings/ovl/fuzzy.s"
+    assert matched["source"] == found["source"]
 
 
 def test_build_context_says_where_each_line_of_the_source_was_written(tmp_path: Path, toolchains) -> None:

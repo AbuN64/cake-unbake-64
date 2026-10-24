@@ -108,7 +108,10 @@ def measured_apart(text: str, segment: str, name: str) -> bool:
         return False
     stack = _sides(text, found.start())  # the condition of each side open at the stand-in
     # off with NON_MATCHING and on without it: its negation opens a NON_MATCHING side (tree.guard)
-    return any(e is not None and tree.guard(f"#if !({e})\n") is not None for e in stack)
+    # or a version term beside it (`#if !defined(VERSION_DE) && !defined(NON_MATCHING)`), which tree.guard cannot judge
+    return any(
+        e is not None and (tree.guard(f"#if !({e})\n") is not None or tree.off_with_non_matching(e)) for e in stack
+    )
 
 
 def _sides(text: str, at: int) -> list[str | None]:
@@ -300,14 +303,53 @@ def _wanted(groups: Sequence[Sequence[tuple[str, int]]], before: str) -> list[tu
     is kept or dropped whole, never one of its directives alone (an `#endif` the file also has must not go)."""
     have = {_norm(d) for d in _declarations(_visible(before))}
     whole = _visible_groups(before)
+    inside = _open_conditions(before)
     out: list[tuple[str, int]] = []
     for group in groups:
         if len(group) == 1 and _norm(group[0][0]) in have:
             continue
         if len(group) > 1 and _norm("\n".join(t for t, _ in group)) in whole:
             continue
+        if _unwrappable(group, inside):
+            # the candidate's function sits in the same conditional as the file's definition (`#if !VERSION_DE` around
+            # its helpers and itself): text inserted there is already inside it, so its helpers are judged one by one
+            # (DispatchControllerButtonEvent: a whole-file candidate brought its static inline helpers a second time)
+            out += [item for item in group[1:-1] if _norm(item[0]) not in have]
+            continue
         out += group
     return out
+
+
+def _open_conditions(before: str) -> frozenset[str]:
+    """The opening directives (whitespace-normalized) of the conditionals still open, on their first side, at the end
+    of `before`: text inserted right after it compiles exactly when every one of them holds."""
+    stack: list[str | None] = []
+    for part in items(before):
+        word = _directive(before, part)
+        if word in ("if", "ifdef", "ifndef"):
+            stack.append(_norm(before[part.start : part.end]))
+        elif word in ("else", "elif") and stack:
+            stack[-1] = None
+        elif word == "endif" and stack:
+            stack.pop()
+    return frozenset(s for s in stack if s is not None)
+
+
+def _unwrappable(group: Sequence[tuple[str, int]], inside: frozenset[str]) -> bool:
+    """Whether a group is one conditional with no other side whose opener is already open where it would go."""
+    if len(group) < 3 or _norm(group[0][0]) not in inside or not re.match(r"#\s*endif\b", group[-1][0]):
+        return False
+    depth = 0
+    for text, _ in group[1:-1]:
+        word = re.match(r"#\s*(\w+)", text)
+        kind = word[1] if word else ""
+        if kind in ("if", "ifdef", "ifndef"):
+            depth += 1
+        elif kind == "endif":
+            depth -= 1
+        elif kind in ("else", "elif") and depth == 0:
+            return False
+    return depth == 0
 
 
 def _pieces(source: str, name: str, known: Collection[str] = ()) -> tuple[list[list[tuple[str, int]]], str, int]:

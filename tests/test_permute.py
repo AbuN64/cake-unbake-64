@@ -183,3 +183,14 @@ def test_the_base_score_comes_from_the_preflight_and_a_worse_output_is_not_a_bes
     ctx = {"source": SOURCE, "script": "true", "assemble": ["/usr/bin/touch", "{out}"], "asm_path": "nonmatchings/g.s"}
     found = permute.search(config, "g", ctx, {"permute": 30, "permuter": str(fake)}, tmp_path / "work")  # type: ignore[arg-type]
     assert found["base_score"] == 20 and found["best_score"] is None and found["function"] == ""
+
+
+def test_a_function_without_assembly_is_refused_before_the_permuter_runs(tmp_path: Path) -> None:
+    fake = tmp_path / "permuter"
+    fake.write_text("#!/bin/sh\nexit 3\n")
+    fake.chmod(0o755)
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path), host=SimpleNamespace(workers=2))
+    ctx = {"source": SOURCE, "script": "true", "assemble": [], "asm_path": "nonmatchings/g.s", "asm": None}
+    with pytest.raises(Refusal) as refused:
+        permute.search(config, "g", ctx, {"permute": 30, "permuter": str(fake)}, tmp_path / "w")  # type: ignore[arg-type]
+    assert refused.value.findings[0].key == "permute.no_target"

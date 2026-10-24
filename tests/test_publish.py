@@ -767,3 +767,19 @@ def test_a_pool_stand_in_without_a_literals_row_of_the_owner_or_in_a_version_the
         == {}
     )
     assert publish._literal_pools(config, "func_80000000_de", held, [owner], {}, publish.Reads(config, {}), {}) == {}
+
+
+def test_a_whole_file_candidate_inside_the_files_own_conditional_does_not_bring_its_helpers_twice():
+    # math_controller_events.CPP DispatchControllerButtonEvent: helpers and function share `#if !defined(VERSION_DE)`
+    # in the file and the candidate; the helpers came in again (redefinition, score.compile)
+    current = (
+        "#ifdef NON_MATCHING\n#if !defined(VERSION_DE)\nstatic inline int h(int a) {\n    return a + 1;\n}\n\n"
+        "void f(int *p) {\n    *p = h(1);\n}\n#endif\n#endif\n"
+    )
+    source = current.replace("h(1)", "h(2)")
+    text, origins = publish.replace_traced(current, "f", source)
+    assert text.count("static inline int h") == 1 and "h(2)" in text and "h(1)" not in text
+    assert text.count("#if !defined(VERSION_DE)") == 1 and text.count("#endif") == 2
+    assert len(origins) == len(text.splitlines())
+    changed = source.replace("a + 1", "a + 3")  # a helper the candidate changes still comes along
+    assert "a + 3" in publish.replace_traced(current, "f", changed)[0]

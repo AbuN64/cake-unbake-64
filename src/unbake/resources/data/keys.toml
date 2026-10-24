@@ -37,6 +37,10 @@ sentence = "the compiler reported an error"
 owner = "compare"
 sentence = "the candidate is not compiled in this version, so a score would measure the module's own definition"
 
+[key."permute.no_target"]
+owner = "permute"
+sentence = "the function has no assembly in this version (it is C there), so the permuter has no target"
+
 [key."score.compile"]
 owner = "compare"
 sentence = "the candidate did not build, so there is nothing to score"

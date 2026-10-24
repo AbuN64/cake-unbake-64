@@ -90,9 +90,10 @@ def build_context(config: Config, name: str, version: str, text: bytes | None = 
     """What decomp-permuter needs for the function `name` in `version`, from the toolchain rows the Makefile uses:
     `path` (the owning module), `source` (that module, or `text` standing for it, as the compiler reads it),
     `script` (compile.sh: the build's preprocess, compile and assemble of "$1" into the object "$3"), `cc` (the
-    compile argv over {in} and {out}), `toolchain`, `cppflags`, `cflags`, `asm_path` and `asm` (the target assembly)
-    and `assemble` (the argv that assembles it into {out}, as unbake assembles a target); `lines` holds per line of
-    `source` the [file, line] it was written on, which a diagnostic that names a line of `source` is read through."""
+    compile argv over {in} and {out}), `toolchain`, `cppflags`, `cflags`, `asm_path` and `asm` (the target assembly,
+    None when that file is absent) and `assemble` (the argv that assembles it into {out}, as unbake assembles a
+    target); `lines` holds per line of `source` the [file, line] it was written on, which a diagnostic that names a
+    line of `source` is read through."""
     path = capture(config).owner(version, name)
     if path is None:
         raise Refusal(Finding("symbols.unknown", f"no module owns {name} in {version}", unit=name, versions=(version,)))
@@ -125,7 +126,9 @@ def build_context(config: Config, name: str, version: str, text: bytes | None = 
         "cppflags": list(recipe.cppflags),
         "cflags": list(recipe.cflags),
         "asm_path": target,
-        "asm": (root / target).read_text(encoding="utf-8", errors="replace"),
+        # None once the function is C in this version (an exact match deletes its assembly; a name the version keeps
+        # under another symbol's file has none): the module still builds, only a permuter target is missing
+        "asm": (root / target).read_text(encoding="utf-8", errors="replace") if (root / target).is_file() else None,
         "assemble": assemble,
     }
 

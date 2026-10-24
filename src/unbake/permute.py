@@ -227,6 +227,11 @@ def search(config: Config, name: str, ctx: Json, params: Json, work: Path) -> Js
         raise Refusal(
             Finding("native.missing_tool", "no permuter: pass --permuter PATH or set UNBAKE_PERMUTER", path=permuter)
         )
+    target = ctx.get("asm", "")
+    if target is None:  # build_context found no assembly: the function is C in this version, nothing to aim at
+        raise Refusal(
+            Finding("permute.no_target", f"{name} has no assembly file {ctx['asm_path']} to permute toward", unit=name)
+        )
     root, folder = config.project.root, work / "permute"
     folder.mkdir(parents=True, exist_ok=True)
     base, defines, named = _shield(ctx["source"])

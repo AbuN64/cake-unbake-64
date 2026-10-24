@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import compare, effort, publish, store, view
+from unbake import compare, effort, publish, store, tree, view
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Proof, Refusal, sha256
 
@@ -537,6 +537,23 @@ def test_a_measure_reads_the_candidate_in_the_place_of_a_draft_kept_apart_from_i
     assert "hud->x = 2;" in text and "hud->x = 1;" not in text
     assert text.index("hud->x = 2;") > text.index("#if defined(NON_MATCHING)") > text.index("INCLUDE_ASM")
     assert len(origins) == len(text.splitlines())
+
+
+def test_a_stand_in_guarded_by_a_version_beside_non_matching_is_measured_in_its_drafts_place():
+    # math_controller_events.CPP DispatchControllerButtonEvent: `#if !(defined(VERSION_DE)) && !defined(NON_MATCHING)`
+    # read every other name as defined and missed the guard, so the candidate went to the stand-in (score.inactive)
+    nested = (
+        _APART.replace("#ifndef NON_MATCHING", "#if !(defined(VERSION_DE)) && !defined(NON_MATCHING)")
+        .replace("#if defined(NON_MATCHING)\n", "#ifdef NON_MATCHING\n#if !defined(VERSION_DE)\n")
+        .replace("}\n#endif\n", "}\n#endif\n#endif\n")
+    )
+    assert publish.measured_apart(nested, "seg", "f")
+    text, origins = compare._text(nested, "seg", "f", "void f(Hud *hud) {\n    hud->x = 2;\n}\n")
+    assert "hud->x = 2;" in text and "hud->x = 1;" not in text
+    assert text.index("hud->x = 2;") > text.index("#if !defined(VERSION_DE)") > text.index("INCLUDE_ASM")
+    assert len(origins) == len(text.splitlines())
+    assert not tree.off_with_non_matching("defined(VERSION_DE)")
+    assert not tree.off_with_non_matching("defined(NON_MATCHING) || defined(VERSION_DE)")
 
 
 def test_a_stand_in_on_the_else_side_of_its_drafts_block_is_still_spliced_there():

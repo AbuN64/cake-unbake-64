@@ -624,9 +624,9 @@ _EXPR_TOKEN = re.compile(r"\s*(defined\b|[A-Za-z_]\w*|0[xX][0-9a-fA-F]+|\d+|&&|\
 _DEFINED = re.compile(r"\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|([A-Za-z_]\w*))")
 
 
-def _condition(text: str, matching: bool) -> bool | None:
-    """The truth of an `#if` expression with NON_MATCHING defined or not, every other name defined and every other
-    identifier 0 (the build of the one version being measured), None when it is not an expression of those."""
+def _condition(text: str, matching: bool, others: bool = True) -> bool | None:
+    """The truth of an `#if` expression with NON_MATCHING defined or not, every other name defined (`others`) and every
+    other identifier 0 (the build of the one version being measured), None when it is not an expression of those."""
     text = re.sub(r"/\*.*?\*/|//.*", " ", text).rstrip()
     out: list[str] = []
     at = 0
@@ -640,7 +640,7 @@ def _condition(text: str, matching: bool) -> bool | None:
             if named is None:
                 return None
             at = named.end()
-            out.append(str(matching if (named[1] or named[2]) == "NON_MATCHING" else True))
+            out.append(str(matching if (named[1] or named[2]) == "NON_MATCHING" else others))
         elif word[0].isalpha() or word[0] == "_":
             out.append("0")
         else:
@@ -676,6 +676,18 @@ def guard(line: str) -> tuple[str, str] | None:
     if _condition(expression, True) is True and _condition(expression, False) is False:
         return m[1], m[4]
     return None
+
+
+def off_with_non_matching(expression: str) -> bool:
+    """Whether an `#if` expression that names NON_MATCHING is false whenever NON_MATCHING is defined and true in some
+    build without it, whatever the other names (`!defined(VERSION_DE) && !defined(NON_MATCHING)`): the side a
+    stand-in sits on that only the real build compiles. `guard` reads every other name as defined, so a version term
+    beside the NON_MATCHING one hides such a side from it."""
+    if "NON_MATCHING" not in expression:
+        return False
+    on = [_condition(expression, True, v) for v in (True, False)]
+    off = [_condition(expression, False, v) for v in (True, False)]
+    return on == [False, False] and True in off
 
 
 def non_matching_blocks(lines: Sequence[str]) -> list[tuple[int, int, int]]:
