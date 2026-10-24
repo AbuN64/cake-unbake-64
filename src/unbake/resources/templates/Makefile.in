@@ -203,19 +203,32 @@ else:
     os.remove(keep)
 endef
 export KEEP_DATES
+# One extraction per input: a version whose baserom, splat.yaml, symbol_addrs.txt, splat and extract recipe are those of its last
+# extraction (build/.extract-key-<v>) is not split again, so a build or probe extracts only a version whose inputs it changed.
+# `make extract-force-<v>` (or removing asm/<v>/.extracted) splits regardless. One recipe, no sub-make (parallel sub-makes raced
+# on remaking the included files). Bump rev1 when the recipe changes.
+export EXTRACT_RECIPE := rev1 $$(DATA_SED) $$(CODE_SED)
+EXTRACT_KEY = { cat roms/baserom.$$*.z64 versions/$$*/splat.yaml versions/$$*/symbol_addrs.txt; $$(SPLAT) --version 2>&1; printf %s "$$$$EXTRACT_RECIPE"; } | sha1sum | cut -d" " -f1
 extract: $$(VERSIONS:%=extract-%)
+extract-force-%:
+	$$(Q)rm -f build/.extract-key-$$* && $$(MAKE) --no-print-directory extract-$$*
+# Records the inputs asm/<v>/ holds the extraction of (the tool that extracts runs it too).
+extract-stamp-%:
+	$$(Q)mkdir -p build && { $$(EXTRACT_KEY); } > build/.extract-key-$$*
 extract-%:
-	$$(Q)python3 -I -c "$$$$KEEP_DATES" save $$*
-	$$(Q)$$(SPLAT) split versions/$$*/splat.yaml
-	$$(Q)find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
+	$$(Q)mkdir -p build; if test -f asm/$$*/.extracted && test "$$$$($$(EXTRACT_KEY))" = "$$$$(cat build/.extract-key-$$* 2>/dev/null)"; then rm -f build/.extract-run-$$*; echo "extract-$$*: inputs unchanged, not split again (make extract-force-$$* splits)"; else touch build/.extract-run-$$*; fi
+	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" save $$*
+	$$(Q)test -e build/.extract-run-$$* || exit 0; $$(SPLAT) split versions/$$*/splat.yaml
+	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
 		case $$$$(grep -m1 -oE '^ */\* [0-9A-F]+ [0-9A-F]{8}' "$$$$f" | tail -c 2) in \
 		0*) c='';; 8*) c='s/^\.align [4-9]/.align 3/';; [4C]*) c='s/^\.align [3-9]/.align 2/';; \
 		[26AE]*) c='s/^\.align [2-9]/.align 1/';; *) c='s/^\.align [1-9]/.align 0/';; esac; \
 		sed -E $$(DATA_SED) -e "$$$$c" "$$$$f" > "$$$${f%.*.s}.s" && rm "$$$$f"; done
-	$$(Q)python3 -I -c "$$$$FILL_DATA" $$*
-	$$(Q)find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
-	$$(Q)touch asm/$$*/.extracted
-	$$(Q)python3 -I -c "$$$$KEEP_DATES" restore $$*
+	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$FILL_DATA" $$*
+	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
+	$$(Q)test -e build/.extract-run-$$* || exit 0; touch asm/$$*/.extracted
+	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" restore $$*
+	$$(Q)test -e build/.extract-run-$$* || exit 0; { $$(EXTRACT_KEY); } > build/.extract-key-$$* && rm -f build/.extract-run-$$*
 # An object assembles extracted files its source only names through a macro: every object follows the extraction.
 asm/%/.extracted: | roms/baserom.%.z64
 	+$$(Q)$$(MAKE) --no-print-directory extract-$$*

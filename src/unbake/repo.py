@@ -1152,6 +1152,8 @@ def extract_job(job: tuple[Config, str]) -> bool:
         _prune_superseded(config, v)  # facts the stamp names cannot leave a file of an earlier name: one put there does
         if not (_facts_snapshot(config, v).exists() and _yaml_snapshot(config, v).exists()):
             _snapshot_inputs(config, v)  # the key says these facts and pieces made this extraction
+        if not (config.project.root / "build" / f".extract-key-{v}").is_file():
+            _stamp_make(config, v)  # a tree made before the Makefile skipped unchanged versions
         return False
     # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
     # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.
@@ -1178,7 +1180,16 @@ def extract_job(job: tuple[Config, str]) -> bool:
     _write_asm_manifest(config, v)
     _snapshot_inputs(config, v)
     store.write(stamp, key.encode())
+    _stamp_make(config, v)
     return True
+
+
+def _stamp_make(config: Config, v: str) -> None:
+    """Tell the Makefile that asm/<v>/ holds the extraction of today's inputs, so `make extract-<v>` (a lane's build
+    script) does not split it again. Nothing to do for a Makefile without the skip."""
+    makefile = config.project.root / "Makefile"
+    if makefile.is_file() and build.rule_text(makefile.read_text(errors="replace"), "extract-stamp-%") is not None:
+        _checked(build.make(config, [f"extract-stamp-{v}"]), "setup.splat", f"stamp {v}")
 
 
 _INCLUDE = re.compile(rb'^\s*\.include\s+"([^"]+)"', re.M)

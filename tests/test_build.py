@@ -335,7 +335,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(text.splitlines()) < 360
+    assert len(text.splitlines()) < 372
     assert "src/f1.c" not in text
 
 
@@ -696,7 +696,11 @@ def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
     (tmp_path / "macro.txt").write_text("macro\n")
     splat = tmp_path / "splat.py"
     splat.write_text(
+        "import sys\n"
         "from pathlib import Path\n"
+        "if '--version' in sys.argv:\n"
+        "    print('splat test')\n"
+        "    sys.exit(0)\n"
         "folder = Path('asm/us/nonmatchings/seg')\n"
         "folder.mkdir(parents=True, exist_ok=True)\n"
         "for old in folder.glob('*.s'):\n"
@@ -729,6 +733,7 @@ def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
     assert extract() == dict.fromkeys(first, old)
     assert not list((tmp_path / "build").glob(".extract-dates-*"))
     (tmp_path / "out.txt").write_text("call f_renamed\n")
+    (tmp_path / "versions/us/splat.yaml").write_text("# renamed\n")
     changed = extract()
     assert changed[files[0]] > old and changed[files[1]] > old and changed[files[2]] == old
     assert changed[stamp] == old
@@ -737,11 +742,13 @@ def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
     obj.parent.mkdir(parents=True, exist_ok=True)
     obj.write_text("o")
     (tmp_path / "names.txt").write_text("f")  # g.s, which a.c names, is no longer extracted
+    (tmp_path / "versions/us/splat.yaml").write_text("# 2\n")
     gone = extract()
     assert gone[stamp] == old and files[1] not in gone
     assert obj.stat().st_mtime_ns == build._LONG_AGO
     age(*gone)
     (tmp_path / "macro.txt").write_text("macro 2\n")  # every object assembles the shared include folder
+    (tmp_path / "versions/us/splat.yaml").write_text("# 3\n")
     assert extract()[stamp] > old
 
 

@@ -279,7 +279,7 @@ def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace)
 
 
 def test_the_uncommitted_tree_still_refuses_added_assembly(repo: SimpleNamespace) -> None:
-    (repo.root / "src/a.c").write_text(A + "void h(void) { __asm__(\"nop\"); }\n")
+    (repo.root / "src/a.c").write_text(A + 'void h(void) { __asm__("nop"); }\n')
     with pytest.raises(Refusal) as refused:
         cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
     assert {f.key for f in refused.value.findings} == {"cheat.added"}
