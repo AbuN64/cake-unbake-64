@@ -353,6 +353,17 @@ def test_sync_check_lists_changes_and_writes_nothing(world):
     assert repo.sync(world.cfg, {"check": True}) == {"written": [], "stand_ins": {}}  # now nothing would change
 
 
+def test_sync_leaves_an_existing_makefile_alone_until_asked(world):
+    repo.sync(world.cfg, {})
+    generated = (world.root / "Makefile").read_bytes()
+    (world.root / "Makefile").write_bytes(b"# main's older generation\n" + generated)  # what a newer tool would rewrite
+    assert repo.sync(world.cfg, {"check": True}) == {"written": [], "stand_ins": {}}
+    assert "Makefile" not in repo.sync(world.cfg, {})["written"]
+    assert (world.root / "Makefile").read_bytes().startswith(b"# main's older")
+    assert "Makefile" in repo.sync(world.cfg, {"makefile": True})["written"]
+    assert (world.root / "Makefile").read_bytes() == generated
+
+
 def test_sync_settle_writes_then_checks_again_only_after_a_write_and_refuses_a_moving_output(world, monkeypatch):
     (world.root / "Makefile").unlink()
     runs = []

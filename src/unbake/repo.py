@@ -833,6 +833,9 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
         changed = {
             path: value
             for path, value in {**appended, **_generated(config, current)}.items()
+            # an existing Makefile is the project's own until `sync --makefile` regenerates it: a tool newer than the
+            # tree's main would otherwise rewrite it into something main does not carry (every lane then restored it)
+            if not (path == "Makefile" and (root / path).is_file() and not params.get("makefile"))
             if (root / path).is_file() != (value is not None)
             or (value is not None and (root / path).read_bytes() != value)
         }
