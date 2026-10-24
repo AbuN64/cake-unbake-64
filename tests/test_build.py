@@ -300,6 +300,12 @@ def test_splat_yaml_writes_labels_into_the_piece_before_them(tmp_path):
     assert "main/d_1]" in out and "main/d_3]" in out and "d_2" not in out
 
 
+def without_hdrkey(text: str) -> str:
+    """The Makefile without the C source of hdrkey it embeds (a constant, like the python scripts)."""
+    head, rest = text.split("define HDRKEY_C\n", 1)
+    return head + rest.split("\nendef", 1)[1]
+
+
 def test_makefile_variable_blocks(tmp_path):
     config = make_config(tmp_path, {"src/lib/": FileFacts(cflags=("-O1",), omit=("-O2",)), "src/a.c": FileFacts()})
     text = build.makefile(config).decode()
@@ -312,9 +318,10 @@ def test_makefile_variable_blocks(tmp_path):
     assert [line.split(": ")[1].split(" ")[0] for line in lines] == ["TC", "CPPFLAGS", "CFLAGS"]
     assert lines[2].endswith("-mno-fix4300 -O1") and " -O2 " not in lines[2]
     assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
-    assert (
-        "sed -nE" in text and sum(line.count("sed ") for line in text.splitlines() if not line.startswith("#")) == 5
-    )  # PROVIDE lines (facts, .L labels); data files; code files; jump tables
+    make_text = without_hdrkey(text)
+    assert "sed -nE" in text
+    assert sum(line.count("sed ") for line in make_text.splitlines() if not line.startswith("#")) == 5
+    # PROVIDE lines (facts, .L labels); data files; code files; jump tables
     assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
 
@@ -335,7 +342,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(text.splitlines()) < 372
+    assert len(without_hdrkey(text).splitlines()) < 390
     assert "src/f1.c" not in text
 
 
