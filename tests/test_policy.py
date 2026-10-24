@@ -960,3 +960,31 @@ def test_a_name_that_is_the_right_operand_of_another_operator_starts_no_sum(snap
         "x = a - D_800D7000 + 0x5A;\n",
     ):
         assert policy._address_literals(snapshot, PATH, code, SimpleNamespace(text="")) == {}, code
+
+
+def test_struct_return_void_declaration(snapshot, monkeypatch):
+    monkeypatch.setattr(policy, "_struct_returns", lambda snap: {"build": "src/a.c"})
+    text = "extern void build(CQuatern *out, int x);\nextern CQuatern build(int x);\nvoid other(CQuatern *out);"
+    found = [
+        (f.key, f.line)
+        for f in policy.evaluate(snapshot, PATH, text, None, False)
+        if f.key == "source.struct-return-void"
+    ]
+    assert found == [("source.struct-return-void", 1)]
+
+
+def test_struct_returns_index_names_by_value_definitions(snapshot, monkeypatch):
+    files = {
+        "include/q.h": b"typedef struct { float x; float y; float z; } Quat;\n",
+        "src/a.c": b"Quat build(int x) {\n    return q;\n}\nvoid fill(Quat *out) {\n}\nint count(void) {\n}\n",
+    }
+    monkeypatch.setattr(policy, "_include_headers", lambda snap: ["include/q.h"])
+    monkeypatch.setattr(policy, "_tree", lambda snap: Mock(modules=[Mock(path="src/a.c")]))
+    monkeypatch.setattr(policy.effort, "memo", lambda key, build: build())
+    snap = Mock(digest="d", peek=lambda path: files.get(path))
+    assert policy._struct_returns(snap) == {"build": "src/a.c"}
+
+
+def test_value_alias_directive():
+    found = policy.text_findings("src/a.c", "#define f f_value\n#define g h\n", False)
+    assert [(x.key, x.line) for x in found if x.key == "source.value-alias"] == [("source.value-alias", 1)]

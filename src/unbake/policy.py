@@ -782,6 +782,48 @@ def _offset_names(snapshot: Snapshot, scopes: Mapping[str, str]) -> dict[int, st
     return found
 
 
+_VOID_DECL = re.compile(r"^[ \t]*(?:extern[ \t]+)?void[ \t]+(\w+)[ \t]*\(", re.M)
+_RECORD_DEF = re.compile(
+    r"^(?:(?:static|inline|extern)[ \t]+)*(?:struct[ \t]+|union[ \t]+)?(\w+)[ \t]+(\w+)[ \t]*\([^;{}]*\)[ \t]*\{", re.M
+)
+
+
+def _struct_returns(snapshot: Snapshot) -> dict[str, str]:
+    """name -> path of every function the tree defines with a record returned by value, once per snapshot. The MIPS ABI
+    passes such a result through a hidden first pointer, which a native host handles differently, so every caller must
+    use the by-value form too."""
+
+    def build() -> dict[str, str]:
+        paths = sorted([*_include_headers(snapshot), *(m.path for m in _tree(snapshot).modules)])
+        texts = {p: snapshot.peek(p) for p in paths}
+        names = {
+            name
+            for data in texts.values()
+            if data is not None
+            for _, name, _ in _records(_scopes(data.decode(errors="replace"))["code"])
+        }
+        found: dict[str, str] = {}
+        for path, data in texts.items():
+            if data is None or config.is_header(path):
+                continue
+            for m in _RECORD_DEF.finditer(_scopes(data.decode(errors="replace"))["code"]):
+                if m[1] in names:
+                    found.setdefault(m[2], path)
+        return found
+
+    return effort.memo(("struct-returns", snapshot.digest), build)
+
+
+def _struct_return_void(snapshot: Snapshot | None, code: str) -> dict[int, str]:
+    """{line: subject} of each `void f(` declaration or definition of a function defined elsewhere as returning a record
+    by value."""
+    if snapshot is None:
+        return {}
+    defined = _struct_returns(snapshot)
+    line = _line_of(code)
+    return {line(m.start()): m[1] for m in _VOID_DECL.finditer(code) if m[1] in defined}
+
+
 _DEBT = {
     "fake-type": _fake_type,
     "pad-view": _pad_view,
@@ -835,6 +877,8 @@ def _hits(
     elif check == "volatile":
         active = code if sdk_group or not view else _scopes(_active(view, path))["code"]
         lines = set() if sdk_group else _volatile(active, rules["hardware"]["address_ranges"])
+    elif check == "struct-return-void":
+        return _struct_return_void(snapshot, code)
     elif check == "shared-declarations":
         lines = _shared(code, view, path, snapshot) if view else set()
     elif check == "address-literal":

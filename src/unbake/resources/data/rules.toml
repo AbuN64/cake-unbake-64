@@ -200,3 +200,19 @@ scope = "code"
 waivable = false
 sentence = "names must be portable across every target in symbol-names.toml"
 check = "symbol-name"
+
+[[rule]]
+id = "struct-return-void"
+needs = "snapshot"
+scope = "code"
+waivable = false
+sentence = "a function the tree defines as returning a record by value is declared void with a result pointer; declare it by value and let callers assign"
+check = "struct-return-void"
+
+[[rule]]
+id = "value-alias"
+scope = "directives"
+waivable = false
+sentence = "a function is aliased to a _value twin that wraps a struct return; keep one by-value body"
+regex = '^[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+\1_value\b'
+files = "source"

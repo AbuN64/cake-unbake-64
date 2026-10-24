@@ -68,7 +68,8 @@
        "stand-in-body",
        "duplicate-record",
        "offset-name",
-       "symbol-name"
+       "symbol-name",
+       "struct-return-void"
       ]
      }
     },

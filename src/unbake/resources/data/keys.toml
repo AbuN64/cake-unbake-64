@@ -635,3 +635,11 @@ sentence = "the tree's facts differ from the revision to check"
 [key."source.symbol-name"]
 owner = "policy"
 sentence = "a source name or alias violates the target symbol naming table"
+
+[key."source.struct-return-void"]
+owner = "policy"
+sentence = "a function the tree defines as returning a record by value is declared void with a result pointer; declare it by value and let callers assign"
+
+[key."source.value-alias"]
+owner = "policy"
+sentence = "a function is aliased to a _value twin that wraps a struct return; keep one by-value body"
