@@ -9,6 +9,7 @@ Reference format: https://dsll32.github.io/nviewer/wiki/compression/rnc.html
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 # Prefixes include the leading nonliteral bit. No speculative reads across raw bytes.
 _LENGTHS = {"1000": 4, "1010": 5, "10010": 6, "10011": 7, "10110": 8, "10111": 0, "110": 2, "1110": 3, "1111": -1}
@@ -105,54 +106,56 @@ def unpack(packed: bytes, size: int) -> bytes:
 
 @dataclass(frozen=True)
 class Walk:
-    """What reading the bits of one stream gave: the output, the packed bytes read, how it stopped and the tokens."""
+    """What reading the bits of one stream gave: the output bytes, the packed bytes read, whether an end marker closed
+    it (`error` says why not) and the tokens ('L', at), ('M', at, length, distance), ('R', at, count) and
+    ('E', at, more)."""
 
-    output: int
+    data: bytes
     cursor: int
     ended: bool
     error: str
-    tokens: dict[str, int]
+    tokens: list[tuple[Any, ...]]
 
 
 def walk(packed: bytes, cap: int) -> Walk:
-    """Read `packed` as RNC2 tokens from the first bit, without the checks `rnc2.unpack` ends with: it stops at the end
+    """Read `packed` as RNC2 tokens from the first bit, without the checks `unpack` ends with: it stops at the end
     marker (`ended`) or at the first token that cannot be (`error`). `cap` bounds the output."""
     reader = _Reader(packed)
-    size = 0
-    tokens = {"literal": 0, "match": 0, "raw": 0, "chunk": 0}
+    output = bytearray()
+    tokens: list[tuple[Any, ...]] = []
     try:
         if reader.bits(2):
             raise ValueError("locked or encrypted stream")
         while True:
             if reader.bits(1) == 0:
-                if size >= cap:
+                if len(output) >= cap:
                     raise ValueError("literal past the output cap")
-                reader.raw(1)
-                size += 1
-                tokens["literal"] += 1
+                tokens.append(("L", len(output)))
+                output += reader.raw(1)
                 continue
             length = reader.prefix(_LENGTHS, "1")
             if length == 0:
                 count = reader.bits(4) * 4 + 12
-                if size + count > cap:
+                if len(output) + count > cap:
                     raise ValueError("raw run past the output cap")
-                reader.raw(count)
-                size += count
-                tokens["raw"] += 1
+                tokens.append(("R", len(output), count))
+                output += reader.raw(count)
                 continue
             if length == -1:
                 length = reader.raw(1)[0]
                 if length == 0:
-                    if reader.bits(1):
-                        tokens["chunk"] += 1
+                    more = reader.bits(1)
+                    tokens.append(("E", len(output), more))
+                    if more:
                         continue
-                    return Walk(size, reader.cursor, True, "", tokens)
+                    return Walk(bytes(output), reader.cursor, True, "", tokens)
                 length += 8
             high = 0 if length == 2 else reader.prefix(_HIGH)
             distance = high * 256 + reader.raw(1)[0] + 1
-            if distance > size or size + length > cap:
+            if distance > len(output) or len(output) + length > cap:
                 raise ValueError("match outside the output")
-            size += length
-            tokens["match"] += 1
+            tokens.append(("M", len(output), length, distance))
+            for _ in range(length):
+                output.append(output[-distance])
     except ValueError as error:
-        return Walk(size, reader.cursor, False, str(error), tokens)
+        return Walk(bytes(output), reader.cursor, False, str(error), tokens)

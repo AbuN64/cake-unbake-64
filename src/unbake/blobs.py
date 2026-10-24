@@ -26,7 +26,7 @@ LEFTOVER_FORMATS = (
     "earlier-link",
     "copy",
     "mips-stream",
-    "rnc-stale",
+    "rnc-repack",
 )  # what a `leftover` row (build residue read by a native reader) may be
 CONTENT = (
     "graphics",
@@ -97,7 +97,7 @@ def check(config: Config, document: Json, file: str = FILE) -> tuple[Finding, ..
             found.append(
                 Finding(
                     "blobs.schema",
-                    f"leftover blob {name} needs sn-debug, earlier-link, copy, mips-stream or rnc-stale",
+                    f"leftover blob {name} needs sn-debug, earlier-link, copy, mips-stream or rnc-repack",
                     path=file,
                 )
             )

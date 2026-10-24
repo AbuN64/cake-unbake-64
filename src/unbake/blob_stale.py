@@ -15,7 +15,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import blobs, mipsstream, objcode, rncstale, snsym
+from unbake import blobs, mipsstream, objcode, rncrepack, snsym
 from unbake.contracts import Config, Json
 
 MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
@@ -206,10 +206,10 @@ def code_streams(rom: bytes, targets: Spans) -> list[Json]:
 
 
 def rnc_streams(rom: bytes, targets: Spans) -> list[Json]:
-    """The rows of damaged stale RNC2 streams (`rncstale`: the bits read to an end marker where the header says, the
-    packed CRC failing) that fill `targets`: each credits the part of a stream inside the spans."""
-    found = sorted({s for low, high in targets for s in rncstale.find(rom, low, high)})
-    return [{"version": "", "reader": "rnc-stale", **row} for row in rncstale.spans(found, targets)]
+    """The rows of stale RNC2 streams the packer reproduces (`rncrepack`: the bits decode and pack again to the same
+    bytes) that fill `targets`: each credits the reproduced packed bytes inside the spans."""
+    found = sorted({s for low, high in targets for s in rncrepack.find(rom, low, high)})
+    return [{"version": "", "reader": "rnc-repack", **row} for row in rncrepack.spans(found, targets)]
 
 
 def scan(config: Config) -> Json:

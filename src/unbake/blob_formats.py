@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from unbake import blob_archive, blob_decode, blob_stale, blobs, mipsstream, objcode, rnc, rncstale, snsym
+from unbake import blob_archive, blob_decode, blob_stale, blobs, mipsstream, objcode, rnc, rncrepack, snsym
 from unbake.contracts import Config, Json, sha256
 
 READERS = frozenset(
@@ -23,7 +23,7 @@ READERS = frozenset(
         "segment-fill",
         "obj-code",
         "mips-stream",
-        "rnc-stale",
+        "rnc-repack",
         "rnc-copy",
     }
 )
@@ -298,11 +298,11 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             return mipsstream.prove(rom, start, end, row["stream"])
         except (mipsstream.StreamError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"mips-stream: {error}") from error
-    if reader == "rnc-stale":
+    if reader == "rnc-repack":
         try:
-            return rncstale.prove(rom, start, end, row["stream"])
-        except (rncstale.StreamError, KeyError, TypeError, ValueError) as error:
-            raise ValueError(f"rnc-stale: {error}") from error
+            return rncrepack.prove(rom, start, end, row["stream"])
+        except (rncrepack.StreamError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"rnc-repack: {error}") from error
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":
