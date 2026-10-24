@@ -7,6 +7,7 @@ Reads git and the tree's facts only: no ROM, no build. The rules are data (repo.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from collections.abc import Collection, Sequence
@@ -175,8 +176,8 @@ class _Git:
             raise Refusal(Finding("native.missing_tool", "git is not installed", path="git"))
         self.exe = found
 
-    def __call__(self, *args: str, ok: Sequence[int] = (0,)) -> str:
-        result = process.run("git " + args[0], [self.exe, *args], self.root, tmp=self.tmp)
+    def __call__(self, *args: str, ok: Sequence[int] = (0,), env: dict[str, str] | None = None) -> str:
+        result = process.run("git " + args[0], [self.exe, *args], self.root, tmp=self.tmp, env=env or {})
         if result.exit not in ok:
             raise Refusal(Finding("native.exit", f"git {' '.join(args)} exit {result.exit}"))
         return result.stdout.decode(errors="replace")
@@ -290,13 +291,34 @@ def _tree_findings(config: Config) -> tuple[Finding, ...]:
     return ()
 
 
+WORKTREE = "WORKTREE"
+
+
+def _worktree_tree(git: _Git) -> str:
+    """The tree object of the working tree as it is now (HEAD plus every tracked change and every untracked file that
+    is not ignored), built in a private index so the repository's own index, HEAD and files are untouched. A tree is
+    all `git diff`, `git show` and `git grep` need as a revision: nothing is committed."""
+    index = git.tmp / f"cheat-index-{os.getpid()}"
+    env = {"GIT_INDEX_FILE": str(index)}
+    try:
+        git("read-tree", "HEAD", env=env)
+        git("add", "-A", env=env)
+        return git("write-tree", env=env).strip()
+    finally:
+        index.unlink(missing_ok=True)
+
+
 def cheat_command(config: Config, params: Json) -> Json:
     """Refuse what `head` (default HEAD) adds over `against` that could fake a match. The facts read are the working
-    tree's, so it must be checked out at `head`."""
+    tree's, so it must be checked out at `head`; `head` WORKTREE checks the working tree as it is, uncommitted (a lane
+    that may not commit), through a tree object built in a private index."""
     base, head = params["against"], params.get("head") or "HEAD"
     rules = configuration.load_resource("repo.toml")["cheat"]
     git = _Git(config.project.root)
-    if git("status", "--porcelain", "--", *rules["facts"]).strip() and head == "HEAD":
+    shown, live = head, head in ("HEAD", WORKTREE)
+    if head == WORKTREE:  # the uncommitted tree: its facts are the working tree's, so they are the head's
+        head = _worktree_tree(git)
+    elif head == "HEAD" and git("status", "--porcelain", "--", *rules["facts"]).strip():
         raise Refusal(Finding("cheat.dirty", "the tree's facts differ from HEAD: check out the revision first"))
     roots = rules["source"]
     findings: list[Finding] = []
@@ -374,8 +396,8 @@ def cheat_command(config: Config, params: Json) -> Json:
                 action="give each address its own name (rename the new row, e.g. suffix _2)",
             )
         )
-    if head == "HEAD":  # the facts and sources captured are the working tree's: the head only when it is checked out
+    if live:  # the facts and sources captured are the working tree's: the head only when it is checked out
         findings.extend(_tree_findings(config))
     if findings:
         raise Refusal(*findings)
-    return {"against": base, "head": head, "makefile": makefile, "stand_ins": sorted(set(stand_ins))}
+    return {"against": base, "head": shown, "makefile": makefile, "stand_ins": sorted(set(stand_ins))}

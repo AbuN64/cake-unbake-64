@@ -133,7 +133,7 @@ help = "Refuse what a change adds over REV that could fake a match: assembly, ra
 handler = "cheat.cheat_command"
 params = [
   { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "base revision the change is compared with" },
-  { name = "head", kind = "option", type = "str", required = false, multiple = false, help = "revision checked out in the tree, default HEAD" },
+  { name = "head", kind = "option", type = "str", required = false, multiple = false, help = "revision checked out in the tree, default HEAD; WORKTREE checks the uncommitted tree as it is" },
 ]
 
 [command.renameproof]

@@ -262,3 +262,24 @@ def test_a_blobs_toml_that_fails_verification_is_refused(
 
     monkeypatch.setattr(blobs, "verify", lambda cfg, base=None: (Finding("blobs.evidence", "bad sha"),))
     assert _refused(repo, blobs_toml="schema = 1\n") == {"blobs.evidence"}
+
+
+def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace) -> None:
+    head = _git(repo.root, "rev-parse", "HEAD")
+    (repo.root / "src/a.c").write_text(A + "int g;\n")  # tracked change, not committed
+    (repo.root / "src/new.s").write_text("nop\n")  # untracked file under the source roots
+    with pytest.raises(Refusal) as refused:
+        cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
+    assert {f.key for f in refused.value.findings} == {"cheat.non-c"}
+    (repo.root / "src/new.s").unlink()
+    done = cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
+    assert done["head"] == "WORKTREE"
+    assert _git(repo.root, "rev-parse", "HEAD") == head and not _git(repo.root, "diff", "--cached", "--name-only")
+    assert _git(repo.root, "status", "--porcelain") == "M src/a.c"
+
+
+def test_the_uncommitted_tree_still_refuses_added_assembly(repo: SimpleNamespace) -> None:
+    (repo.root / "src/a.c").write_text(A + "void h(void) { __asm__(\"nop\"); }\n")
+    with pytest.raises(Refusal) as refused:
+        cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
+    assert {f.key for f in refused.value.findings} == {"cheat.added"}
