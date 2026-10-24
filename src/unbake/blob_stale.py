@@ -15,7 +15,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import blobs, mipsstream, objcode, snsym
+from unbake import blobs, mipsstream, objcode, rncstale, snsym
 from unbake.contracts import Config, Json
 
 MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
@@ -161,16 +161,19 @@ def heads(
     witness in this ROM or another version's. The proof is the reader `sn-head`."""
     rom = roms[version]
     others = {v: roms[v] for v in order if v != version and v in roms}
-    found = []
+    found: list[Json] = []
     for start in sorted(set(starts)):
         low = start - start % PAGE
         if not 0 < start - low <= 255 or blobs.subtract([(low, start)], targets):
             continue
-        try:
-            snsym.cut_head(rom, low, start - low, others)
-        except snsym.SymError:
-            continue
-        found.append({"version": version, "region": [low, start], "reader": "sn-head"})
+        for dialect in ("sym", "obj"):
+            try:
+                snsym.cut_head(rom, low, start - low, others, dialect)
+            except snsym.SymError:
+                continue
+            extra = {"dialect": dialect} if dialect != "sym" else {}
+            found.append({"version": version, "region": [low, start], "reader": "sn-head", **extra})
+            break
     return found
 
 
@@ -202,6 +205,13 @@ def code_streams(rom: bytes, targets: Spans) -> list[Json]:
     return [{"version": "", "reader": "mips-stream", **row} for row in mipsstream.spans(found, targets)]
 
 
+def rnc_streams(rom: bytes, targets: Spans) -> list[Json]:
+    """The rows of damaged stale RNC2 streams (`rncstale`: the bits read to an end marker where the header says, the
+    packed CRC failing) that fill `targets`: each credits the part of a stream inside the spans."""
+    found = sorted({s for low, high in targets for s in rncstale.find(rom, low, high)})
+    return [{"version": "", "reader": "rnc-stale", **row} for row in rncstale.spans(found, targets)]
+
+
 def scan(config: Config) -> Json:
     """`unbake blobs scan stale`: per version, the object-code regions, the code streams and the exact copies that
     fill unknown bytes, as the rows `unbake blobs prove` takes (without an id or its evidence), and the bytes left."""
@@ -228,7 +238,9 @@ def scan(config: Config) -> Json:
         code = bodies.regions(roms[v], v, left_over)
         left_code = blobs.subtract(left_over, blobs.merge([tuple(r["rom"]) for r in code]))
         mips = [{**r, "version": v} for r in code_streams(roms[v], left_code)]
-        rest = blobs.subtract(left_code, blobs.merge([tuple(r["region"]) for r in mips]))
+        left_mips = blobs.subtract(left_code, blobs.merge([tuple(r["region"]) for r in mips]))
+        packed = [{**r, "version": v} for r in rnc_streams(roms[v], left_mips)]
+        rest = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in packed]))
         copies = find(roms, spans, windows, v, rest, list(parts))
         left = blobs.subtract(rest, blobs.merge([tuple(c["region"]) for c in copies]))
         short = text_copies(roms[v], text_sources, v, left, list(parts))
@@ -242,6 +254,7 @@ def scan(config: Config) -> Json:
                 for r in code
             ],
             "code_streams": mips,
+            "rnc_streams": packed,
             "copies": copies,
             "heads": cuts,
             "left": blobs.length(left),

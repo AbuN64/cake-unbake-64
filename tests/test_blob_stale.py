@@ -122,3 +122,14 @@ def test_code_streams_fill_the_unknown_spans_a_stream_covers_and_name_the_stream
         {"version": "", "reader": "mips-stream", "region": [end - 8, end], "stream": [0x203, end]},
     ]
     assert blob_stale.code_streams(rom((0, NOISE)), [(0, 0x1000)]) == []
+
+
+def test_a_cut_object_head_is_listed_with_its_dialect():
+    def obj(name):
+        return bytes([0x52]) + struct.pack("<HI", 1, 0) + _definition(name)[5:]
+
+    first, following = obj(b"paramSamples"), obj(b"next")
+    page = rom((0x1000 - 0x40, b"\x00" * 0x40), (0x1000, b"amSamples" + following), size=0x2000)
+    roms = {"a": page, "b": rom((0x10, first + following))}
+    found = blob_stale.heads(roms, "a", [(0xFC0, 0x1009)], [0x1009], ["a", "b"])
+    assert found == [{"version": "a", "region": [0x1000, 0x1009], "reader": "sn-head", "dialect": "obj"}]

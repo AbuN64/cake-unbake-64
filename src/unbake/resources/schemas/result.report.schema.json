@@ -415,6 +415,9 @@
   "states": {
    "type": "object"
   },
+  "unknown": {
+   "type": "object"
+  },
   "exact_from": {
    "enum": [
     "assumed",
@@ -432,6 +435,12 @@
     "kinds",
     "debt",
     "inbox"
+   ]
+  },
+  {
+   "required": [
+    "unknown",
+    "digest"
    ]
   },
   {

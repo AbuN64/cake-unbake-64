@@ -105,3 +105,13 @@ def test_a_fact_named_with_no_c_identifier_is_refused_by_both_readers(name: str)
     assert caught.value.findings[0].path == "versions/de/symbol_addrs.txt:2"
     with pytest.raises(symbols.Refusal):
         versions.parse_symbol_addrs(text.encode())
+
+
+def test_size_conflicts_name_a_symbol_with_two_sizes():
+    sym = "literals_f = 0x80215410; // rom:0x1000 size:0x4\nsame = 0x80000000; // size:0x8\nnosize = 0x80000010;\n"
+    alias = (
+        "literals_f = 0x80215410; // rom:0x1000 size:0x20\nsame = 0x80000000; // size:0x8\n"
+        "nosize = 0x80000010; // size:0x4\n"
+    )
+    assert symbols.size_conflicts(sym, alias) == {"literals_f": [(4,), (0x20,)]}
+    assert symbols.size_conflicts(sym) == {}

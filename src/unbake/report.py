@@ -319,6 +319,32 @@ def platform_overlaps(config: Any, tree: Any) -> list[Finding]:
     ]
 
 
+def size_conflicts(config: Any) -> list[Finding]:
+    """A non-blocking finding per symbol name that symbol_addrs.txt and aliases.txt give different sizes."""
+    symbols = import_module("unbake.symbols")
+    found: list[Finding] = []
+    for v in config.project.version:
+        texts = []
+        for name in (symbols.path(v), symbols.aliases_path(v)):
+            try:
+                texts.append((Path(config.project.root) / name).read_text(errors="replace"))
+            except FileNotFoundError:
+                texts.append("")
+        for name, rows in sorted(symbols.size_conflicts(*texts).items()):
+            sizes = " vs ".join(f"0x{r[0]:X}" for r in rows)
+            found.append(
+                Finding(
+                    "report.size-conflict",
+                    f"{v}: {name} has sizes {sizes} across symbol_addrs.txt and aliases.txt; the first wins",
+                    unit=name,
+                    versions=(v,),
+                    action=f"give every row of {name} one size (the larger when a pool follows the symbol)",
+                    blocking=False,
+                )
+            )
+    return found
+
+
 def scores(config: Any, tree: Any, only: Collection[str] | None = None) -> dict[str, dict[str, float]]:
     """name -> version -> cached fuzzy score of every NON_MATCHING function (what `unbake score` and the API read);
     of the names in `only` alone when given."""
@@ -797,7 +823,35 @@ def files(config: Any, tree: Any, settle: bool = False) -> dict[str, bytes]:
         return out
 
 
+def unknown_spans(config: Any, tree: Any) -> Json:
+    """Per version the ROM spans that no class (code, data, platform, blobs) holds: `[low, high, size, segment]`, in ROM
+    order, and their total. The segment is the one the span starts in ("" when the version has none there)."""
+    symbols = import_module("unbake.symbols")
+    out: Json = {}
+    for v, parts in partitions(config, tree).items():
+        spans = import_module("unbake.blob_stale").unknown(parts)
+        out[v] = {
+            "total": blobs.length(spans),
+            "spans": [[a, b, b - a, symbols.segment_at(config, v, a) or ""] for a, b in spans],
+        }
+    return out
+
+
+def _unknown_run(config: Any) -> Json:
+    """Write the unknown spans to .unbake/unknown.json and return them; nothing tracked changes."""
+    with effort.stage("report.unknown"):
+        tree = _capture(config)
+        found = unknown_spans(config, tree)
+        document = {"digest": tree.digest, "versions": found}
+        store.write(
+            Path(config.project.root) / ".unbake/unknown.json", (json.dumps(document, sort_keys=True) + "\n").encode()
+        )
+        return {"unknown": found, "digest": tree.digest}
+
+
 def run(config: Any, params: Json) -> Json:
+    if params.get("unknown"):
+        return _unknown_run(config)
     if params.get("states"):
         return _states_run(config, params)
     with effort.stage("report.run"):
@@ -809,7 +863,7 @@ def run(config: Any, params: Json) -> Json:
 
         tree = _capture(config)
         result = {**current(config, tree), "inbox": pending}
-        notes = [asdict(f) for f in platform_overlaps(config, tree)]
+        notes = [asdict(f) for f in [*platform_overlaps(config, tree), *size_conflicts(config)]]
         if hold := publish_hold(config, tree):
             result["notes"] = [asdict(hold), *notes]
         else:

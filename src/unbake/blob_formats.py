@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from unbake import blob_archive, blob_decode, blob_stale, blobs, mipsstream, objcode, rnc, snsym
+from unbake import blob_archive, blob_decode, blob_stale, blobs, mipsstream, objcode, rnc, rncstale, snsym
 from unbake.contracts import Config, Json, sha256
 
 READERS = frozenset(
@@ -23,6 +23,7 @@ READERS = frozenset(
         "segment-fill",
         "obj-code",
         "mips-stream",
+        "rnc-stale",
         "rnc-copy",
     }
 )
@@ -156,11 +157,16 @@ def _sn_head(config: Config, row: Json, rom: bytes, start: int, end: int) -> Jso
     if not 0 < size <= 255:
         raise ValueError("a stream head is 1 to 255 bytes")
     others = {v: _baserom(config, v) for v in sorted(config.project.version) if v != row["version"]}
-    try:
-        cut = snsym.cut_head(rom, start, size, others)
-    except snsym.SymError as error:
-        raise ValueError(str(error)) from error
-    return {**cut, "hex": rom[start:end].hex(), "sha256": sha256(rom[start:end])}
+    dialects = [row["dialect"]] if "dialect" in row else ["sym", "obj"]
+    for dialect in dialects:
+        try:
+            cut = snsym.cut_head(rom, start, size, others, dialect)
+        except snsym.SymError as error:
+            failure = error
+        else:
+            extra = {"dialect": dialect} if dialect != "sym" else {}
+            return {**cut, **extra, "hex": rom[start:end].hex(), "sha256": sha256(rom[start:end])}
+    raise ValueError(str(failure))
 
 
 def _rnc_copy(config: Config, row: Json, rom: bytes, document: Json, start: int, end: int) -> Json:
@@ -292,6 +298,11 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             return mipsstream.prove(rom, start, end, row["stream"])
         except (mipsstream.StreamError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"mips-stream: {error}") from error
+    if reader == "rnc-stale":
+        try:
+            return rncstale.prove(rom, start, end, row["stream"])
+        except (rncstale.StreamError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"rnc-stale: {error}") from error
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":

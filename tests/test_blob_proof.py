@@ -146,8 +146,11 @@ def test_public_proof_dispatch_pins_rom_and_preserves_project(tmp_path, monkeypa
     assert result["proved"]["rows"] == 1
     assert json.loads(target.read_text())["rows"][0]["status"] == "decoded"
     assert (tmp_path / "roms/baserom.v.z64").read_bytes() == rom
-    with pytest.raises(Refusal, match="receipt exists"):
-        blob_proof.run(cfg, str(source), str(target))
+    blob_proof.run(cfg, str(source), str(target))  # the same request may rewrite its own receipt
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({**request, "rows": [{**request["rows"][0], "id": "tail2"}]}))
+    with pytest.raises(Refusal, match="receipt exists for another request"):
+        blob_proof.run(cfg, str(other), str(target))
     request["rom_sha256"]["v"] = "0" * 64
     source.write_text(json.dumps(request))
     with pytest.raises(Refusal, match="ROM sha256 mismatch"):
@@ -206,3 +209,20 @@ def test_packed_padding_is_relative_to_the_stored_record(tmp_path, monkeypatch):
     monkeypatch.setattr(blob_proof.rnc, "unpack", lambda _: words(123))
     rom = rom[:11] + b"\0" + rom[12:]
     assert blob_proof.prove_one(cfg, row, rom, {"blob": {}}, [])["status"] == "decoded"
+
+
+def test_prove_names_every_bad_row(tmp_path):
+    cfg, rom = fixture(tmp_path)
+    rows = [
+        {"id": "a", "version": "v", "region": [64, 128], "reader": "nope"},
+        {"id": "ok", "version": "v", "region": [64, 128], "reader": "fill"},
+        {"id": "b", "version": "v", "region": [0, 10**9], "reader": "fill"},
+        {"id": "c", "version": "zz", "region": [0, 4], "reader": "fill"},
+    ]
+    source, target = tmp_path / "request.json", tmp_path / "receipt.json"
+    source.write_text(json.dumps({"schema": 1, "rom_sha256": {"v": sha256(rom)}, "rows": rows}))
+    with pytest.raises(Refusal) as caught:
+        blob_proof.run(cfg, str(source), str(target))
+    reasons = [f.reason for f in caught.value.findings]
+    assert [r.split(":")[0] for r in reasons] == ["a", "b", "c"]
+    assert not target.exists()

@@ -799,3 +799,25 @@ def test_states_are_exact_fuzzy_or_none_and_a_fragment_follows_its_parent(projec
     assert a["code"]["none"] == 8 + 4 and a["code"]["exact"] == 16 + 8 and a["code"]["fuzzy"] == 16
     assert a["fragments"] == 1 and [f[0] for f in a["none_fns"]] == ["nn"]
     assert a["data"] == {"exact": 0, "none": 30}
+
+
+def test_size_conflict_is_a_note_per_name_and_version(tmp_path):
+    from types import SimpleNamespace
+
+    (tmp_path / "versions/a").mkdir(parents=True)
+    (tmp_path / "versions/a/symbol_addrs.txt").write_text("p = 0x80000000; // size:0x4\n")
+    (tmp_path / "versions/a/aliases.txt").write_text("p = 0x80000000; // size:0x10\n")
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, version={"a": None, "b": None}))
+    found = report.size_conflicts(config)
+    assert [f.unit for f in found] == ["p"] and not found[0].blocking and "0x4 vs 0x10" in found[0].reason
+
+
+def test_unknown_spans_list_what_no_class_holds(monkeypatch):
+
+    from unbake import symbols
+
+    parts = {"a": {"rom_size": 100, "spans": {"code": [(0, 40)], "data": [(50, 60)], "blobs": [(60, 90)]}}}
+    monkeypatch.setattr(report, "partitions", lambda config, tree: parts)
+    monkeypatch.setattr(symbols, "segment_at", lambda config, v, rom: "main" if rom < 80 else None)
+    got = report.unknown_spans(None, None)
+    assert got == {"a": {"total": 20, "spans": [[40, 50, 10, "main"], [90, 100, 10, ""]]}}

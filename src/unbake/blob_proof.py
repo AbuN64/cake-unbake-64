@@ -157,6 +157,14 @@ def prove_one(config: Config, row: Json, rom: bytes, document: Json, fills: list
     return {**result, "status": "decoded"}
 
 
+def _receipt_request(path: Path) -> str:
+    """The request sha256 a receipt on disk answers; empty when the file is not a receipt."""
+    try:
+        return str(json.loads(path.read_bytes())["request_sha256"])
+    except (ValueError, KeyError, TypeError, OSError):
+        return ""
+
+
 def run(config: Config, request_path: str, receipt_path: str) -> Json:
     raw = Path(request_path).read_bytes()
     request = json.loads(raw)
@@ -164,13 +172,20 @@ def run(config: Config, request_path: str, receipt_path: str) -> Json:
     if request.get("schema") != 1 or not rows:
         raise Refusal(Finding("blobs.proof", "proof request needs schema 1 and nonempty rows"))
     document = blobs.load(config)
-    roms, fills, results = {}, {}, []
+    target = Path(receipt_path)
+    request_sha = sha256(raw)
+    if target.exists() and _receipt_request(target) != request_sha:
+        raise Refusal(
+            Finding("blobs.proof", "receipt exists for another request; choose a new evidence path", path=receipt_path)
+        )
+    roms, fills, results, bad = {}, {}, [], []
     with blob_formats.session():
         for row in rows:
             wall, cpu = time.monotonic(), time.process_time()
             version = row["version"]
             if version not in config.project.version:
-                raise Refusal(Finding("blobs.proof", f"unknown ROM version {version}"))
+                bad.append(Finding("blobs.proof", f"{row.get('id')}: unknown ROM version {version}"))
+                continue
             if version not in roms:
                 rom = (Path(config.project.root) / "roms" / f"baserom.{version}.z64").read_bytes()
                 if sha256(rom) != request["rom_sha256"][version]:
@@ -180,18 +195,18 @@ def run(config: Config, request_path: str, receipt_path: str) -> Json:
             try:
                 proof = prove_one(config, row, roms[version], document, fills[version])
             except (ValueError, KeyError, TypeError, OSError) as error:
-                raise Refusal(Finding("blobs.proof", f"{row.get('id')}: {error}")) from error
+                bad.append(Finding("blobs.proof", f"{row.get('id')}: {error}"))
+                continue
             results.append({**proof, "wall_s": time.monotonic() - wall, "cpu_s": time.process_time() - cpu})
+    if bad:  # every bad row is named, so one run finds them all
+        raise Refusal(*bad)
     receipt = {
         "schema": 1,
-        "request_sha256": sha256(raw),
+        "request_sha256": request_sha,
         "rom_sha256": request["rom_sha256"],
         "blobs_sha256": blobs.sha(config),
         "rows": results,
     }
-    target = Path(receipt_path)
-    if target.exists():
-        raise Refusal(Finding("blobs.proof", "receipt exists; choose a new evidence path", path=receipt_path))
     encoded = (json.dumps(receipt, indent=1, sort_keys=True) + "\n").encode()
     target.write_bytes(encoded)
     # Proof is deliberately independent of matching reports. It grants no catalog credit and runs no build.

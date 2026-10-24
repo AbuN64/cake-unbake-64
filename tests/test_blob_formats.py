@@ -325,3 +325,32 @@ def test_mips_stream_proves_a_region_of_whole_functions_and_refuses_what_is_not(
         prove(row("mips-stream", [0x40, 0x80], stream=[7, stream[1]]), rom)
     with pytest.raises(ValueError, match="mips-stream"):
         prove(row("mips-stream", [0x40, 0x80]), rom)
+
+
+def object_definition(name):
+    return bytes([0x52]) + struct.pack("<HI", 1, 0) + definition(name)[5:]
+
+
+def test_cut_head_takes_the_object_dialect_and_names_it():
+    first, following = object_definition(b"paramSamples"), object_definition(b"next")
+    other = first + following
+    rom = b"\x00" * 64 + b"amSamples" + following
+    with pytest.raises(snsym.SymError, match="no record"):
+        snsym.cut_head(rom, 64, 9, {"b": other})  # the default dialect reads none of it
+    got = snsym.cut_head(rom, 64, 9, {"b": other}, "obj")
+    assert got["source_version"] == "b" and got["record"] == 0 and got["source"] == len(first) - 9
+    with pytest.raises(snsym.SymError, match="no record"):
+        snsym.cut_head(rom, 64, 9, {"b": b"\xff" * len(first) + b"amSamples" + following}, "obj")
+
+
+def test_sn_head_reader_finds_the_dialect_of_the_witness(tmp_path):
+    first, following = object_definition(b"paramSamples"), object_definition(b"next")
+    rom = b"\x00" * 64 + b"amSamples" + following
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms" / "baserom.b.z64").write_bytes(first + following)
+    (tmp_path / "roms" / "baserom.v.z64").write_bytes(rom)
+    config = N(project=N(root=tmp_path, version={"v": None, "b": None}))
+    got = blob_formats.prove(config, row("sn-head", [64, 73]), rom, {"blob": {}})
+    assert (got["dialect"], got["source_version"], got["bytes"]) == ("obj", "b", 9)
+    with pytest.raises(ValueError):
+        blob_formats.prove(config, dict(row("sn-head", [64, 73]), dialect="sym"), rom, {"blob": {}})

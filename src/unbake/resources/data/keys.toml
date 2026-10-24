@@ -480,6 +480,10 @@ sentence = "the blobs command was given something it cannot read or run"
 owner = "report"
 sentence = "a symbol covers identified platform bytes (boot or SDK microcode): they count as platform, not as our code or data"
 
+[key."report.size-conflict"]
+owner = "report"
+sentence = "one symbol name has different sizes in symbol_addrs.txt and aliases.txt: the first row wins and the bytes of the others are owned by nobody"
+
 [key."report.partition"]
 owner = "report"
 sentence = "the ROM bytes are not counted exactly once: a byte is credited twice, a range lies beyond the ROM or the parts do not sum to the ROM size"

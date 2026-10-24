@@ -170,6 +170,7 @@ handler = "report.run"
 params = [
   { name = "next", kind = "flag", type = "str", required = false, multiple = false, help = "list unmatched functions by increasing size" },
   { name = "states", kind = "flag", type = "str", required = false, multiple = false, help = "only the three states (exact, fuzzy, none) of functions, code and data bytes per version, from the source alone (no build, compile or score); writes .unbake/states.json and nothing tracked" },
+  { name = "unknown", kind = "flag", type = "str", required = false, multiple = false, help = "only the ROM spans no class holds, per version, each with its segment and size (the input of `blobs scan stale` and of a by-hand reading); writes .unbake/unknown.json and nothing tracked" },
   { name = "exact", kind = "option", type = "str", required = false, multiple = true, help = "a version whose last link matched the ROM (repeat). With --states, none given takes every version as linking exact; without it, the report is published on this verdict instead of a make check (the caller vouches for it)" },
 ]
 

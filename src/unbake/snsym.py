@@ -287,19 +287,22 @@ def cut_tail(data: bytes | memoryview, at: int, end: int) -> dict[str, int | str
 
 
 def cut_head(
-    data: bytes | memoryview, start: int, size: int, others: Mapping[str, bytes] | None = None
+    data: bytes | memoryview, start: int, size: int, others: Mapping[str, bytes] | None = None, dialect: str = "sym"
 ) -> dict[str, int | str]:
     """Prove `data[start:start+size]`, the first bytes of a stream that a 4 KiB write cut from the previous page, is the
     end of the record that straddles `start`: some earlier record start (at most 2 KiB back) chains whole records
-    onto exactly `start + size`, and the last of them begins before `start`. Returns where that record begins."""
+    onto exactly `start + size`, and the last of them begins before `start`. Returns where that record begins.
+    The `obj` dialect (an object file's records, which come back normalised and cannot be re-emitted) takes the same
+    proofs; its witness record is whole by parsing alone, where a `sym` witness must also re-encode to its bytes."""
+    parse = record if dialect == "sym" else object_record
     for back in range(start - 1, max(0, start - 0x800) - 1, -1):
-        recs, stop = records(data, back, start + size)
+        recs, stop = records(data, back, start + size, dialect)
         if stop == start + size and len(recs) >= 2 and recs[-1].at < start:
             return {"at": start, "bytes": size, "record": recs[-1].at, "tag": recs[-1].tag}
     # A later section write can overwrite the prefix of the record. Require an intact
     # witness elsewhere: the same suffix followed by a whole record, with a valid
     # containing record whose canonical encoding agrees with its source bytes.
-    following, _ = records(data, start + size, min(len(data), start + size + 2048))
+    following, _ = records(data, start + size, min(len(data), start + size + 2048), dialect)
     if following:
         witness = bytes(data[start : following[0].end])
         # The same ROM first, then the other versions' (`others`, by name): a record another ROM holds whole.
@@ -309,10 +312,10 @@ def cut_head(
                 if at != start or name:
                     for back in range(at - 1, max(-1, at - 0x800), -1):
                         try:
-                            rec = record(raw, back)
+                            rec = parse(raw, back)
                         except SymError:
                             continue
-                        if rec.end == at + size and encode(rec) == raw[back : rec.end]:
+                        if rec.end == at + size and (dialect != "sym" or encode(rec) == raw[back : rec.end]):
                             return {
                                 "at": start,
                                 "bytes": size,

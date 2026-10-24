@@ -138,6 +138,21 @@ def duplicates(*texts: str) -> set[str]:
     return out
 
 
+def size_conflicts(*texts: str) -> dict[str, list[tuple[int, ...]]]:
+    """The names that two fact rows (a version's symbol_addrs.txt and aliases.txt) give different sizes: `merged` keeps
+    the first row, so the others' bytes are silently owned by nobody (a pool hidden behind a smaller size). A row
+    without a size, or the same size twice, agrees. name -> the sizes in file order."""
+    seen: dict[str, list[tuple[int, ...]]] = {}
+    for text in texts:
+        for line in text.splitlines():
+            found = _LINE.match(line)
+            if found:
+                attrs = dict(a.split(":", 1) for a in (found[7] or "").split() if ":" in a)
+                if "size" in attrs:
+                    seen.setdefault(found[2], []).append((int(attrs["size"], 0),))
+    return {n: rows for n, rows in seen.items() if len(set(rows)) > 1}
+
+
 def load(config: Config, version: str) -> dict[str, Symbol]:
     """symbol_addrs.txt and aliases.txt of one version (either may be absent)."""
     texts = []
