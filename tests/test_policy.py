@@ -224,12 +224,12 @@ def test_struct_view_cast(snapshot, text, denied):
 
 
 def test_shared_declarations_active_headers_only(snapshot, monkeypatch):
-    text = "extern int shared;\nint call(int x);\ntypedef int Number;\nextern int private;"
+    text = "extern int shared;\nint call(int x);\ntypedef int Number;\nextern int localValue;"
     source = _source(dependencies=((PATH, "s"), ("include/shared.h", "h"), ("src/other.c", "o")))
     active = {
         PATH: dict(enumerate(text.splitlines(), 1)),
         "include/shared.h": {1: "extern int shared;", 3: "int call(int x);", 7: "typedef int Number;"},
-        "src/other.c": {1: "extern int private;"},
+        "src/other.c": {1: "extern int localValue;"},
     }
     monkeypatch.setattr(policy._view, "active_lines", Mock(side_effect=lambda view, path: active[path]))
     monkeypatch.setattr(policy.store, "cached_object", lambda cfg, kind, key, produce: produce())

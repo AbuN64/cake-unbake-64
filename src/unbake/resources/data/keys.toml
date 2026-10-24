@@ -631,3 +631,7 @@ sentence = "a change spells one symbol name on more than one fact row"
 [key."cheat.dirty"]
 owner = "cheat"
 sentence = "the tree's facts differ from the revision to check"
+
+[key."source.symbol-name"]
+owner = "policy"
+sentence = "a source name or alias violates the target symbol naming table"

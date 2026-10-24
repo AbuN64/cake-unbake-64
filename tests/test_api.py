@@ -28,6 +28,8 @@ EXPECTED = [
     "command",
     "load",
     "memo",
+    "name_issues",
+    "naming_findings",
     "pool_map",
     "preprocess",
     "score",

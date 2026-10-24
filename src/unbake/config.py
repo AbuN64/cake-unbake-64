@@ -35,6 +35,7 @@ from unbake.contracts import (
 )
 
 SCHEMA_OF = {
+    "symbol-names.toml": "symbol-names",
     "keys.toml": "keys",
     "rules.toml": "rules",
     "units.toml": "units",

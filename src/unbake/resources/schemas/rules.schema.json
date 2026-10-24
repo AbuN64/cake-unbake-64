@@ -67,7 +67,8 @@
        "subword-view",
        "stand-in-body",
        "duplicate-record",
-       "offset-name"
+       "offset-name",
+       "symbol-name"
       ]
      }
     },

@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "unbake:symbol-names",
+  "type": "object",
+  "required": [
+    "schema",
+    "keywords",
+    "target"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "keywords": {
+      "type": "object",
+      "required": [
+        "c",
+        "cpp",
+        "gcc",
+        "clang",
+        "msvc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "c": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "cpp": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "gcc": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "clang": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "msvc": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "keyword_sets",
+          "symbol_prefix",
+          "identifier_pattern",
+          "reserved",
+          "reserved_global",
+          "section_pattern",
+          "file_pattern",
+          "file_reserved",
+          "cxx_linkage",
+          "identifier_max",
+          "section_max",
+          "file_max",
+          "file_case_sensitive",
+          "symbol_case_sensitive",
+          "portable_symbol_case_sensitive",
+          "explicit_asm_labels"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "keyword_sets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "c",
+                "cpp",
+                "gcc",
+                "clang",
+                "msvc"
+              ]
+            }
+          },
+          "symbol_prefix": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "identifier_pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reserved": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reserved_global": {
+            "type": "string",
+            "minLength": 1
+          },
+          "section_pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file_pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file_reserved": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cxx_linkage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "identifier_max": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "section_max": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "file_max": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "file_case_sensitive": {
+            "type": "boolean"
+          },
+          "symbol_case_sensitive": {
+            "type": "boolean"
+          },
+          "portable_symbol_case_sensitive": {
+            "type": "boolean"
+          },
+          "explicit_asm_labels": {
+            "const": false
+          }
+        }
+      }
+    }
+  }
+}

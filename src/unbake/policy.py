@@ -13,7 +13,21 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from unbake import config, delta, effort, lookalike, native, offsets, pool, process, recipes, store, tree, versions
+from unbake import (
+    config,
+    delta,
+    effort,
+    lookalike,
+    native,
+    offsets,
+    pool,
+    process,
+    recipes,
+    store,
+    symbol_names,
+    tree,
+    versions,
+)
 from unbake import view as _view
 from unbake.contracts import Finding, Json, Refusal, Snapshot, SourceView, UnitSpec, code_identity, digest
 
@@ -801,6 +815,11 @@ def _hits(
     check = rule["check"]
     if check == "placeholder-record" and config.is_header(path):
         return {}
+    if check == "symbol-name":
+        found_names: dict[int, str] = {}
+        for finding in symbol_names.source(path, scopes["text"]):
+            found_names[finding.line] = "; ".join(filter(None, (found_names.get(finding.line), finding.reason)))
+        return found_names
     if check in _DEBT:
         return dict(_DEBT[check](code))
     if check == "stand-in-body":
@@ -1514,6 +1533,19 @@ def audit_command(params: Json) -> Json:
     def new_file(path: str) -> bytes | None:
         return (root / path).read_bytes() if (root / path).is_file() else None
 
+    tracked = run("ls-files", "-z").decode().split("\0")
+    source_files = {
+        p: (root / p).read_text(errors="replace")
+        for p in tracked
+        if p
+        and (config.is_source(p) or config.is_header(p))
+        and not config.is_assembly(p)
+        and (root / p).is_file()
+        and not any(Path(p).is_relative_to(d) for d in library)
+    }
+    naming = symbol_names.findings(source_files)
+    if naming:
+        raise Refusal(*naming)
     before: list[Finding] = []
     after: list[Finding] = []
     for path in paths:
