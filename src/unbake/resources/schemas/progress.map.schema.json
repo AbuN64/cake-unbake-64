@@ -150,6 +150,25 @@
       "minItems": 2,
       "maxItems": 2
      }
+    },
+    "leftover": {
+     "type": "array",
+     "items": {
+      "type": "array",
+      "prefixItems": [
+       {
+        "type": "integer",
+        "minimum": 0
+       },
+       {
+        "type": "integer",
+        "minimum": 0
+       }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+     }
     }
    },
    "required": [

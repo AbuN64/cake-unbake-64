@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -60,14 +61,29 @@ def _header(config: Any, version: str) -> Json:
         return header(rom.read(0x40))
 
 
+def _mention(config: Any, path: str, name: str) -> int | None:
+    """The first line of a source that spells `name` as a word, or None when it cannot be read."""
+    try:
+        text = (Path(config.project.root) / path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, AttributeError, TypeError):
+        return None
+    for number, line in enumerate(text.splitlines(), 1):
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", line):
+            return number
+    return None
+
+
 def _map(config: Any, tree: Any, current: Json, version: str, lines: dict[tuple[str, str], int], rows: Any) -> Json:
     fns = []
     for row in rows:
         if row.version != version or row.code <= 0:
             continue
         path = row.member.group
-        line = lines.get((path, row.name)) if row.member.state in _C_STATES else None
-        fns.append([row.name, row.member.rom, row.code, report.percent(row), path if line else None, line])
+        has_c = row.member.state in _C_STATES and bool(path)
+        line = lines.get((path, row.name)) if has_c else None
+        if has_c and line is None:  # defined by a macro or renamed by it: the first line that spells the name
+            line = _mention(config, path, row.name)
+        fns.append([row.name, row.member.rom, row.code, report.percent(row), path if has_c else None, line])
     spans = report.layers(config, tree, version)
     content = [
         [name, start, end - start, row["state"], row["type"]]
@@ -75,13 +91,23 @@ def _map(config: Any, tree: Any, current: Json, version: str, lines: dict[tuple[
         if row["type"] in blobs.CONTENT
         for start, end in row.get("rom", {}).get(version, ())
     ]
+    spans = {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform", "fill")}
+    spans["leftover"] = [  # build residue read by a native reader: accounted bytes, not content
+        [start, end]
+        for start, end in blobs.merge(
+            tuple(span)
+            for row in blobs.load(config)["blob"].values()
+            if row["type"] == "leftover"
+            for span in row.get("rom", {}).get(version, ())
+        )
+    ]
     return {
         "schema": 1,
         "version": version,
         "rom_size": current["versions"][version]["rom_size"],
         "fns": sorted(fns, key=lambda row: (row[1], row[0])),
         "blobs": sorted(content, key=lambda row: (row[1], row[0])),
-        "spans": {kind: [list(span) for span in spans.get(kind, [])] for kind in ("data", "platform", "fill")},
+        "spans": spans,
     }
 
 

@@ -564,7 +564,7 @@ def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_c
         ["fuzzy", 4112, 8, 100.0, "src/a.c", 3],
         ["asm", 4120, 8, 0.0, None, None],
     ]
-    assert published_map["spans"] == {"platform": [[0, 4096]], "data": [], "fill": []}
+    assert published_map["spans"] == {"platform": [[0, 4096]], "data": [], "fill": [], "leftover": []}
     assert [row[0] for row in published_map["blobs"]] == ["tex", "other", "observed"]
     assert "map" not in document and "maps" not in document
     assert sorted(p.name for p in (config.project.root / "docs").iterdir()) == ["map-a.json"]
@@ -821,3 +821,28 @@ def test_unknown_spans_list_what_no_class_holds(monkeypatch):
     monkeypatch.setattr(symbols, "segment_at", lambda config, v, rom: "main" if rom < 80 else None)
     got = report.unknown_spans(None, None)
     assert got == {"a": {"total": 20, "spans": [[40, 50, 10, "main"], [90, 100, 10, ""]]}}
+
+
+def test_map_spans_carry_leftover_ranges_and_a_macro_defined_fn_keeps_its_file(monkeypatch, tmp_path):
+    from types import SimpleNamespace as NS
+
+    from unbake import blobs, progress
+
+    (tmp_path / "a.c").write_text('#define F real_fn\nint x;\nINCLUDE_ASM("s", real_fn);\n')
+    config = NS(project=NS(root=tmp_path))
+    document = {
+        "blob": {
+            "l1": {"type": "leftover", "state": "decoded", "rom": {"a": [[16, 32]]}},
+            "l2": {"type": "leftover", "state": "decoded", "rom": {"a": [[32, 48]]}},
+            "g": {"type": "graphics", "state": "decoded", "rom": {"a": [[64, 72]]}},
+        }
+    }
+    monkeypatch.setattr(blobs, "load", lambda config: document)
+    monkeypatch.setattr(report, "layers", lambda config, tree, version: {})
+    member = NS(group="a.c", state="fuzzy", rom=100)
+    rows = [NS(version="a", code=8, name="real_fn", member=member, exact=False)]
+    monkeypatch.setattr(report, "percent", lambda row: 50.0)
+    row = progress._map(config, None, {"versions": {"a": {"rom_size": 4096}}}, "a", {}, rows)
+    assert row["spans"]["leftover"] == [[16, 48]]
+    assert row["fns"] == [["real_fn", 100, 8, 50.0, "a.c", 1]]
+    configuration.validate("progress.map", row, "docs/map-a.json")
