@@ -27,6 +27,7 @@ from unbake.contracts import sha256
 
 RETURN = 0x03E00008  # jr $ra
 MIN_WORDS = 16  # the fewest words of one stream (the 64 B a copy needs)
+PAGE = 0x1000  # the write size that cuts a stream: a stream ending on a page boundary may lack its return
 MAX_NOPS = 16  # the most zero words in a row inside a stream
 NULL_STORES = frozenset({0xA0000000, 0xAC000000})  # sb/sw $zero, 0($zero): the crash an assertion plants
 _KERNEL = frozenset({26, 27, 28})  # $k0 $k1 $gp
@@ -198,7 +199,20 @@ def find(rom: bytes | memoryview, low: int, high: int) -> list[tuple[int, int]]:
             continue
         words = unpack(bytes(rom[low + phase : low + phase + 4 * count]))
         for a, b in runs(usable(words)):
-            found += [(low + phase + 4 * s, low + phase + 4 * e) for s, e in pieces(words, a, b)]
+            whole = pieces(words, a, b)
+            found += [(low + phase + 4 * s, low + phase + 4 * e) for s, e in whole]
+            first = next((i for i in range(max([a, *(e for _, e in whole)]), b) if prologue(words[i])), None)
+            if first is None:
+                continue
+            for stop in range(b, first + MIN_WORDS - 1, -1):  # the last page boundary in the run that leaves a stream
+                if (low + phase + 4 * stop) % PAGE:
+                    continue
+                try:
+                    check(words[first:stop], True)
+                except StreamError:
+                    continue
+                found.append((low + phase + 4 * first, low + phase + 4 * stop))
+                break
     return sorted(found)
 
 
@@ -226,8 +240,9 @@ def _after_return(words: Sequence[int], i: int) -> bool:
     return k >= 0 and (words[k] == RETURN or (k >= 1 and words[k - 1] == RETURN))
 
 
-def check(words: Sequence[int]) -> None:
-    """Raise StreamError naming the first thing that makes `words` no stream."""
+def check(words: Sequence[int], cut: bool = False) -> None:
+    """Raise StreamError naming the first thing that makes `words` no stream. A `cut` stream ends where a page write
+    cut it: no return or padding at its end, and a branch may land after the end, never before it starts."""
     if len(words) < MIN_WORDS:
         raise StreamError(f"{len(words)} words are fewer than the {MIN_WORDS} of a stream")
     ok = usable(words)
@@ -236,10 +251,13 @@ def check(words: Sequence[int]) -> None:
         raise StreamError(f"word {i} ({words[i]:#010x}) is no canonical instruction in compiled code")
     if not prologue(words[0]):
         raise StreamError(f"the first word {words[0]:#010x} is no frame prologue (addiu $sp, $sp, -N)")
-    if words[-2] != RETURN:
+    if not cut and words[-2] != RETURN:
         raise StreamError("the stream does not end with a return and its delay slot")
+    if cut and words[-1] == 0:
+        raise StreamError("a cut stream ends on code, not on padding")
     for i, w in enumerate(words):
-        if conditional(w) and not 0 <= i + 1 + offset(w) < len(words):
+        target = i + 1 + offset(w)
+        if conditional(w) and not (target >= 0 if cut else 0 <= target < len(words)):
             raise StreamError(f"the branch at word {i} leaves the stream")
 
 
@@ -252,8 +270,10 @@ def prove(rom: bytes | memoryview, start: int, end: int, stream: Sequence[int]) 
         raise StreamError("the region is not inside its stream")
     data = bytes(rom[first:last])
     words = unpack(data)
-    check(words)
+    cut = last % PAGE == 0 and (len(words) < 2 or words[-2] != RETURN)
+    check(words, cut)
     return {
+        "cut": cut,
         "stream": [first, last],
         "phase": first % 4,
         "words": len(words),

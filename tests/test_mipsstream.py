@@ -144,3 +144,25 @@ def test_spans_clip_a_stream_to_the_unknown_bytes():
         {"region": [0x100, 0x120], "stream": [0x100, 0x200]},
         {"region": [0x180, 0x200], "stream": [0x100, 0x200]},
     ]
+
+
+def test_a_stream_cut_at_a_page_boundary_needs_no_return_but_stays_whole_before_it():
+    body = function(size=40)[:-2]  # cut inside the restores: no return, ends on the page boundary
+    cut_at = 0x2000
+    rom = rom_with(body, cut_at - 4 * len(body), size=0x3000, filler=bytes(0x3000))
+    first = cut_at - 4 * len(body)
+    assert mipsstream.find(rom, first - 0x40, cut_at + 0x40) == [(first, cut_at)]
+    receipt = mipsstream.prove(rom, first, cut_at, [first, cut_at])
+    assert receipt["cut"] is True and receipt["words"] == len(body)
+    # off the page boundary the same words are no stream, and a whole function is not "cut"
+    moved = rom_with(body, first - 8, size=0x3000, filler=bytes(0x3000))
+    assert mipsstream.find(moved, first - 0x40, cut_at + 0x40) == []
+    with pytest.raises(mipsstream.StreamError, match="return"):
+        mipsstream.prove(moved, first - 8, cut_at - 8, [first - 8, cut_at - 8])
+    whole = function(size=40)
+    rom2 = rom_with(whole, cut_at - 4 * len(whole), size=0x3000, filler=bytes(0x3000))
+    assert mipsstream.prove(rom2, cut_at - 4 * len(whole), cut_at, [cut_at - 4 * len(whole), cut_at])["cut"] is False
+    # a branch back before the first word stays refused
+    bad = [addiu(SP, SP, -32)] + [addiu(V0, V0, 1)] * 20 + [beqz(S0, -40), addiu(V0, V0, 1)]
+    with pytest.raises(mipsstream.StreamError, match="branch"):
+        mipsstream.check(bad, True)
