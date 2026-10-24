@@ -502,6 +502,32 @@ def whole_unit(source: str, name: str) -> bool:
     return bool(_VENDORED.search(source)) and not any(i.kind == "function" and i.name == name for i in items(source))
 
 
+def per_version_copies(source: str, name: str) -> bool:
+    """Whether `source` defines `name` more than once, each copy in a conditional of its own (the DE and US copies of a
+    function in one module, `#if VERSION_X` / `#else`): the file already holds every version's copy, so it is the unit
+    to measure; there is no single definition to splice in."""
+    found = [i for i in items(source) if i.kind == "function" and i.name == name]
+    if len(found) < 2:
+        return False
+    lines = source.splitlines()
+    depth_of = _depths(lines)
+    return all(depth_of[source.count("\n", 0, i.start)] > 0 for i in found)
+
+
+def _depths(lines: Sequence[str]) -> list[int]:
+    """Conditional nesting depth at each line (the line of a directive counts as outside what it opens)."""
+    depth, out = 0, []
+    for line in lines:
+        kind = _DIRECTIVE.match(line)
+        word = kind[1] if kind else ""
+        if word == "endif":
+            depth = max(depth - 1, 0)
+        out.append(depth)
+        if word in ("if", "ifdef", "ifndef"):
+            depth += 1
+    return out
+
+
 def whole_traced(source: str) -> tuple[str, list[Origin]]:
     """The candidate as the unit, every line from the candidate."""
     return _traced([("candidate", source if source.endswith("\n") else source + "\n", 1)])

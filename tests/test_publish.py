@@ -783,3 +783,30 @@ def test_a_whole_file_candidate_inside_the_files_own_conditional_does_not_bring_
     assert len(origins) == len(text.splitlines())
     changed = source.replace("a + 1", "a + 3")  # a helper the candidate changes still comes along
     assert "a + 3" in publish.replace_traced(current, "f", changed)[0]
+
+
+DUAL = """#include "x.h"
+#if defined(VERSION_DE)
+int f(int a) {
+    return a + 1;
+}
+#else
+int f(int a) {
+    return a + 2;
+}
+#endif
+"""
+
+
+def test_a_function_defined_once_per_version_guard_makes_the_file_the_unit():
+    from unbake import compare
+
+    assert publish.per_version_copies(DUAL, "f")
+    assert not publish.per_version_copies(DUAL, "g")
+    assert not publish.per_version_copies("int f(void) {\n    return 1;\n}\n", "f")
+    # two definitions with one outside any conditional are still a duplicate, not per-version copies
+    assert not publish.per_version_copies(
+        "int f(void) {\n    return 1;\n}\n#if A\nint f(void) {\n    return 2;\n}\n#endif\n", "f"
+    )
+    text, origins = compare._text("stale", "seg", "f", DUAL)
+    assert text == DUAL and {kind for kind, _ in origins} == {"candidate"}
