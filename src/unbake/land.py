@@ -12,7 +12,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from unbake import api, effort, foreign, journal, policy, process, publish, report, rescore, store, tree, treelock
+from unbake import (
+    api,
+    effort,
+    foreign,
+    journal,
+    non_matching,
+    policy,
+    process,
+    publish,
+    report,
+    rescore,
+    store,
+    tree,
+    treelock,
+)
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Proof, Receipt, Refusal, Submission, digest, proof_from, sha256
 
@@ -381,14 +395,27 @@ def _bodies(config: Config, paths: Sequence[str]) -> tuple[Finding, ...]:
 
 def check_command(config: Config, params: Json) -> Json:
     """The source rules over the files that own names (or the given paths); a blocking finding refuses."""
-    with effort.stage("land.check_command"):
+    with effort.stage("land.check_command"), treelock.hold(config.project.root, exclusive=True, who="check"):
         given = list(params.get("paths", ()))
-        paths = sorted(given or {m.path for m in tree.capture(config).modules})
+        held = tree.capture(config)
+        paths = sorted(given or {m.path for m in held.modules})
         snapshot = api.snapshot(config)
         findings: list[Finding] = []
         for path in paths:
             if (text := _peek(config, path)) is not None:
                 findings.extend(policy.evaluate(snapshot, path, text.decode(), None, False))
+        overrides, baseline = non_matching.check(
+            config.project.root,
+            {path: text.decode() for path in paths if (text := _peek(config, path)) is not None},
+            tuple(config.project.versions),
+            {
+                m.path: {version: set(names) - set(m.stand_ins.get(version, ())) for version, names in m.owns.items()}
+                for m in held.modules
+                if not configuration.is_assembly(m.path)
+            },
+        )
+        findings.extend(overrides)
+        publish.refuse_blocking(overrides)
         findings.extend(_bodies(config, paths))
         publish.refuse_blocking(findings)
         report.record(config, tree.capture(config), commit=snapshot.commit, counts=policy.counts(findings))
@@ -401,4 +428,6 @@ def check_command(config: Config, params: Json) -> Json:
                     action="fix each finding in the source",
                 )
             )
+        if not given:
+            non_matching.shrink(config.project.root, baseline, findings)
         return {"commit": snapshot.commit, "counts": policy.counts(findings)}
