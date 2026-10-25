@@ -21,28 +21,35 @@ def test_items_and_defs_follow_hdrkeys_drop_rule():
     got = [hn.defs(i) for i in p.items]
     assert got == [
         None,
+        None,
+        None,
         {"Foo"},
         {"Foo"},
         {"Foo"},
         {"D_1"},
         {"Math_Sqrtf"},
         {"Kind", "E_A", "E_B"},
-    ]  # item 0 is the include
+        None,
+    ]  # the guard's #ifndef/#define, the include and the #endif are fixed items
 
 
 def test_anything_hdrkey_keeps_always_or_this_parser_does_not_know_is_not_droppable():
     def last(text):
         p = hn.parse(GUARD.format(text))
         assert not p.why, text
-        return hn.defs(p.items[-1])
+        return hn.defs([i for i in p.items if i[0] != "__PP__"][-1])  # the last item before #endif
 
     for text in ("u8 D_2;", "struct S { u8 a; } s;", "static inline int f(void) { return 1; }", "struct { int a; };"):
         assert last(text) is None, text
     assert last("extern int a, b;") == {"a", "b"}  # a comma list: every name, a safe superset
-    assert hn.parse(GUARD.format('extern "C" { }')).why
-    assert hn.parse("#ifdef X\nint a;\n#endif\n").why
-    assert hn.parse("#define M 1\n").why
-    assert hn.parse(GUARD.format("int f(void) { return 1; }\nextern u8 D_3;\n")).items[-1] == ("extern", "u8", "D_3")
+    assert last('extern "C" { }') is None  # never droppable, whatever item it runs into
+    assert hn.parse("#ifdef X\nint a;\n#endif\n").items == [
+        ("__PP__", '"ifdef X"'),
+        ("int", "a"),
+        ("__PP__", '"endif"'),
+    ]
+    assert hn.defs(hn.parse("#define M 1\n").items[0]) is None  # a directive never drops
+    assert hn.parse(GUARD.format("int f(void) { return 1; }\nextern u8 D_3;\n")).items[-2] == ("extern", "u8", "D_3")
 
 
 def test_changed_defs_names_removed_and_added_items_only():
@@ -56,7 +63,20 @@ def test_changed_defs_names_removed_and_added_items_only():
     got, why = hn.changed_defs(old, old + "int g(void) { return 0; }\n")
     assert got is None
     got, why = hn.changed_defs(old, old.replace("#endif", "#if X\n#endif\n#endif"))
-    assert got is None and "preprocessor" in why
+    assert got is None and "__PP__" in why  # a directive added or changed: not analysable
+
+
+def test_an_edit_inside_a_version_conditional_names_only_what_it_changes():
+    """A version-conditional header (61 `#if` lines in include/COMMON) was refused whole, so a one-struct edit of a
+    header 4200 units read rebuilt all of them in the stamp check (385 CPU s, 10-25)."""
+    body = "#if defined(VERSION_EU)\nstruct W { u8 a; };\n#else\nstruct W { u16 a; };\n#endif\nextern u8 D_1;\n"
+    old = GUARD.format(body)
+    assert hn.changed_defs(old, old.replace("u8 a;", "s8 a;")) == ({"W"}, "")
+    assert hn.changed_defs(old, old.replace("extern u8 D_1;", "extern s8 D_1;")) == ({"D_1"}, "")
+    got, why = hn.changed_defs(old, old.replace("VERSION_EU", "VERSION_DE"))
+    assert got is None and "__PP__" in why
+    got, why = hn.changed_defs(old, old.replace("#else", "#define W_OTHER 1\n#else"))
+    assert got is None
 
 
 def git(d, *a):

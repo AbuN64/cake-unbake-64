@@ -12,7 +12,9 @@ changes a unit's key only if the unit's key names one of the names those declara
   closure over the new text is the same set of items with the same text: the key is equal and the object is too.
 
 The proof holds only when (1) the header's changed region holds nothing but droppable declarations, parsed here from
-the raw text with no preprocessor line beyond the include guard and unchanged includes; (2) no name involved is a
+the raw text; every preprocessor line (a conditional, a define, an include) is an item of its own that must not change,
+and the items of every branch are read together (a unit sees one branch: the names of all of them are a superset);
+(2) no name involved is a
 macro anywhere (a macro could rename the declaration inside the unit); (3) the unit's old key is the key of the
 state the header diff starts from: the unit's `.i.ok` is not newer than the pool's build marker (written when the
 pool's build ends), so no build after the pool minted the tree has touched it.
@@ -104,11 +106,12 @@ def _blank(m: re.Match[str]) -> str:
 
 
 def parse(text: str) -> Parsed:
-    """The includes and the top-level items of a header's raw text. `why` names the first thing it does not handle."""
+    """The includes, preprocessor lines and top-level items of a header's raw text. `why` names the first thing it does
+    not handle. A directive is an item that must not change (`__INC__` for an include, `__PP__` for any other: the
+    include guard, a version conditional, a define); a directive inside an item stays one of its tokens."""
     text = _COMMENT.sub(_blank, text.replace("\\\n", "  "))
     out = Parsed()
     code: list[str] = []
-    guard: list[str] = []
     for line in text.split("\n"):
         s = line.strip()
         if not s.startswith("#"):
@@ -118,21 +121,8 @@ def parse(text: str) -> Parsed:
         if m:  # an include is an item in its place: moving an item across it, or changing it, is not analysable
             code.append('__INC__ "' + m.group(1).strip('"<>') + '" ;')
             continue
-        m = re.match(r"#\s*(ifndef|define|endif)\b\s*(\w*)\s*$", s)
-        if m and not guard and m.group(1) == "ifndef" and m.group(2):
-            guard = [m.group(2)]
-            continue
-        if m and len(guard) == 1 and m.group(1) == "define" and m.group(2) == guard[0]:
-            guard.append("def")
-            continue
-        if m and m.group(1) == "endif" and len(guard) == 2:
-            guard.append("end")
-            continue
-        out.why = f"preprocessor line {s[:40]!r}"
-        return out
-    if guard and len(guard) != 3:
-        out.why = "unbalanced include guard"
-        return out
+        words = " ".join(s[1:].split()).replace("\\", "/").replace('"', "'")
+        code.append(f'__PP__ "{words}" ;')
     toks = _TOKEN.findall("\n".join(code))
     item: list[str] = []
     depth = {"(": 0, "[": 0, "{": 0}
