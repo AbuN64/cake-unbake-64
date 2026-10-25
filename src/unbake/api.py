@@ -30,6 +30,7 @@ __all__ = [
     "closed",
     "command",
     "load",
+    "make",
     "memo",
     "name_issues",
     "naming_debt",
