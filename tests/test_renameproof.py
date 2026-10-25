@@ -237,6 +237,12 @@ def test_a_local_rename_to_a_name_another_function_uses_is_proved(repo: Path) ->
     assert result["map"] == [["range", "influenceRange"], ["step", "growStep"]]
 
 
+def test_a_local_may_take_a_builtin_spelling_a_global_may_not(repo: Path) -> None:
+    _locals(repo)
+    _grow(repo, "step", "index")  # a loop index: shadows libc index() inside this function only
+    assert _prove(repo)["map"] == [["step", "index"]]
+
+
 def test_a_local_rename_to_a_name_the_function_already_uses_is_refused(repo: Path) -> None:
     _locals(repo)
     _grow(repo, "step", "range")

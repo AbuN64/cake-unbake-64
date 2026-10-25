@@ -22,8 +22,9 @@ The pieces of the proof, each a reason to refuse:
   (that would capture or collide); a swap inside the map is allowed;
 - a renamed identifier is never pasted (`##`) and is stringified (`#x`) only into inline assembly text, through
   every macro call that holds it as an argument, to the depth the macro definitions go;
-- no name, old or new, is one the compiler knows as a builtin (`sqrtf`, `memcpy`): it expands those inline, so a
-  rename across them changes the objects; a project that compiles with `-fno-builtin` is exempt;
+- no file-scope name, old or new, is one the compiler knows as a builtin (`sqrtf`, `memcpy`): it expands those
+  inline, so a rename across them changes the objects (a local, member or tag of that spelling is no call); a project
+  that compiles with `-fno-builtin` is exempt;
 - where the tree reads `__LINE__`, every changed token stays on its line.
 The map is read from the change itself, so no project, name or file is special."""
 
@@ -724,12 +725,14 @@ class _Proof:
             self.refuse(f"{name} is a macro name or appears in a preprocessor directive, where it could mean the local")
 
     def builtins(self) -> None:
-        """A name the compiler knows as a builtin must not enter or leave the map, unless the project's flags turn
-        builtins off."""
+        """A file-scope name the compiler knows as a builtin must not enter or leave the map, unless the project's flags
+        turn builtins off. A local, parameter, member or tag of that spelling is no call the compiler expands: a local
+        `index` shadows the libc function inside its own function only (`scoped` already refuses one the function
+        calls), so locals stay free (10-25 CLEAN-MENU2-3: `index` refused for a loop index)."""
         config = self.repo.blobs([f"{self.base}:config.toml"])[f"{self.base}:config.toml"] or b""
         if b"-fno-builtin" in config:
             return
-        every = {name for pair in self.pairs() for name in pair}
+        every = {name for pair in self.map.items() for name in pair}
         crossing = sorted(n for n in every if n in BUILTINS or n.startswith("__builtin_"))
         if crossing:
             self.refuse(f"{', '.join(crossing[:5])} is a name the compiler expands itself, so a rename changes code")
