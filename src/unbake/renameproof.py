@@ -36,7 +36,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from unbake import process
@@ -227,9 +227,28 @@ def _member(tokens: Sequence[str], n: int) -> bool:
     return n > 0 and (tokens[n - 1] == "." or (n > 1 and tokens[n - 1] == ">" and tokens[n - 2] == "-"))
 
 
+BUILD_TOPS = frozenset({"src", "include", "asm", "tools", "roms"})
+BUILD_FILES = frozenset({"Makefile", "config.toml", "rom.toml", "local.mk"})
+
+
+def _unread(path: str, makefile: str) -> bool:
+    """Whether no build reads PATH, so a rename may change it freely (a catalog of names such as
+    versions/<v>/libultra_names.tsv, docs): it lies outside the source, assembly and tool folders, is no project or
+    build file, and the generated Makefile never spells its file name (it names versions/<v>/symbol_addrs.txt,
+    text_sizes.mk, splat.yaml...). A catalog row added beside a rename made the whole diff "not a rename" (NAMES-2)."""
+    parts = PurePosixPath(path).parts
+    if not parts or parts[0] in BUILD_TOPS or path in BUILD_FILES or not makefile:
+        return False
+    name = parts[-1]
+    if PurePosixPath(name).suffix.lower() in (".c", ".cpp", ".h", ".s", ".inc", ".ld", ".mk", ".py", ".sh"):
+        return False
+    return name not in makefile
+
+
 def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
     """True when the identifier at `n` is declared there (a parameter or a local): it follows a type word or `*`
-    inside a statement or parameter list that starts with two words, and is followed by `;`, `=`, `,`, `)` or `[`."""
+    inside a statement or parameter list that starts with two words, and is followed by `;`, `=`, `,`, `)` or `[`.
+    A declaration with `extern` declares the global of that name inside the block, not a local."""
     if n + 1 >= len(tokens) or tokens[n + 1] not in DECL_END or _member(tokens, n):
         return False
     depth, j, comma, opened = 0, n - 1, n, False
@@ -260,6 +279,8 @@ def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
         stop += 1
     lead = tokens[first:stop]
     if not lead or not _is_id(lead[0]) or lead[0] in NOT_TYPES:
+        return False
+    if "extern" in lead:  # a block-scope `extern T NAME;` names the global itself, no local (10-25 CLEAN-FRONTEND-4)
         return False
     if comma == n:
         return stop == n and any(_is_id(t) for t in lead)
@@ -407,8 +428,9 @@ class _Proof:
             repo.run("add", "-u")
         rows = repo.run("diff", "--cached", "--no-renames", "--name-status", "-z", self.base).decode().split("\0")
         changed, inert = [], []
+        makefile = (repo.blobs([f"{self.base}:Makefile"])[f"{self.base}:Makefile"] or b"").decode("latin-1")
         for status, path in zip(rows[0::2], rows[1::2], strict=False):
-            if any(fnmatch.fnmatch(path, glob) for glob in self.inert):
+            if any(fnmatch.fnmatch(path, glob) for glob in self.inert) or _unread(path, makefile):
                 inert.append(path)
             elif status == "M":
                 changed.append(path)

@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -358,12 +359,14 @@ def narrow_tree(
         return [], stats
     pat = re.compile(r"(?<![\w$])(?:" + "|".join(map(re.escape, sorted(names, key=len, reverse=True))) + r")(?![\w$])")
     hdrkey = root / "build/hdrkey"
+    made_at_base = _base_made(root, base, headers)
     keep: list[str] = []
     for u in units:
         unit_i = root / (object_fmt.format(v=version, unit=u)[: -len(".o")] + ".i")
+        stamp = unit_i.parent / (unit_i.name + ".ok")
         try:
-            pristine = (unit_i.parent / (unit_i.name + ".ok")).stat().st_mtime <= since
-        except OSError:
+            pristine = stamp.stat().st_mtime <= since or made_at_base(str(stamp.relative_to(root)))
+        except (OSError, ValueError):
             pristine = False
         key = unit_key(root, unit_i, hdrkey) if pristine else None
         if key is None or pat.search(key):
@@ -371,6 +374,75 @@ def narrow_tree(
         else:
             stats["skipped"] += 1
     return keep, stats
+
+
+_RECORDS: dict[tuple[str, int, int], dict[str, list]] = {}
+
+
+def records(root: Path) -> dict[str, list]:
+    """The stamp sweep's recorded input keys, {output: [mtime_ns, key]}: build/.inputs.json with build/.inputs.log
+    replayed over it (the last record of an output wins), as the sweep reads them. Cached while neither file moves."""
+    root = Path(root)
+    state_path, log_path = root / "build/.inputs.json", root / "build/.inputs.log"
+    try:
+        stat = state_path.stat()
+        tag = (str(root), stat.st_mtime_ns, log_path.stat().st_size if log_path.exists() else -1)
+    except OSError:
+        tag = (str(root), -1, log_path.stat().st_size if log_path.exists() else -1)
+    if tag in _RECORDS:
+        return _RECORDS[tag]
+    try:
+        state = json.loads(state_path.read_text())
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    try:
+        for line in log_path.read_text(errors="replace").splitlines():
+            try:
+                name, when, key = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            state[name] = [when, key]
+    except OSError:
+        pass
+    _RECORDS.clear()
+    _RECORDS[tag] = state
+    return state
+
+
+def _base_made(root: Path, base: str, headers: Sequence[str]) -> Callable[[str], bool]:
+    """A test of whether a unit's stamp (build/<v>/<unit>.i.ok) was made from the tree at BASE whatever its date: its
+    record (the date it carries now and the key the Makefile wrote) equals the key of the files its .d names, read as
+    BASE holds them (the HEADERS at BASE, every other file as it is). A unit preprocessed again after the pool's build
+    marker from the same bytes (a no-op make, a refresh) still narrows."""
+    state = records(root)
+    digests: dict[str, str] = {}
+    for h in headers:
+        done = subprocess.run(["git", "-C", str(root), "show", f"{base}:{h}"], capture_output=True, check=False)
+        digests[h] = hashlib.sha1(done.stdout).hexdigest() if done.returncode == 0 else "-"
+
+    def digest(name: str) -> str:
+        if name not in digests:
+            try:
+                digests[name] = hashlib.sha1((root / name).read_bytes()).hexdigest()
+            except OSError:
+                digests[name] = "-"
+        return digests[name]
+
+    def made(stamp: str) -> bool:
+        rec = state.get(stamp)
+        if not rec or len(rec) != 2:
+            return False
+        try:
+            if (root / stamp).stat().st_mtime_ns != rec[0]:
+                return False
+        except OSError:
+            return False
+        deps = _dependencies(root / (stamp[: -len(".i.ok")] + ".d"))
+        return deps is not None and hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest() == rec[1]
+
+    return made
 
 
 def _dependencies(dfile: Path) -> list[str] | None:

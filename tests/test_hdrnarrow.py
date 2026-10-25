@@ -178,3 +178,28 @@ def test_the_build_marker_makes_units_built_at_the_mint_pristine(tmp_path):
     built.write_text(head + "\n")
     os.utime(built, (later + 5, later + 5))
     assert narrow(tmp_path, ["a.CPP", "b.CPP"])[0] == ["b.CPP"]
+
+
+def test_a_stamp_rebuilt_after_the_mint_from_the_same_bytes_is_pristine_by_its_record(tmp_path):
+    """A reused stamp tree: units its last stamp rebuilt carry a later date than the pool's marker, but their record
+    (date + key of the files the .d names) says they were made from the base's bytes, so they still narrow."""
+    import hashlib
+    import json
+
+    tree(tmp_path, {"a.CPP": "int f(void){return D_2;}", "b.CPP": "int g(void){return D_1[0];}"})
+    old_h = (tmp_path / "include/H.H").read_bytes()
+    (tmp_path / "src/a.CPP").write_text("a\n")
+    later = time.time() + 60
+    lines = []
+    for name, header_bytes in (("a.CPP", old_h), ("b.CPP", b"other bytes")):
+        stamp = tmp_path / f"build/v/src/{name}.i.ok"
+        os.utime(stamp, (later, later))  # rebuilt after the marker: not pristine by date
+        (tmp_path / f"build/v/src/{name}.d").write_text(f"build/v/src/{name}.i.ok: src/a.CPP include/H.H\n")
+        key = hashlib.sha1(" ".join(hashlib.sha1(b).hexdigest() for b in (b"a\n", header_bytes)).encode()).hexdigest()
+        lines.append(json.dumps([f"build/v/src/{name}.i.ok", stamp.stat().st_mtime_ns, key]) + "\n")
+    (tmp_path / "build/.inputs.log").write_text("".join(lines))
+    (tmp_path / "include/H.H").write_text(GUARD.format("extern f32 D_1;\nextern u8 D_2;\n"))
+    keep, stats = narrow(tmp_path, ["a.CPP", "b.CPP"])
+    assert keep == ["b.CPP"] and stats["skipped"] == 1  # a: made from the base bytes; b: its record holds other bytes
+    os.utime(tmp_path / "build/v/src/a.CPP.i.ok", (later + 1, later + 1))  # touched since its record: not trusted
+    assert narrow(tmp_path, ["a.CPP", "b.CPP"])[0] == ["a.CPP", "b.CPP"]

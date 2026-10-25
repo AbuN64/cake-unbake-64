@@ -462,3 +462,33 @@ def test_two_names_of_different_addresses_in_one_version_may_not(repo: Path) -> 
     _twin(repo, "0x80101340;")
     with pytest.raises(Refusal, match="both renamed to g_value"):
         _prove(repo)
+
+
+def test_a_block_scope_extern_of_a_renamed_global_is_the_global_not_a_local(repo: Path) -> None:
+    """10-25 CLEAN-FRONTEND-4: `extern s32 D_801462C8, D_801462CC;` inside a function body was read as a local of that
+    name, so its rename was judged a local rename and refused (the name is spelled in a #define)."""
+    (repo / "include/set.h").write_text("extern int D_80100400;\n#define SET_BIT (D_80100400 & 1)\n")
+    (repo / "src/set.c").write_text(
+        '#include "set.h"\nint Set_Get(void) {\n    extern int D_80100400, D_80100404;\n'
+        "    return SET_BIT + D_80100404;\n}\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "set")
+    _rename(repo, "D_80100400", "g_settings")
+    assert _prove(repo)["map"] == [["D_80100400", "g_settings"]]
+
+
+def test_a_catalog_no_build_reads_may_change_beside_a_rename(repo: Path) -> None:
+    """NAMES-2: a libultra_names.tsv row added beside a rename made the whole diff "not a rename". A file outside the
+    source folders whose name the Makefile never spells is no build input: it changes freely, like --inert."""
+    (repo / "Makefile").write_text("SYMS = versions/$(V)/symbol_addrs.txt\n")
+    (repo / "versions/de/libultra_names.tsv").write_text("80100200\tosInit\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "catalog")
+    _rename(repo, "func_80100000_de", "Game_Init")
+    (repo / "versions/de/libultra_names.tsv").write_text("80100200\tosInit\n80100300\tosStart\n")
+    got = _prove(repo)
+    assert got["map"] == [["func_80100000_de", "Game_Init"]]
+    assert got["inert"] == ["versions/de/libultra_names.tsv"]
+    (repo / "versions/de/symbol_addrs.txt").write_text("func_80100000_de = 0x80100004; // type:func\n")
+    assert "added or removed" not in _refused(repo)  # the Makefile names symbol_addrs.txt: it is judged, not inert
