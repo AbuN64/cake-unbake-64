@@ -271,10 +271,9 @@ def macro_hits(root: Path, names: set[str], flags: Sequence[str] = ()) -> set[st
     return hit
 
 
-def unit_key(config: Config, obj_i: Path, hdrkey: Path) -> str | None:
+def unit_key(root: Path, obj_i: Path, hdrkey: Path) -> str | None:
     """The compile key of a unit's preprocessed `.i`: the `.i.key` make keeps when it is newer than the `.i`, else
     hdrkey's answer (left there as make would). None when no key can be had."""
-    root = config.project.root
     key = obj_i.parent / (obj_i.name + ".key")
     try:
         if key.is_file() and key.stat().st_mtime >= obj_i.stat().st_mtime:
@@ -302,11 +301,33 @@ def narrow(
     new_text: Callable[[str], str | None],
     flags: Sequence[str] = (),
 ) -> tuple[list[str], dict[str, Any]]:
+    """`narrow_tree` of the project's tree."""
+    return narrow_tree(config.project.root, version, headers, units, object_fmt, new_text, flags)
+
+
+def narrow_tree(
+    root: Path,
+    version: str,
+    headers: Sequence[str],
+    units: Sequence[str],
+    object_fmt: str,
+    new_text: Callable[[str], str | None] | None = None,
+    flags: Sequence[str] = (),
+) -> tuple[list[str], dict[str, Any]]:
     """(UNITS to keep, stats): drops the units that no edit of HEADERS can reach (module doc). The old text of a header
     is its text at the revision the tree was built at (`build/.pool-built-at`, written when the pool's build ends; else
     the extraction marker `build/.pool-extracted-at`), which must be the tree's own content;
-    NEW_TEXT(header) is its text after the change (None: deleted). `object_fmt` is the object path template."""
-    root = config.project.root
+    NEW_TEXT(header) is its text after the change (None: deleted; default: the work tree's file). `object_fmt` is the
+    object path template. The one narrowing of the build (`buildproof`) and of `decomp data check`."""
+    root = Path(root)
+    if new_text is None:
+
+        def new_text(h: str) -> str | None:
+            try:
+                return (root / h).read_text(errors="replace")
+            except OSError:
+                return None
+
     stats: dict[str, Any] = {"headers": len(headers), "includers": len(units), "skipped": 0, "why": ""}
     for name in (
         BUILT_MARKER,
@@ -351,7 +372,7 @@ def narrow(
             pristine = (unit_i.parent / (unit_i.name + ".ok")).stat().st_mtime <= since
         except OSError:
             pristine = False
-        key = unit_key(config, unit_i, hdrkey) if pristine else None
+        key = unit_key(root, unit_i, hdrkey) if pristine else None
         if key is None or pat.search(key):
             keep.append(u)
         else:
