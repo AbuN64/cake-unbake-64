@@ -229,6 +229,7 @@ def test_records_append_without_a_lock_and_the_sweep_folds_them_in(tmp_path):
     """A record was a global flock + rewrite of the whole state (6.5 MB on a full tree): a cold make -j12 of all
     versions ran one record at a time (POOL-SRC refresh 21+ min at 11 s make CPU). A record now appends one line."""
     import json
+
     tree = Tree(tmp_path)
     (tmp_path / "src/h.h").write_text("one\n")
     tree.write("int a;\n")
@@ -242,12 +243,12 @@ def test_records_append_without_a_lock_and_the_sweep_folds_them_in(tmp_path):
     assert any(k.endswith(".i.ok") for k in state)
 
 
-
 def test_asm_deps_is_replaced_whole_and_the_scripts_are_not_rewritten_unchanged(tmp_path):
     """REV1-ONE-40: `build/asm.deps:157: missing separator`: a make -included asm.deps another make of the same tree was
     rewriting in place (shell redirect). It is now written to a temporary file and replaced, and the generated scripts
     are written only when their text changed (a parallel make never runs a half-written one)."""
     import os
+
     tree = Tree(tmp_path)
     asm = tmp_path / "asm/us/nonmatchings/seg/f.s"
     asm.parent.mkdir(parents=True)
@@ -267,7 +268,8 @@ def test_asm_deps_is_replaced_whole_and_the_scripts_are_not_rewritten_unchanged(
 
 
 def test_a_sweep_with_nothing_moved_does_not_walk_or_rewrite_the_state(tmp_path):
-    """WATCH-0153: every make ran a full walk and rehash (two cores held across trees). With every input and output as the
+    """WATCH-0153: every make ran a full walk and rehash (two cores held across trees). With every input and output as
+    the
     last sweep saw it, the sweep reads the small cache and leaves the state alone; a later record still joins it."""
     tree = Tree(tmp_path)
     (tmp_path / "src/h.h").write_text("one\n")

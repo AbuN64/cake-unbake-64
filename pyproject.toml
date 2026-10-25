@@ -52,6 +52,7 @@ split-on-trailing-comma = false
 [tool.ruff.lint.per-file-ignores]
 "src/unbake/cli.py" = ["T20"]
 "cutover/*" = ["T20"]
+"src/unbake/build.py" = ["E501"]  # the Makefile template: its shell lines cannot be wrapped
 
 [tool.mypy]
 python_version = "3.13"

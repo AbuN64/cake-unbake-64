@@ -314,7 +314,8 @@ def _worktree_tree(git: _Git) -> str:
 
 
 def _merge_base(git: _Git, base: str, head: str) -> str:
-    """The revision `head` branched from `base` at: a head behind `base` (main moved on) must not be charged with what main
+    """The revision `head` branched from `base` at: a head behind `base` (main moved on) must not be charged with what
+    main
     added since (a false INCLUDE_ASM rise, 10-24). Unchanged when either is no commit or they share no history."""
     found = git("merge-base", base, head, ok=(0, 1, 128)).strip()
     return found.splitlines()[0] if found else base

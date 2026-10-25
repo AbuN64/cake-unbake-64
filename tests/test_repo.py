@@ -155,7 +155,14 @@ def _config(root, host=None):
     project = SimpleNamespace(
         root=root, name="demo", versions=("a", "b"), version=version, files={}, toolchain="gcc-test"
     )
-    host = host or SimpleNamespace(slots=4, workers=4, move_wait_s=1, cache_dir=root.parent / "cache", cache_max_bytes=10**9, tools={"splat": root / "splat", "git": "git"})
+    host = host or SimpleNamespace(
+        slots=4,
+        workers=4,
+        move_wait_s=1,
+        cache_dir=root.parent / "cache",
+        cache_max_bytes=10**9,
+        tools={"splat": root / "splat", "git": "git"},
+    )
     return SimpleNamespace(project=project, host=host, digest="config-digest")
 
 

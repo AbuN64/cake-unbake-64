@@ -463,7 +463,7 @@ def test_nothing_placed_in_any_version_is_a_refusal_not_a_silent_success(monkeyp
 
 
 def test_alignment_padding_before_a_jump_table_is_not_part_of_the_row(monkeypatch, tmp_path):
-    """10-24 de: the row began at the 3 pad words before the 16-aligned table (0xC26E4 size 0x2C, wanted 0xC26F0 size 0x20)."""
+    """10-24 de: the row began at the 3 pad words before the 16-aligned table (0xC26E4 size 0x2C, wanted 0xC26F0 size 0x20)."""  # noqa: E501
     facts = _facts()
     facts.pop("jtbl_800E1500")
     facts["jtbl_800E14F4"] = (0x800E14F4, 0x1FF4, None, "data")
@@ -545,7 +545,8 @@ def test_a_piece_that_ends_with_the_functions_data_is_no_remainder(monkeypatch, 
 
 
 def test_a_shared_piece_is_split_at_the_functions_data_as_the_reference_version_names_it(monkeypatch, tmp_path):
-    """REV1-ONE-40: one version already holds the next function's pool as its own piece (D_auto_src_rw_pool_<owner>_...);
+    """REV1-ONE-40: one version already holds the next function's pool as its own piece
+    (D_auto_src_rw_pool_<owner>_...);
     the versions that hold both in one blob get a row of that name for the rest instead of a refusal."""
     facts = _facts(
         {

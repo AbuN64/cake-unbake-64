@@ -1221,7 +1221,6 @@ def extract_job(job: tuple[Config, str]) -> bool:
     return True
 
 
-
 _SPLIT_KIND = "split"  # host cache kind: a version's whole extraction, keyed by _extract_key
 
 

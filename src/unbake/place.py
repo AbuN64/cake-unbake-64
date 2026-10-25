@@ -14,9 +14,9 @@ A table or pool that other functions also read is placed with the function asked
 reader links by the symbol's address and a C reader declares the symbol `extern`, so both keep reading the same bytes;
 the plan's note names them; a word array of another file for the same bytes is superseded by the row (sync drops it).
 What it refuses (nothing is written then): leftover bytes with no file after them to hold a stand-in, a piece it would
-supersede that also holds another function's bytes after the function's data when no version splits it (place.remainder), and, when the
-version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment,
-content).
+supersede that also holds another function's bytes after the function's data when no version splits it
+(place.remainder), and, when the version's object is built and newer than its source, a compiled .rodata that is not the
+ROM's bytes (size, alignment, content).
 """
 
 from __future__ import annotations

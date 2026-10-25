@@ -63,7 +63,8 @@ def _spec(config: Config, path: str, names: tuple[str, ...]) -> UnitSpec:
     )
 
 
-# A -f/-m option the catalog does not list goes to the compiler as given (probe sweeps: -fforce-mem); cc1 refuses invalid ones.
+# A -f/-m option the catalog does not list goes to the compiler as given (probe sweeps: -fforce-mem); cc1 refuses
+# invalid ones.
 _PASS_THROUGH = ("-f", "-m")
 
 

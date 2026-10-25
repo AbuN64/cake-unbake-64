@@ -1400,6 +1400,7 @@ def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_fa
     import hashlib
     import subprocess
     import sys
+
     splat = _extract_world(tmp_path)
     (tmp_path / "src").mkdir(exist_ok=True)
     (tmp_path / "src/a.c").write_text("int a;\n")
@@ -1416,18 +1417,47 @@ def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_fa
     (tmp_path / "build/.extract-src-us").write_text(
         hashlib.sha1(b"").hexdigest() + "\n"
     )  # a record that says the facts are the extracted ones (the other mechanism missed it)
-    refused = subprocess.run([*make, "-n", "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS="],
-                             cwd=tmp_path, capture_output=True, text=True)
-    run = subprocess.run([*make, "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS=", "TC=gcc_2_8_1_sn64",
-                          "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)"],
-                         cwd=tmp_path, capture_output=True, text=True)
+    refused = subprocess.run(
+        [*make, "-n", "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS="],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    run = subprocess.run(
+        [
+            *make,
+            "-o",
+            "asm/us/.extracted",
+            "build/us/src/a.c.o",
+            "STAMPS=",
+            "TC=gcc_2_8_1_sn64",
+            "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
     assert run.returncode != 0 and "asm/us was extracted from other symbol_addrs.txt/splat.yaml" in run.stderr, (
-        refused.stdout, run.stdout, run.stderr)
+        refused.stdout,
+        run.stdout,
+        run.stderr,
+    )
     # an empty mark (an older extraction) is not checked
     mark.write_text("")
-    run = subprocess.run([*make, "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS=", "TC=gcc_2_8_1_sn64",
-                          "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)"],
-                         cwd=tmp_path, capture_output=True, text=True)
+    run = subprocess.run(
+        [
+            *make,
+            "-o",
+            "asm/us/.extracted",
+            "build/us/src/a.c.o",
+            "STAMPS=",
+            "TC=gcc_2_8_1_sn64",
+            "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
     assert "was extracted from other" not in run.stderr
 
 
@@ -1750,6 +1780,7 @@ def test_two_makes_extracting_one_version_split_it_once(tmp_path):
     """`make -j extract` and the build's own .extracted rule reach one recipe: the second waits, then sees the key."""
     import subprocess
     import sys
+
     splat = _extract_world(tmp_path)
     cmd = ["make", "--no-print-directory", "extract-us", f"SPLAT={sys.executable} {splat}"]
     pipe = subprocess.PIPE
@@ -1764,12 +1795,15 @@ def test_a_rebase_that_changed_the_facts_extracts_again_on_the_next_build(tmp_pa
     """asm/<v>/.extracted had only the ROM as prerequisite: symbol_addrs.txt changed and the build linked stale asm."""
     import subprocess
     import sys
+
     splat = _extract_world(tmp_path)
     cmd = ["make", "--no-print-directory", "asm/us/.extracted", f"SPLAT={sys.executable} {splat}"]
+
     def run():
         result = subprocess.run(cmd, cwd=tmp_path, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         return (tmp_path / "runs.log").read_text().count("split")
+
     assert run() == 1
     stamp = tmp_path / "asm/us/.extracted"
     assert run() == 1  # nothing moved: no split, and no key check once the record is current

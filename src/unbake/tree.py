@@ -451,9 +451,9 @@ def _extern_declaration(chunk: Sequence[bytes]) -> bool:
 def _skeleton(data: bytes) -> bytes:
     """`data` (a header, comments gone) without the declarations that cannot change which names a source defines:
     every top-level type definition (typedef, struct, union, enum), static inline function and extern declaration.
-    Directives stay as written, and so does any run of lines that is not whole declarations (a struct body split by a conditional). A
-    header edit that only adds, drops or changes such declarations keeps this text, so a parse keyed on it is reused
-    where the preprocessor would otherwise run again for every source that includes the header."""
+    Directives stay as written, and so does any run of lines that is not whole declarations (a struct body split by a
+    conditional). A header edit that only adds, drops or changes such declarations keeps this text, so a parse keyed on
+    it is reused where the preprocessor would otherwise run again for every source that includes the header."""
     out: list[bytes] = []
     run: list[bytes] = []
     joined = False
