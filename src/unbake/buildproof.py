@@ -255,6 +255,9 @@ def buildproof_command(config: Config, params: Json) -> Json:
 
     applied: list[Path] = []
     extracted: list[str] = []
+    new_targets: list[str] = []
+    absent_new: set[str] = set()
+    after: dict[str, Path] = {}
     made = sorted(a for a in added)
     try:
         for patch in patches:
@@ -269,6 +272,16 @@ def buildproof_command(config: Config, params: Json) -> Json:
 
         new_targets = [t for t in _targets(versions, post_units) if _pair(t) not in skipped]
         absent_new, bad = _build(config, new_targets, jobs)
+        # Keep what the change built before the tree goes back: restoring REV's extraction runs make, whose stamp
+        # sweep deletes every object assembled from the patched extraction (10-25: a rename of an INCLUDE_ASM function
+        # reported its unit's object "gone" in all five versions).
+        after: dict[str, Path] = {}
+        for target in new_targets:
+            if (root / target).is_file():
+                dest = holder / "after" / target
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(root / target, dest)
+                after[target] = dest
         if bad:
             findings.append(
                 Finding(
@@ -283,7 +296,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
             build.extract(config, v)
     compared, differ, missing, extra, built_added = 0, [], [], [], []
     for target in new_targets:
-        obj = root / target
+        obj = after.get(target, root / "build" / "no-such-object")
         was = kept.get(target)
         unit = target.split("/", 2)[2].removesuffix(".o")
         if unit in added:

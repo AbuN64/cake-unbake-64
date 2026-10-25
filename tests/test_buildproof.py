@@ -247,3 +247,32 @@ def test_a_header_edit_a_key_names_is_built_and_compared(tree: SimpleNamespace) 
 
     result = _run(tree, _patch(tree, "keep.diff", edit))
     assert result["narrowed"]["skipped"] == 0 and result["compared"] == 2
+
+
+def test_objects_the_change_built_are_compared_even_when_restoring_the_extraction_deletes_them(
+    tree: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """10-25 B22: a rename of an INCLUDE_ASM function edits symbol_addrs, so the proof extracts again; restoring REV's
+    extraction runs make, whose stamp sweep deletes the objects assembled from the patched assembly. They were
+    reported "built before, gone" in every version; the proof now keeps a copy of what the change built."""
+    (tree.root / "versions/us").mkdir(parents=True)
+    (tree.root / "versions/us/symbol_addrs.txt").write_text("Thing = 0x80001000;\n")
+    _git(tree.root, "add", "-A")
+    _git(tree.root, "commit", "-q", "-m", "facts")
+    extracted: list[str] = []
+
+    def extract(_c: Any, v: str) -> None:
+        extracted.append(v)
+        if len(extracted) == 2:  # the restore: the sweep drops what the patched assembly made
+            for obj in (tree.root / "build").rglob("a.c.o"):
+                obj.unlink()
+
+    monkeypatch.setattr(build, "extract", extract)
+
+    def edit(root: Path) -> None:
+        (root / "include/h.h").write_text("int Renamed(void);\n")
+        (root / "src/a.c").write_text('#include "h.h"\nint A(void) { return Renamed(); }\n')
+        (root / "versions/us/symbol_addrs.txt").write_text("Renamed = 0x80001000;\n")
+
+    result = _run(tree, _patch(tree, "facts.diff", edit))
+    assert extracted == ["us", "us"] and result["compared"] == 2 and result["identical"] == 2
