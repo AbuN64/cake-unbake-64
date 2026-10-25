@@ -63,6 +63,10 @@ def _spec(config: Config, path: str, names: tuple[str, ...]) -> UnitSpec:
     )
 
 
+# A -f/-m option the catalog does not list goes to the compiler as given (probe sweeps: -fforce-mem); cc1 refuses invalid ones.
+_PASS_THROUGH = ("-f", "-m")
+
+
 def resolve(config: Config, unit: UnitSpec, overrides: Json) -> Recipe:
     for key in overrides:
         if key not in _KNOWN:
@@ -105,6 +109,7 @@ def resolve(config: Config, unit: UnitSpec, overrides: Json) -> Recipe:
             and words[0] not in present
             and not small
             and not words[0].startswith(preprocessor)
+            and not words[0].startswith(_PASS_THROUGH)
         ):
             raise Refusal(Finding("recipe.option", f"cannot add {text}: not supported by {toolchain}", unit=unit.path))
         if small:  # one small-data size holds: the new one replaces the old

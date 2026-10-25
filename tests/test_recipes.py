@@ -77,6 +77,7 @@ def test_paired_add(cfg: Config, paired: str) -> None:
         ({"bogus": 1}, "recipe.option"),
         ({"omit": ["-O3"]}, "recipe.option"),
         ({"add": ["-nonsense"]}, "recipe.option"),
+        ({"add": ["-Wnonsense"]}, "recipe.option"),
         ({"toolchain": "nope"}, "adapter.unknown"),
     ],
 )
@@ -147,3 +148,8 @@ def test_the_registrys_small_data_sizes_are_admissible_and_replace_the_old_one(
     with pytest.raises(Refusal) as error:
         recipes.resolve(cfg, unit, {"add": ["-G5"]})
     assert error.value.findings[0].key == "recipe.option"
+
+
+def test_unlisted_f_and_m_options_pass_through_to_the_compiler(cfg: Config) -> None:
+    recipe = recipes.resolve(cfg, _unit(), {"add": ["-fforce-mem", "-mcheck-zero-division"]})
+    assert "-fforce-mem" in recipe.cflags and "-mcheck-zero-division" in recipe.cflags
