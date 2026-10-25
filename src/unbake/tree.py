@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import pickle
 import re
 import warnings
 from collections import defaultdict
@@ -1194,9 +1195,72 @@ def _inputs_of(
     skeleton: bool = False,
 ) -> list[str]:
     """The parse inputs of each (file, version): the one function, whichever process parses or looks it up. With
-    `skeleton` each header counts without its type definitions and static inline functions."""
-    read = _Headers(_reader(config, blobs, overlay), skeleton)
-    return [_inputs(config, p, blobs[p], v, read) for p, v in jobs]
+    `skeleton` each header counts without its type definitions and static inline functions. A whole tree's inputs
+    come from the last tree's (`_reused_inputs`): only the files that changed walk their includes again."""
+    reader = _reader(config, blobs, overlay)
+    if len(jobs) < _INPUTS_REUSED_AT:
+        read = _Headers(reader, skeleton)
+        return [_inputs(config, p, blobs[p], v, read) for p, v in jobs]
+    return _reused_inputs(config, blobs, jobs, reader, skeleton)
+
+
+INPUTS = "tree.inputs"  # the parse inputs of the last whole tree captured, with every path their include walk read
+_INPUTS_REUSED_AT = 512  # jobs below this walk their includes directly: a candidate's few files gain nothing
+_INPUTS_FORMAT = 1  # the stored (deps, rows) shape
+_INPUTS_SAVED_AT = 1024  # a tree that walked this many jobs again stores its inputs for the next command
+_INPUTS_HELD: dict[str, tuple[dict[str, str], dict[tuple[str, str], tuple[str, str]]]] = {}  # per slot, this process
+
+
+def _reused_inputs(
+    config: Config,
+    blobs: Mapping[str, bytes],
+    jobs: Sequence[tuple[str, str]],
+    reader: Callable[[str], bytes | None],
+    skeleton: bool,
+) -> list[str]:
+    """`_inputs` of every job, reused from the last whole tree where nothing it read changed. A job's inputs are a
+    pure function of its own text and of the paths its include walk read (each found file's bytes, each probed
+    absent path's absence); the stored tree keeps every such path with the sha of what it read. When all of them
+    still read the same, a job whose own text is the same has the same inputs, and only the others walk their
+    includes (A16: a variant scored in a worker walked the whole tree's includes again, ~4.5 of its ~5 CPU s)."""
+    # keyed by the code that makes a parse key (as `_row_key` is), not the whole tool: a deploy keeps it
+    basis = [_INPUTS_FORMAT, _code(), _expansion_code(), _project(config).digest, config.host.digest, skeleton]
+    slot = sha256(json.dumps(basis).encode())
+    held = _INPUTS_HELD.get(slot)
+    if held is None and (blob := store.get(config, INPUTS, slot, named=True)) is not None:
+        held = pickle.loads(blob)
+    deps: dict[str, str] = {}
+    rows: dict[tuple[str, str], tuple[str, str]] = {}
+    if held is not None and all(_read_sha(reader(p)) == s for p, s in held[0].items()):
+        deps, rows = dict(held[0]), dict(held[1])
+
+    def recording(path: str) -> bytes | None:
+        data = reader(path)
+        deps[path] = _read_sha(data)
+        return data
+
+    read = _Headers(recording, skeleton)
+    texts: dict[str, str] = {}
+    out: list[str] = []
+    walked = 0
+    for path, version in jobs:
+        text = texts.get(path) or texts.setdefault(path, sha256(blobs[path]))
+        row = rows.get((path, version))
+        if row is None or row[0] != text:
+            row = rows[(path, version)] = (text, _inputs(config, path, blobs[path], version, read))
+            walked += 1
+        out.append(row[1])
+    if walked:
+        _INPUTS_HELD[slot] = (deps, rows)
+        if walked >= _INPUTS_SAVED_AT:
+            store.put(config, INPUTS, slot, pickle.dumps((deps, rows), protocol=pickle.HIGHEST_PROTOCOL), named=True)
+    elif held is not None:
+        _INPUTS_HELD[slot] = held
+    return out
+
+
+def _read_sha(data: bytes | None) -> str:
+    return "" if data is None else sha256(data)
 
 
 def _parse_all(

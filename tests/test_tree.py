@@ -811,3 +811,49 @@ def test_an_address_named_file_binds_its_unlisted_definition_to_the_fact_at_that
     held = tree.capture(fixture.config(tmp_path, versions=("a",), sources=sources, symbols={"a": text}))
     assert held.owner("a", "D_auto_data_unresolved_80000420") == "src/main/DATA_80000420.CPP"
     assert "D_auto_data_unresolved_80000420" not in held.unowned("a")
+
+
+def test_a_whole_trees_parse_inputs_are_reused_where_nothing_they_read_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A16: a variant scored in a worker walked every file's includes again (~4.5 of its ~5 CPU s). The inputs of the
+    last whole tree are kept with every path the walk read; a job is reused only while its own text and all of
+    those read the same, so each answer equals a fresh walk: after a source edit, an edit of a header off disk and a
+    header that now resolves an include that was absent."""
+    monkeypatch.setattr(tree, "_INPUTS_REUSED_AT", 0)
+    monkeypatch.setattr(tree, "_INPUTS_SAVED_AT", 3)  # a whole walk (3 files x 2 versions) is stored, one file is not
+    monkeypatch.setattr(tree, "_INPUTS_HELD", {})
+    config = fixture.config(tmp_path)
+    root = config.project.root
+    (root / "asm/a/include").mkdir(parents=True)
+    (root / "asm/a/include/gen.h").write_text("#define GEN 1\n")
+    edit(config, "src/main/c_func.c", '#include "gen.h"\n#include "late.h"\ns32 c_func(void) { return 1; }\n')
+    walked: list[str] = []
+    real = tree._inputs
+
+    def spy(config: Config, path: str, *rest: object) -> str:
+        walked.append(path)
+        return real(config, path, *rest)  # type: ignore[arg-type]
+
+    def check(overlay: dict[str, bytes | None] | None = None) -> list[str]:
+        overlay = overlay or {}
+        blobs = tree._files(config, overlay)
+        jobs = tree._jobs(config, blobs)
+        walked.clear()
+        got = tree._inputs_of(config, blobs, jobs, overlay)
+        fresh = tree._Headers(tree._reader(config, blobs, overlay))
+        assert got == [real(config, p, blobs[p], v, fresh) for p, v in jobs]
+        return sorted(set(walked))
+
+    monkeypatch.setattr(tree, "_inputs", spy)
+    every = check()
+    assert len(every) == 3
+    assert check() == []  # nothing changed: nothing walks
+    assert check({"src/main/stand_in.c": b"s32 stand_in(void) { return 7; }\n"}) == ["src/main/stand_in.c"]
+    monkeypatch.setattr(tree, "_INPUTS_HELD", {})  # a new command reads the stored tree
+    assert check() == []
+    (root / "asm/a/include/gen.h").write_text("#define GEN 2\n")
+    assert check() == every  # a header off disk changed: every job walks again
+    (root / "include").mkdir(exist_ok=True)
+    (root / "include/late.h").write_text("#define LATE 1\n")
+    assert check() == every  # an include that was absent resolves now
