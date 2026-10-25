@@ -277,7 +277,7 @@ def _rows(
 ) -> tuple[Credit, ...]:
     held = facts(config)
     versions = list(config.project.version)
-    faked = fakematch.by_version(_sources(config), versions)
+    faked = fakematch.by_version(_sources(config), versions, lambda p: configuration.library(config.project, p))
     rows = build_credits(versions, tree, held, exact, scored, _broken(config, tree), _extents(config, tree), faked)
     spans = {v: blobs.merge(platform.ranges(config, v)) for v in config.project.version}
     return off_platform(rows, spans)
@@ -468,9 +468,16 @@ def _states_run(config: Any, params: Json) -> Json:
     nothing is built, compiled or scored."""
     with effort.stage("report.states"):
         document = _states(config, _capture(config), params.get("exact") or None)
+        sdk = lambda p: configuration.library(config.project, p)  # noqa: E731
+        document["sdk_asm"] = fakematch.asm_allowed(_sources(config), list(config.project.version), sdk)
         path = Path(config.project.root) / ".unbake/states.json"
         store.write(path, (json.dumps(document, sort_keys=True) + "\n").encode())
-        return {"states": document["versions"], "exact_from": document["exact_from"], "digest": document["digest"]}
+        return {
+            "states": document["versions"],
+            "exact_from": document["exact_from"],
+            "digest": document["digest"],
+            "sdk_asm": document["sdk_asm"],  # the inline asm let stay exact (fakematch.asm_allowed), for the owner
+        }
 
 
 def _tallies(config: Any, tree: Any) -> tuple[Buckets, dict[str, Buckets], dict[str, Buckets]]:

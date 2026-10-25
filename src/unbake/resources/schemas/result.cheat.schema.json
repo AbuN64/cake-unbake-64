@@ -23,6 +23,12 @@
    "items": {
     "type": "string"
    }
+  },
+  "sdk_asm": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
   }
  },
  "required": [

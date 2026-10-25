@@ -14,8 +14,9 @@ _C_STATES = frozenset({"c", "fuzzy"})
 # What a map's scores mean. Bump it whenever the same source and ROM would score differently (a consumer comparing two
 # maps, like the train's exact ratchet, then re-bases instead of blaming the change that happened to land first):
 # 1 = byte scores; 2 = an exact build through a FAKEMATCH scores `fakematch.SCORE`, below 100 (10-25);
-# 3 = a function the build does not compile as exact shows at most `report.FUZZY_MAX` (10-25).
-SCORER = 3
+# 3 = a function the build does not compile as exact shows at most `report.FUZZY_MAX` (10-25);
+# 4 = inline asm in a compiled function scores like a FAKEMATCH unless the SDK exception allows it (10-25).
+SCORER = 4
 
 
 def locations(config: Any, tree: Any) -> dict[tuple[str, str], int]:

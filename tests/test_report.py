@@ -567,7 +567,7 @@ def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_c
     assert not {"platform", "unknown"} & set(cart) and "by_type" not in cart["blobs"]
     published_map = json.loads((config.project.root / "docs/map-a.json").read_bytes())
     configuration.validate("progress.map", published_map, "docs/map-a.json")
-    assert published_map["schema"] == 1 and published_map["version"] == "a" and published_map["scorer"] == 3
+    assert published_map["schema"] == 1 and published_map["version"] == "a" and published_map["scorer"] == 4
     assert published_map["fns"] == [
         ["exact", 4096, 16, 100.0, "src/a.c", 2],
         ["fuzzy", 4112, 8, 99.99, "src/a.c", 3],  # not exact: never 100

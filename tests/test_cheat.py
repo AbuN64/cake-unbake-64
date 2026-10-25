@@ -331,3 +331,12 @@ def test_a_base_that_moved_on_is_not_charged_to_the_head(repo: SimpleNamespace) 
     _git(repo.root, "add", "-A")
     _git(repo.root, "commit", "-qm", "lane work")
     assert cheat.cheat_command(repo.config, {"against": ahead})["stand_ins"] == []
+
+
+def test_an_added_sdk_trap_is_recorded_not_refused_and_game_code_is_refused(repo: SimpleNamespace) -> None:
+    """10-25 REV1-ONE-72: the narrow SDK exception (fakematch.sdk_line); the owner still confirms the form."""
+    repo.config.project.libraries = (Path("src/sdk/libsn"),)
+    line = '    __asm__ volatile ("break 1");\n'
+    got = repo.check(**{"src/sdk/libsn/s.c": "int S(int a) {\n    if (a) {\n" + line + "    }\n    return a;\n}\n"})
+    assert got["sdk_asm"] == ['src/sdk/libsn/s.c: "break 1"']
+    assert _refused(repo, src__a_c=A + "int G(int a) {\n" + line + "    return a;\n}\n") == {"cheat.added"}

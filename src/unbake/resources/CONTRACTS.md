@@ -94,7 +94,7 @@ and a name has the same declaration everywhere (cached in the `header.names` kin
 | renameproof | `prove(root: Path, against: str, patches: Sequence[Path], inert: Sequence[str], steps: bool=False) -> Json`; `rename_command(params: Json) -> Json` |
 | buildproof | `buildproof_command(config: Config, params: Json) -> Json` |
 | hdrnarrow | `parse(text: str) -> Parsed`; `defs(item: tuple[str, ...]) -> set[str] | None`; `changed_defs(old: str | None, new: str | None) -> tuple[set[str] | None, str]`; `macro_hits(root: Path, names: set[str], flags: Sequence[str]) -> set[str]`; `unit_key(root: Path, obj_i: Path, hdrkey: Path) -> str | None`; `narrow(config: Config, version: str, headers: Sequence[str], units: Sequence[str], object_fmt: str, new_text: Callable[[str], str | None], flags: Sequence[str]) -> tuple[list[str], dict[str, Any]]`; `narrow_tree(root: Path, version: str, headers: Sequence[str], units: Sequence[str], object_fmt: str, new_text: Callable[[str], str | None] | None, flags: Sequence[str]) -> tuple[list[str], dict[str, Any]]`; `records(root: Path) -> dict[str, list]`; `sign(root: Path, stamps: Sequence[str]) -> int`; `drop(root: Path, stamps: Sequence[str]) -> int`; `includers(root: Path, version: str, headers: Sequence[str]) -> list[str]`; `narrow_command(params: dict[str, Any]) -> dict[str, Any]` |
-| fakematch | `WAIVER: re.Pattern[str]`; `SCORE: float`; `active(text: str, version: str) -> str`; `tainted(texts: Mapping[str, str], version: str) -> frozenset[str]`; `by_version(texts: Mapping[str, str], versions: Iterable[str]) -> dict[str, frozenset[str]]` |
+| fakematch | `WAIVER: re.Pattern[str]`; `SCORE: float`; `active(text: str, version: str) -> str`; `PRIVILEGED: frozenset[str]`; `sdk_line(line: str, path: str, sdk: Callable[[str], bool]) -> str`; `asm_allowed(texts: Mapping[str, str], versions: Iterable[str], sdk: Callable[[str], bool]) -> list[dict[str, str]]`; `tainted(texts: Mapping[str, str], version: str) -> frozenset[str]`; `by_version(texts: Mapping[str, str], versions: Iterable[str]) -> dict[str, frozenset[str]]` |
 | rescore | `KIND: constant`; `scores(config: Any, tree: _Tree, facts: Facts, only: Collection[str] | None=None) -> dict[str, dict[str, float]]`; `rows(config: Any, tree: _Tree, facts: Facts, only: Collection[str] | None=None) -> dict[str, dict[str, float]]`; `Fact: alias`; `Facts: alias` |
 | sched | `memory_key(text: str) -> tuple[str, int, int, int] \| None`; `Pass(...)`; `hint(words: int, pick: Json, own: int) -> str`; `displacement(dump: Pass, uid: int) -> int`; `moved(everything: list[str]) -> list[tuple[str, str, str]]`; `report(function: str, passes: dict[str, str], listing: list[str], everything: list[str]) -> list[Json]` |
 | whatif | `whatif_command(config: Config, params: Json) -> Json`; `parse_deps(specs: Sequence[str], kinds: Mapping[str, int]) -> list[tuple[int, int, str]]`; `search(...)`; `universe(...)` |
@@ -220,7 +220,7 @@ Tracked generated files (`unbake sync`; each starts with the stamp `generated fr
 - renameproof: 400
 - buildproof: 300
 - hdrnarrow: 600
-- fakematch: 150
+- fakematch: 260
 - foreign: 70
 - non_matching: 200
 - folders: 420

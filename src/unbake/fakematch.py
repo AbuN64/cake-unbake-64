@@ -9,12 +9,16 @@ A note counts in a version only on the lines that version compiles (`active`: VE
 undefined, so NON_MATCHING sides are off). A note inside a function taints the function; a note directly above a
 function or a `#define` (only comments and blank lines between) taints that definition. An inline function or a macro
 is pasted into its users, so every function whose body names a tainted one is tainted too, transitively; a called
-function that is not inline is its own code and taints nobody."""
+function that is not inline is its own code and taints nobody.
+Inline assembly inside a compiled function is no C either and taints it the same way, with one narrow exception
+(`asm_allowed`, owner to confirm, 10-25): a function in a library folder of the project (`[library."..."]`, the SDK)
+whose asm holds only instructions cc1 cannot emit (a trap, `break`, `syscall`, `cache`, coprocessor 0 moves, TLB
+operations, `eret`, `sync`): the original SDK source wrote the same line (Libsn_SendHostCommand's `break 1`)."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from unbake import publish, tree
 
@@ -23,6 +27,59 @@ SCORE = 0.99  # what an exact build through a FAKEMATCH earns: fuzzy, just below
 _DIRECTIVE = re.compile(r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)$")
 _DEFINE = re.compile(r"#\s*define\s+([A-Za-z_]\w*)")
 _INLINE = re.compile(r"\binline\b|\b__inline(?:__)?\b")
+_ASM = re.compile(r"\b(?:__asm__|__asm|asm)\b\s*(?:volatile\b|__volatile__\b)?\s*\(\s*((?:\"(?:\\.|[^\"\\])*\"\s*)+)")
+_ASM_HINT = re.compile(r"\basm\b|__asm")
+# what cc1 never emits from C: the only inline assembly an SDK function may keep
+PRIVILEGED = frozenset(
+    {"break", "syscall", "teq", "tne", "tge", "tgeu", "tlt", "tltu", "teqi", "tnei", "tgei", "tgeiu", "tlti", "tltiu"}
+    | {"cache", "mtc0", "mfc0", "dmtc0", "dmfc0", "eret", "tlbp", "tlbr", "tlbwi", "tlbwr", "sync"}
+)
+
+
+def _mnemonics(strings: str) -> list[str]:
+    """The instruction words of an asm statement's string literals (`"break 1"` -> ["break"])."""
+    text = "".join(re.findall(r'"((?:\\.|[^"\\])*)"', strings)).replace("\\n", "\n").replace("\\t", " ")
+    return [p.split()[0].lower() for p in re.split(r"[;\n]", text) if p.strip() and not p.strip().endswith(":")]
+
+
+def _asm_in(texts: Mapping[str, str], version: str, sdk: Callable[[str], bool] | None):
+    """(functions whose active body holds inline asm that is not allowed, [allowed rows]) for VERSION."""
+    bad: set[str] = set()
+    allowed: list[dict[str, str]] = []
+    for path, raw in texts.items():
+        if not _ASM_HINT.search(raw):
+            continue
+        act = active(raw, version)
+        for item in publish.items(act):
+            if item.kind != "function":
+                continue
+            for m in _ASM.finditer(act, item.start, item.end):
+                words = _mnemonics(m.group(1))
+                if words and sdk is not None and sdk(path) and all(w in PRIVILEGED for w in words):
+                    allowed.append({"path": path, "function": item.name, "asm": " ".join(m.group(1).split())})
+                else:
+                    bad.add(item.name)
+    return bad, allowed
+
+
+def sdk_line(line: str, path: str, sdk: Callable[[str], bool]) -> str:
+    """The asm statement of one source LINE when the exception allows it in PATH (a library folder, privileged
+    instructions only), else "": the cheat gate's view of an added line."""
+    m = _ASM.search(line)
+    words = _mnemonics(m.group(1)) if m else []
+    if not m or not words or not all(w in PRIVILEGED for w in words):
+        return ""
+    return " ".join(m.group(1).split()) if sdk(path) else ""
+
+
+def asm_allowed(texts: Mapping[str, str], versions: Iterable[str], sdk: Callable[[str], bool]) -> list[dict[str, str]]:
+    """The inline asm the exception lets stay exact, once per (path, function, asm) over VERSIONS: what the report
+    lists for the owner to see."""
+    seen: dict[tuple[str, str, str], dict[str, str]] = {}
+    for v in versions:
+        for row in _asm_in(texts, v, sdk)[1]:
+            seen.setdefault((row["path"], row["function"], row["asm"]), row)
+    return [seen[k] for k in sorted(seen)]
 
 
 def _truth(expr: str, defined: frozenset[str]) -> bool:
@@ -82,9 +139,10 @@ def _defines(items: list[publish.Item], text: str) -> list[tuple[publish.Item, s
     return out
 
 
-def tainted(texts: Mapping[str, str], version: str) -> frozenset[str]:
-    """Names (functions, inline functions, macros) whose definition in VERSION carries a FAKEMATCH note, or that use a
-    tainted inline function or macro, transitively. TEXTS: C sources and headers by path."""
+def tainted(texts: Mapping[str, str], version: str, sdk: Callable[[str], bool] | None = None) -> frozenset[str]:
+    """Names (functions, inline functions, macros) whose definition in VERSION carries a FAKEMATCH note or inline asm
+    the exception does not allow (SDK: a path predicate, the project's library folders), or that use a tainted inline
+    function or macro, transitively. TEXTS: C sources and headers by path."""
     parsed: dict[str, tuple[str, list[tuple[publish.Item, str, bool]]]] = {}
 
     def read(path: str) -> tuple[str, list[tuple[publish.Item, str, bool]]]:
@@ -96,6 +154,16 @@ def tainted(texts: Mapping[str, str], version: str) -> frozenset[str]:
 
     seeds: set[str] = set()
     pasted: set[str] = set()
+    asm_bad = _asm_in(texts, version, sdk)[0]
+    if asm_bad:
+        for path, raw in texts.items():
+            if not _ASM_HINT.search(raw):
+                continue
+            for _item, name, paste in read(path)[1]:
+                if name in asm_bad:
+                    seeds.add(name)
+                    if paste:
+                        pasted.add(name)
     for path, raw in texts.items():
         if "FAKEMATCH" not in raw:
             continue
@@ -134,6 +202,8 @@ def tainted(texts: Mapping[str, str], version: str) -> frozenset[str]:
     return frozenset(done)
 
 
-def by_version(texts: Mapping[str, str], versions: Iterable[str]) -> dict[str, frozenset[str]]:
+def by_version(
+    texts: Mapping[str, str], versions: Iterable[str], sdk: Callable[[str], bool] | None = None
+) -> dict[str, frozenset[str]]:
     """`tainted` for every version."""
-    return {v: tainted(texts, v) for v in versions}
+    return {v: tainted(texts, v, sdk) for v in versions}

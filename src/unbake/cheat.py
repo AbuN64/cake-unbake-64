@@ -15,7 +15,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import api, build, process, symbols, tree
+from unbake import api, build, fakematch, process, symbols, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Refusal, digest
 
@@ -183,7 +183,12 @@ class _Git:
         return result.stdout.decode(errors="replace")
 
 
-def _added(git: _Git, base: str, head: str, roots: Sequence[str], skip: Collection[str] = ()) -> list[str]:
+def _library(config: Config, path: str) -> bool:
+    """Whether PATH is in one of the project's library folders (none configured: no)."""
+    return bool(getattr(config.project, "libraries", ())) and configuration.library(config.project, path)
+
+
+def _added(git: _Git, base: str, head: str, roots: Sequence[str], skip: Collection[str] = ()) -> list[tuple[str, str]]:
     """The lines `head` adds under the source roots over `base` (a renamed file shows only the lines it changes),
     without those inside a NON_MATCHING-only branch (dead without NON_MATCHING, live with it). A file whose branches
     cannot be read keeps every added line in scope. Files in `skip` (proven handwritten assembly) are not scanned."""
@@ -206,7 +211,7 @@ def _added(git: _Git, base: str, head: str, roots: Sequence[str], skip: Collecti
                 except Refusal:
                     exempt[path] = set()
             if not (path is not None and cur in exempt[path]):
-                out.append(line[1:])
+                out.append((path or "", line[1:]))
             cur += 1
     return out
 
@@ -376,8 +381,13 @@ def cheat_command(config: Config, params: Json) -> Json:
         if p
     ]
     homes = _handwritten_homes(config, git, head, rules, new)
-    for line in _added(git, base, head, roots, skip={p for p, why in homes.items() if not why}):
+    allowed: list[str] = []
+    for path, line in _added(git, base, head, roots, skip={p for p, why in homes.items() if not why}):
         if not scan.search(line):
+            continue
+        asm = fakematch.sdk_line(line, path, lambda p: _library(config, p))
+        if asm:  # the narrow SDK exception (fakematch.asm_allowed): recorded, not refused
+            allowed.append(f"{path}: {asm}")
             continue
         found = _STAND_IN.match(line)
         if found and _generated(config, git, base, found[1], found[2], roots):
@@ -418,4 +428,10 @@ def cheat_command(config: Config, params: Json) -> Json:
         findings.extend(_tree_findings(config))
     if findings:
         raise Refusal(*findings)
-    return {"against": base, "head": shown, "makefile": makefile, "stand_ins": sorted(set(stand_ins))}
+    return {
+        "against": base,
+        "head": shown,
+        "makefile": makefile,
+        "stand_ins": sorted(set(stand_ins)),
+        "sdk_asm": allowed,
+    }

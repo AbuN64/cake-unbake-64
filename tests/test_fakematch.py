@@ -37,3 +37,36 @@ def test_a_note_counts_only_in_the_versions_that_compile_it():
 def test_the_gate_reads_the_same_note():
     assert fakematch.WAIVER.findall(NOTE) == [" a dead clamp keeps the register live "]
     assert fakematch.WAIVER.findall("/* FAKEMATCH */") == []
+
+
+SDK_FN = (
+    "int Send(int a) {\n    do {\n        if (a) {\n#if defined(__i386__)\n            __builtin_trap();\n#else\n"
+    '            __asm__ volatile ("break 1");\n#endif\n        }\n    } while (a);\n    return a;\n}\n'
+)
+
+
+def _sdk(path: str) -> bool:
+    return path.startswith("src/sdk/libsn/")
+
+
+def test_inline_asm_in_a_compiled_function_is_no_c_unless_the_sdk_exception_allows_it():
+    """10-25 REV1-ONE-72: Libsn_SendHostCommand is exact through SN's own `break 1`. Inline asm inside a function
+    scores like a FAKEMATCH, except in a library folder with only instructions cc1 cannot emit (owner to confirm)."""
+    texts = {
+        "src/sdk/libsn/a.c": SDK_FN,
+        "src/game/b.c": SDK_FN.replace("Send", "GameSend"),
+        "src/sdk/libsn/c.c": 'int Add(int a) { __asm__ volatile ("addiu $2, $4, 1"); return a; }\n',
+        "src/sdk/libsn/d.c": 'INCLUDE_ASM("seg", Stub);\nint Plain(void) { return 1; }\n',
+    }
+    got = fakematch.tainted(texts, "us", _sdk)
+    assert "Send" not in got and "GameSend" in got and "Add" in got and "Plain" not in got
+    assert "Send" in fakematch.tainted(texts, "us")  # no SDK folders known: nothing is allowed
+    rows = fakematch.asm_allowed(texts, ["us", "de"], _sdk)
+    assert rows == [{"path": "src/sdk/libsn/a.c", "function": "Send", "asm": '"break 1"'}]
+
+
+def test_the_cheat_gate_reads_one_added_line_the_same_way():
+    line = '            __asm__ volatile ("break 1");'
+    assert fakematch.sdk_line(line, "src/sdk/libsn/a.c", _sdk) == '"break 1"'
+    assert fakematch.sdk_line(line, "src/game/b.c", _sdk) == ""
+    assert fakematch.sdk_line('__asm__("addiu $2, $4, 1");', "src/sdk/libsn/a.c", _sdk) == ""
