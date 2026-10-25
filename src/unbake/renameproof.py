@@ -246,6 +246,36 @@ def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
 Macros = dict[str, list[tuple[list[str], list[str]]]]
 
 
+_ALIAS = re.compile(r"[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+fz_?\w+[ \t]*")
+_UNDEF = re.compile(r"[ \t]*#[ \t]*undef[ \t]+(\w+)[ \t]*")
+
+
+def _without_aliases(before: str, after: str) -> str:
+    """`before` minus the `#define NAME fz_OLD` shim lines (and the `#undef NAME` of the same name) that `after` no
+    longer has: a fuzzy file's alias is dropped once the name is real, and the aliases only exist under the
+    NON_MATCHING flag the proofs build without, so the removal moves no token the rename map must account for."""
+    left: dict[str, int] = {}
+    for line in after.split("\n"):
+        left[line] = left.get(line, 0) + 1
+    gone: set[str] = set()
+    out: list[str] = []
+    lines = before.split("\n")
+    for line in lines:
+        if left.get(line, 0) > 0:
+            left[line] -= 1
+        elif m := _ALIAS.fullmatch(line):
+            gone.add(m[1])
+            continue
+        out.append(line)
+    kept: list[str] = []
+    for line in out:
+        m = _UNDEF.fullmatch(line)
+        if m and m[1] in gone and line not in after.split("\n"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 class _Repo:
     """Git on the project with a private index (the working tree's own index is never touched)."""
 
@@ -349,8 +379,11 @@ class _Proof:
         declared: dict[tuple[str, int, str], bool] = {}
         shared: dict[str, set[str]] = {}  # new name -> the old names that share it (checked per version below)
         seen: dict[str, set[str]] = {}  # old name -> versions/<v>/ directories where its token changes
+        files: dict[str, set[str]] = {}  # old name -> the other files where its token changes
         for path, (before, after) in self.texts.items():
             c = _is_c(path)
+            if c:
+                before = _without_aliases(before, after)
             a_at: list[int] | None = [] if line_sensitive else None
             b_at: list[int] | None = [] if line_sensitive else None
             a, b = _tokens(before, c, a_at), _tokens(after, c, b_at)
@@ -394,6 +427,8 @@ class _Proof:
                     shared.setdefault(y, {sources[y]}).add(x)
                 if path.startswith("versions/"):
                     seen.setdefault(x, set()).add(path.split("/")[1])
+                else:
+                    files.setdefault(x, set()).add(path)
             if a_at is not None and b_at is not None:
                 lines_a = [m.start() for m in re.finditer("\n", before)]
                 lines_b = [m.start() for m in re.finditer("\n", after)]
@@ -407,6 +442,12 @@ class _Proof:
             olds,
         ) in shared.items():  # per-version copies of one function may share a name: each version has one of them
             versions = [seen.get(x, set()) for x in sorted(olds)]
+            # A file-local static has no symbol row to name its version: two names that never share a file are one
+            # symbol per version (a us-rev1 static and another version's extern of the same datum)
+            places = [files.get(x, set()) for x in sorted(olds)]
+            apart = sum(len(f) for f in places) == len(set().union(*places))
+            if not all(versions) and apart and all(p or v for p, v in zip(places, versions, strict=True)):
+                continue
             if not all(versions) or sum(len(v) for v in versions) != len(set().union(*versions)):
                 self.refuse(
                     f"{' and '.join(sorted(olds))} are both renamed to {y} (and are not copies for disjoint versions)"

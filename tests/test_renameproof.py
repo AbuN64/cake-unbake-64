@@ -286,6 +286,33 @@ def test_per_version_copies_of_one_function_may_share_a_new_name(repo: Path) -> 
     assert ["func_80100200_eu", "Game_Init"] in _prove(repo)["map"]
 
 
+def test_a_static_without_a_symbol_row_and_another_versions_extern_may_share_a_new_name(repo: Path) -> None:
+    (repo / "versions/us-rev1").mkdir()
+    (repo / "versions/de/symbol_addrs.txt").write_text(
+        (repo / "versions/de/symbol_addrs.txt").read_text() + "D_80100300_de = 0x80100300; // type:data\n"
+    )
+    (repo / "src/s.c").write_text("static int D_80100300_us_rev1;\nint Rd(void) { return D_80100300_us_rev1; }\n")
+    (repo / "src/d.c").write_text("extern int D_80100300_de;\nint Rd2(void) { return D_80100300_de; }\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "statics")
+    _rename(repo, "D_80100300_us_rev1", "g_value")
+    _rename(repo, "D_80100300_de", "g_value")
+    assert ["D_80100300_us_rev1", "g_value"] in _prove(repo)["map"]
+
+
+def test_a_fuzzy_alias_dropped_with_its_undef_is_a_rename(repo: Path) -> None:
+    text = (repo / "src/a.c").read_text()
+    shim = "#ifdef NON_MATCHING\n#define func_80100000_de fz_func_80100000_de\n#endif\n"
+    undef = "#ifdef NON_MATCHING\n#undef func_80100000_de\n#endif\n"
+    (repo / "src/a.c").write_text(shim + text + undef)
+    _git(repo, "commit", "-q", "-am", "shim")
+    _rename(repo, "func_80100000_de", "Game_Init")
+    (repo / "src/a.c").write_text(
+        (repo / "src/a.c").read_text().replace("#define Game_Init fz_Game_Init\n", "").replace("#undef Game_Init\n", "")
+    )
+    assert ["func_80100000_de", "Game_Init"] in _prove(repo)["map"]
+
+
 def test_two_copies_in_one_version_still_share_no_name(repo: Path) -> None:
     _rename(repo, "func_80100000_de", "Game_Init")
     _rename(repo, "func_80100100_de", "Game_Init")
