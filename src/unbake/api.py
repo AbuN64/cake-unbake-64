@@ -193,9 +193,12 @@ def tree_epoch(config: Config) -> int:
     return treelock.epoch(config.project.root)
 
 
-def name_issues(name: str, kind: str = "symbol", taken: Sequence[str] = ()) -> tuple[str, ...]:
-    """Portable naming policy, shared with source admission. Kinds: symbol, section, file."""
-    return symbol_names.issues(name, kind, taken)
+def name_issues(
+    name: str, kind: str = "symbol", taken: Sequence[str] = (), implementation: bool = False
+) -> tuple[str, ...]:
+    """Portable naming policy, shared with source admission. Kinds: symbol, section, file. `implementation`: the SDK's
+    own reserved names (`__osDisableInt`, `_G_*`) pass, exactly as source admission lets them."""
+    return symbol_names.issues(name, kind, taken, implementation=implementation)
 
 
 def naming_findings(files: Mapping[str, str]) -> tuple[Finding, ...]:

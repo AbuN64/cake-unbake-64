@@ -208,3 +208,9 @@ def test_comma_declarator_after_initializer_is_still_checked():
 )
 def test_source_naming_boundaries(text):
     assert api.naming_findings({"src/game.c": text})
+
+
+def test_sdk_reserved_names_pass_as_implementation_names_only():
+    assert api.name_issues("__osDisableInt")
+    assert api.name_issues("__osDisableInt", implementation=True) == ()
+    assert api.name_issues("__secret", implementation=True)

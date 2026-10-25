@@ -62,9 +62,16 @@ def _keywords(target: str) -> frozenset[str]:
     return frozenset(w for group in _table()["target"][target]["keyword_sets"] for w in _table()["keywords"][group])
 
 
-def issues(name: str, kind: str = "symbol", taken: Collection[str] = (), global_scope: bool = True) -> tuple[str, ...]:
-    """All target-qualified reasons, including collisions in the caller's namespace."""
-    out = list(_issues(name, kind, global_scope))
+def issues(
+    name: str,
+    kind: str = "symbol",
+    taken: Collection[str] = (),
+    global_scope: bool = True,
+    implementation: bool = False,
+) -> tuple[str, ...]:
+    """All target-qualified reasons, including collisions in the caller's namespace. `implementation` admits the SDK's
+    own reserved names (`__osDisableInt`), as source admission does for every file."""
+    out = list(_issues(name, kind, global_scope, implementation))
     collisions: dict[str, list[str]] = {}
     for target, row in _table()["target"].items():
         folded = kind == "file" and not row["file_case_sensitive"]
