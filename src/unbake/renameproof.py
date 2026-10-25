@@ -299,6 +299,7 @@ def _bodies(tokens: Sequence[str]) -> dict[int, list[int]]:
 Macros = dict[str, list[tuple[list[str], list[str]]]]
 
 
+_BINDING = re.compile(r"^[ \t]*([A-Za-z_$][A-Za-z_0-9$]*)[ \t]*=[ \t]*(0[xX][0-9A-Fa-f]+)[ \t]*;", re.M)
 _ALIAS = re.compile(r"[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+fz_?\w+[ \t]*")
 _UNDEF = re.compile(r"[ \t]*#[ \t]*undef[ \t]+(\w+)[ \t]*")
 
@@ -525,6 +526,8 @@ class _Proof:
             apart = sum(len(f) for f in places) == len(set().union(*places))
             if not all(versions) and apart and all(p or v for p, v in zip(places, versions, strict=True)):
                 continue
+            if self._aliases(sorted(olds), versions):
+                continue
             if not all(versions) or sum(len(v) for v in versions) != len(set().union(*versions)):
                 self.refuse(
                     f"{' and '.join(sorted(olds))} are both renamed to {y} (and are not copies for disjoint versions)"
@@ -540,6 +543,25 @@ class _Proof:
         self.map = pairs
         self.tag = tags
         self.local = local
+
+    def _aliases(self, olds: list[str], versions: list[set[str]]) -> bool:
+        """Whether OLDS, renamed to one name, are spellings of one symbol: in every version that spells more than one of
+        them, each is bound to the same address (`A = 0x800C9FD0` in a symbol table and `B = 0x800C9FD0` in its alias
+        table). The rename joins two names of one address, so the objects do not change."""
+        crowded = {v for v in set().union(*versions) if sum(v in seen for seen in versions) > 1}
+        if not crowded or not all(versions):
+            return False
+        for v in crowded:
+            bound: list[set[str]] = [set() for _ in olds]
+            for path, (before, _after) in self.texts.items():
+                if not path.startswith(f"versions/{v}/"):
+                    continue
+                for name, address in _BINDING.findall(before):
+                    if name in olds:
+                        bound[olds.index(name)].add(int(address, 16))
+            if not all(bound) or len(set.union(*bound)) != 1:
+                return False
+        return True
 
     def pairs(self) -> list[tuple[str, str]]:
         typed = ((x, y) for x, ys in self.typed.items() for y in ys)

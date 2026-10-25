@@ -433,3 +433,26 @@ def test_a_typed_member_name_already_used_in_the_tree_is_refused(structs: Path) 
     )
     _edit(structs, "src/m.c", ("a->unk58", "a->modeState"), ("b->unk58", "b->phase"))
     assert "already used in the old tree" in _refused(structs)
+
+
+def _twin(repo: Path, alias_address: str) -> None:
+    (repo / "versions/us-rev1").mkdir()
+    (repo / "versions/us-rev1/symbol_addrs.txt").write_text("D_80100300_de = 0x80101300; // type:data\n")
+    (repo / "versions/us-rev1/aliases.txt").write_text(f"D_auto_blob_us_rev1 = {alias_address};\n")
+    (repo / "src/s.c").write_text("extern int D_80100300_de;\nint Rd(void) { return D_80100300_de; }\n")
+    (repo / "src/t.c").write_text("extern int D_auto_blob_us_rev1;\nint Rt(void) { return D_auto_blob_us_rev1; }\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "twin")
+    _rename(repo, "D_80100300_de", "g_value")
+    _rename(repo, "D_auto_blob_us_rev1", "g_value")
+
+
+def test_two_names_of_one_address_in_one_version_may_share_a_new_name(repo: Path) -> None:
+    _twin(repo, "0x80101300;")
+    assert ["D_auto_blob_us_rev1", "g_value"] in _prove(repo)["map"]
+
+
+def test_two_names_of_different_addresses_in_one_version_may_not(repo: Path) -> None:
+    _twin(repo, "0x80101340;")
+    with pytest.raises(Refusal, match="both renamed to g_value"):
+        _prove(repo)
