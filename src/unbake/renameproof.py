@@ -335,6 +335,8 @@ class _Proof:
         local: dict[tuple[str, int, str], str] = {}
         local_sources: dict[tuple[str, int, str], str] = {}
         declared: dict[tuple[str, int, str], bool] = {}
+        shared: dict[str, set[str]] = {}  # new name -> the old names that share it (checked per version below)
+        seen: dict[str, set[str]] = {}  # old name -> versions/<v>/ directories where its token changes
         for path, (before, after) in self.texts.items():
             c = _is_c(path)
             a_at: list[int] | None = [] if line_sensitive else None
@@ -369,7 +371,9 @@ class _Proof:
                 if pairs.setdefault(x, y) != y:
                     self.refuse(f"{x} is renamed to both {pairs[x]} and {y}", path)
                 elif sources.setdefault(y, x) != x:
-                    self.refuse(f"{sources[y]} and {x} are both renamed to {y}", path)
+                    shared.setdefault(y, {sources[y]}).add(x)
+                if path.startswith("versions/"):
+                    seen.setdefault(x, set()).add(path.split("/")[1])
             if a_at is not None and b_at is not None:
                 lines_a = [m.start() for m in re.finditer("\n", before)]
                 lines_b = [m.start() for m in re.finditer("\n", after)]
@@ -378,6 +382,15 @@ class _Proof:
                     for p, q in zip(a_at, b_at, strict=True)
                 ):
                     self.refuse("a token moved to another line where the tree reads __LINE__", path)
+        for (
+            y,
+            olds,
+        ) in shared.items():  # per-version copies of one function may share a name: each version has one of them
+            versions = [seen.get(x, set()) for x in sorted(olds)]
+            if not all(versions) or sum(len(v) for v in versions) != len(set().union(*versions)):
+                self.refuse(
+                    f"{' and '.join(sorted(olds))} are both renamed to {y} (and are not copies for disjoint versions)"
+                )
         self.map = pairs
         self.local = local
 

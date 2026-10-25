@@ -274,3 +274,19 @@ def test_a_global_rename_to_a_name_that_is_another_functions_local_is_proved(rep
     _git(repo, "commit", "-q", "-am", "loc")
     _rename(repo, "func_80100000_de", "step", only=("include/api.h", "src/a.c", "versions/de/symbol_addrs.txt"))
     assert _prove(repo)["map"] == [["func_80100000_de", "step"]]
+
+
+def test_per_version_copies_of_one_function_may_share_a_new_name(repo: Path) -> None:
+    (repo / "versions/eu").mkdir()
+    (repo / "versions/eu/symbol_addrs.txt").write_text("func_80100200_eu = 0x80100200; // type:func\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "eu")
+    _rename(repo, "func_80100000_de", "Game_Init")
+    _rename(repo, "func_80100200_eu", "Game_Init")
+    assert ["func_80100200_eu", "Game_Init"] in _prove(repo)["map"]
+
+
+def test_two_copies_in_one_version_still_share_no_name(repo: Path) -> None:
+    _rename(repo, "func_80100000_de", "Game_Init")
+    _rename(repo, "func_80100100_de", "Game_Init")
+    assert "both renamed to" in _refused(repo)
