@@ -616,6 +616,10 @@ sentence = "a directory row, library or flag names a directory whose files move 
 owner = "cheat"
 sentence = "a change edits the build or compare infrastructure (ci/, tools/, asm/, roms/ ...), which could fake a match; project data files belong in docs/"
 
+[key."cheat.makefile-stale"]
+owner = "cheat"
+sentence = "the lane tree's Makefile is older than the generator, so the check would run against rules the round no longer uses; regenerate it (unbake sync --makefile)"
+
 [key."cheat.makefile"]
 owner = "cheat"
 sentence = "a Makefile change is neither a per-object compiler row nor the generated Makefile"
