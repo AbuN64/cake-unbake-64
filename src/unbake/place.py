@@ -53,6 +53,7 @@ class Placement:
     segment: str = ""
     split_from: str = ""  # when that file also owns data before the table: `after` is a new sibling taking `split`
     split: tuple[str, ...] = ()  # the names split_from owns at or after `rest`, moved into `after`
+    junk: tuple[tuple[str, int], ...] = ()  # (name, rom) of unread rows inside the table
 
     @property
     def row(self) -> str:
@@ -75,6 +76,10 @@ class Placement:
     @property
     def file(self) -> str:
         return f"versions/{self.version}/aliases.txt"
+
+    @property
+    def junk_files(self) -> tuple[str, str]:
+        return f"versions/{self.version}/symbol_addrs.txt", self.file
 
 
 def jump_target(words: Sequence[int], code: Sequence[tuple[int, int, str]]) -> str | None:
@@ -234,6 +239,11 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                 and not n.startswith(tree.LITERALS)
                 and f[1] not in {table[x][1] for x in names}
             )
+            junk: list[str] = []
+            if inside:  # a row between the function's own is junk when nothing reads it and no file owns it
+                seen = _readers(root, v, inside, f"{function}.s", set(symbols.superseded_asm(root, v, table)))
+                junk = [n for n in inside if n not in seen and not current.owned(v, n)]
+                inside = [n for n in inside if n not in junk]
             if (
                 inside
             ):  # a single row cannot hold bytes of other data between the function's own: name them, write nothing
@@ -242,8 +252,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                         "place.gap",
                         f"{v}: {function}: its data spans 0x{rom:X}-0x{end:X}, which holds rows it does not read: "
                         + ", ".join(f"{n} (0x{table[n][1]:X})" for n in inside[:6])
-                        + f"; stray rows inside a table are junk: delete them from versions/{v}/symbol_addrs.txt "
-                        "and run again",
+                        + "; they are read by other code or owned by a file, so they are no junk to remove",
                         path=module.path,
                         unit=function,
                         versions=(v,),
@@ -291,6 +300,12 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                     if after not in siblings:
                         siblings[after] = _sibling(root, after, set(siblings.values()))
                     split_from, after = after, siblings[after]
+            elif (follow := _owner_from(current, v, table, end, module.path)) and (
+                split := _trailing(current, v, table, follow, rom, end)
+            ):  # no bytes left over, but the file that owns the data after the pool also owns data before it
+                if follow not in siblings:
+                    siblings[follow] = _sibling(root, follow, set(siblings.values()))
+                split_from, after = follow, siblings[follow]
             found.append(
                 Placement(
                     v,
@@ -306,6 +321,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                     segment,
                     split_from,
                     split,
+                    tuple((n, table[n][1] or 0) for n in junk),
                 )
             )
     refused.extend(
@@ -447,7 +463,7 @@ def sources(placements: Sequence[Placement], texts: Mapping[str, str]) -> dict[s
     out: dict[str, list[str]] = {}
     moving: dict[tuple[str, str], dict[str, set[str]]] = {}
     for p in placements:
-        if p.leftover and p.split:
+        if p.split:
             names = moving.setdefault((p.split_from, p.after), {})
             for n in p.split:
                 names.setdefault(n, set()).add(tree.macro(p.version))  # only this version's pieces of the name move
@@ -492,6 +508,12 @@ def rows(placements: Sequence[Placement], texts: Mapping[str, str]) -> dict[str,
     """aliases.txt per version with each placement's row added (once)."""
     out: dict[str, str] = {}
     for p in placements:
+        for path in p.junk_files if p.junk else ():
+            text = out.get(path, texts.get(path, ""))
+            gone = re.compile(r"^\s*(?:" + "|".join(re.escape(n) for n, _ in p.junk) + r")\s*=")
+            kept = "".join(x for x in text.splitlines(True) if not gone.match(x))
+            if kept != text:
+                out[path] = kept
         for row in (p.row, p.leftover):
             text = out.get(p.file, texts.get(p.file, ""))
             if row and row not in text.splitlines():

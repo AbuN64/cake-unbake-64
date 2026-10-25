@@ -367,8 +367,8 @@ def test_a_pool_stops_where_another_functions_jump_table_begins(monkeypatch, tmp
     assert found.end == 0x2030 and found.leftover == ""
 
 
-def test_a_row_is_never_sized_across_rows_the_function_does_not_read(monkeypatch, tmp_path):
-    # F reads two pools with an unread row between them: one literals_ row would hold foreign bytes
+def _gap_world(monkeypatch, tmp_path, middle_asm=None):
+    # F reads two pools with an unread row (D_800E1530) between them: one literals_ row would hold its bytes
     facts = _facts(
         {
             "D_800E1520": (0x800E1520, 0x2020, None, "data"),
@@ -376,13 +376,46 @@ def test_a_row_is_never_sized_across_rows_the_function_does_not_read(monkeypatch
             "D_800E1540": (0x800E1540, 0x2040, None, "data"),
         }
     )
-    config = _world(monkeypatch, tmp_path, facts=facts, words=(0x3F800000,) * 4)
+    config = _world(monkeypatch, tmp_path, facts=facts, words=(0x3F800000,) * 4, asm=middle_asm)
     (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text(
         "lwc1 $f0, %lo(D_800E1520)($at)\nlwc1 $f2, %lo(D_800E1540)($at)\n"
     )
+    return config
+
+
+def test_an_unread_unowned_row_between_the_functions_pools_is_junk_to_remove(monkeypatch, tmp_path):
+    config = _gap_world(monkeypatch, tmp_path)
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.junk == (("D_800E1530", 0x2030),) and found.names[0] == "D_800E1520"
+    texts = {
+        "versions/a/symbol_addrs.txt": (
+            "D_800E1520 = 0x800E1520;\nD_800E1530 = 0x800E1530; // junk\nD_800E1540 = 0x800E1540;\n"
+        ),
+        "versions/a/aliases.txt": "D_800E1530x = 1;\nD_800E1530 = 0x800E1530;\n",
+    }
+    out = {k: v.decode() for k, v in place.rows([found], texts).items()}
+    assert out["versions/a/symbol_addrs.txt"] == "D_800E1520 = 0x800E1520;\nD_800E1540 = 0x800E1540;\n"
+    assert (
+        out["versions/a/aliases.txt"].startswith("D_800E1530x = 1;\n")
+        and "D_800E1530 =" not in out["versions/a/aliases.txt"]
+    )
+    assert found.row in out["versions/a/aliases.txt"]
+
+
+def test_a_row_between_the_pools_that_other_code_reads_stays_a_refusal(monkeypatch, tmp_path):
+    config = _gap_world(monkeypatch, tmp_path, middle_asm={G: "lwc1 $f4, %lo(D_800E1530)($at)\n"})
     with pytest.raises(Refusal) as refused:
         place.plan(config, _tree(), [F])
     assert "place.gap" in {f.key for f in refused.value.findings} and "D_800E1530" in str(refused.value)
+
+
+def test_a_row_between_the_pools_that_a_file_owns_stays_a_refusal(monkeypatch, tmp_path):
+    config = _gap_world(monkeypatch, tmp_path)
+    tree = _tree()
+    tree.owned = lambda v, n: "src/m.c" if n in (F, "D_800E1530") else None
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, tree, [F])
+    assert "place.gap" in {f.key for f in refused.value.findings}
 
 
 def test_a_row_read_only_past_an_offset_starts_there_not_at_the_foreign_blob_before_it(monkeypatch, tmp_path):
@@ -429,3 +462,31 @@ def test_alignment_padding_before_a_jump_table_is_not_part_of_the_row(monkeypatc
     (found,) = place.plan(config, _tree(), [F])
     assert found.row == f"literals_{F} = 0x800E1500; // rom:0x2000 size:0x10"
 
+
+def test_a_data_file_on_both_sides_of_a_pool_with_nothing_left_over_is_split_at_the_pool(monkeypatch, tmp_path):
+    # REV1-ONE-21: the pool sat mid-unit and the bytes after it start at the next row; the unit's names from there on
+    # move to a sibling, so the link order puts the function's pool between the two halves
+    config = _world(monkeypatch, tmp_path, facts=_facts({"D_800E14F0": (0x800E14F0, 0x1FF0, None, "data")}))
+    both = SimpleNamespace(
+        path="src/d.c",
+        owns={"a": ("D_800E14F0", "D_800E1510")},
+        stand_ins={"a": ("D_800E14F0", "D_800E1510")},
+        sections={"a": {"D_800E14F0": ".rodata", "D_800E1510": ".rodata"}},
+    )
+    current = _tree()
+    current.modules = (*current.modules, both)
+    (found,) = place.plan(config, current, [F])
+    assert found.leftover == "" and (found.split_from, found.after, found.split) == (
+        "src/d.c",
+        "src/d_2.c",
+        ("D_800E1510",),
+    )
+    text = (
+        '#include "include_asm.h"\n'
+        "#if defined(VERSION_A)\nconst unsigned int D_800E14F0[1] = {\n    0x00000000,\n};\n#endif\n"
+        '#if defined(VERSION_A)\nINCLUDE_RODATA("data_x", D_800E1510);\n#endif\n'
+    )
+    out = place.sources([found], {"src/d.c": text})
+    kept, new = out["src/d.c"].decode(), out["src/d_2.c"].decode()
+    assert "D_800E14F0" in kept and "D_800E1510" not in kept and "D_800E1510" in new
+    assert "INCLUDE_RODATA" in new and "D_auto_rodata" not in new

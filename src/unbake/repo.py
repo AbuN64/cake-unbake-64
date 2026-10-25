@@ -586,6 +586,7 @@ def _sync_placing(config: Config, params: Json) -> Json:
     root = config.project.root
     found = place.plan(config, tree.capture(config), list(params["place"]))
     wanted = {*(p.file for p in found), *(p.after for p in found if p.after), *(p.split_from for p in found if p.split)}
+    wanted |= {f for p in found if p.junk for f in p.junk_files}
     texts = {path: (_read(root / path) or b"").decode() for path in wanted}
     writes = {**place.rows(found, texts), **place.sources(found, texts)}
     shown = [
@@ -595,6 +596,7 @@ def _sync_placing(config: Config, params: Json) -> Json:
             "row": p.row,
             "file": p.file,
             "note": p.note + (f"; {', '.join(p.split)} move from {p.split_from} to {p.after}" if p.split else ""),
+            **({"removed": [f"{n} (rom 0x{r:X})" for n, r in p.junk]} if p.junk else {}),
         }
         for p in found
     ]
