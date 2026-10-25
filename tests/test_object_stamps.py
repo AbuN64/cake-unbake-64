@@ -217,3 +217,27 @@ def test_records_append_without_a_lock_and_the_sweep_folds_them_in(tmp_path):
     tree.make(deps=True)  # the sweep folds the log into the state; this run's records start a new log
     state = json.loads((tmp_path / "build/.inputs.json").read_text())
     assert any(k.endswith(".i.ok") for k in state)
+
+
+
+def test_asm_deps_is_replaced_whole_and_the_scripts_are_not_rewritten_unchanged(tmp_path):
+    """REV1-ONE-40: `build/asm.deps:157: missing separator`: a make -included asm.deps another make of the same tree was
+    rewriting in place (shell redirect). It is now written to a temporary file and replaced, and the generated scripts
+    are written only when their text changed (a parallel make never runs a half-written one)."""
+    import os
+    tree = Tree(tmp_path)
+    asm = tmp_path / "asm/us/nonmatchings/seg/f.s"
+    asm.parent.mkdir(parents=True)
+    asm.write_text("glabel f\n")
+    tree.write('INCLUDE_ASM("seg", f);\n')
+    tree.make(deps=True)
+    deps, script, sweep = (tmp_path / "build" / n for n in ("asm.deps", "asm-deps.py", "stamp-sweep.py"))
+    assert "asm/us/nonmatchings/seg/f.s" in deps.read_text()
+    ino, when, swept = deps.stat().st_ino, script.stat().st_mtime_ns, sweep.stat().st_mtime_ns
+    os.utime(script, ns=(10**9, 10**9))
+    os.utime(sweep, ns=(10**9, 10**9))
+    tree.make(deps=True)
+    assert deps.stat().st_ino != ino  # a new file took the name: a reader sees the old one or the new one, whole
+    assert script.stat().st_mtime_ns == 10**9 and sweep.stat().st_mtime_ns == 10**9  # unchanged text: not rewritten
+    assert not list((tmp_path / "build").glob("asm.deps.*"))
+    assert when and swept

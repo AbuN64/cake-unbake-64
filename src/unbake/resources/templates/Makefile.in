@@ -250,12 +250,13 @@ asm/%/.extracted: | roms/baserom.%.z64
 define ASM_DEPS
 import os, re, sys
 named = re.compile(rb'INCLUDE_(ASM|RODATA|DATA)\(\s*"(\w+)"\s*,\s*(\w+)\s*[,)]')
+out, lines = sys.argv[1], []
 for here, _, names in sorted(os.walk("src")):
     for name in sorted(names):
         path = os.path.join(here, name)
         with open(path, "rb") as source:
             found = sorted(set(named.findall(source.read())))
-        for version in sys.argv[1:]:
+        for version in sys.argv[2:]:
             files = []
             for kind, segment, symbol in found:
                 folder = "nonmatchings" if kind == b"ASM" else "data"
@@ -263,11 +264,18 @@ for here, _, names in sorted(os.walk("src")):
                 if os.path.exists(asm):
                     files.append(asm)
             if files:
-                print("build/%s/%s.o: %s" % (version, path, " ".join(files)))
+                lines.append("build/%s/%s.o: %s\n" % (version, path, " ".join(files)))
+tmp = "%s.%d" % (out, os.getpid())
+with open(tmp, "w") as handle:
+    handle.write("".join(lines))
+os.replace(tmp, out)
 endef
 $$(shell mkdir -p build)
-$$(file >build/asm-deps.py,$$(ASM_DEPS))
-$$(shell python3 -I build/asm-deps.py $$(VERSIONS) >build/asm.deps)
+# Parallel makes of one tree (a check beside an extract's sub-make) each parse this: the file a make -includes is only
+# ever replaced whole (REV1-ONE-40: `build/asm.deps:157: missing separator` read mid-rewrite), and a script is rewritten
+# only when its text changed, so a make never runs another's half-written copy.
+$$(if $$(subst $$(file <build/asm-deps.py),,$$(ASM_DEPS)),$$(file >build/asm-deps.py,$$(ASM_DEPS)))
+$$(shell python3 -I build/asm-deps.py build/asm.deps $$(VERSIONS))
 -include build/asm.deps
 
 # Make trusts file dates, and a date can lie: a tree copied, rebased or fast-forwarded gives a stamp that is newer than the
@@ -391,7 +399,7 @@ if pending:
 if removed:
     sys.stderr.write("stamp sweep: %d outputs made from other bytes than their inputs now hold were dropped\n" % removed)
 endef
-$$(file >build/stamp-sweep.py,$$(STAMP_SWEEP))
+$$(if $$(subst $$(file <build/stamp-sweep.py),,$$(STAMP_SWEEP)),$$(file >build/stamp-sweep.py,$$(STAMP_SWEEP)))
 $$(shell python3 -I build/stamp-sweep.py sweep $$(VERSIONS) >&2)
 # The link script names every object, so no rule here lists a file.
 $$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
