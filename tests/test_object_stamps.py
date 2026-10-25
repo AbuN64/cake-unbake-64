@@ -188,6 +188,26 @@ def test_an_extracted_file_changed_under_a_newer_object_remakes_the_object(tmp_p
     assert tree.make(deps=True) == (1, 1)
 
 
+def test_an_included_asm_naming_a_renamed_callee_remakes_the_object_under_an_older_date(tmp_path):
+    """After a rebase the extracted .s of a renamed callee is older than the object built before it: the object that
+    includes it is keyed on the file's bytes, so it is assembled again and no link keeps the old name."""
+    tree = Tree(tmp_path)
+    for name in ("f", "g"):
+        asm = tmp_path / f"asm/us/nonmatchings/seg/{name}.s"
+        asm.parent.mkdir(parents=True, exist_ok=True)
+        asm.write_text(f"glabel {name}\n  jal func_802A037C_de\n")
+    tree.write('INCLUDE_ASM("seg", f);\nINCLUDE_ASM("seg", g);\n')
+    assert tree.make(deps=True) == (1, 1)
+    tree.age()
+    tree.make(deps=True)
+    assert tree.make(deps=True) == (0, 0)
+    renamed = tmp_path / "asm/us/nonmatchings/seg/g.s"
+    renamed.write_text("glabel g\n  jal Resmgr_CopyString\n")
+    _old(renamed)  # extraction wrote it with a date older than the object
+    assert tree.make(deps=True) == (1, 1)
+    assert tree.make(deps=True) == (0, 0)
+
+
 def test_a_tree_without_recorded_inputs_is_trusted(tmp_path):
     tree = Tree(tmp_path)
     (tmp_path / "src/h.h").write_text("one\n")
