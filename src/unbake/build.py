@@ -889,14 +889,6 @@ def _stable(path: Path) -> Path:
     return path
 
 
-_PIN = "ABU_VENV"
-
-
-def _venv_link(path: Path) -> Path | None:
-    """The symlink a `_stable` spelling goes through (`~/venv-decomp`), None for a path that is not under one."""
-    return next((f for f in path.parents if f.is_symlink()), None)
-
-
 def _cached_cc(config: Config, compiler: Path) -> str:
     """The compiler the Makefile runs: behind resources/cc_front.sh and cc_cache.py, whose results live beside the host
     content cache, so every tree on the host copies the assembly of a text any tree compiled (a commit that changes a
@@ -907,9 +899,6 @@ def _cached_cc(config: Config, compiler: Path) -> str:
     if cache is None:
         return str(compiler)
     script = _stable(Path(__file__).parent / "resources" / "cc_front.sh")
-    if (pin := _venv_link(script)) is not None:  # the make resolves the link once, at its start (ABU_VENV)
-        rest, args = shlex.quote(str(script.relative_to(pin))), " ".join(shlex.quote(str(p)) for p in (cache, compiler))
-        return f"sh $({_PIN})/{rest} {args}"
     return " ".join(shlex.quote(str(p)) for p in ("sh", script, cache, compiler))
 
 
@@ -923,12 +912,6 @@ def local_mk(config: Config) -> bytes:
                 if "download" not in row  # a pinned tool is the Makefile's own fetch, never a machine path
             ),
         ]
-        script = _stable(Path(__file__).parent / "resources" / "cc_front.sh")
-        if front.cache(config.host) is not None and (link := _venv_link(script)) is not None:
-            # A deploy switches the link while a build runs: every command of one make, its sub-makes and the second run
-            # of a build must keep the interpreter and scripts the make started with, so the link is resolved once, by
-            # the first make that reads this file, and exported (a deployed-away venv stays while a process names it).
-            assignments[:0] = [f"{_PIN} := $(or $({_PIN}),$(realpath {link}))", f"export {_PIN}"]
         for id, row in sorted(configuration.toolchains().items()):
             key, base = _key(id), config.host.toolchain_root / id
             assignments.append(f"CC_{key} := {_cached_cc(config, base / row['cc'])}")

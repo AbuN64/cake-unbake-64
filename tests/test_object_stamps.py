@@ -264,19 +264,3 @@ def test_a_sweep_with_nothing_moved_does_not_walk_or_rewrite_the_state(tmp_path)
     _old(tmp_path / "src/h.h")  # a header changed under a newer stamp is still found
     tree.make(deps=True)
     assert (tmp_path / "preprocessed").read_text() == "p\n"
-
-
-def test_local_mk_pins_the_venv_link_once_per_make(tmp_path, monkeypatch):
-    """A deploy switches ~/venv-decomp while a build runs: the compiler front is spelled through ABU_VENV, which the
-    first make resolves and exports, so one build never mixes two venvs."""
-    venv = tmp_path / "venv-decomp.0123456789ab"
-    (venv / "resources").mkdir(parents=True)
-    link = tmp_path / "venv-decomp"
-    link.symlink_to(venv)
-    monkeypatch.setattr(build, "_stable", lambda path: link / "resources" / Path(path).name)
-    host = SimpleNamespace(workers=1, tools={}, toolchain_root=Path("/c"), cache_dir=Path("/cache/content"))
-    text = build.local_mk(SimpleNamespace(host=host)).decode()
-    assert f"ABU_VENV := $(or $(ABU_VENV),$(realpath {link}))" in text and "export ABU_VENV\n" in text
-    line = next(row for row in text.splitlines() if row.startswith("CC_gcc_2_8_1_sn64 :="))
-    assert line.startswith("CC_gcc_2_8_1_sn64 := sh $(ABU_VENV)/resources/cc_front.sh ")
-    assert str(venv) not in text
