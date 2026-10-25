@@ -141,6 +141,13 @@ def memo[T](key: object, produce: Callable[[], T]) -> T:
     return effort.memo(key, produce)
 
 
+def make(config: Config, targets: Sequence[str]) -> tuple[str, str]:
+    """`make -k TARGETS` in the project under the host's one jobserver (`process.make`): what a tool builds runs with
+    the host's slots and compiler cache, never a `-j` of its own. (stdout, stderr) as text."""
+    ran = process.make(config, targets, len(targets))
+    return ran.stdout.decode(errors="replace"), ran.stderr.decode(errors="replace")
+
+
 def pool_map(
     config: Config,
     name: str,
