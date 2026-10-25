@@ -21,7 +21,23 @@ from typing import Any
 import rabbitizer
 import yaml
 
-from unbake import adapters, api, build, ci, effort, journal, libasm, place, pool, process, report, store, symbols, tree
+from unbake import (
+    adapters,
+    api,
+    build,
+    ci,
+    effort,
+    journal,
+    libasm,
+    place,
+    pool,
+    process,
+    report,
+    store,
+    symbols,
+    tree,
+    treelock,
+)
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, NativeResult, Refusal, digest, sha1
 
@@ -1486,7 +1502,26 @@ def _extract(config: Config, versions: Sequence[str]) -> list[str]:
     return [v for v, did in zip(versions, ran, strict=True) if did]
 
 
+def _extracting(config: Config) -> bool:
+    """Whether a setup now would extract some version again (its asm and splat files rewritten)."""
+    try:
+        return any(_extract_why(config, v) for v in _extractable(config))
+    except (OSError, ValueError):
+        return True
+
+
 def setup(config: Config, params: Json) -> Json:
+    """Extract what moved and sync the tree. An extraction rewrites asm/<v>/ and build/<v>/*_auto.txt, which make never
+    makes again, so it runs under the tree lock held exclusively: a tree copied from this one (a stamp or lane seed
+    holds the lock shared) never gets a half-written extraction (10-25: a seed copied during a pool refresh lacked
+    build/de/undefined_syms_auto.txt and every link of the stamp failed). The tree lock comes before the store lock."""
+    if not _extracting(config):
+        return _setup(config, params)
+    with treelock.hold(config.project.root, exclusive=True, who="unbake setup (extracting)"):
+        return _setup(config, params)
+
+
+def _setup(config: Config, params: Json) -> Json:
     wait_s = config.host.move_wait_s
     with effort.stage("repo.setup"), store.exclusive(config, "structure", wait=True, wait_s=wait_s) as held:
         adapters.check_abucache()

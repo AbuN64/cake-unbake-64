@@ -304,6 +304,27 @@ def test_a_setup_without_make_prepares_and_a_later_setup_still_builds(world):
     assert world.setup()["make"] == MADE and world.makes == [(("check",), 4)]  # a full setup does not take it as done
 
 
+def test_an_extracting_setup_holds_the_tree_lock_exclusively_and_a_noop_setup_takes_none(world, monkeypatch):
+    """A seed copies a tree under its lock held shared: an extraction (asm and splat files make never remakes) must not
+    be half-written in the copy (10-25: a stamp seed lacked build/de/undefined_syms_auto.txt)."""
+    from contextlib import contextmanager
+
+    holds = []
+
+    @contextmanager
+    def hold(root, *, exclusive=False, who="", **kw):
+        holds.append((exclusive, who))
+        yield 0.0
+
+    monkeypatch.setattr(repo.treelock, "hold", hold)
+    real = repo.build.extract
+    monkeypatch.setattr(repo.build, "extract", lambda c, v: (holds and holds[-1][0]) and real(c, v))
+    assert sorted(world.setup()["extracted"]) == ["a", "b"]
+    assert holds == [(True, "unbake setup (extracting)")]
+    world.setup()
+    assert len(holds) == 1  # nothing to extract: no writer lock
+
+
 def test_extract_cache(world):
     world.setup()
     assert sorted(world.extracts) == ["a", "b"]
