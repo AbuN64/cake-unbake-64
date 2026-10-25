@@ -342,7 +342,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(without_hdrkey(text).splitlines()) < 390
+    assert len(without_hdrkey(text).splitlines()) < 400
     assert "src/f1.c" not in text
 
 
@@ -1671,3 +1671,62 @@ def test_separate_images_at_same_vma_do_not_share_namespace(tmp_path):
     assert "ROM extent: first" in script and "ROM extent: second" in script
     yaml = build.splat_yaml(config, "us", make_tree()).decode()
     assert 'exclusive_ram_id: "first"' in yaml and 'exclusive_ram_id: "second"' in yaml
+
+
+def _extract_world(tmp_path):
+    """A tree whose fake splat appends a line to runs.log (and sleeps) each time it splits."""
+    config = make_config(tmp_path)
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "roms").mkdir(exist_ok=True)
+    (tmp_path / "roms/baserom.us.z64").write_bytes(bytes(64))
+    (tmp_path / "versions/us/splat.yaml").write_text("")
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("f = 0x1;\n")
+    splat = tmp_path / "splat.py"
+    splat.write_text(
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "if '--version' in sys.argv:\n"
+        "    print('splat test')\n"
+        "    sys.exit(0)\n"
+        "time.sleep(0.5)\n"
+        "with open('runs.log', 'a') as log:\n"
+        "    log.write('split\\n')\n"
+        "Path('asm/us/nonmatchings/seg').mkdir(parents=True, exist_ok=True)\n"
+        "Path('asm/us/nonmatchings/seg/f.s').write_text(Path('versions/us/symbol_addrs.txt').read_text())\n"
+    )
+    return splat
+
+
+def test_two_makes_extracting_one_version_split_it_once(tmp_path):
+    """`make -j extract` and the build's own .extracted rule reach one recipe: the second waits, then sees the key."""
+    import subprocess
+    import sys
+    splat = _extract_world(tmp_path)
+    cmd = ["make", "--no-print-directory", "extract-us", f"SPLAT={sys.executable} {splat}"]
+    pipe = subprocess.PIPE
+    procs = [subprocess.Popen(cmd, cwd=tmp_path, stdout=pipe, stderr=pipe, text=True) for _ in range(3)]
+    for proc in procs:
+        _, err = proc.communicate()
+        assert proc.returncode == 0, err
+    assert (tmp_path / "runs.log").read_text() == "split\n"
+
+
+def test_a_rebase_that_changed_the_facts_extracts_again_on_the_next_build(tmp_path):
+    """asm/<v>/.extracted had only the ROM as prerequisite: symbol_addrs.txt changed and the build linked stale asm."""
+    import subprocess
+    import sys
+    splat = _extract_world(tmp_path)
+    cmd = ["make", "--no-print-directory", "asm/us/.extracted", f"SPLAT={sys.executable} {splat}"]
+    def run():
+        result = subprocess.run(cmd, cwd=tmp_path, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return (tmp_path / "runs.log").read_text().count("split")
+    assert run() == 1
+    stamp = tmp_path / "asm/us/.extracted"
+    assert run() == 1  # nothing moved: no split, and no key check once the record is current
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("f = 0x1;\ng = 0x2;\n")
+    assert run() == 2 and "g = 0x2" in (tmp_path / "asm/us/nonmatchings/seg/f.s").read_text()
+    assert run() == 2 and stamp.is_file()
+    # a tree recorded by an older Makefile (key but no source record) is checked once and keeps its extraction
+    (tmp_path / "build/.extract-src-us").unlink()
+    assert run() == 2 and (tmp_path / "build/.extract-src-us").is_file()

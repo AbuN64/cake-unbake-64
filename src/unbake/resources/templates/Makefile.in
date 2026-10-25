@@ -209,14 +209,21 @@ export KEEP_DATES
 # on remaking the included files). Bump rev1 when the recipe changes.
 export EXTRACT_RECIPE := rev1 $$(DATA_SED) $$(CODE_SED)
 EXTRACT_KEY = { cat roms/baserom.$$*.z64 versions/$$*/splat.yaml versions/$$*/symbol_addrs.txt; $$(SPLAT) --version 2>&1; printf %s "$$$$EXTRACT_RECIPE"; } | sha1sum | cut -d" " -f1
+# asm/<v>/.extracted has only the ROM as prerequisite: a rebase that changed symbol_addrs.txt or splat.yaml left stale asm. A version whose
+# two files differ from build/.extract-src-<v> (or have no record) gets the phony extract-stale: the full key is checked once, then recorded.
+SRC_KEY = cat versions/$$*/splat.yaml versions/$$*/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1
+.PHONY: extract-stale
+$$(foreach v,$$(VERSIONS),$$(if $$(wildcard build/.extract-key-$$(v)),$$(if $$(filter $$(shell cat versions/$$(v)/splat.yaml versions/$$(v)/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1),$$(shell cat build/.extract-src-$$(v) 2>/dev/null)),,$$(eval asm/$$(v)/.extracted: extract-stale))))
 extract: $$(VERSIONS:%=extract-%)
 extract-force-%:
 	$$(Q)rm -f build/.extract-key-$$* && $$(MAKE) --no-print-directory extract-$$*
 # Records the inputs asm/<v>/ holds the extraction of (the tool that extracts runs it too).
 extract-stamp-%:
-	$$(Q)mkdir -p build && { $$(EXTRACT_KEY); } > build/.extract-key-$$*
+	$$(Q)mkdir -p build && { $$(EXTRACT_KEY); } > build/.extract-key-$$* && { $$(SRC_KEY); } > build/.extract-src-$$*
 extract-%:
-	$$(Q)mkdir -p build; if test -f asm/$$*/.extracted && test "$$$$($$(EXTRACT_KEY))" = "$$$$(cat build/.extract-key-$$* 2>/dev/null)"; then rm -f build/.extract-run-$$*; echo "extract-$$*: inputs unchanged, not split again (make extract-force-$$* splits)"; else touch build/.extract-run-$$*; fi
+	$$(Q)mkdir -p build; flock build/.extract-lock-$$* $$(MAKE) --no-print-directory extract-do-$$*
+extract-do-%:
+	$$(Q)mkdir -p build; if test -f asm/$$*/.extracted && test "$$$$($$(EXTRACT_KEY))" = "$$$$(cat build/.extract-key-$$* 2>/dev/null)"; then rm -f build/.extract-run-$$*; echo "extract-$$*: inputs unchanged, not split again (make extract-force-$$* splits)"; { $$(SRC_KEY); } > build/.extract-src-$$*; else touch build/.extract-run-$$*; fi
 	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" save $$*
 	$$(Q)test -e build/.extract-run-$$* || exit 0; $$(SPLAT) split versions/$$*/splat.yaml
 	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
@@ -228,7 +235,7 @@ extract-%:
 	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
 	$$(Q)test -e build/.extract-run-$$* || exit 0; touch asm/$$*/.extracted
 	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" restore $$*
-	$$(Q)test -e build/.extract-run-$$* || exit 0; { $$(EXTRACT_KEY); } > build/.extract-key-$$* && rm -f build/.extract-run-$$*
+	$$(Q)test -e build/.extract-run-$$* || exit 0; { $$(EXTRACT_KEY); } > build/.extract-key-$$* && { $$(SRC_KEY); } > build/.extract-src-$$* && rm -f build/.extract-run-$$*
 # An object assembles extracted files its source only names through a macro: every object follows the extraction.
 asm/%/.extracted: | roms/baserom.%.z64
 	+$$(Q)$$(MAKE) --no-print-directory extract-$$*
