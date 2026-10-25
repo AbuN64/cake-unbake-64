@@ -301,8 +301,10 @@ def test_splat_yaml_writes_labels_into_the_piece_before_them(tmp_path):
 
 
 def without_hdrkey(text: str) -> str:
-    """The Makefile without the C source of hdrkey it embeds (a constant, like the python scripts)."""
+    """The Makefile without the C source of hdrkey and the stamp sweep it embeds."""
     head, rest = text.split("define HDRKEY_C\n", 1)
+    text = head + rest.split("\nendef", 1)[1]
+    head, rest = text.split("define STAMP_SWEEP\n", 1)
     return head + rest.split("\nendef", 1)[1]
 
 
@@ -342,7 +344,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(without_hdrkey(text).splitlines()) < 400
+    assert len(without_hdrkey(text).splitlines()) < 420
     assert "src/f1.c" not in text
 
 

@@ -240,10 +240,8 @@ extract-do-%:
 asm/%/.extracted: | roms/baserom.%.z64
 	+$$(Q)$$(MAKE) --no-print-directory extract-$$*
 
-# The link script names every object, so no rule here lists a file.
-$$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
--include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
-
+# Both scripts run before make reads a directory of build/: make keeps the listing it first read, so a stamp the sweep
+# removes later would still look present.
 # The compiler's assembly for a unit holds only an `.include` line for each extracted file its INCLUDE_ASM, INCLUDE_RODATA
 # and INCLUDE_DATA lines name: the assembler reads the file's content, so an edit in place (a symbol renamed by hand or
 # by a tool, with the .i unchanged and the compile answered by the cache) is an input of the object that no other rule
@@ -271,6 +269,111 @@ $$(shell mkdir -p build)
 $$(file >build/asm-deps.py,$$(ASM_DEPS))
 $$(shell python3 -I build/asm-deps.py $$(VERSIONS) >build/asm.deps)
 -include build/asm.deps
+
+# Make trusts file dates, and a date can lie: a tree copied, rebased or fast-forwarded gives a stamp that is newer than the
+# inputs it was made from. STAMP_SWEEP runs before make reads any date. For each .i.ok stamp it hashes the inputs the
+# preprocess read (the source and every header in its .d); for each object it hashes the extracted files the
+# object assembles (its .i is dated by the preprocess rule, which writes it only when its bytes change) (asm.deps). The hashes seen at the last sweep are kept beside the stamp's date (build/.inputs.json).
+# A stamp whose date did not move but whose inputs' bytes did was made from other bytes: it is dated long ago (make
+# skips a missing stamp when the object is newer than the source), so make makes it again, and an object is removed. A stamp that was rebuilt since (its date moved) records the bytes it now has.
+define STAMP_SWEEP
+import hashlib, json, os, sys
+state_path = "build/.inputs.json"
+seen = {}
+def digest(path):
+    if path not in seen:
+        try:
+            with open(path, "rb") as handle:
+                seen[path] = hashlib.sha1(handle.read()).hexdigest()
+        except OSError:
+            seen[path] = "-"
+    return seen[path]
+def dependencies(dfile):
+    try:
+        text = open(dfile).read()
+    except OSError:
+        return None
+    names = []
+    for line in text.replace(chr(92) + chr(10), " ").splitlines():
+        target, colon, named = line.partition(": ")
+        if colon and named.strip():
+            names += named.split()
+    return names
+def stamp_key(stamp):
+    deps = dependencies(stamp[: -len(".i.ok")] + ".d")
+    return None if deps is None else hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest()
+def object_key(obj, extracted):
+    return hashlib.sha1(" ".join(digest(a) for a in sorted(set(extracted))).encode()).hexdigest()
+def load():
+    try:
+        with open(state_path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+def save(state):
+    os.makedirs("build", exist_ok=True)
+    tmp = state_path + "." + str(os.getpid())
+    with open(tmp, "w") as handle:
+        json.dump(state, handle)
+    os.replace(tmp, state_path)
+if sys.argv[1] == "record":
+    path, key = sys.argv[2], None
+    key = stamp_key(path) if path.endswith(".i.ok") else object_key(path, sys.argv[3:])
+    if key is not None:
+        import fcntl
+        with open(state_path + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = load()
+            state[path] = [os.stat(path).st_mtime_ns, key]
+            save(state)
+    sys.exit(0)
+state = load()
+asm = {}
+if os.path.exists("build/asm.deps"):
+    for line in open("build/asm.deps"):
+        target, _, named = line.partition(": ")
+        asm[target] = named.split()
+removed = 0
+def check(path, key):
+    global removed
+    if key is None:
+        return
+    try:
+        when = os.stat(path).st_mtime_ns
+    except OSError:
+        state.pop(path, None)
+        return
+    old = state.get(path)
+    if old and old[0] == when and old[1] != key:
+        if path.endswith(".o"):
+            os.unlink(path)
+        else:
+            os.utime(path, ns=(1000000000, 1000000000))
+        state.pop(path, None)
+        removed += 1
+    else:
+        state[path] = [when, key]
+versions = set(sys.argv[2:])
+def twin(obj):
+    parts = obj.split("/")
+    return obj if parts[1] in versions else "/".join(parts[:1] + parts[2:])
+for here, _, names in os.walk("build"):
+    for name in names:
+        if name.endswith(".i.ok"):
+            stamp = os.path.join(here, name)
+            check(stamp, stamp_key(stamp))
+            obj = stamp[: -len(".i.ok")] + ".o"
+            check(obj, object_key(obj, asm.get(twin(obj), [])))
+save(state)
+if removed:
+    sys.stderr.write("stamp sweep: %d outputs made from other bytes than their inputs now hold were dropped\n" % removed)
+endef
+$$(file >build/stamp-sweep.py,$$(STAMP_SWEEP))
+$$(shell python3 -I build/stamp-sweep.py sweep $$(VERSIONS) >&2)
+# The link script names every object, so no rule here lists a file.
+$$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
+-include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
+
 
 # An object follows the text its source preprocesses to, not the time its headers were written: the .i is replaced only
 # when its bytes change, so a header edit that leaves a source's text alone (a comment, a part another version reads)
@@ -664,11 +767,13 @@ build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY
 	fi
 	$$(Q)printf '%s\n' $$(call shq,$$(PP_FLAGS)) > $$@.flags
 	$$(Q)touch $$@
+	$$(Q)python3 -I build/stamp-sweep.py record $$@
 build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS)
 	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)$$(flags_changed)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
 	[ $$(@:.o=.i) -ot $$@ ]; then printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; touch $$@; \
 	else $$(COMPILE_$$(TC)) && if [ -f $$@.same ]; then rm -f $$@.same; else $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \
 	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi && printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; fi
+	$$(Q)python3 -I build/stamp-sweep.py record $$@ $$(filter-out %/.extracted,$$(filter asm/%,$$^))
 build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASDEFS) $$(ASINC) -Iinclude $$< -o $$@

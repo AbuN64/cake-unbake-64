@@ -40,8 +40,8 @@ class Tree:
         self.trim.write_text("")
         self.target = "build/us/src/a.c.o"
 
-    def make(self, cflags: str = "-O2", cppflags: str = "-DX", expect: int = 0) -> tuple[int, int]:
-        for log in ("compiled", "assembled"):
+    def make(self, cflags: str = "-O2", cppflags: str = "-DX", expect: int = 0, deps: bool = False) -> tuple[int, int]:
+        for log in ("compiled", "assembled", "preprocessed"):
             (self.root / log).write_text("")
         result = subprocess.run(
             [
@@ -53,7 +53,8 @@ class Tree:
                 "TC=gcc_2_8_1_sn64",
                 f"CFLAGS={cflags}",
                 f"CPPFLAGS={cppflags}",
-                "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+                "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)"
+                + (" && echo p >> preprocessed && printf '%s: %s src/h.h\\n' $@ $< > $(@:.i.ok=.d)" if deps else ""),
                 f"CC_gcc_2_8_1_sn64={sys.executable} {self.cc}",
                 f"N64LINK={sys.executable} {self.asm}",
                 "OBJCOPY=true",
@@ -148,3 +149,53 @@ def test_local_mk_names_the_venv_link_not_its_versioned_directory(tmp_path):
     host = SimpleNamespace(workers=1, tools={"splat": venv / "bin/splat"}, toolchain_root=Path("/c"), cache_dir=None)
     text = build.local_mk(SimpleNamespace(host=host)).decode()
     assert str(venv) not in text
+
+
+def _old(path: Path) -> None:
+    os.utime(path, ns=(10**18, 10**18))
+
+
+def test_a_header_changed_under_a_newer_stamp_remakes_the_stamp(tmp_path):
+    """Dates lie after a copy or a fast-forward: a stamp is newer than a header whose bytes it never saw."""
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("one\n")
+    tree.write("int a;\n")
+    tree.make(deps=True)
+    tree.age()
+    tree.make(deps=True)
+    assert (tmp_path / "preprocessed").read_text() == ""
+    (tmp_path / "src/h.h").write_text("two\n")
+    _old(tmp_path / "src/h.h")
+    tree.make(deps=True)
+    assert (tmp_path / "preprocessed").read_text() == "p\n"
+    tree.age()
+    tree.make(deps=True)  # the new bytes are recorded: nothing runs again
+    assert (tmp_path / "preprocessed").read_text() == ""
+
+
+def test_an_extracted_file_changed_under_a_newer_object_remakes_the_object(tmp_path):
+    tree = Tree(tmp_path)
+    asm = tmp_path / "asm/us/nonmatchings/seg/f.s"
+    asm.parent.mkdir(parents=True)
+    asm.write_text("glabel f\n")
+    tree.write('INCLUDE_ASM("seg", f);\n')
+    assert tree.make(deps=True) == (1, 1)
+    tree.age()
+    tree.make(deps=True)
+    assert tree.make(deps=True) == (0, 0)
+    asm.write_text("glabel g\n")
+    _old(asm)
+    assert tree.make(deps=True) == (1, 1)
+
+
+def test_a_tree_without_recorded_inputs_is_trusted(tmp_path):
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("one\n")
+    tree.write("int a;\n")
+    tree.make(deps=True)
+    (tmp_path / "build/.inputs.json").unlink()
+    tree.age()
+    (tmp_path / "src/h.h").write_text("two\n")
+    _old(tmp_path / "src/h.h")
+    tree.make(deps=True)
+    assert (tmp_path / "preprocessed").read_text() == ""

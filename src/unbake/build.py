@@ -1005,7 +1005,7 @@ def drop_including(config: Config, version: str, names: set[str]) -> int:
     return dropped
 
 
-_DEPENDENCY_LINE = re.compile(r"asm-deps\.py|asm\.deps|mkdir -p build\)")
+_DEPENDENCY_LINE = re.compile(r"asm-deps\.py|asm\.deps|stamp-sweep\.py|mkdir -p build\)")
 
 
 def _dependency_lines(text: str) -> set[str]:
@@ -1015,7 +1015,7 @@ def _dependency_lines(text: str) -> set[str]:
     found: set[str] = set()
     inside = False
     for line in text.splitlines():
-        if line.startswith("define ASM_DEPS"):
+        if line.startswith(("define ASM_DEPS", "define STAMP_SWEEP")):
             inside = True
             found.add(line)
         elif inside and line == "endef":
