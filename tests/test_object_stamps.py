@@ -41,7 +41,13 @@ class Tree:
         self.target = "build/us/src/a.c.o"
 
     def make(
-        self, cflags: str = "-O2", cppflags: str = "-DX", expect: int = 0, deps: bool = False, level: int = 0
+        self,
+        cflags: str = "-O2",
+        cppflags: str = "-DX",
+        expect: int = 0,
+        deps: bool = False,
+        level: int = 0,
+        extra: tuple[str, ...] = (),
     ) -> tuple[int, int]:
         for log in ("compiled", "assembled", "preprocessed"):
             (self.root / log).write_text("")
@@ -62,6 +68,7 @@ class Tree:
                 "OBJCOPY=true",
                 f"TRIM_TEXT={sys.executable} {self.trim}",
                 "TEXTSIZE=0x10",
+                *extra,
             ],
             cwd=self.root,
             capture_output=True,
@@ -377,4 +384,35 @@ def test_a_stamp_signed_under_the_new_header_bytes_survives_the_sweep(tmp_path):
     (tmp_path / "src/h.h").write_text("three\n")  # unsigned: the sweep drops the stamp
     _old(tmp_path / "src/h.h")
     tree.make(deps=True)
+    assert (tmp_path / "preprocessed").read_text() == "p\n"
+
+
+def test_narrow_apply_lets_make_skip_the_header_and_rebuild_only_what_the_edit_reaches(tmp_path):
+    """`unbake narrow --against REV --apply` (the train's check): a unit whose key names nothing the header edit
+    changed is signed, and `make -o HEADER` leaves it; an edit it names dates it for a rebuild."""
+    import shutil
+
+    from unbake import hdrnarrow
+
+    if shutil.which("cc") is None:
+        return
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("extern int D_1;\nextern int D_2;\n")
+    tree.write("int f(void) { return D_1; }\n")
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("")
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "base"]):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=tmp_path, check=True)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True).stdout.strip()
+    tree.make(deps=True)
+    tree.age()
+    tree.make(deps=True)
+    (tmp_path / "src/h.h").write_text("extern int D_1;\nextern short D_2;\n")  # D_2: no name the unit's key spells
+    got = hdrnarrow.narrow_command({"project": str(tmp_path), "against": base, "apply": True, "version": ["us"]})
+    assert got["skip_headers"] == ["src/h.h"] and got["versions"]["us"]["skipped"] == 1 and got["signed"] == 1
+    assert tree.make(deps=True, extra=("-o", "src/h.h")) == (0, 0)
+    assert (tmp_path / "preprocessed").read_text() == ""
+    (tmp_path / "src/h.h").write_text("extern short D_1;\nextern short D_2;\n")  # D_1: the unit's key names it
+    got = hdrnarrow.narrow_command({"project": str(tmp_path), "against": base, "apply": True, "version": ["us"]})
+    assert got["versions"]["us"]["skipped"] == 0 and got["dropped"] == 1
+    tree.make(deps=True, extra=("-o", "src/h.h"))
     assert (tmp_path / "preprocessed").read_text() == "p\n"

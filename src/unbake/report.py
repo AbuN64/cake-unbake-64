@@ -149,9 +149,15 @@ class Credit(NamedTuple):
     platform: int = 0  # bytes of the symbol that are identified platform (boot, SDK microcode): counted there
 
 
+FUZZY_MAX = 99.99  # the most a function the build does not compile from C as exact can show
+
+
 def percent(credit: Credit) -> float:
-    """A function's match in one version, 0..100 with two decimals: 100 for exact bytes, else its fuzzy score."""
-    return 100.0 if credit.exact or credit.score >= 1.0 else round(credit.score * 100, 2)
+    """A function's match in one version, 0..100 with two decimals: 100 only for an exact build, else its fuzzy score,
+    at most FUZZY_MAX: a body behind `#ifdef NON_MATCHING` whose build is INCLUDE_ASM may score 1.0 when compiled on
+    its own, but the ROM is the stand-in's (10-25: func_802AAEE4_de and func_802017E8_de showed 100 in the us-rev1
+    map while the build assembled them)."""
+    return 100.0 if credit.exact else min(round(credit.score * 100, 2), FUZZY_MAX)
 
 
 def fuzzy(credit: Credit) -> bool:
@@ -435,7 +441,10 @@ def _states(config: Any, tree: Any, exact: Collection[str] | None = None, rows: 
                 held["fragments"] += 1
                 continue
             hand = symbols.HANDWRITTEN in text
-            state = "exact" if row.exact or hand else "fuzzy" if row.member.state == "fuzzy" else "none"
+            # one 0..100 scale with the map: a C body built exact only through a FAKEMATCH is fuzzy (it scores
+            # fakematch.SCORE), as is a body behind NON_MATCHING; a stand-in with neither is none
+            c_fuzzy = row.member.state not in ("stand-in", "unowned") and fuzzy(row)
+            state = "exact" if row.exact or hand else "fuzzy" if row.member.state == "fuzzy" or c_fuzzy else "none"
             if state == "none":
                 held["none_fns"].append([row.name, row.code, row.member.group])
             for kind, size in (("functions", 1), ("code", row.code)):

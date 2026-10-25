@@ -307,6 +307,12 @@ def tree_id(root: Path, rev: str) -> str:
     return done.stdout.decode().strip() if done.returncode == 0 else ""
 
 
+def changed(root: Path, rev: str) -> list[str] | None:
+    """The paths the work tree changes over REV, committed or not (`git diff --name-only REV`); None when git fails."""
+    done = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "-z", rev], capture_output=True, check=False)
+    return [p for p in done.stdout.decode(errors="replace").split("\0") if p] if done.returncode == 0 else None
+
+
 def blob(root: Path, rev: str, path: str) -> bytes | None:
     """The bytes of PATH at REV; None when REV does not hold it."""
     done = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output=True, check=False)

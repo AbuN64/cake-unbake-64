@@ -306,10 +306,13 @@ def narrow_tree(
     object_fmt: str,
     new_text: Callable[[str], str | None] | None = None,
     flags: Sequence[str] = (),
+    base: str | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """(UNITS to keep, stats): drops the units that no edit of HEADERS can reach (module doc). The old text of a header
     is its text at the revision the tree was built at (`build/.pool-built-at`, written when the pool's build ends; else
-    the extraction marker `build/.pool-extracted-at`), which must be the tree's own content;
+    the extraction marker `build/.pool-extracted-at`), which must be the tree's own content; with BASE, its text at
+    BASE, and a unit counts as built there only when its stamp record says so (`_base_made`: the train's tree, whose
+    chain is committed over BASE and whose build is the last round's);
     NEW_TEXT(header) is its text after the change (None: deleted; default: the work tree's file). `object_fmt` is the
     object path template. The one narrowing of the build (`buildproof`) and of `decomp data check`."""
     root = Path(root)
@@ -322,10 +325,9 @@ def narrow_tree(
                 return None
 
     stats: dict[str, Any] = {"headers": len(headers), "includers": len(units), "skipped": 0, "why": ""}
-    for name in (
-        BUILT_MARKER,
-        EXTRACTED_MARKER,
-    ):  # a build after the extraction touches the units' .i.ok: the later marker
+    since = -1.0  # with BASE given, no date makes a unit pristine: only its record
+    for name in () if base else (BUILT_MARKER, EXTRACTED_MARKER):
+        # a build after the extraction touches the units' .i.ok: the later marker
         try:
             base = (root / name).read_text().strip()
             since = (root / name).stat().st_mtime
@@ -333,9 +335,12 @@ def narrow_tree(
         except OSError:
             continue
     else:
-        stats["why"] = "no pool marker: tree not minted from a pool"
-        return list(units), stats
-    if not base or process.tree_id(root, base) != process.tree_id(root, "HEAD") or not process.tree_id(root, "HEAD"):
+        if not base:
+            stats["why"] = "no pool marker: tree not minted from a pool"
+            return list(units), stats
+    if since >= 0 and (
+        not base or process.tree_id(root, base) != process.tree_id(root, "HEAD") or not process.tree_id(root, "HEAD")
+    ):
         stats["why"] = "the tree is not the one the unit keys were made at"
         return list(units), stats
     names: set[str] = set()
@@ -352,11 +357,13 @@ def narrow_tree(
     if mac:
         stats["why"] = f"{sorted(mac)[0]} is a macro"
         return list(units), stats
+    pat = (
+        re.compile(r"(?<![\w$])(?:" + "|".join(map(re.escape, sorted(names, key=len, reverse=True))) + r")(?![\w$])")
+        if names
+        else None
+    )
     if not names:
         stats["why"] = "no declaration changed"
-        stats["skipped"] = len(units)
-        return [], stats
-    pat = re.compile(r"(?<![\w$])(?:" + "|".join(map(re.escape, sorted(names, key=len, reverse=True))) + r")(?![\w$])")
     hdrkey = root / "build/hdrkey"
     made_at_base = _base_made(root, base, headers)
     keep: list[str] = []
@@ -364,9 +371,15 @@ def narrow_tree(
         unit_i = root / (object_fmt.format(v=version, unit=u)[: -len(".o")] + ".i")
         stamp = unit_i.parent / (unit_i.name + ".ok")
         try:
-            pristine = stamp.stat().st_mtime <= since or made_at_base(str(stamp.relative_to(root)))
+            # a stamp dated 1 s is one the sweep (or `drop`) marked for a rebuild: its .i is no base text
+            st = stamp.stat()
+            dated = st.st_mtime_ns != DROPPED_NS and st.st_mtime <= since
+            pristine = dated or made_at_base(str(stamp.relative_to(root)))
         except (OSError, ValueError):
             pristine = False
+        if pristine and pat is None:  # nothing a key could name changed: the unit's object stands as built at BASE
+            stats["skipped"] += 1
+            continue
         key = unit_key(root, unit_i, hdrkey) if pristine else None
         if key is None or pat.search(key):
             keep.append(u)
@@ -456,6 +469,71 @@ def _dependencies(dfile: Path) -> list[str] | None:
         if colon and named.strip():
             names += named.split()
     return names
+
+
+DROPPED_NS = 10**9  # the date the Makefile's stamp sweep gives a stamp made from other bytes
+
+
+def drop(root: Path, stamps: Sequence[str]) -> int:
+    """Date STAMPS (build/<v>/<unit>.i.ok) long ago, as the stamp sweep drops a stamp made from other bytes, so the next
+    make preprocesses those units again whatever header it is told to skip by date (`make -o`): the includers a
+    narrowing keeps. Returns how many were dated."""
+    done = 0
+    for stamp in stamps:
+        try:
+            os.utime(Path(root) / stamp, ns=(DROPPED_NS, DROPPED_NS))
+            done += 1
+        except OSError:
+            continue
+    return done
+
+
+def includers(root: Path, version: str, headers: Sequence[str]) -> list[str]:
+    """The units of VERSION whose dependency file (build/<version>/<unit>.d) names one of HEADERS."""
+    found: set[str] = set()
+    want = set(headers)
+    for dfile in (Path(root) / "build" / version).rglob("*.d"):
+        deps = _dependencies(dfile)
+        if deps and want & set(deps):
+            found.add(str(dfile.relative_to(Path(root) / "build" / version))[: -len(".d")])
+    return sorted(found)
+
+
+def narrow_command(params: dict[str, Any]) -> dict[str, Any]:
+    """`unbake narrow --against REV [--version V] [--apply]`: for every header the tree changes over REV (committed or
+    not), the includers whose object no edit can change, per version (`narrow_tree` with BASE=REV: only a stamp record
+    proves a unit was built from REV's bytes). With --apply, and only when every version narrowed, their stamps are
+    signed under the new bytes (`sign`) and every other includer is dated for a rebuild (`drop`): a make told to skip
+    the headers by date (`make -o HEADER`) then rebuilds exactly the includers the edit can reach (the train's check
+    rebuilt all 9,933 includers x versions of a reshaped wide header for ~925 real compiles, 10-25)."""
+    root = Path(params.get("project") or ".")
+    against = str(params["against"])
+    changed = process.changed(root, against)
+    headers = sorted(f for f in changed or () if f.lower().endswith(".h"))
+    versions = list(params.get("version") or ()) or sorted(
+        p.name for p in (root / "build").iterdir() if p.is_dir() and (root / "versions" / p.name).is_dir()
+    )
+    out: dict[str, Any] = {"against": against, "headers": headers, "versions": {}, "skip_headers": [], "applied": False}
+    if not headers:
+        out["why"] = "no header changed" if changed is not None else "git diff failed"
+        return out
+    plans: dict[str, tuple[list[str], list[str]]] = {}
+    for v in versions:
+        units = includers(root, v, headers)
+        keep, stats = narrow_tree(root, v, headers, units, "build/{v}/{unit}.o", base=against)
+        kept = set(keep)
+        out["versions"][v] = {k: stats[k] for k in ("includers", "skipped", "why")}
+        plans[v] = ([u for u in units if u not in kept], keep)
+        if stats["why"] and stats["why"] != "no declaration changed":
+            out["why"] = f"{v}: {stats['why']}"
+            return out
+    if params.get("apply"):
+        stamp = "build/{v}/{u}.i.ok"
+        out["signed"] = sign(root, [stamp.format(v=v, u=u) for v, (skip, _) in plans.items() for u in skip])
+        out["dropped"] = drop(root, [stamp.format(v=v, u=u) for v, (_, keep) in plans.items() for u in keep])
+        out["applied"] = True
+    out["skip_headers"] = headers
+    return out
 
 
 def sign(root: Path, stamps: Sequence[str]) -> int:

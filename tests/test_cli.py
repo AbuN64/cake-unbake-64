@@ -267,6 +267,7 @@ def test_the_command_set_is_the_C9_set() -> None:
         "audit",
         "cheat",
         "renameproof",
+        "narrow",
         "buildproof",
         "compare",
         "score",

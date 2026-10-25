@@ -1,0 +1,17 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.narrow",
+ "type": "object",
+ "properties": {
+  "against": {"type": "string", "minLength": 1},
+  "headers": {"type": "array", "items": {"type": "string"}},
+  "versions": {"type": "object", "additionalProperties": {"type": "object"}},
+  "skip_headers": {"type": "array", "items": {"type": "string"}},
+  "applied": {"type": "boolean"},
+  "signed": {"type": "integer", "minimum": 0},
+  "dropped": {"type": "integer", "minimum": 0},
+  "why": {"type": "string"}
+ },
+ "required": ["against", "headers", "versions", "skip_headers", "applied"],
+ "additionalProperties": false
+}

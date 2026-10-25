@@ -150,7 +150,7 @@ def test_record_keeps_the_verdict_of_this_tree_and_forgets_that_of_another(tmp_p
 
 
 @pytest.mark.parametrize(
-    ("score", "exact", "expected"), [(0.0, False, 0.0), (0.456, False, 45.6), (1.0, False, 100.0), (0.2, True, 100.0)]
+    ("score", "exact", "expected"), [(0.0, False, 0.0), (0.456, False, 45.6), (1.0, False, 99.99), (0.2, True, 100.0)]
 )
 def test_percent(score, exact, expected):
     credit = report.Credit("f", report.Symbol("function", "", "c", 0), None, "", "a", 4, 0, 0, exact, score)
@@ -570,7 +570,7 @@ def test_report_publishes_schema2_and_next_from_the_same_credit_rows(published_c
     assert published_map["schema"] == 1 and published_map["version"] == "a" and published_map["scorer"] == 2
     assert published_map["fns"] == [
         ["exact", 4096, 16, 100.0, "src/a.c", 2],
-        ["fuzzy", 4112, 8, 100.0, "src/a.c", 3],
+        ["fuzzy", 4112, 8, 99.99, "src/a.c", 3],  # not exact: never 100
         ["asm", 4120, 8, 0.0, None, None],
     ]
     assert published_map["spans"] == {"platform": [[0, 4096]], "data": [], "fill": [], "leftover": []}
@@ -855,3 +855,15 @@ def test_map_spans_carry_leftover_ranges_and_a_macro_defined_fn_keeps_its_file(m
     assert row["spans"]["leftover"] == [[16, 48]]
     assert row["fns"] == [["real_fn", 100, 8, 50.0, "a.c", 1]]
     configuration.validate("progress.map", row, "docs/map-a.json")
+
+
+def test_states_count_a_fakematch_build_as_fuzzy_like_the_map(project, monkeypatch):
+    """One 0..100 scale: the map scores a FAKEMATCH build 99.0, so `--states` counts it fuzzy, not none (10-25)."""
+    tree = _tree([_module("src/a.c", ["fake", "real"])], "fakestates")
+    facts = _facts(fake=(0x1000, 20, "func"), real=(0x1014, 8, "func"))
+    rows = report.build_credits(["a"], tree, facts, frozenset({"a"}), {}, frozenset(), faked={"a": frozenset({"fake"})})
+    monkeypatch.setattr(report, "_rows", lambda config, tree, exact, scored: rows)
+    monkeypatch.setattr(report, "_asm_text", lambda config, row: "")
+    a = report._states(_config(project), tree)["versions"]["a"]
+    assert a["functions"]["fuzzy"] == 1 and a["functions"]["exact"] == 1 and a["functions"]["none"] == 0
+    assert a["code"]["fuzzy"] == 20 and a["none_fns"] == []
