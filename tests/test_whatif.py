@@ -187,3 +187,23 @@ def test_a_toolchain_without_a_whatif_row_is_refused(monkeypatch: pytest.MonkeyP
 
 def test_the_toolchain_table_describes_the_gcc_281_scheduler() -> None:
     assert config.toolchain("gcc-2.8.1-sn64")["whatif"]["kinds"]["anti"] == 14
+
+
+def test_the_toolchain_table_describes_the_gcc_272_schedulers() -> None:
+    for name in ("gcc-2.7.2-sn64", "gcc-2.7.2-kmc"):
+        assert config.toolchain(name)["whatif"]["kinds"] == {"anti": 14, "output": 15, "true": 0}
+
+
+def test_a_cc1_without_the_adjust_priority_symbol_refuses_top_priority_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    lab = whatif.Lab.__new__(whatif.Lab)
+    lab.gdb, lab.steps, lab.work = "gdb", [SimpleNamespace(argv=["cc1"])], Path(".")
+    lab.recipe, lab.cfg = SimpleNamespace(toolchain="t"), SimpleNamespace(project=SimpleNamespace(root=Path(".")))
+    monkeypatch.setattr(whatif.process, "scratch", lambda root: Path("."))
+    said = SimpleNamespace(stdout=b'No symbol "adjust_priority" in current context.', stderr=b"")
+    monkeypatch.setattr(whatif.process, "run", lambda *a, **k: said)
+    with pytest.raises(Refusal) as refused:
+        lab._need_symbols(("adjust_priority",))
+    assert (
+        "no symbol adjust_priority" in refused.value.findings[0].reason
+        and "--kind deps" in refused.value.findings[0].action
+    )

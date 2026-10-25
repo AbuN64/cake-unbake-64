@@ -193,6 +193,18 @@ class Lab:
         self.text = text
         self._count = itertools.count()
 
+    def _need_symbols(self, names: Sequence[str]) -> None:
+        """Refuse by name when this cc1 has no symbol the gdb program breaks on (sn64 2.7.2 inlines adjust_priority)."""
+        cc1 = self.steps[0].argv[0]
+        for name in names:
+            argv = [str(self.gdb), "-q", "-batch", "-ex", f"info address {name}", str(cc1)]
+            out = process.run("whatif.symbol", argv, self.work, tmp=process.scratch(self.cfg.project.root), timeout=60)
+            if b"No symbol" in out.stdout + out.stderr:
+                raise _refuse(
+                    f"{self.recipe.toolchain}'s cc1 has no symbol {name}, so this kind cannot be driven there",
+                    "use --kind deps (its three symbols exist) or a cc1 that keeps this one",
+                )
+
     def baseline_pass(self, work: Path) -> sched.Pass:
         """The sched1 dump of the plain compile, parsed: the insns of each block in the order the scheduler got them."""
         _, _, _, passes = native.dumps(self.snapshot, self.unit, self.version, self.recipe, work)
@@ -209,6 +221,7 @@ class Lab:
         }
         (folder / "params.json").write_text(json.dumps(params), encoding="utf-8")
         if tops:
+            self._need_symbols(("adjust_priority", "birthing_insn_p"))
             uids = " || ".join(f"$u == {u}" for u in tops)
             script = folder / "program.gdb"
             script.write_text(

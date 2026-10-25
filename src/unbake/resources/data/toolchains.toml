@@ -147,6 +147,10 @@ preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
 assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
 
+[toolchain."gcc-2.7.2-kmc".whatif]
+# reg_note values the cc1 passes to add_dependence (read from this cc1's reg_note_name table: REG_DEP_ANTI is entry 14); a true dependence is 0
+kinds = { anti = 14, output = 15, true = 0 }
+
 [toolchain."gcc-2.7.2-kmc".pins]
 "cc1" = "c4976e94ebf81d0ab1336f631fb752fbe6e0e0810e90a24da11e6ed1d5223b8a"
 
@@ -189,6 +193,10 @@ decompme = "gcc2.7.2snew"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
 assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+
+[toolchain."gcc-2.7.2-sn64".whatif]
+# reg_note values the cc1 passes to add_dependence (read from this cc1's reg_note_name table: REG_DEP_ANTI is entry 14); a true dependence is 0
+kinds = { anti = 14, output = 15, true = 0 }
 
 [toolchain."gcc-2.7.2-sn64".pins]
 "cc1" = "566d91772fc1435d23dbca5e8040d3e441b31375b2aec4f430e5cddc5d70d8d4"
