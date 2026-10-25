@@ -293,3 +293,17 @@ def test_the_uncommitted_tree_still_refuses_added_assembly(repo: SimpleNamespace
     with pytest.raises(Refusal) as refused:
         cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
     assert {f.key for f in refused.value.findings} == {"cheat.added"}
+
+
+def test_a_base_that_moved_on_is_not_charged_to_the_head(repo: SimpleNamespace) -> None:
+    """Main matched a function after the lane branched (its INCLUDE_ASM went away): the lane is judged against the
+    merge-base, not charged with the INCLUDE_ASM line main removed."""
+    _git(repo.root, "checkout", "-q", "-b", "ahead")
+    (repo.root / "src/a.c").write_text('#include "include_asm.h"\nint f(void) { return 1; }\n')
+    _git(repo.root, "commit", "-qam", "main matched func_80000000")
+    ahead = _git(repo.root, "rev-parse", "HEAD")
+    _git(repo.root, "checkout", "-q", repo.base)
+    (repo.root / "src/b.c").write_text("int g(void) { return 3; }\n")
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "lane work")
+    assert cheat.cheat_command(repo.config, {"against": ahead})["stand_ins"] == []

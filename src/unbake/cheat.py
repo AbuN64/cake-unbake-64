@@ -308,6 +308,13 @@ def _worktree_tree(git: _Git) -> str:
         index.unlink(missing_ok=True)
 
 
+def _merge_base(git: _Git, base: str, head: str) -> str:
+    """The revision `head` branched from `base` at: a head behind `base` (main moved on) must not be charged with what main
+    added since (a false INCLUDE_ASM rise, 10-24). Unchanged when either is no commit or they share no history."""
+    found = git("merge-base", base, head, ok=(0, 1, 128)).strip()
+    return found.splitlines()[0] if found else base
+
+
 def cheat_command(config: Config, params: Json) -> Json:
     """Refuse what `head` (default HEAD) adds over `against` that could fake a match. The facts read are the working
     tree's, so it must be checked out at `head`; `head` WORKTREE checks the working tree as it is, uncommitted (a lane
@@ -320,6 +327,7 @@ def cheat_command(config: Config, params: Json) -> Json:
         head = _worktree_tree(git)
     elif head == "HEAD" and git("status", "--porcelain", "--", *rules["facts"]).strip():
         raise Refusal(Finding("cheat.dirty", "the tree's facts differ from HEAD: check out the revision first"))
+    base = _merge_base(git, base, "HEAD" if shown == WORKTREE else head)
     roots = rules["source"]
     findings: list[Finding] = []
     infra = [p for p in git("diff", "--name-only", base, head, "--", *rules["infra"]).splitlines() if p]
