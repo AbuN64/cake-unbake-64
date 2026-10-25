@@ -184,6 +184,23 @@ def _asm_names(root: Path, config: Config, v: str, function: str, table: Mapping
     return set(_asm_refs(root, config, v, function, table))
 
 
+_WORD = re.compile(r"[A-Za-z_]\w*")
+_INDEX: dict[tuple[str, str], dict[str, list[Path]]] = {}
+
+
+def _index(root: Path, v: str) -> dict[str, list[Path]]:
+    """word -> the extracted assembly files of version v that contain it, in path order. Built once per plan call: the
+    alternation regex it replaces cost 14 s per call, 143 of the 154 CPU s of one sync --place."""
+    key = (str(root), v)
+    if key not in _INDEX:
+        index: dict[str, list[Path]] = {}
+        for file in sorted((root / "asm" / v / "nonmatchings").rglob("*.s")):
+            for word in set(_WORD.findall(file.read_text(errors="replace"))):
+                index.setdefault(word, []).append(file)
+        _INDEX[key] = index
+    return _INDEX[key]
+
+
 def _readers(
     root: Path, v: str, names: Collection[str], skip: str, left: Collection[Path] = ()
 ) -> dict[str, list[str]]:
@@ -191,14 +208,71 @@ def _readers(
     files an earlier name of a function left behind (symbols.superseded_asm): the same function, not a second reader."""
     if not names:
         return {}
-    pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, names))) + r")\b")
+    index = _index(root, v)
     found: dict[str, list[str]] = {}
-    for file in sorted((root / "asm" / v / "nonmatchings").rglob("*.s")):
-        if file.name == skip or file in left:
-            continue
-        for n in set(pattern.findall(file.read_text(errors="replace"))):
-            found.setdefault(n, []).append(file.stem)
+    for n in names:
+        for file in index.get(n, ()):
+            if file.name != skip and file not in left:
+                found.setdefault(n, []).append(file.stem)
     return found
+
+
+def _extent(
+    root: Path, current: Any, v: str, table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]], function: str
+) -> tuple[list[str], int, int, int, list[str], list[str]]:
+    """(names, vram, rom, end, inside, junk) of the data rows of the function: the span they cover, rows that are
+    not its own inside the span that something reads or a file owns (inside), and those nothing reads (junk)."""
+    names = [n for n, _, _ in rows]
+    first, last = names[0], names[-1]
+    vram, rom = table[first][0] + rows[0][1], (table[first][1] or 0) + rows[0][1]
+    end = (table[last][1] or 0) + rows[-1][1] + rows[-1][2]
+    inside = sorted(
+        n
+        for n, f in table.items()
+        if f[1] is not None
+        and rom < f[1] < end
+        and n not in names
+        and f[3] not in ("func", "label")
+        and not n.startswith(tree.LITERALS)
+        and f[1] not in {table[x][1] for x in names}
+    )
+    junk: list[str] = []
+    if inside:  # a row between the function's own is junk when nothing reads it and no file owns it
+        seen = _readers(root, v, inside, f"{function}.s", set(symbols.superseded_asm(root, v, table)))
+        junk = [n for n in inside if n not in seen and not current.owned(v, n)]
+        inside = [n for n in inside if n not in junk]
+    return names, vram, rom, end, inside, junk
+
+
+def _shared_rows(
+    root: Path, v: str, table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]], function: str
+) -> set[str]:
+    """The names among `rows` that another function's assembly reads too."""
+    aka = {n: [m for m, f in table.items() if f[0] == table[n][0]] for n, _, _ in rows}
+    left = set(symbols.superseded_asm(root, v, table))
+    read = _readers(root, v, {m for ms in aka.values() for m in ms}, f"{function}.s", left)
+    return {n for n, _, _ in rows if any(read.get(m) for m in aka[n])}
+
+
+def _trim_shared(
+    root: Path, current: Any, v: str, table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]], function: str
+) -> tuple[list[tuple[str, int, int]], tuple[Any, ...]] | None:
+    """When the span of `rows` holds foreign rows, drop the shared rows at its ends one at a time (a constant other
+    functions read stays its own shared row, declared extern by them) until the span is clean: (rows, extent), or None
+    when no trimming makes it clean."""
+    shared = _shared_rows(root, v, table, rows, function)
+    cur = list(rows)
+    while len(cur) > 1:
+        if cur[-1][0] in shared:
+            cur = cur[:-1]
+        elif cur[0][0] in shared:
+            cur = cur[1:]
+        else:
+            return None
+        got = _extent(root, current, v, table, cur, function)
+        if not got[4]:
+            return cur, got
+    return None
 
 
 def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placement]:
@@ -206,6 +280,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
     Refusal naming every reason when any function has data it may not take, or nothing to place."""
 
     root = config.project.root
+    _INDEX.clear()  # the assembly may have changed since an earlier plan in this process
     mask = configuration.load_resource("rom.toml").get("text_mask", 0xFFFFFFFF)
     found: list[Placement] = []
     refused: list[Finding] = []
@@ -247,25 +322,11 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             if not rows:
                 continue  # nothing of its own here; no version placing anything is the place.none refusal below
             nothing[function] = False
-            names = [n for n, _, _ in rows]
-            first, last = names[0], names[-1]
-            vram, rom = table[first][0] + rows[0][1], (table[first][1] or 0) + rows[0][1]
-            end = (table[last][1] or 0) + rows[-1][1] + rows[-1][2]
-            inside = sorted(
-                n
-                for n, f in table.items()
-                if f[1] is not None
-                and rom < f[1] < end
-                and n not in names
-                and f[3] not in ("func", "label")
-                and not n.startswith(tree.LITERALS)
-                and f[1] not in {table[x][1] for x in names}
-            )
-            junk: list[str] = []
-            if inside:  # a row between the function's own is junk when nothing reads it and no file owns it
-                seen = _readers(root, v, inside, f"{function}.s", set(symbols.superseded_asm(root, v, table)))
-                junk = [n for n in inside if n not in seen and not current.owned(v, n)]
-                inside = [n for n in inside if n not in junk]
+            names, vram, rom, end, inside, junk = _extent(root, current, v, table, rows, function)
+            # a constant other functions read, far from the data (REV1-ONE-54 D_800C913C_de), is no part of it
+            if inside and (trimmed := _trim_shared(root, current, v, table, rows, function)):
+                rows, (names, vram, rom, end, inside, junk) = trimmed
+            last = names[-1]
             if (
                 inside
             ):  # a single row cannot hold bytes of other data between the function's own: name them, write nothing

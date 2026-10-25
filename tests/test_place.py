@@ -589,3 +589,12 @@ def test_a_shared_piece_is_split_at_the_functions_data_as_the_reference_version_
     written = place.rows(found, {})
     assert "D_auto_src_rw_pool_80400100_2008_b_x = 0x800E1508;" in written["versions/b-x/aliases.txt"].decode()
     assert "rw_pool" not in written["versions/ref/aliases.txt"].decode()
+
+
+def test_a_far_constant_other_functions_read_stays_a_shared_row_not_part_of_the_data(monkeypatch, tmp_path):
+    # F reads D_800E1520 and D_800E1540; G reads D_800E1530 and D_800E1540 too: the shared 1540 is no part of F
+    config = _gap_world(
+        monkeypatch, tmp_path, middle_asm={G: "lwc1 $f4, %lo(D_800E1530)($at)\nlwc1 $f6, %lo(D_800E1540)($at)\n"}
+    )
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.names == ("D_800E1520",) and found.end == 0x2030
