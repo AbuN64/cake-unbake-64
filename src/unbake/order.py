@@ -133,18 +133,38 @@ def moves(block: Sequence[str], window: int) -> list[list[str]]:
     return out
 
 
+def _opening(lines: Sequence[str], k: int) -> int | None:
+    """The line holding the `{` of a definition whose signature starts on line K (the parameter list may span lines and
+    the brace may stand alone below it); None when K starts a prototype or a call."""
+    depth, seen = 0, False
+    for j in range(k, min(k + 40, len(lines))):
+        for ch in lines[j]:
+            depth += ch == "("
+            depth -= ch == ")"
+            seen = seen or ch == "("
+        if seen and depth <= 0:
+            tail = lines[j].rstrip()
+            if tail.endswith("{"):
+                return j
+            if tail.endswith(";"):
+                return None
+            return j + 1 if j + 1 < len(lines) and lines[j + 1].strip() == "{" else None
+    return None
+
+
 def body(lines: Sequence[str], name: str) -> tuple[int, int]:
-    """(open, close) line indexes of the function's definition: the `{` line and the first `}` in column 0 after it."""
+    """(open, close) line indexes of the function's definition: the `{` line and the first `}` in column 0 after it. The
+    parameter list may span lines, and the brace may end the last one or stand alone below it."""
     for k, line in enumerate(lines):
-        if re.match(rf"^\S.*\b{re.escape(name)}\(", line) and line.rstrip().endswith("{"):
-            for end in range(k, len(lines)):
+        if re.match(rf"^\S.*\b{re.escape(name)}\(", line) and (opened := _opening(lines, k)) is not None:
+            for end in range(opened, len(lines)):
                 if lines[end] == "}":
-                    return k, end
+                    return opened, end
     raise Refusal(
         Finding(
             "order.function",
-            reason=f"no definition of {name}() found: its `{{` must end the signature line and its `}}` stand alone "
-            "in column 0",
+            reason=f"no definition of {name}() found: its `}}` must stand alone in column 0 and its `{{` must "
+            "end the signature or stand alone below it",
             action="pass the candidate file that defines the function",
         )
     )

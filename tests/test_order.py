@@ -118,3 +118,23 @@ def test_a_missing_file_or_function_is_refused(world, tmp_path):
         order.order_command(object(), {"file": str(tmp_path / "none.c"), "function": "X"})
     with pytest.raises(Refusal):
         order.order_command(object(), {"file": str(src)})
+
+
+def test_body_finds_a_definition_with_a_multi_line_parameter_list():
+    lines = [
+        "#ifdef NON_MATCHING",
+        "void Thing_Run(int a,",
+        "                int b) {",
+        "    a = b;",
+        "}",
+        "#endif",
+        "void Other(int a,",
+        "           int b)",
+        "{",
+        "    a = b;",
+        "}",
+    ]
+    assert order.body(lines, "Thing_Run") == (2, 4)
+    assert order.body(lines, "Other") == (8, 10)
+    with pytest.raises(Refusal):
+        order.body(["void Proto(int a,", "           int b);"], "Proto")
