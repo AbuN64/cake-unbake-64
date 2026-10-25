@@ -290,3 +290,18 @@ def test_two_copies_in_one_version_still_share_no_name(repo: Path) -> None:
     _rename(repo, "func_80100000_de", "Game_Init")
     _rename(repo, "func_80100100_de", "Game_Init")
     assert "both renamed to" in _refused(repo)
+
+
+def test_a_later_parameter_with_a_typed_name_is_a_local_of_its_function(repo: Path) -> None:
+    (repo / "src/loc.c").write_text(
+        "typedef struct Box Box;\n"
+        "int One(Box *arg0, Box *arg1, int arg2) {\n    return arg1->w + arg2;\n}\n"
+        "int Two(Box *arg0, Box *arg1) {\n    return arg1->h;\n}\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "params")
+    text = (repo / "src/loc.c").read_text()
+    one, two = text.split("int Two")
+    (repo / "src/loc.c").write_text(re.sub(r"\barg1\b", "entry", one) + "int Two" + re.sub(r"\barg1\b", "box", two))
+    result = _prove(repo)
+    assert result["map"] == [["arg1", "box"], ["arg1", "entry"]]

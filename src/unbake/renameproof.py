@@ -204,13 +204,14 @@ def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
     inside a statement or parameter list that starts with two words, and is followed by `;`, `=`, `,`, `)` or `[`."""
     if n + 1 >= len(tokens) or tokens[n + 1] not in DECL_END or _member(tokens, n):
         return False
-    depth, j, comma = 0, n - 1, n
+    depth, j, comma, opened = 0, n - 1, n, False
     while j > lo:
         token = tokens[j]
         if token in (")", "]"):
             depth += 1
         elif token in ("(", "["):
             if not depth:
+                opened = token == "("
                 break
             depth -= 1
         elif not depth and token in (";", "{", "}"):
@@ -221,6 +222,9 @@ def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
             comma = j
         j -= 1
     first = j + 1
+    opened = opened or tokens[j] == "("  # the scan stops at the span's first token, the `(` of the parameter list
+    if opened and comma != n:  # a later parameter: its own type and name, whatever the earlier ones spell
+        first, comma = comma + 1, n
     if comma != n and any(t not in ("*", "const", "volatile") for t in tokens[comma + 1 : n]):
         return False
     stop = first
