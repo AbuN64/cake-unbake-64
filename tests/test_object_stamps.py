@@ -203,8 +203,8 @@ def test_a_tree_without_recorded_inputs_is_trusted(tmp_path):
 
 
 def test_records_append_without_a_lock_and_the_sweep_folds_them_in(tmp_path):
-    """A record was a global flock + rewrite of the whole state (6.5 MB on a full tree): a cold make -j12 of all versions
-    ran one record at a time (POOL-SRC refresh 21+ min at 11 s make CPU). A record now appends one line."""
+    """A record was a global flock + rewrite of the whole state (6.5 MB on a full tree): a cold make -j12 of all
+    versions ran one record at a time (POOL-SRC refresh 21+ min at 11 s make CPU). A record now appends one line."""
     import json
     tree = Tree(tmp_path)
     (tmp_path / "src/h.h").write_text("one\n")
