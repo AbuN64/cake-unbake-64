@@ -220,9 +220,29 @@ def test_the_whole_tree_census_reads_an_unchanged_file_once():
     from unbake import symbol_names
 
     files = {"src/a.c": "int Foo_bar;\n", "src/b.c": "int Baz(void) { return 1; }\n"}
-    symbol_names._per_file.cache_clear()
+    symbol_names._MEMO.clear()
     first = symbol_names.findings(files)
     again = symbol_names.findings({**files, "src/b.c": files["src/b.c"] + "int Qux;\n"})
-    info = symbol_names._per_file.cache_info()
-    assert info.hits >= 1 and info.misses == 3  # a.c and b.c once, the edited b.c again
+    assert len(symbol_names._MEMO) == 3  # a.c and b.c once, the edited b.c again
     assert symbol_names.findings(files) == first and isinstance(again, tuple)
+
+
+def test_naming_census_cache_keeps_each_file_between_runs(tmp_path):
+    from unbake import symbol_names
+
+    cache = tmp_path / "census.pkl"
+    files = {"src/a.c": "int Bad_name;\n", "src/b.c": "int good;\n"}
+    first = api.naming_findings(files, cache)
+    assert cache.is_file()
+    symbol_names._MEMO.clear()
+    symbol_names._DISK.clear()  # a new process: the census comes from the file, not the memo
+    calls = []
+    real = symbol_names._census
+    symbol_names._census = lambda path, text: (calls.append(path), real(path, text))[1]
+    try:
+        files2 = {**files, "src/b.c": "int good;\nint also_ok;\n"}
+        again = api.naming_findings(files2, cache)
+    finally:
+        symbol_names._census = real
+    assert calls == ["src/b.c"]  # only the changed file is read again
+    assert [f.path for f in again] == [f.path for f in first]

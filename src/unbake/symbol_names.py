@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import pickle
 import re
 from collections.abc import Collection, Iterator, Mapping
 from functools import cache
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from unbake import config
 from unbake.contracts import Finding, Json
@@ -232,8 +235,24 @@ def source(path: str, text: str) -> tuple[Finding, ...]:
     return tuple(findings)
 
 
-@cache
-def _per_file(path: str, text: str) -> tuple[tuple[Finding, ...], tuple[tuple[str, int, bool, bool], ...]]:
+_PerFile = tuple[tuple[Finding, ...], tuple[tuple[str, int, bool, bool], ...]]
+_MEMO: dict[tuple[str, str], _PerFile] = {}  # (path, text) -> its census, for the life of the process
+_DISK: dict[tuple[str, str], _PerFile] = {}  # (path, sha1 of text) -> its census, loaded from the census file
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def _per_file(path: str, text: str) -> _PerFile:
+    held = _MEMO.get((path, text))
+    if held is None:
+        found = _DISK.get((path, _digest(text))) if _DISK else None
+        _MEMO[(path, text)] = held = found if found is not None else _census(path, text)
+    return held
+
+
+def _census(path: str, text: str) -> _PerFile:
     """What one file alone says, memoized on its text: its source and file-name findings, and its global declarations as
     (name, offset, static, local-to-a-typedef). `findings` runs over the whole tree several times in one rename (before
     and after, per pack); only the files a change edited are read again."""
@@ -251,8 +270,48 @@ def _per_file(path: str, text: str) -> tuple[tuple[Finding, ...], tuple[tuple[st
     return tuple(own), tuple(declared)
 
 
-def findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
-    """Whole source set naming census: source rules plus path and external-symbol case collisions."""
+def _load(cache: Path) -> None:
+    try:
+        with cache.open("rb") as handle:
+            loaded = pickle.load(handle)  # our own file: written by `_save` under the project's .unbake
+        if isinstance(loaded, dict):
+            _DISK.update(loaded)
+    except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
+        pass  # no census file yet, or one from older code: every file is read again
+
+
+def _save(cache: Path, files: Mapping[str, str]) -> None:
+    """Keep the census of exactly the files just read (a file gone from the tree drops out)."""
+    keep = {(p, _digest(t)): _MEMO[(p, t)] for p, t in files.items() if (p, t) in _MEMO}
+    if keep.keys() == _DISK.keys():
+        return
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+        with tmp.open("wb") as handle:
+            pickle.dump(keep, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(cache)
+        _DISK.clear()
+        _DISK.update(keep)
+    except OSError:
+        pass  # a read-only tree only loses the speed-up
+
+
+def findings(files: Mapping[str, str], cache: Path | None = None) -> tuple[Finding, ...]:
+    """Whole source set naming census: source rules plus path and external-symbol case collisions. `cache` names a
+    file that keeps each source file's census between runs (by path and content hash): only the files an edit changed
+    are read again (the whole tree was 9 s of a 10-row rename)."""
+    if cache is not None and not _DISK:
+        _load(cache)
+    try:
+        return _findings(files)
+    finally:
+        if cache is not None:
+            _save(cache, files)
+
+
+def _findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
+    """The census proper (see `findings`)."""
     out: list[Finding] = []
     paths: dict[str, str] = {}
     symbols: dict[str, tuple[str, str]] = {}

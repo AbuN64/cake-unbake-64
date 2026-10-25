@@ -201,9 +201,10 @@ def name_issues(
     return symbol_names.issues(name, kind, taken, implementation=implementation)
 
 
-def naming_findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
-    """Portable source and path names, without a host, compiler or ROM."""
-    return symbol_names.findings(files)
+def naming_findings(files: Mapping[str, str], cache: Path | None = None) -> tuple[Finding, ...]:
+    """Portable source and path names, without a host, compiler or ROM. `cache`: a file that keeps each source file's
+    census between runs, so a repeated call reads only the files that changed."""
+    return symbol_names.findings(files, cache)
 
 
 def naming_debt(root: Path) -> Json:
