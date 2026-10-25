@@ -118,9 +118,11 @@ def deadcode_command(config: Config, params: Json) -> Json:
         dumps = read_dumps(work / "dumps", Path(rel).stem)
         lines = text.split("\n")
         found: list[Json] = []
+        scanned: list[str] = []
         for name in functions(dumps.get("rtl", "")):
             if wanted and name != wanted:
                 continue
+            scanned.append(name)
             for row in dead_lines(dumps, name):
                 shown = lines[row["line"] - 1].strip() if 0 < row["line"] <= len(lines) else ""
                 found.append({"function": name, **row, "text": shown[:120]})
@@ -129,5 +131,12 @@ def deadcode_command(config: Config, params: Json) -> Json:
         "version": version,
         "dead": found,
         "functions": len({r["function"] for r in found}),
-        "next": "read each line: a statement the compiler deletes is one the original may not have had",
+        # how many functions cc1 compiled and this scan read: 0 means the function was not found (a name the
+        # version does not compile), not that it is clean (TOOL-SPEED-19: "functions: 0" read as both)
+        "scanned": len(scanned),
+        "next": (
+            "read each line: a statement the compiler deletes is one the original may not have had"
+            if scanned
+            else f"no function {wanted or ''} was compiled for {version}: check the name and --version"
+        ),
     }

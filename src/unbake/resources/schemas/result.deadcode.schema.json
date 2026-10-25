@@ -21,8 +21,9 @@
    }
   },
   "functions": {"type": "integer", "minimum": 0},
+  "scanned": {"type": "integer", "minimum": 0},
   "next": {"type": "string"}
  },
- "required": ["file", "version", "dead", "functions", "next"],
+ "required": ["file", "version", "dead", "functions", "scanned", "next"],
  "additionalProperties": false
 }

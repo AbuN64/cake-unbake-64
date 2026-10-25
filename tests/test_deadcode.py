@@ -83,3 +83,23 @@ def test_a_missing_source_is_refused(tmp_path):
     config = type("C", (), {"project": type("P", (), {"root": tmp_path, "names_from": "v"})()})()
     with pytest.raises(Refusal):
         deadcode.deadcode_command(config, {"file": "none.c"})
+
+
+def test_the_result_says_how_many_functions_it_scanned(tmp_path, monkeypatch):
+    """TOOL-SPEED-19: `functions: 0` meant both "no dead code" and "no such function"; `scanned` tells them apart."""
+    import contextlib
+
+    from unbake import native, store
+
+    (tmp_path / "a.c").write_text("int F(void) { return 4; }\n")
+    config = type("C", (), {"project": type("P", (), {"root": tmp_path, "names_from": "v"})()})()
+    monkeypatch.setattr(native, "candidate", lambda *a, **k: (None, None, None, None))
+    monkeypatch.setattr(native, "dumps", lambda *a, **k: None)
+    monkeypatch.setattr(
+        deadcode, "read_dumps", lambda folder, stem: {p: dump("F", note(1, 1), insn(2)) for p in deadcode.PASSES}
+    )
+    monkeypatch.setattr(store, "work", lambda config: contextlib.nullcontext(tmp_path))
+    got = deadcode.deadcode_command(config, {"file": "a.c"})
+    assert (got["functions"], got["scanned"]) == (0, 1)
+    got = deadcode.deadcode_command(config, {"file": "a.c", "function": "G"})
+    assert got["scanned"] == 0 and "no function G" in got["next"]
