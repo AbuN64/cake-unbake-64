@@ -214,3 +214,15 @@ def test_sdk_reserved_names_pass_as_implementation_names_only():
     assert api.name_issues("__osDisableInt")
     assert api.name_issues("__osDisableInt", implementation=True) == ()
     assert api.name_issues("__secret", implementation=True)
+
+
+def test_the_whole_tree_census_reads_an_unchanged_file_once():
+    from unbake import symbol_names
+
+    files = {"src/a.c": "int Foo_bar;\n", "src/b.c": "int Baz(void) { return 1; }\n"}
+    symbol_names._per_file.cache_clear()
+    first = symbol_names.findings(files)
+    again = symbol_names.findings({**files, "src/b.c": files["src/b.c"] + "int Qux;\n"})
+    info = symbol_names._per_file.cache_info()
+    assert info.hits >= 1 and info.misses == 3  # a.c and b.c once, the edited b.c again
+    assert symbol_names.findings(files) == first and isinstance(again, tuple)

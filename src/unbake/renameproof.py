@@ -199,6 +199,25 @@ def _tagged(tokens: Sequence[str], n: int) -> bool:
     return n > 0 and tokens[n - 1] in ("struct", "union", "enum")
 
 
+def _prototype_parameters(tokens: Sequence[str], owner: Sequence[int]) -> set[int]:
+    """The parameter names of the prototypes at file level (`int f(int rate);`): a name that belongs to that
+    declaration alone, no use of a global or a member of the same name."""
+    found: set[int] = set()
+    for n, token in enumerate(tokens):
+        if token != ")" or owner[n] >= 0 or n + 1 >= len(tokens) or tokens[n + 1] != ";":
+            continue
+        depth, j = 0, n
+        while j >= 0:
+            depth += (tokens[j] == ")") - (tokens[j] == "(")
+            if not depth:
+                break
+            j -= 1
+        if j <= 0 or not (_is_id(tokens[j - 1]) or tokens[j - 1] == ")"):
+            continue
+        found |= {k for k in range(j + 1, n) if _is_id(tokens[k]) and _declares(tokens, j, k) and owner[k] < 0}
+    return found
+
+
 def _member(tokens: Sequence[str], n: int) -> bool:
     """A name after `.` or `->` is a member, which has its own namespace."""
     return n > 0 and (tokens[n - 1] == "." or (n > 1 and tokens[n - 1] == ">" and tokens[n - 2] == "-"))
@@ -329,6 +348,7 @@ class _Proof:
         self.tag: dict[str, str] = {}  # struct/union/enum tags renamed (their own namespace: `Message` may be both)
         self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
         self.owner: dict[str, list[int]] = {}
+        self.proto: dict[str, set[int]] = {}
         self.spans: dict[str, list[tuple[int, int]]] = {}
         self.texts: dict[str, tuple[str, str]] = {}
         self.old: dict[str, list[str]] = {}
@@ -393,12 +413,16 @@ class _Proof:
                 continue
             owner, spans = _spans(a) if c else ([-1] * len(a), [])
             self.owner[path], self.spans[path] = owner, spans
+            protos = _prototype_parameters(a, owner) if c else set()
+            self.proto[path] = protos
             for n, (x, y) in enumerate(zip(a, b, strict=True)):
                 if x == y or (x[:1] == ASM_MARK and y[:1] == ASM_MARK):
                     continue  # equal, or an assembly string judged under the finished map
                 if not (_is_id(x) and _is_id(y)):
                     self.refuse(f"token {n} changed from {x[:40]!r} to {y[:40]!r}, which is not an identifier", path)
                     break
+                if n in protos:  # a prototype's parameter name is the declaration's own: no symbol use
+                    continue
                 fn = owner[n]
                 if _tagged(
                     a, n
@@ -468,8 +492,11 @@ class _Proof:
 
         for path, before in self.old.items():
             owner = self.owner[path]
+            keep = self.proto[path]
             mapped = [
-                text(t)
+                self.new[path][n]
+                if n in keep
+                else text(t)
                 if t[:1] == ASM_MARK
                 else tags.get(t, t)
                 if _tagged(before, n)

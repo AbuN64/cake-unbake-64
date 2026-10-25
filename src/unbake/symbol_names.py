@@ -232,6 +232,25 @@ def source(path: str, text: str) -> tuple[Finding, ...]:
     return tuple(findings)
 
 
+@cache
+def _per_file(path: str, text: str) -> tuple[tuple[Finding, ...], tuple[tuple[str, int, bool, bool], ...]]:
+    """What one file alone says, memoized on its text: its source and file-name findings, and its global declarations as
+    (name, offset, static, local-to-a-typedef). `findings` runs over the whole tree several times in one rename (before
+    and after, per pack); only the files a change edited are read again."""
+    own = list(source(path, text))
+    for why in issues(path, "file"):
+        own.append(_finding(path, text, 0, why))
+    code = _code(text)
+    declared = []
+    for name, at, global_scope in _declared(code):
+        start = max(code.rfind(char, 0, at) for char in ";{}") + 1
+        prefix = code[start:at]
+        local = re.search(r"\btypedef\b|^\s*(?:struct|union|enum)\s*$", prefix)
+        if global_scope and not local:
+            declared.append((name, at, bool(re.search(r"\bstatic\b", prefix)), False))
+    return tuple(own), tuple(declared)
+
+
 def findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
     """Whole source set naming census: source rules plus path and external-symbol case collisions."""
     out: list[Finding] = []
@@ -240,9 +259,8 @@ def findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
     for path, text in sorted(files.items()):
         if not (config.is_source(path) or config.is_header(path)) or config.is_assembly(path):
             continue
-        out.extend(source(path, text))
-        for why in issues(path, "file"):
-            out.append(_finding(path, text, 0, why))
+        own, declared = _per_file(path, text)
+        out.extend(own)
         for parent in (*reversed(PurePosixPath(path).parents), PurePosixPath(path)):
             part = str(parent)
             if part == ".":
@@ -252,20 +270,14 @@ def findings(files: Mapping[str, str]) -> tuple[Finding, ...]:
                 for why in issues(part, "file", (paths[key],)):
                     out.append(_finding(path, text, 0, why))
             paths[key] = part
-        code = _code(text)
         file_symbols: dict[str, str] = {}
-        for name, at, global_scope in _declared(code):
-            start = max(code.rfind(char, 0, at) for char in ";{}") + 1
-            prefix = code[start:at]
-            local = re.search(r"\btypedef\b|^\s*(?:struct|union|enum)\s*$", prefix)
-            if not global_scope or local:
-                continue
+        for name, at, static, _ in declared:
             key = name.casefold()
             if key in file_symbols and file_symbols[key] != name:
                 for why in issues(name, taken=(file_symbols[key],)):
                     out.append(_finding(path, text, at, why))
             file_symbols[key] = name
-            if re.search(r"\bstatic\b", prefix):
+            if static:
                 continue
             if key in symbols and symbols[key][0] != name:
                 other, origin = symbols[key]

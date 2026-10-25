@@ -313,6 +313,16 @@ def test_a_fuzzy_alias_dropped_with_its_undef_is_a_rename(repo: Path) -> None:
     assert ["func_80100000_de", "Game_Init"] in _prove(repo)["map"]
 
 
+def test_a_prototype_parameter_named_like_a_renamed_global_is_no_use_of_it(repo: Path) -> None:
+    (repo / "include/rate.h").write_text("extern int rate;\nint Scale(int rate, int other);\n")
+    (repo / "src/r.c").write_text('#include "rate.h"\nint rate;\nint Use(void) { return rate; }\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "rate")
+    (repo / "include/rate.h").write_text("extern int g_rate;\nint Scale(int rate, int other);\n")
+    (repo / "src/r.c").write_text('#include "rate.h"\nint g_rate;\nint Use(void) { return g_rate; }\n')
+    assert ["rate", "g_rate"] in _prove(repo)["map"]
+
+
 def test_two_copies_in_one_version_still_share_no_name(repo: Path) -> None:
     _rename(repo, "func_80100000_de", "Game_Init")
     _rename(repo, "func_80100100_de", "Game_Init")
