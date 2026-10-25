@@ -909,6 +909,10 @@ def _mark_facts(config: Config, v: str) -> None:
         os.utime(mark, ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
+def _why_path(config: Config, v: str) -> Path:
+    return config.project.root / ".unbake" / f"extract-{v}.why"
+
+
 def _asm_manifest_path(config: Config, v: str) -> Path:
     return config.project.root / "asm" / v / ".unbake-asm.json"
 
@@ -1096,6 +1100,13 @@ def _fact_why(old: str, new: str) -> str:
     return "a new name is not an identifier, is a splat auto name, or an old auto name is misaddressed"
 
 
+def _read_why(config: Config, v: str) -> str:
+    try:
+        return _why_path(config, v).read_text()
+    except OSError:
+        return "no record"
+
+
 def _extract_why(config: Config, v: str) -> str:
     """Why the next setup extracts version v again, and by which path: '' when it will not, else 'full: <cause>' (splat
     runs and every file is written) or 'rename: N renames M drops' (the cheap path). Setup reports this beside
@@ -1271,12 +1282,13 @@ def extract_job(job: tuple[Config, str]) -> bool:
     finally:
         shutil.rmtree(aside, ignore_errors=True)
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    _keep_unchanged(config, v, before)
+    kept = _keep_unchanged(config, v, before)
     _prune_superseded(config, v)  # a rename extraction only renames what the old tree held; files the facts left go
     _mark_facts(config, v)
     _write_asm_manifest(config, v)
     _snapshot_inputs(config, v)
     store.write(stamp, key.encode())
+    store.write(_why_path(config, v), kept.encode())
     _stamp_make(config, v)
     return True
 
@@ -1371,13 +1383,14 @@ def _manifest_rows(config: Config, v: str) -> dict[str, list[Any]] | None:
     return rows if isinstance(rows, dict) else None
 
 
-def _keep_unchanged(config: Config, v: str, before: Mapping[str, list[Any]] | None) -> None:
+def _keep_unchanged(config: Config, v: str, before: Mapping[str, list[Any]] | None) -> str:
     """After an extraction again: every file whose bytes equal the last extraction's gets that one's mtime back. When
     every changed file is one only C objects include (not a top-level file, not a file other assembly includes), the
     `.extracted` mark gets its old mtime too and the objects including a changed file are removed for make to rebuild;
-    otherwise the fresh mark rebuilds the whole version, as after a first extraction."""
+    otherwise the fresh mark rebuilds the whole version, as after a first extraction. Returns what it decided, in words:
+    setup reports it (`why`) so a round that rebuilds every object names the file that forced it."""
     if before is None:
-        return
+        return "whole version rebuilds: no record of the last extraction to compare"
     root, prefix = config.project.root, f"asm/{v}/"
     mark = f"{prefix}.extracted"
     changed, includes = [rel for rel in before if not (root / rel).exists()], {}
@@ -1392,14 +1405,16 @@ def _keep_unchanged(config: Config, v: str, before: Mapping[str, list[Any]] | No
         else:
             changed.append(rel)
     names = {rel[len(prefix) :] for rel in changed if rel.startswith(prefix)}
-    if mark not in before or any(
-        "/" not in name for name in names
-    ):  # a top-level file (a macro set) reaches every object
-        return
+    top = sorted(name for name in names if "/" not in name)
+    if mark not in before or top:  # a top-level file (a macro set) reaches every object
+        if top:
+            return f"whole version rebuilds: {len(top)} top-level files changed, e.g. {', '.join(top[:3])}"
+        return "whole version rebuilds: the last extraction recorded no mark"
     reach = _including(names, includes)
     effort.count("extract-reach", len(reach) <= len(names))
     os.utime(root / mark, ns=(before[mark][1], before[mark][1]))
     build.drop_including(config, v, reach)
+    return f"{len(names)} files changed, {len(reach)} reached by their includers"
 
 
 def _including(names: set[str], includes: Mapping[str, set[str]]) -> set[str]:
@@ -1511,7 +1526,7 @@ def setup(config: Config, params: Json) -> Json:
         result = {
             "toolchains": toolchains,
             "extracted": sorted(extracted),
-            "why": {v: w for v, w in sorted(why.items()) if v in extracted},
+            "why": {v: f"{w}; {_read_why(config, v)}" for v, w in sorted(why.items()) if v in extracted},
             "files": written,
             "message": "setup",
             "make": make,

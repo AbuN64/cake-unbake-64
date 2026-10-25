@@ -1290,3 +1290,29 @@ def test_extract_why_names_damage_a_moved_input_and_a_rename(tmp_path, monkeypat
     assert repo._extract_why(config, "us") == "rename: 1 renames 0 drops"
     (tmp_path / "versions/us/symbol_addrs.txt").write_text(facts + "c = 0x80000500; // type:func\n")
     assert repo._extract_why(config, "us").startswith("full: 1 added facts")
+
+
+def test_keep_unchanged_names_the_top_level_file_that_rebuilds_the_version(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    asm = tmp_path / "asm" / "us"
+    (asm / "nonmatchings").mkdir(parents=True)
+    (asm / "macro.inc").write_bytes(b"one\n")
+    (asm / "nonmatchings" / "f.s").write_bytes(b"same\n")
+    (asm / ".extracted").write_bytes(b"k\n")
+    repo._write_asm_manifest(config, "us")
+    before = repo._manifest_rows(config, "us")
+    dropped = []
+    monkeypatch.setattr(repo.build, "drop_including", lambda c, v, reach: dropped.append(sorted(reach)))
+    (asm / "macro.inc").write_bytes(b"two\n")
+    assert (
+        repo._keep_unchanged(config, "us", before)
+        == "whole version rebuilds: 1 top-level files changed, e.g. macro.inc"
+    )
+    assert dropped == []
+    (asm / "macro.inc").write_bytes(b"one\n")
+    (asm / "nonmatchings" / "f.s").write_bytes(b"other\n")
+    assert repo._keep_unchanged(config, "us", before) == "1 files changed, 2 reached by their includers"
+    assert dropped == [["f.s", "nonmatchings/f.s"]]
+    assert repo._keep_unchanged(config, "us", None).startswith("whole version rebuilds: no record")
