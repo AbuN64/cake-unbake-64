@@ -203,3 +203,28 @@ def test_a_stamp_rebuilt_after_the_mint_from_the_same_bytes_is_pristine_by_its_r
     assert keep == ["b.CPP"] and stats["skipped"] == 1  # a: made from the base bytes; b: its record holds other bytes
     os.utime(tmp_path / "build/v/src/a.CPP.i.ok", (later + 1, later + 1))  # touched since its record: not trusted
     assert narrow(tmp_path, ["a.CPP", "b.CPP"])[0] == ["a.CPP", "b.CPP"]
+
+
+def test_resign_signs_again_under_the_commits_bytes_only_the_includers_no_build_touched(tmp_path):
+    """A2: a reused stamp slot reset after a header diff. The includers that diff's narrowing signed under its header
+    bytes are signed again under the commit's; one rebuilt after the marker or dropped by the sweep is left for make."""
+    import hashlib
+
+    tree(tmp_path, {"a.CPP": "k", "b.CPP": "k", "c.CPP": "k"})
+    (tmp_path / "versions/v").mkdir(parents=True)
+    for name in ("a.CPP", "b.CPP", "c.CPP"):
+        (tmp_path / f"build/v/src/{name}.d").write_text(f"build/v/src/{name}.i.ok: include/H.H\n")
+    later = time.time() + 60
+    os.utime(tmp_path / "build/v/src/b.CPP.i.ok", (later, later))  # rebuilt by the diff's build
+    hn.drop(tmp_path, ["build/v/src/c.CPP.i.ok"])  # dropped by a sweep
+    base = (tmp_path / "include/H.H").read_bytes()
+    stamps = [f"build/v/src/{n}.i.ok" for n in ("a.CPP", "b.CPP", "c.CPP")]
+    (tmp_path / "include/H.H").write_text(GUARD.format("extern f32 D_1;\nextern u8 D_2;\n"))
+    assert hn.sign(tmp_path, stamps) == 3
+    assert hn.resign(tmp_path, ["include/H.H"]) == 0  # the tree still holds the diff: nothing is the commit's
+    (tmp_path / "include/H.H").write_bytes(base)
+    assert hn.resign(tmp_path, ["include/H.H"]) == 1
+    key = hashlib.sha1(hashlib.sha1(base).hexdigest().encode()).hexdigest()
+    records = hn.records(tmp_path)
+    assert records["build/v/src/a.CPP.i.ok"][1] == key
+    assert records["build/v/src/b.CPP.i.ok"][1] != key and records["build/v/src/c.CPP.i.ok"][1] != key

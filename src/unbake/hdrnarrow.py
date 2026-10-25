@@ -573,3 +573,34 @@ def sign(root: Path, stamps: Sequence[str]) -> int:
         finally:
             os.close(fd)
     return len(lines)
+
+
+def resign(root: Path, headers: Sequence[str]) -> int:
+    """After a tree is reset to the commit its build marker names (a reused stamp slot, its diff reverted): sign again
+    the includer stamps of HEADERS that no build touched since the marker. Their preprocessed text is the commit's
+    and the headers hold the commit's bytes again, but their records name the bytes a diff's narrowing signed them
+    under, so the next make's stamp sweep would drop every one (2,000-4,500 includers per version, A2 10-25).
+    Returns the number of records written (none when the tree is not at its marker's commit)."""
+    root = Path(root)
+    try:
+        marker = root / BUILT_MARKER if (root / BUILT_MARKER).is_file() else root / EXTRACTED_MARKER
+        base, since = marker.read_text().strip(), marker.stat().st_mtime_ns
+    except OSError:
+        return 0
+    head = process.tree_id(root, "HEAD")
+    if not base or not head or process.tree_id(root, base) != head or process.changed(root, "HEAD") != []:
+        return 0
+    versions = sorted(
+        p.name for p in (root / "build").iterdir() if p.is_dir() and (root / "versions" / p.name).is_dir()
+    )
+    stamps = []
+    for v in versions:
+        for u in includers(root, v, headers):
+            stamp = f"build/{v}/{u}.i.ok"
+            try:
+                when = (root / stamp).stat().st_mtime_ns
+            except OSError:
+                continue
+            if when != DROPPED_NS and when <= since:
+                stamps.append(stamp)
+    return sign(root, stamps)
