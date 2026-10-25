@@ -70,3 +70,58 @@ def test_pieces_interleaved_with_another_function_are_refused() -> None:
     text = 'INCLUDE_ASM("seg", func_f);\nint func_x(void) { return 1; }\nINCLUDE_ASM("seg", func_f);\n'
     with pytest.raises(Refusal):
         padsplit.hull(text, "func_f")
+
+
+PER_VERSION = """#include "x.h"
+#if defined(VERSION_DE) || defined(VERSION_EU_X) || defined(VERSION_US_REV1)
+#ifdef VERSION_DE
+const unsigned int D_blob[2] = {
+    1, 2,
+};
+#endif
+#ifdef VERSION_EU_X
+const unsigned int D_blob[1] = {
+    3,
+};
+#endif
+#ifdef VERSION_US_REV1
+const unsigned int D_blob[1] = {
+    4,
+};
+#endif
+#endif
+"""
+
+
+def test_a_name_defined_once_per_version_moves_only_for_the_asked_versions() -> None:
+    runs = padsplit.hulls(PER_VERSION, "D_blob", ["VERSION_EU_X", "VERSION_US_REV1"])
+    assert len(runs) == 1  # EU_X and US_REV1 sit next to each other
+    start, end, wrappers = runs[0]
+    block = PER_VERSION[start:end]
+    assert "1, 2" not in block
+    assert block.startswith("#ifdef VERSION_EU_X") and block.endswith("#endif") and "4," in block
+    assert wrappers == ["#if defined(VERSION_DE) || defined(VERSION_EU_X) || defined(VERSION_US_REV1)"]
+    (de,) = padsplit.hulls(PER_VERSION, "D_blob", ["VERSION_DE"])
+    assert "1, 2" in PER_VERSION[de[0] : de[1]] and "4," not in PER_VERSION[de[0] : de[1]]
+    assert (
+        len(padsplit.hulls(PER_VERSION, "D_blob")) == 1
+        and "1, 2" in PER_VERSION[padsplit.hull(PER_VERSION, "D_blob")[0] :]
+    )
+
+
+def test_separate_pieces_of_the_asked_version_are_separate_runs() -> None:
+    text = (
+        "#ifdef VERSION_A\nint D_x[1] = {1};\n#endif\n#ifdef VERSION_B\nint D_x[1] = {2};\n#endif\n"
+        "#ifdef VERSION_A\nint D_x2;\nint D_x[2] = {3, 4};\n#endif\n"
+    )
+    assert len(padsplit.hulls(text, "D_x", ["VERSION_A"])) == 2
+    with pytest.raises(Refusal):
+        padsplit.hulls(text, "D_x", ["VERSION_Z"])
+
+
+def test_a_piece_in_the_else_branch_is_wrapped_by_the_branch_not_the_first_condition() -> None:
+    text = "#ifdef VERSION_DE\nint a;\n#else\nint D_y[1] = {7};\nint D_z;\n#endif\n"
+    start, end, wrappers = padsplit.hulls(text, "D_y")[0]
+    assert text[start:end] == "int D_y[1] = {7};" and wrappers == ["#if !(defined(VERSION_DE))"]
+    text = "#if A\nint a;\n#elif B\nint b;\n#elif C\nint D_y;\nint D_w;\n#else\nint d;\n#endif\n"
+    assert padsplit.hulls(text, "D_y")[0][2] == ["#if !(A) && !(B) && (C)"]

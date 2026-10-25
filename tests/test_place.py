@@ -309,3 +309,36 @@ def test_a_file_on_both_sides_of_the_table_is_split_and_the_new_file_takes_the_s
     assert kept.count("#if") == kept.count("#endif") == 1  # no empty #if left where D_800E1510 was
     stand_in = f'INCLUDE_RODATA("data_x", D_auto_rodata_{F}_800E150C);'
     assert new.index(stand_in) < new.index("D_800E1510") and new.startswith('#include "include_asm.h"')
+
+
+def test_a_split_moves_only_the_placed_versions_blobs_and_leaves_the_other_versions_in_place():
+    # 10-24 System_RunPiManager: one name defined per version; the split wrapped and moved the wrong version block
+    text = (
+        '#include "include_asm.h"\n'
+        "#ifdef VERSION_DE\nconst unsigned int D_blob[2] = {\n    1, 2,\n};\n#endif\n"
+        "#ifdef VERSION_EU_X\nconst unsigned int D_blob[1] = {\n    3,\n};\n#endif\n"
+        "#ifdef VERSION_US_REV1\nconst unsigned int D_blob[1] = {\n    4,\n};\n#endif\n"
+    )
+    ps = [
+        place.Placement(
+            v,
+            F,
+            "src/m.c",
+            TABLE[0],
+            TABLE[1],
+            0x200C,
+            ("jtbl",),
+            "",
+            0x2010,
+            "src/d_2.c",
+            "data_x",
+            "src/d.c",
+            ("D_blob",),
+        )
+        for v in ("eu-x", "us-rev1")
+    ]
+    out = place.sources(ps, {"src/d.c": text})
+    kept, new = out["src/d.c"].decode(), out["src/d_2.c"].decode()
+    assert "1, 2" in kept and "VERSION_DE" in kept and "3," not in kept and "4," not in kept
+    assert "VERSION_DE" not in new and "1, 2" not in new
+    assert "3," in new and "4," in new and new.count("#if") == new.count("#endif")

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 
 from unbake import batch_data, effort, journal, publish, repo, tree, treelock
 from unbake.contracts import Config, Finding, Json, Refusal
@@ -54,16 +55,97 @@ def _kinds(text: str) -> list[tuple[publish.Item, str]]:
     return [(i, text[i.start : i.end]) for i in publish.items(text)]
 
 
-def hull(text: str, member: str) -> tuple[int, int, list[str]]:
-    """(start, end, wrappers) of the smallest run of `text` holding every piece of `member` (its definition, its
-    NON_MATCHING draft, its INCLUDE_ASM stand-in) with its #if/#else/#endif balanced, and the `#if` lines of the
-    conditionals that still enclose it. A refusal when another function sits inside the run."""
+def _guards(rows: Sequence[tuple[publish.Item, str]]) -> list[list[list[str]]]:
+    """Per row, the conditionals open at it, outermost first, each as its lines (#if..., then any #elif/#else)."""
+    open_: list[list[str]] = []
+    out: list[list[list[str]]] = []
+    for item, body in rows:
+        out.append([list(g) for g in open_])
+        if item.kind != "directive":
+            continue
+        if _OPEN.match(body):
+            open_.append([body])
+        elif _MID.match(body) and open_:
+            open_[-1].append(body)
+        elif _END.match(body) and open_:
+            open_.pop()
+    return out
+
+
+def _ours(guards: Sequence[Sequence[str]], macros: Collection[str] | None) -> bool:
+    """A piece belongs to the versions `macros` when the innermost conditional around it that names a version names one
+    of them (in an #else branch: when it leaves one of them out), or when no conditional names a version."""
+    if macros is None:
+        return True
+    named = re.compile(r"\bVERSION_\w+")
+    for g in reversed(guards):
+        if not any(named.search(line) for line in g):
+            continue
+        branch = g[-1]
+        if re.match(r"#\s*else\b", branch):
+            return any(not re.search(rf"\b{re.escape(m)}\b", " ".join(g[:-1])) for m in macros)
+        return any(re.search(rf"\b{re.escape(m)}\b", branch) for m in macros)
+    return True
+
+
+def hulls(text: str, member: str, macros: Collection[str] | None = None) -> list[tuple[int, int, list[str]]]:
+    """(start, end, wrappers) per run of `text` holding the pieces of `member` (its definition, its NON_MATCHING draft,
+    its INCLUDE_ASM stand-in) with its #if/#else/#endif balanced, and the `#if` lines of the conditionals that still
+    enclose it. With `macros` (version macros), only the pieces those versions compile: a name defined once per
+    version under `#ifdef VERSION_X` moves for the asked versions, the other versions' pieces stay, and each run is
+    apart. A refusal when another function sits inside a run."""
     rows = _kinds(text)
+    guards = _guards(rows)
     word = re.compile(rf"\b{re.escape(member)}\b")
-    mine = [n for n, (i, body) in enumerate(rows) if i.kind in ("function", "decl") and word.search(body)]
-    if not mine:
+    allm = [n for n, (i, body) in enumerate(rows) if i.kind in ("function", "decl") and word.search(body)]
+    if not allm:
         raise _refuse(f"no piece of {member} in its file", unit=member)
-    lo, hi = mine[0], mine[-1]
+    groups: list[list[int]] = [[]]
+    for n in allm:
+        if _ours(guards[n], macros):
+            groups[-1].append(n)
+        elif groups[-1]:
+            groups.append([])
+    groups = [g for g in groups if g]
+    if not groups:
+        raise _refuse(f"no piece of {member} for {', '.join(sorted(macros or ()))} in its file", unit=member)
+    return [_run(rows, g[0], g[-1], member) for g in groups]
+
+
+def hull(text: str, member: str) -> tuple[int, int, list[str]]:
+    """The one run holding every piece of `member` (see hulls)."""
+    return hulls(text, member)[0]
+
+
+def _condition(line: str) -> str:
+    """The expression an #if/#ifdef/#ifndef/#elif line tests."""
+    m = re.match(r"#\s*(ifdef|ifndef|if|elif)\b\s*(.*?)\s*(?://.*|/\*.*)?$", line.strip())
+    if m is None:
+        return line
+    return {"ifdef": f"defined({m[2]})", "ifndef": f"!defined({m[2]})"}.get(m[1], m[2])
+
+
+def _wrappers(rows: Sequence[tuple[publish.Item, str]], lo: int) -> list[str]:
+    """The #if lines open at row lo. A run inside an #else/#elif branch gets the line that holds in
+    that branch (`#if !(first) && (this)`), never its #if, which names the other branch."""
+    stack: list[list[Any]] = []  # [#if line, conditions passed, this branch condition or None]
+    for n in range(lo):
+        body = rows[n][1] if rows[n][0].kind == "directive" else ""
+        if _OPEN.match(body):
+            stack.append([body, [], _condition(body)])
+        elif _MID.match(body) and stack:
+            stack[-1][1].append(stack[-1][2])
+            stack[-1][2] = _condition(body) if re.match(r"#\s*elif\b", body) else None
+        elif _END.match(body) and stack:
+            stack.pop()
+    out = []
+    for line, passed, cur in stack:
+        terms = [f"!({c})" for c in passed] + ([f"({cur})"] if cur else [])
+        out.append("#if " + " && ".join(terms) if passed else line)
+    return out
+
+
+def _run(rows: Sequence[tuple[publish.Item, str]], lo: int, hi: int, member: str) -> tuple[int, int, list[str]]:
     while True:
         depth, left = 0, False
         for n in range(lo, hi + 1):
@@ -96,14 +178,7 @@ def hull(text: str, member: str) -> tuple[int, int, list[str]]:
     others = [i.name for i, _ in rows[lo : hi + 1] if i.kind == "function" and i.name != member]
     if others:
         raise _refuse(f"{member}'s pieces are interleaved with {others[0]}: move them to a file of their own by hand")
-    open_: list[str] = []
-    for n in range(lo):
-        body = rows[n][1] if rows[n][0].kind == "directive" else ""
-        if _OPEN.match(body):
-            open_.append(body)
-        elif _END.match(body) and open_:
-            open_.pop()
-    return rows[lo][0].start, rows[hi][0].end, open_
+    return rows[lo][0].start, rows[hi][0].end, _wrappers(rows, lo)
 
 
 def head(text: str) -> str:

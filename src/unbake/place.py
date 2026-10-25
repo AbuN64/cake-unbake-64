@@ -371,11 +371,12 @@ def sources(placements: Sequence[Placement], texts: Mapping[str, str]) -> dict[s
     from unbake import padsplit  # padsplit imports repo, which imports this module
 
     out: dict[str, list[str]] = {}
-    moving: dict[tuple[str, str], list[str]] = {}
+    moving: dict[tuple[str, str], dict[str, set[str]]] = {}
     for p in placements:
         if p.leftover and p.split:
-            names = moving.setdefault((p.split_from, p.after), [])
-            names.extend(n for n in p.split if n not in names)
+            names = moving.setdefault((p.split_from, p.after), {})
+            for n in p.split:
+                names.setdefault(n, set()).add(tree.macro(p.version))  # only this version's pieces of the name move
     for (source, sibling), names in moving.items():
         kept, new = _split(padsplit, texts.get(source, ""), names)
         out[source], out[sibling] = kept.splitlines(), new.splitlines()
@@ -397,14 +398,17 @@ def sources(placements: Sequence[Placement], texts: Mapping[str, str]) -> dict[s
 _EMPTY_IF = re.compile(r"^[ \t]*#\s*if[^\n]*\n(?:[ \t]*\n)*[ \t]*#\s*endif[^\n]*\n?(?:[ \t]*\n)?", re.M)
 
 
-def _split(padsplit: Any, text: str, names: Sequence[str]) -> tuple[str, str]:
+def _split(padsplit: Any, text: str, names: Mapping[str, Collection[str]]) -> tuple[str, str]:
     """(`text` without `names`, a new file of its #include lines and each name with the #if lines around it): not
     padsplit.split_file's head, which keeps a data file's leading word arrays (they are definitions, not header)."""
-    kept, blocks = text, []
-    for name in names:
-        start, end, wrappers = padsplit.hull(kept, name)
-        blocks.append("".join(w + "\n" for w in wrappers) + kept[start:end] + "\n#endif" * len(wrappers))
-        kept = (kept[:start].rstrip() + "\n" + kept[end:].lstrip("\n")).lstrip("\n")
+    kept = text
+    blocks: list[str] = []
+    for name, macros in names.items():
+        found = []
+        for start, end, wrappers in reversed(padsplit.hulls(kept, name, macros)):  # last first: earlier offsets hold
+            found.append("".join(w + "\n" for w in wrappers) + kept[start:end] + "\n#endif" * len(wrappers))
+            kept = (kept[:start].rstrip() + "\n" + kept[end:].lstrip("\n")).lstrip("\n")
+        blocks.extend(reversed(found))
     kept = _EMPTY_IF.sub("", kept)  # the #if around a moved name, now holding nothing
     includes = [line for line in text.splitlines() if line.startswith("#include")]
     return kept, "\n".join(includes) + "\n\n" + "\n".join(blocks) + "\n"
