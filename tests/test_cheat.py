@@ -264,7 +264,8 @@ def test_a_blobs_toml_that_fails_verification_is_refused(
     assert _refused(repo, blobs_toml="schema = 1\n") == {"blobs.evidence"}
 
 
-def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace) -> None:
+def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
     head = _git(repo.root, "rev-parse", "HEAD")
     (repo.root / "src/a.c").write_text(A + "int g;\n")  # tracked change, not committed
     (repo.root / "src/new.s").write_text("nop\n")  # untracked file under the source roots
@@ -278,7 +279,16 @@ def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace)
     assert _git(repo.root, "status", "--porcelain") == "M src/a.c"
 
 
-def test_the_uncommitted_tree_still_refuses_added_assembly(repo: SimpleNamespace) -> None:
+def test_the_uncommitted_tree_with_a_stale_makefile_is_refused(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    (repo.root / "src/a.c").write_text(A + "int g;\n")
+    with pytest.raises(Refusal) as refused:
+        cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
+    assert {f.key for f in refused.value.findings} == {"cheat.makefile-stale"}
+    monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
+    assert cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})["makefile"] == "unchanged"
+    assert cheat.cheat_command(repo.config, {"against": repo.base})["head"] == "HEAD"  # a committed head is the round's own check
+def test_the_uncommitted_tree_still_refuses_added_assembly(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
     (repo.root / "src/a.c").write_text(A + 'void h(void) { __asm__("nop"); }\n')
     with pytest.raises(Refusal) as refused:
         cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})

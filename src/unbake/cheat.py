@@ -349,6 +349,16 @@ def cheat_command(config: Config, params: Json) -> Json:
             findings.append(
                 Finding("cheat.makefile", "Makefile change beyond per-object compiler rows", missing=tuple(changed[:8]))
             )
+    if shown == WORKTREE and not changed and not _makefile_generated(config, git, head, rows):
+        # the round regenerates the Makefile with the deployed generator before its own cheat: a lane whose base Makefile is
+        # older than the generator passed here and was dropped there (REV1-ONE-16B, 10-24)
+        findings.append(
+            Finding(
+                "cheat.makefile-stale",
+                "the Makefile is older than the generator (`unbake sync --makefile --check` differs): run `unbake sync --makefile`"
+                " and include the regenerated Makefile in the diff, as the round does",
+            )
+        )
     scan = re.compile("|".join(rules["added"]))
     stand_ins: list[str] = []
     hits: list[str] = []
