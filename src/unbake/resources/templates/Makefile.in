@@ -214,6 +214,9 @@ EXTRACT_KEY = { cat roms/baserom.$$*.z64 versions/$$*/splat.yaml versions/$$*/sy
 SRC_KEY = cat versions/$$*/splat.yaml versions/$$*/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1
 .PHONY: extract-stale
 $$(foreach v,$$(VERSIONS),$$(if $$(wildcard build/.extract-key-$$(v)),$$(if $$(filter $$(shell cat versions/$$(v)/splat.yaml versions/$$(v)/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1),$$(shell cat build/.extract-src-$$(v) 2>/dev/null)),,$$(eval asm/$$(v)/.extracted: extract-stale))))
+# asm/<v>/.extracted holds the hash of the facts it was made from; an object of other facts is refused (an empty mark is not checked).
+$$(foreach v,$$(VERSIONS),$$(eval FACTS_NOW_$$(v) := $$(shell cat versions/$$(v)/symbol_addrs.txt versions/$$(v)/splat.yaml 2>/dev/null | sha1sum | cut -d' ' -f1)))
+FACTS_CHECK = m=$$$$(cat asm/$$(1)/.extracted 2>/dev/null); [ -z "$$$$m" ] || [ "$$$$m" = "$$(FACTS_NOW_$$(1))" ] || { echo "asm/$$(1) was extracted from other symbol_addrs.txt/splat.yaml than this tree holds ($$$$m, now $$(FACTS_NOW_$$(1))): run make extract-$$(1)" >&2; exit 1; }
 extract: $$(VERSIONS:%=extract-%)
 extract-force-%:
 	$$(Q)rm -f build/.extract-key-$$* && $$(MAKE) --no-print-directory extract-$$*
@@ -233,7 +236,7 @@ extract-do-%:
 		sed -E $$(DATA_SED) -e "$$$$c" "$$$$f" > "$$$${f%.*.s}.s" && rm "$$$$f"; done
 	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$FILL_DATA" $$*
 	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
-	$$(Q)test -e build/.extract-run-$$* || exit 0; touch asm/$$*/.extracted
+	$$(Q)test -e build/.extract-run-$$* || exit 0; printf '%s\n' $$(FACTS_NOW_$$*) > asm/$$*/.extracted
 	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" restore $$*
 	$$(Q)test -e build/.extract-run-$$* || exit 0; { $$(EXTRACT_KEY); } > build/.extract-key-$$* && { $$(SRC_KEY); } > build/.extract-src-$$* && rm -f build/.extract-run-$$*
 # An object assembles extracted files its source only names through a macro: every object follows the extraction.
@@ -800,6 +803,7 @@ build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY
 	$$(Q)touch $$@
 	$$(Q)python3 -I build/stamp-sweep.py record $$@
 build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS)
+	$$(Q)$$(call FACTS_CHECK,$$(call ver,$$*))
 	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)$$(flags_changed)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
 	[ $$(@:.o=.i) -ot $$@ ]; then printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; touch $$@; \
 	else $$(COMPILE_$$(TC)) && if [ -f $$@.same ]; then rm -f $$@.same; else $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \

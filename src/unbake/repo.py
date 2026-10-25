@@ -885,6 +885,30 @@ def _extracted_key(config: Config, v: str) -> str | None:
     return stamp.read_text() if stamp.is_file() else None
 
 
+def _facts_hash(root: Path, v: str) -> str:
+    """The hash of what an extraction reads (symbol_addrs.txt then splat.yaml, missing ones skipped): the same bytes the
+    Makefile hashes with `cat | sha1sum`, so the mark and the build agree on which facts made asm/<v>/."""
+    data = b"".join(
+        (root / f"versions/{v}/{name}").read_bytes()
+        for name in ("symbol_addrs.txt", "splat.yaml")
+        if (root / f"versions/{v}/{name}").is_file()
+    )
+    return sha1(data)
+
+
+def _mark_facts(config: Config, v: str) -> None:
+    """Record the facts hash in asm/<v>/.extracted (content only: the mark keeps its mtime, which dates the extraction).
+    make refuses to compile against a mark whose hash differs from the tree's facts."""
+    mark = config.project.root / "asm" / v / ".extracted"
+    if not mark.is_file():
+        return
+    want = (_facts_hash(config.project.root, v) + "\n").encode()
+    if mark.read_bytes() != want:
+        info = mark.stat()
+        mark.write_bytes(want)
+        os.utime(mark, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+
 def _asm_manifest_path(config: Config, v: str) -> Path:
     return config.project.root / "asm" / v / ".unbake-asm.json"
 
@@ -916,6 +940,8 @@ def _asm_damaged(config: Config, v: str) -> list[str]:
     base = config.project.root
     damaged = []
     for rel, (size, mtime, digest_) in sorted(rows.items()):
+        if rel == f"asm/{v}/.extracted":
+            continue  # the mark's content is the facts hash, rewritten without a new extraction
         try:
             info = (base / rel).stat()
             if (info.st_size, info.st_mtime_ns) != (size, mtime) and sha1((base / rel).read_bytes()) != digest_:
@@ -1186,6 +1212,7 @@ def extract_job(job: tuple[Config, str]) -> bool:
     stamp.parent.mkdir(parents=True, exist_ok=True)
     _keep_unchanged(config, v, before)
     _prune_superseded(config, v)  # a rename extraction only renames what the old tree held; files the facts left go
+    _mark_facts(config, v)
     _write_asm_manifest(config, v)
     _snapshot_inputs(config, v)
     store.write(stamp, key.encode())

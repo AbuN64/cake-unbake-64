@@ -1384,6 +1384,43 @@ def test_drop_including_rebuilds_objects_whose_output_includes_a_name(tmp_path):
     assert sorted(p.name for p in (tmp_path / "build/us").glob("*.o")) == ["b.c.o"]
 
 
+def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_facts_refuses(tmp_path):
+    """REV1-ONE-43B: stale asm/ linked old names. The mark names the facts the extraction was made from; an object of a
+    tree whose facts moved on without an extraction is refused with the cause named, not compiled."""
+    import hashlib
+    import subprocess
+    import sys
+    splat = _extract_world(tmp_path)
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src/a.c").write_text("int a;\n")
+    make = ["make", "--no-print-directory", f"SPLAT={sys.executable} {splat}"]
+    done = subprocess.run([*make, "asm/us/.extracted"], cwd=tmp_path, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    facts = b"".join((tmp_path / f"versions/us/{n}").read_bytes() for n in ("symbol_addrs.txt", "splat.yaml"))
+    mark = tmp_path / "asm/us/.extracted"
+    assert mark.read_text() == hashlib.sha1(facts).hexdigest() + "\n"
+    # the facts move on while the mark stays: the object is refused, naming the version and both hashes
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("g = 0x1;\n")
+    mark.write_text("0" * 40 + "\n")
+    os.utime(tmp_path / "asm/us/.extracted", (time.time() + 100, time.time() + 100))  # no extraction is due
+    (tmp_path / "build/.extract-src-us").write_text(
+        hashlib.sha1(b"").hexdigest() + "\n"
+    )  # a record that says the facts are the extracted ones (the other mechanism missed it)
+    refused = subprocess.run([*make, "-n", "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS="],
+                             cwd=tmp_path, capture_output=True, text=True)
+    run = subprocess.run([*make, "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS=", "TC=gcc_2_8_1_sn64",
+                          "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)"],
+                         cwd=tmp_path, capture_output=True, text=True)
+    assert run.returncode != 0 and "asm/us was extracted from other symbol_addrs.txt/splat.yaml" in run.stderr, (
+        refused.stdout, run.stdout, run.stderr)
+    # an empty mark (an older extraction) is not checked
+    mark.write_text("")
+    run = subprocess.run([*make, "-o", "asm/us/.extracted", "build/us/src/a.c.o", "STAMPS=", "TC=gcc_2_8_1_sn64",
+                          "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)"],
+                         cwd=tmp_path, capture_output=True, text=True)
+    assert "was extracted from other" not in run.stderr
+
+
 def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_last_ones(tmp_path):
     """The generated recipe of the real toolchain with stub tools: a preprocessed text that changed but compiles to the
     assembly already beside the object keeps the object (no assembler, no trim); other assembly assembles again."""
