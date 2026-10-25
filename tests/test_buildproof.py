@@ -96,6 +96,11 @@ def _run(tree: SimpleNamespace, *patches: Path) -> dict[str, Any]:
     )
 
 
+def _clean(tree: SimpleNamespace) -> bool:
+    import subprocess
+
+    out = subprocess.run(["git", "status", "--porcelain"], cwd=tree.config.project.root, capture_output=True, text=True)
+    return out.stdout.strip() == ""
 def _keys(refused: pytest.ExceptionInfo[Refusal]) -> set[str]:
     return {f.key for f in refused.value.findings}
 
@@ -108,6 +113,7 @@ def test_a_rename_that_builds_the_same_passes_and_reaches_header_consumers(tree:
     result = _run(tree, _patch(tree, "ok.diff", edit))
     assert result["compared"] == 2  # a.c in us and de; b.CPP and c.c are not reached
     assert result["identical"] == 2
+    assert _clean(tree)
     assert not any("b.CPP" in t for t in tree.log[0])
 
 
@@ -128,6 +134,7 @@ def test_a_change_that_breaks_make_fails(tree: SimpleNamespace) -> None:
     with pytest.raises(Refusal) as refused:
         _run(tree, _patch(tree, "bad.diff", edit))
     assert "buildproof.make" in _keys(refused)
+    assert _clean(tree)
 
 
 def test_a_real_change_differs(tree: SimpleNamespace) -> None:
@@ -137,6 +144,7 @@ def test_a_real_change_differs(tree: SimpleNamespace) -> None:
     with pytest.raises(Refusal) as refused:
         _run(tree, _patch(tree, "diff.diff", edit))
     assert _keys(refused) == {"buildproof.differs"}
+    assert _clean(tree)  # the patch is taken off on a failing proof too
 
 
 def test_a_unit_that_disappears_from_the_set_fails(tree: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:

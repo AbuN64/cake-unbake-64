@@ -14,6 +14,7 @@ reported as added. Anything else (a moved function, a changed type) differs and 
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shutil
 from collections.abc import Iterable, Sequence
@@ -156,6 +157,19 @@ def _targets(versions: Sequence[str], units: Iterable[str]) -> list[str]:
     return [f"build/{v}/{u}.o" for v in versions for u in sorted(units)]
 
 
+def _restore(config: Config, applied: Sequence[Path], made: Sequence[str]) -> None:
+    """Take the patches off again, last first: the proof leaves the tree as it found it (10-24 REV1-ONE-16C: it left
+    its patch applied). Intent-to-add entries go first, so the reverse apply removes the files they named."""
+    root = config.project.root
+    if made:
+        process.git(config, "reset", "-q", "--", *made)
+    for patch in reversed(applied):
+        process.git(config, "apply", "-R", str(patch))
+    for path in made:  # an added file a failed reverse left behind
+        with contextlib.suppress(OSError):
+            (root / path).unlink()
+
+
 def buildproof_command(config: Config, params: Json) -> Json:
     root = config.project.root
     patches = [Path(p).resolve() for p in params["patch"]]
@@ -203,25 +217,34 @@ def buildproof_command(config: Config, params: Json) -> Json:
                 shutil.copy2(src, dest)
                 kept[f"build/{v}/{new_of[u] or u}.o"] = dest
 
-    for patch in patches:
-        process.git(config, "apply", str(patch))
+    applied: list[Path] = []
+    extracted: list[str] = []
     made = sorted(a for a in added)
-    if made:
-        process.git(config, "add", "--intent-to-add", "--", *made)
-    for v in versions:
-        if any(p in (symbols.path(v), symbols.aliases_path(v)) for p in touched | added):
-            build.extract(config, v)
+    try:
+        for patch in patches:
+            process.git(config, "apply", str(patch))
+            applied.append(patch)
+        if made:
+            process.git(config, "add", "--intent-to-add", "--", *made)
+        for v in versions:
+            if any(p in (symbols.path(v), symbols.aliases_path(v)) for p in touched | added):
+                extracted.append(v)
+                build.extract(config, v)
 
-    new_targets = _targets(versions, post_units)
-    absent_new, bad = _build(config, new_targets, jobs)
-    if bad:
-        findings.append(
-            Finding(
-                "buildproof.make",
-                "the build after the change failed: " + "; ".join(bad[:SHOWN]),
-                missing=tuple(bad[:SHOWN]),
+        new_targets = _targets(versions, post_units)
+        absent_new, bad = _build(config, new_targets, jobs)
+        if bad:
+            findings.append(
+                Finding(
+                    "buildproof.make",
+                    "the build after the change failed: " + "; ".join(bad[:SHOWN]),
+                    missing=tuple(bad[:SHOWN]),
+                )
             )
-        )
+    finally:  # every exit path (a raise, a Refusal) leaves the tree clean at REV
+        _restore(config, applied, made)
+        for v in extracted:  # the asm of those versions followed the patched symbol rows: back to REV's
+            build.extract(config, v)
     compared, differ, missing, extra, built_added = 0, [], [], [], []
     for target in new_targets:
         obj = root / target
