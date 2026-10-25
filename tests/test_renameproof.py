@@ -492,3 +492,19 @@ def test_a_catalog_no_build_reads_may_change_beside_a_rename(repo: Path) -> None
     assert got["inert"] == ["versions/de/libultra_names.tsv"]
     (repo / "versions/de/symbol_addrs.txt").write_text("func_80100000_de = 0x80100004; // type:func\n")
     assert "added or removed" not in _refused(repo)  # the Makefile names symbol_addrs.txt: it is judged, not inert
+
+
+def test_an_assembly_file_renamed_with_its_symbol_is_part_of_the_rename(repo: Path) -> None:
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src/func_80100200_de.s").write_text("glabel func_80100200_de\n    nop\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "asm")
+    _rename(repo, "func_80100200_de", "Game_Wait", only=("src/func_80100200_de.s",))
+    (repo / "src/func_80100200_de.s").rename(repo / "src/Game_Wait.s")
+    result = _prove(repo)
+    assert result["map"] == [["func_80100200_de", "Game_Wait"]] and result["files"] == 1
+
+
+def test_an_added_file_that_is_no_renamed_assembly_file_still_refuses(repo: Path) -> None:
+    (repo / "src/new.c").write_text("int x;\n")
+    assert "added or removed" in _refused(repo)

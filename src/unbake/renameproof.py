@@ -401,6 +401,7 @@ class _Proof:
         commit = repo.run("rev-parse", "--verify", "--end-of-options", f"{against}^{{commit}}", ok=(0, 128), own=False)
         self.commit = commit.decode().strip() or self.base
         self.reasons: list[Finding] = []
+        self.moved: dict[str, str] = {}  # an assembly file renamed with the symbol it holds: new path -> old path
         self.map: dict[str, str] = {}  # names renamed everywhere they are visible
         self.tag: dict[str, str] = {}  # struct/union/enum tags renamed (their own namespace: `Message` may be both)
         self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
@@ -425,24 +426,51 @@ class _Proof:
         for patch in self.patches:
             repo.run("apply", "--cached", "--whitespace=nowarn", str(patch.resolve()))
         if not self.patches:
-            repo.run("add", "-u")
+            repo.run("add", "-A")  # a file the rename created counts as added, not as nothing
         rows = repo.run("diff", "--cached", "--no-renames", "--name-status", "-z", self.base).decode().split("\0")
         changed, inert = [], []
+        self.moved = self._moves(rows)
         makefile = (repo.blobs([f"{self.base}:Makefile"])[f"{self.base}:Makefile"] or b"").decode("latin-1")
         for status, path in zip(rows[0::2], rows[1::2], strict=False):
             if any(fnmatch.fnmatch(path, glob) for glob in self.inert) or _unread(path, makefile):
                 inert.append(path)
-            elif status == "M":
+            elif status == "M" or path in self.moved:
                 changed.append(path)
+            elif path in self.moved.values():
+                continue  # the old name of a moved assembly file: judged with the new one
             else:
                 self.refuse(f"a file is added or removed (status {status}), which no rename does", path)
         return sorted(changed), sorted(inert)
 
+    def _moves(self, rows: Sequence[str]) -> dict[str, str]:
+        """New path -> old path of each assembly file (`.s`) deleted and added in one folder whose text is the old text
+        with the old file's stem (the symbol it holds) renamed to the new stem: a symbol rename carries its file."""
+        pairs = list(zip(rows[0::2], rows[1::2], strict=False))
+        gone = [p for s, p in pairs if s == "D" and p.lower().endswith(".s")]
+        made = [p for s, p in pairs if s == "A" and p.lower().endswith(".s")]
+        if not gone or not made:
+            return {}
+        old = self.repo.blobs([f"{self.base}:{p}" for p in gone])
+        new = self.repo.blobs([f":0:{p}" for p in made])
+        out: dict[str, str] = {}
+        for q in made:
+            after = new[f":0:{q}"]
+            for p in gone:
+                before = old[f"{self.base}:{p}"]
+                same = PurePosixPath(p).parent == PurePosixPath(q).parent
+                if p in out.values() or before is None or after is None or not same:
+                    continue
+                stem_old, stem_new = PurePosixPath(p).stem, PurePosixPath(q).stem
+                if re.sub(rf"\b{re.escape(stem_old)}\b", stem_new, before.decode("latin-1")) == after.decode("latin-1"):
+                    out[q] = p
+                    break
+        return out
+
     def read(self, changed: Sequence[str]) -> None:
-        old = self.repo.blobs([f"{self.base}:{p}" for p in changed])
+        old = self.repo.blobs([f"{self.base}:{self.moved.get(p, p)}" for p in changed])
         new = self.repo.blobs([f":0:{p}" for p in changed])
         for path in changed:
-            before, after = old[f"{self.base}:{path}"], new[f":0:{path}"]
+            before, after = old[f"{self.base}:{self.moved.get(path, path)}"], new[f":0:{path}"]
             if before is None or after is None or b"\0" in before or b"\0" in after:
                 self.refuse("the file is binary or unreadable as text", path)
                 continue
