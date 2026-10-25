@@ -498,3 +498,45 @@ def test_a_data_file_on_both_sides_of_a_pool_with_nothing_left_over_is_split_at_
     kept, new = out["src/d.c"].decode(), out["src/d_2.c"].decode()
     assert "D_800E14F0" in kept and "D_800E1510" not in kept and "D_800E1510" in new
     assert "INCLUDE_RODATA" in new and "D_auto_rodata" not in new
+
+
+
+def test_a_piece_shared_with_the_next_functions_pool_is_refused_not_cut(monkeypatch, tmp_path):
+    """REV1-ONE-40 01:3x: one 18-word array held Nav_PrepareProbeSegments' 10 words and func_80210EFC_de's 8-word pool;
+    the 0x28 row superseded the whole piece and the 8 words vanished (every later address 0x20 off). Refused now."""
+    facts = _facts(
+        {
+            "D_800E1500": (0x800E1500, 0x2000, None, "data"),
+            "D_800E1504": (0x800E1504, 0x2004, None, "data"),
+            "D_800E1508": (0x800E1508, 0x2008, None, "data"),
+            "D_800E150C": (0x800E150C, 0x200C, None, "data"),
+        }
+    )
+    del facts["jtbl_800E1500"]
+    floats = (0x3F800000, 0x40000000, 0x40400000, 0x40800000)  # literals, no jump targets
+    config = _world(
+        monkeypatch,
+        tmp_path,
+        facts=facts,
+        words=floats,
+        asm={G: "lui $at, %hi(D_800E1508)\nlwc1 $f0, %lo(D_800E1508)($at)\nlwc1 $f2, %lo(D_800E150C)($at)\n"},
+    )
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text(
+        "lui $at, %hi(D_800E1500)\nlwc1 $f0, %lo(D_800E1500)($at)\nlwc1 $f2, %lo(D_800E1504)($at)\n"
+    )
+    (config.project.root / "versions/a").mkdir(parents=True)
+    (config.project.root / "versions/a/splat.yaml").write_text(
+        "  - [0x2000, rodata, data_x/D_blob_shared]\n  - [0x2010, rodata, data_x/D_800E1510]\n"
+    )
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    keys = [f.key for f in refused.value.findings]
+    assert "place.remainder" in keys, refused.value.findings
+    msg = next(f.reason for f in refused.value.findings if f.key == "place.remainder")
+    assert "D_blob_shared" in msg and "0x2008-0x2010" in msg
+
+
+def test_a_piece_that_ends_with_the_functions_data_is_no_remainder(monkeypatch, tmp_path):
+    assert place._piece_tail([(0x2000, "rodata", "d/x"), (0x2008, "rodata", "d/y")], 0x2000, 0x2008) is None
+    assert place._piece_tail([(0x2000, "rodata", "d/literals_f"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008) is None
+    assert place._piece_tail([(0x2000, "rodata", "d/x"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008) == (0x2000, 0x2010, "d/x")

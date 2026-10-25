@@ -413,6 +413,10 @@ sentence = "the function's read-only data spans rows it does not read, which one
 owner = "repo"
 sentence = "bytes after a function's own data have no other file before them to hold their stand-in"
 
+[key."place.remainder"]
+owner = "repo"
+sentence = "the data piece a function's row would supersede also holds another function's bytes after its data"
+
 [key."sync.literals-span"]
 owner = "repo"
 sentence = "the piece a literals_<function> row places runs to the next row over another function's jump table, so the file's compiled .rodata would end before it and the ROM come out short; add the row named that splits the table off"

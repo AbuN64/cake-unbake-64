@@ -13,7 +13,8 @@ names it owns from the leftover on move to a new sibling file (`<stem>_<n>`) tha
 A table or pool that other functions also read is placed with the function asked for, its first owner: an assembly
 reader links by the symbol's address and a C reader declares the symbol `extern`, so both keep reading the same bytes;
 the plan's note names them; a word array of another file for the same bytes is superseded by the row (sync drops it).
-What it refuses (nothing is written then): leftover bytes with no file after them to hold a stand-in, and, when the
+What it refuses (nothing is written then): leftover bytes with no file after them to hold a stand-in, a piece it would
+supersede that also holds another function's bytes after the function's data (place.remainder), and, when the
 version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment,
 content).
 """
@@ -132,6 +133,20 @@ def _pieces(root: Path, v: str) -> list[tuple[int, str, str]]:
     if not path.is_file():
         return []
     return sorted((int(m[1], 16), m[2], m[3]) for m in _PIECE.finditer(path.read_text()))
+
+
+def _piece_tail(pieces: Sequence[tuple[int, str, str]], rom: int, end: int) -> tuple[int, int, str] | None:
+    """(start, stop, name) of the data piece holding `rom` when it runs past `end` (bytes after the function's own data
+    that only this piece holds), else None. REV1-ONE-40 01:3x: de/eu/eu-x/us held Nav_PrepareProbeSegments' 10 words and
+    func_80210EFC_de's 8-word pool in one 18-word array; the 0x28 row superseded it and the 8 words vanished (SHA off)."""
+    at = bisect.bisect_right(pieces, (rom, "\uffff")) - 1
+    if at < 0 or at + 1 >= len(pieces):
+        return None
+    start, kind, name = pieces[at]
+    stop = pieces[at + 1][0]
+    if kind not in ("rodata", "data") or name.rpartition("/")[2].startswith(tree.LITERALS) or stop <= end:
+        return None
+    return start, stop, name
 
 
 def _is_rodata(pieces: Sequence[tuple[int, str, str]], rom: int) -> bool:
@@ -265,6 +280,21 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                 follow = [int.from_bytes(image[i : i + 4], "big") for i in range(end, rest - 3, 4)]
                 if _foreign_table(follow, spans, function) == 0:
                     rest = end
+            held = _piece_tail(pieces, rom, max(end, rest))
+            if held:  # the piece the row supersedes holds more than the function's data: sync would drop those bytes
+                start, stop, piece = held
+                refused.append(
+                    Finding(
+                        "place.remainder",
+                        f"{v}: {function}: its data is 0x{rom:X}-0x{end:X}, but the piece {piece} (0x{start:X}-0x{stop:X}) "
+                        f"that the row supersedes also holds 0x{stop - max(end, rest):X} bytes after it (0x{max(end, rest):X}-"
+                        f"0x{stop:X}, another function's data) that nothing else would hold: split the piece at 0x{end:X} "
+                        "first (a row or array of its own for the rest, as the versions where it is already split have)",
+                        path=module.path,
+                        unit=function,
+                        versions=(v,),
+                    )
+                )
             aka = {n: [m for m, f in table.items() if f[0] == table[n][0]] for n in names}  # second names, same bytes
             left = set(symbols.superseded_asm(root, v, table))
             shared: list[str] = []
