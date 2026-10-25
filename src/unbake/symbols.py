@@ -126,15 +126,19 @@ def parse(text: str, where: str = "symbol_addrs.txt") -> dict[str, Symbol]:
 
 
 def duplicates(*texts: str) -> set[str]:
-    """The names that more than one row spells across these fact texts (a version's symbol_addrs.txt and aliases.txt):
-    `merged` keeps one row per name and drops the rest silently, so the dropped address is a hole in the image."""
-    seen: set[str] = set()
+    """The names that more than one row spells across these fact texts (a version's symbol_addrs.txt and aliases.txt)
+    at different addresses: `merged` keeps one row per name and drops the rest silently, so the dropped address is a
+    hole in the image. The same name at the same address twice (a `literals_<fn>` row both files carry) is one fact
+    stated twice, not a hole: renaming such a pair keeps it a pair."""
+    seen: dict[str, int] = {}
     out: set[str] = set()
     for text in texts:
         for line in text.splitlines():
             found = _LINE.match(line)
             if found:
-                (out if found[2] in seen else seen).add(found[2])
+                at = int(found[4], 0)
+                if seen.setdefault(found[2], at) != at:
+                    out.add(found[2])
     return out
 
 

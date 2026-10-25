@@ -101,3 +101,11 @@ def test_a_batch_retypes_data_the_owner_already_defines_in_c_and_builds_it(world
     assert "unsigned char *D_80002000 = 0;" in text and "unsigned int D_80002000[1]" not in text
     assert "/* font */" in text and "INCLUDE_DATA" not in text
     assert world.makes == [["build/eu/game.z64", "build/us/game.z64"]]  # the bytes are proven by the exact build
+
+
+def test_a_name_stated_twice_at_one_address_is_not_a_duplicate():
+    from unbake import symbols
+
+    pair = "literals_fn = 0x800C4AEC; // rom:0x1 size:0xC\n"
+    assert symbols.duplicates(pair, pair) == set()
+    assert symbols.duplicates(pair, "literals_fn = 0x800C4AF0;\n") == {"literals_fn"}
