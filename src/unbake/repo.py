@@ -1075,6 +1075,66 @@ def _renames(config: Config, v: str) -> tuple[dict[str, str], set[str]] | None:
         return None
 
 
+def _fact_why(old: str, new: str) -> str:
+    """Why `_fact_delta` refuses to treat old -> new as renames: the first reason, with counts and a few names."""
+    before, after = _read_facts(old), _read_facts(new)
+    if before is None or after is None:
+        return "a fact name appears twice"
+    if before[1] != after[1]:
+        return "a line that is not a fact row changed"
+    gone = {n: f for n, f in before[0].items() if after[0].get(n) != f}
+    came = {n: f for n, f in after[0].items() if before[0].get(n) != f}
+    by_fact = {f for f in came.values()}
+    stay = sorted(n for n in gone if n in after[0])
+    if stay:
+        return f"{len(stay)} names stay with other attributes, e.g. {', '.join(stay[:3])}"
+    added = sorted(n for n, f in came.items() if f not in set(gone.values()))
+    if added:
+        return f"{len(added)} added facts (a fact with no old row), e.g. {', '.join(added[:3])}"
+    if len(by_fact) != len(came) or len(set(gone.values())) != len(gone):
+        return "two names share one fact"
+    return "a new name is not an identifier, is a splat auto name, or an old auto name is misaddressed"
+
+
+def _extract_why(config: Config, v: str) -> str:
+    """Why the next setup extracts version v again, and by which path: '' when it will not, else 'full: <cause>' (splat
+    runs and every file is written) or 'rename: N renames M drops' (the cheap path). Setup reports this beside
+    `extracted`, so a round that rewrites all assembly names the input that forced it."""
+    root = config.project.root
+    asm = root / "asm" / v
+    if _extracted_key(config, v) == _extract_key(config, v) and asm.is_dir():
+        damaged = _asm_damaged(config, v)
+        if not damaged:
+            return ""
+        return f"full: {len(damaged)} files damaged since the extraction, e.g. {', '.join(damaged[:3])}"
+    if not asm.is_dir():
+        return "full: no asm directory"
+    damaged = _asm_damaged(config, v)
+    if damaged:
+        return f"full: {len(damaged)} files damaged since the extraction, e.g. {', '.join(damaged[:3])}"
+    try:
+        snapshot = _facts_snapshot(config, v).read_bytes()
+    except OSError:
+        return "full: no facts snapshot of the last extraction"
+    pieces = _yaml_snapshot(config, v)
+    was_yaml = pieces.read_bytes() if pieces.is_file() else None
+    stamp = _extracted_key(config, v)
+    if stamp is None:
+        return "full: no extraction stamp"
+    if _extract_key(config, v, snapshot, was_yaml) != stamp:
+        return (
+            "full: an input other than the facts and piece names moved (splat, extract recipe, ROM) "
+            "or the snapshots disagree with the stamp"
+        )
+    now = (root / f"versions/{v}/symbol_addrs.txt").read_text()
+    delta = _fact_delta(snapshot.decode(), now)
+    if delta is None:
+        return "full: " + _fact_why(snapshot.decode(), now)
+    if was_yaml is not None and _yaml_delta(was_yaml.decode(), (root / f"versions/{v}/splat.yaml").read_text()) is None:
+        return "full: splat.yaml changed beyond piece names"
+    return f"rename: {len(delta[0])} renames {len(delta[1])} drops"
+
+
 def _rename_extraction(
     config: Config, v: str, aside: Path, renames: Mapping[str, str], drops: Collection[str] = ()
 ) -> bool:
@@ -1435,6 +1495,7 @@ def setup(config: Config, params: Json) -> Json:
             )
             build.install_toolchains(config, toolchains)
         with effort.stage("repo.setup.extract"):
+            why = {v: w for v in _extractable(config) if (w := _extract_why(config, v))}
             extracted = _extract(config, _extractable(config))
         synced, current = _sync(config, {"check": False})
         written = synced["written"]
@@ -1450,6 +1511,7 @@ def setup(config: Config, params: Json) -> Json:
         result = {
             "toolchains": toolchains,
             "extracted": sorted(extracted),
+            "why": {v: w for v, w in sorted(why.items()) if v in extracted},
             "files": written,
             "message": "setup",
             "make": make,

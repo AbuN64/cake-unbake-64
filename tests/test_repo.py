@@ -1250,3 +1250,43 @@ def test_a_split_another_tree_made_is_copied_not_split_again(world):
     assert repo._restore_extraction(world.cfg, "a", key) is True
     assert (world.root / "asm/a/.extracted").is_file()
     assert repo._restore_extraction(world.cfg, "a", "0" * 64) is False  # another input: a miss
+
+
+# ---------------------------------------------------------------- the reason a setup extracts again
+def test_fact_why_names_an_added_fact():
+    old = "a = 0x80000400; // type:func\n"
+    new = old + "b = 0x80000500; // type:func\n"
+    assert repo._fact_delta(old, new) is None
+    assert repo._fact_why(old, new).startswith("1 added facts")
+
+
+def test_fact_why_names_a_name_kept_with_other_attributes():
+    old = "a = 0x80000400; // type:func\n"
+    new = "a = 0x80000400; // type:func size:0x10\n"
+    assert "stay with other attributes" in repo._fact_why(old, new)
+
+
+def test_extract_why_names_damage_a_moved_input_and_a_rename(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path))
+    (tmp_path / "asm" / "us").mkdir(parents=True)
+    (tmp_path / "asm" / "us" / "a.s").write_bytes(b"good\n")
+    (tmp_path / "versions" / "us").mkdir(parents=True)
+    facts = "a = 0x80000400; // type:func\n"
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(facts)
+    (tmp_path / "versions/us/splat.yaml").write_text("")
+    keys = {"now": "K"}
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v, f=None, y=None: keys["now"] if f is None else "K")
+    repo._write_asm_manifest(config, "us")
+    repo.store.write(repo._extract_stamp(config, "us"), b"K")
+    repo._snapshot_inputs(config, "us")
+    assert repo._extract_why(config, "us") == ""
+    (tmp_path / "asm" / "us" / "a.s").write_bytes(b"evil\n")
+    assert repo._extract_why(config, "us") == "full: 1 files damaged since the extraction, e.g. asm/us/a.s"
+    (tmp_path / "asm" / "us" / "a.s").write_bytes(b"good\n")
+    keys["now"] = "K2"
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("b = 0x80000400; // type:func\n")
+    assert repo._extract_why(config, "us") == "rename: 1 renames 0 drops"
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text(facts + "c = 0x80000500; // type:func\n")
+    assert repo._extract_why(config, "us").startswith("full: 1 added facts")
