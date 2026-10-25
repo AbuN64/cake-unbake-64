@@ -272,6 +272,7 @@ def test_the_command_set_is_the_C9_set() -> None:
         "score",
         "probe",
         "order",
+        "deadcode",
         "submit",
         "land",
         "report",

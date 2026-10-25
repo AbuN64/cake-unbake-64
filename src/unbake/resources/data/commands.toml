@@ -108,6 +108,15 @@ params = [
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "where the best source goes, default FILE.ordered.c" },
 ]
 
+[command.deadcode]
+help = "Report (never refuse) the statements cc1 deletes as dead in each function of one tree source: lines whose every insn the jump, cse or flow passes removed."
+handler = "deadcode.deadcode_command"
+params = [
+  { name = "file", kind = "argument", type = "path", required = true, multiple = false, help = "tree source to compile with the RTL dumps" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "report only this function" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version to compile, default the names-from version" },
+]
+
 [command.submit]
 help = "Admit sources and put exact (or improved fuzzy) candidates in the landing inbox; landing starts if idle."
 handler = "compare.submit_command"

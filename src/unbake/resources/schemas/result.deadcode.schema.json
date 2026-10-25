@@ -1,0 +1,28 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.deadcode",
+ "type": "object",
+ "properties": {
+  "file": {"type": "string", "minLength": 1},
+  "version": {"type": "string", "minLength": 1},
+  "dead": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "function": {"type": "string"},
+     "line": {"type": "integer", "minimum": 1},
+     "insns": {"type": "integer", "minimum": 1},
+     "passes": {"type": "array", "items": {"type": "string"}},
+     "text": {"type": "string"}
+    },
+    "required": ["function", "line", "insns", "passes", "text"],
+    "additionalProperties": false
+   }
+  },
+  "functions": {"type": "integer", "minimum": 0},
+  "next": {"type": "string"}
+ },
+ "required": ["file", "version", "dead", "functions", "next"],
+ "additionalProperties": false
+}

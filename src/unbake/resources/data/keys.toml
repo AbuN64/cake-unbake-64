@@ -665,3 +665,7 @@ sentence = "the candidate file to reorder does not exist"
 [key."order.probe"]
 owner = "order"
 sentence = "the candidate does not probe as it is, so no order of it can be measured"
+
+[key."deadcode.file"]
+owner = "deadcode"
+sentence = "the source to scan for dead statements does not exist"

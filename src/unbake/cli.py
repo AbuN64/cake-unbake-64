@@ -100,9 +100,9 @@ def _emit(name: str, code: int, result: Json | None, findings: Sequence[Finding]
     return code
 
 
-_READERS = frozenset({"compare", "score", "probe", "order", "symbols", "map"})  # they read the tree a ship rewrites
+_READERS = frozenset({"compare", "score", "probe", "order", "deadcode", "symbols", "map"})  # they read the tree a ship rewrites
 _MEASURERS = frozenset(
-    {"score", "probe", "order", "map", "symbols"}
+    {"score", "probe", "order", "deadcode", "map", "symbols"}
 )  # read-only: a ship in flight never holds them (map: 475 s)
 
 
