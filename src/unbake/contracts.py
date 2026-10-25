@@ -328,7 +328,7 @@ class Host:
     slots: int = 0  # host-wide worker budget all heavy work divides: floor(cores * cap), at most explicit workers
     run_slice: str | None = None  # resources.run_slice: the systemd user slice `unbake-run` starts itself in, if any
     cache_keep_commits: int = 20  # cache.keep_commits: how many commits of a clone's HEAD keep their cache entries live
-    cache_gc_bytes: int = 0  # cache.gc_bytes: the size `python -m unbake.cachegc` trims the content cache to, 0 = none
+    cache_gc_bytes: int = 8 * 10**9  # cache.gc_bytes: `python -m unbake.cachegc` trim size (8 GB)
 
 
 @dataclass(frozen=True)

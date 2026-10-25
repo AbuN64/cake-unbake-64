@@ -326,7 +326,7 @@ def load_host(path: Path) -> Host:
         cache_dir=Path(document["cache"]["dir"]),
         cache_max_bytes=document["cache"]["max_bytes"],
         cache_keep_commits=document["cache"].get("keep_commits", 20),
-        cache_gc_bytes=document["cache"].get("gc_bytes", 0),
+        cache_gc_bytes=document["cache"].get("gc_bytes", Host.cache_gc_bytes),
         toolchain_root=Path(document["toolchains"]["root"]),
         tools=tools,
         sdk_catalog=catalog,

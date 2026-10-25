@@ -85,3 +85,12 @@ def test_main_reads_the_cap_from_the_host_config(tmp_path, monkeypatch, capsys):
     cachestore.ContentCache(store.content_directory(cfg.host), 10**9)
     assert cachegc.main(["--host", str(tmp_path / "h.toml")]) == 0
     assert json.loads(capsys.readouterr().out)["cap"] == 10**12
+
+
+def test_a_host_without_gc_bytes_trims_to_eight_gigabytes(tmp_path, monkeypatch, capsys):
+    cfg = fixture.config(tmp_path)
+    unset = type(cfg.host).cache_gc_bytes
+    monkeypatch.setattr(config, "load_host", lambda path: replace(cfg.host, cache_gc_bytes=unset))
+    cachestore.ContentCache(store.content_directory(cfg.host), 10**9)
+    assert cachegc.main(["--host", str(tmp_path / "h.toml")]) == 0
+    assert json.loads(capsys.readouterr().out)["cap"] == 8 * 10**9

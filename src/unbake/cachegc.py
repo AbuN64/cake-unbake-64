@@ -130,7 +130,7 @@ def _delete(db: sqlite3.Connection, directory: Path, doomed: list[tuple[int, flo
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="unbake.cachegc", description=__doc__)
     parser.add_argument("--host", type=Path, help="host config, default ~/.config/unbake/unbake.toml")
-    parser.add_argument("--cap", type=int, help="bytes; default the host config's cache.gc_bytes")
+    parser.add_argument("--cap", type=int, help="bytes; default the host config's cache.gc_bytes (8 GB when unset)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     path = args.host or config.default_host()
