@@ -40,7 +40,9 @@ class Tree:
         self.trim.write_text("")
         self.target = "build/us/src/a.c.o"
 
-    def make(self, cflags: str = "-O2", cppflags: str = "-DX", expect: int = 0, deps: bool = False) -> tuple[int, int]:
+    def make(
+        self, cflags: str = "-O2", cppflags: str = "-DX", expect: int = 0, deps: bool = False, level: int = 0
+    ) -> tuple[int, int]:
         for log in ("compiled", "assembled", "preprocessed"):
             (self.root / log).write_text("")
         result = subprocess.run(
@@ -64,6 +66,7 @@ class Tree:
             cwd=self.root,
             capture_output=True,
             text=True,
+            env={**os.environ, "MAKELEVEL": str(level)},
         )
         assert result.returncode == expect, result.stderr
         return (
@@ -284,3 +287,18 @@ def test_a_sweep_with_nothing_moved_does_not_walk_or_rewrite_the_state(tmp_path)
     _old(tmp_path / "src/h.h")  # a header changed under a newer stamp is still found
     tree.make(deps=True)
     assert (tmp_path / "preprocessed").read_text() == "p\n"
+
+
+def test_a_recursive_make_never_sweeps_the_objects_its_parent_is_about_to_link(tmp_path):
+    tree = Tree(tmp_path)
+    asm = tmp_path / "asm/us/nonmatchings/seg/f.s"
+    asm.parent.mkdir(parents=True)
+    asm.write_text("glabel f\n")
+    tree.write('INCLUDE_ASM("seg", f);\n')
+    assert tree.make(deps=True) == (1, 1)
+    tree.age()
+    tree.make(deps=True)
+    asm.write_text("glabel g\n")
+    _old(asm)
+    assert tree.make(deps=True, level=1) == (0, 0)  # a sub-make leaves the object where the parent's link expects it
+    assert tree.make(deps=True) == (1, 1)  # the top-level make's sweep still drops it

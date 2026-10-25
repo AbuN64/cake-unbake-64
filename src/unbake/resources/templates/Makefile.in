@@ -483,7 +483,10 @@ if removed:
     sys.stderr.write("stamp sweep: %d outputs made from other bytes than their inputs now hold were dropped\n" % removed)
 endef
 $$(if $$(subst $$(file <build/stamp-sweep.py),,$$(STAMP_SWEEP)),$$(file >build/stamp-sweep.py,$$(STAMP_SWEEP)))
-$$(shell python3 -I build/stamp-sweep.py sweep $$(VERSIONS) >&2)
+# Only the top-level make sweeps: a recursive one (extract-<v> from a recipe) would drop an object its parent is about to
+# link, because the parent's own extraction has just changed the bytes the object's key names (first `make check` after a
+# fast-forward failed to link eu/eu-x: no MENU_2/*.CPP.o).
+$$(if $$(filter 0,$$(MAKELEVEL)),$$(shell python3 -I build/stamp-sweep.py sweep $$(VERSIONS) >&2))
 # The link script names every object, so no rule here lists a file.
 $$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
 -include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
