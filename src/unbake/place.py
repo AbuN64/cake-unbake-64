@@ -241,7 +241,9 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                     Finding(
                         "place.gap",
                         f"{v}: {function}: its data spans 0x{rom:X}-0x{end:X}, which holds rows it does not read: "
-                        + ", ".join(inside[:4]),
+                        + ", ".join(f"{n} (0x{table[n][1]:X})" for n in inside[:6])
+                        + f"; stray rows inside a table are junk: delete them from versions/{v}/symbol_addrs.txt "
+                        "and run again",
                         path=module.path,
                         unit=function,
                         versions=(v,),
@@ -397,6 +399,15 @@ def _data_rows(
         if n in offsets and offsets[n] > 0:
             skip = min(offsets[n] & ~3, max(end - rom - 4, 0))
         words = [int.from_bytes(image[i : i + 4], "big") for i in range(rom + skip, end - 3, 4)] if image else []
+        pad = (-(fact[0] + skip) % 16) // 4  # zero words up to the 16-byte boundary a compiled jump table starts at
+        if (
+            n in offsets
+            and 0 < pad < len(words)
+            and not any(words[:pad])
+            and jump_target([words[pad]] * 2, spans) == function
+        ):  # alignment padding before the table is not the function's data (10-24 de row began 3 words early)
+            skip += 4 * pad
+            words = words[pad:]
         run = next((i for i, w in enumerate(words) if jump_target([w, w], spans) != function), len(words))
         is_table = run >= 2 and 4 * run <= TABLE_MAX
         if n in offsets and (not pieces or _is_rodata(pieces, rom)):

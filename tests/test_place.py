@@ -417,3 +417,15 @@ def test_nothing_placed_in_any_version_is_a_refusal_not_a_silent_success(monkeyp
     with pytest.raises(Refusal) as refused:
         place.plan(config, _tree(compiled=(F, G), literals=f"literals_{G}"), [F])
     assert refused.value.findings[0].key == "place.none"
+
+
+def test_alignment_padding_before_a_jump_table_is_not_part_of_the_row(monkeypatch, tmp_path):
+    """10-24 de: the row began at the 3 pad words before the 16-aligned table (0xC26E4 size 0x2C, wanted 0xC26F0 size 0x20)."""
+    facts = _facts()
+    facts.pop("jtbl_800E1500")
+    facts["jtbl_800E14F4"] = (0x800E14F4, 0x1FF4, None, "data")
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("lw $v0, %lo(jtbl_800E14F4)($at)\n")
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row == f"literals_{F} = 0x800E1500; // rom:0x2000 size:0x10"
+
