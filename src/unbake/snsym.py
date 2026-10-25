@@ -454,11 +454,14 @@ def types(recs: list[Record]) -> list[dict[str, object]]:
 
 
 def functions(recs: list[Record]) -> list[dict[str, object]]:
-    """The functions of a record run, in stream order: name, address, source file, first line, frame size and the
-    parameters (name, type, `reg` for a register parameter) defined before the function's first block or its end.
-    Definitions of classes 2 and 3 (external, static) outside a function come back as `{"global": ...}` rows."""
+    """The functions of a record run, in stream order: name, address, source file, first line, frame size, the
+    parameters (name, type, `reg` for a register parameter) defined before the function's first block, and the locals
+    its blocks define (`locals`, when any: name, type and `auto` frame offset, `reg` register or `static` address; the
+    original names of a function's variables, 10-25). Definitions of classes 2 and 3 (external, static) outside a
+    function come back as `{"global": ...}` rows."""
     out: list[dict[str, object]] = []
     current: dict[str, object] | None = None
+    depth = 0
     files = {rec.extra[0]: rec.name for rec in recs if rec.tag == 0x1C and rec.section < 0 and rec.extra}
     for rec in recs:
         if rec.tag in (0x8C, 0x9C):
@@ -466,18 +469,34 @@ def functions(recs: list[Record]) -> list[dict[str, object]]:
             file = rec.tag_name if rec.file < 0 else files.get(rec.file, f"file {rec.file}")
             current = {"name": rec.name, "address": rec.value, "file": file, "line": line, "frame": rec.extra[1],
                        "params": []}  # fmt: skip
+            depth = 0
             if rec.section >= 0:
                 current["section"] = rec.section
             out.append(current)
-        elif rec.tag in (0x8E, 0x90):
-            current = None
-        elif rec.tag in (0x94, 0x96) and rec.cls in (9, 17) and current is not None:
+        elif rec.tag == 0x8E:
+            current, depth = None, 0
+        elif rec.tag == 0x90:
+            depth += 1
+        elif rec.tag == 0x92:
+            depth = max(0, depth - 1)
+        elif rec.tag in (0x94, 0x96) and current is not None and depth == 0 and rec.cls in (9, 17):
             params = current["params"]
             assert isinstance(params, list)
             param: dict[str, object] = {"name": rec.name, "type": type_text(rec.type, rec.tag_name, rec.dims)}
             if rec.cls == 17:
                 param["reg"] = rec.value
             params.append(param)
+        elif rec.tag in (0x94, 0x96) and current is not None and depth > 0 and rec.cls in (1, 3, 4):
+            local: dict[str, object] = {"name": rec.name, "type": type_text(rec.type, rec.tag_name, rec.dims)}
+            if rec.cls == 1:
+                local["auto"] = rec.value - (1 << 32) if rec.value >= 1 << 31 else rec.value
+            elif rec.cls == 4:
+                local["reg"] = rec.value
+            else:
+                local["static"] = rec.value
+            locals_ = current.setdefault("locals", [])
+            assert isinstance(locals_, list)
+            locals_.append(local)
         elif rec.tag in (0x94, 0x96) and rec.cls in (2, 3) and current is None:
             out.append({"global": rec.name, "address": rec.value, "static": rec.cls == 3,
                         "type": type_text(rec.type, rec.tag_name, rec.dims)})  # fmt: skip

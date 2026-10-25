@@ -111,7 +111,24 @@ def test_functions_carry_parameters_and_globals() -> None:
     assert glob == {"global": "Turret_Setup", "address": 0x203908, "static": False, "type": "int ()"}
     params = [{"name": "pNode", "type": "struct CNode_t *"}, {"name": "nMode", "type": "int", "reg": 5}]
     want = {"name": "Turret_Setup", "address": 0x203908, "file": "A.CPP", "line": 7, "frame": 24}
-    assert fn == dict(want, params=params)
+    assert fn == dict(want, params=params, locals=[{"name": "local", "type": "int", "auto": 0}])
+
+
+def test_block_locals_keep_their_frame_offset_register_or_address() -> None:
+    stream = func(0x203908, "Turret_Aim") + d94(4, 9, 4, 0, "nArg")
+    stream += struct.pack("<IBI", 0x203910, 0x90, 8) + d96(0xFFFFFFB0, 1, 8, 0, (), "CQuatern_t", "qRot")
+    stream += struct.pack("<IBI", 0x203914, 0x90, 9) + d94(17, 4, 6, 0, "fScale") + d94(0x800C0000, 3, 4, 0, "nCount")
+    stream += struct.pack("<IBI", 0x203920, 0x92, 10) + struct.pack("<IBI", 0x203930, 0x92, 11)
+    stream += struct.pack("<IBI", 0x203940, 0x8E, 12) + d94(0x800C1000, 3, 4, 0, "s_after")
+    recs, _ = snsym.records(stream)
+    fn, glob = snsym.functions(recs)
+    assert fn["params"] == [{"name": "nArg", "type": "int"}]
+    assert fn["locals"] == [
+        {"name": "qRot", "type": "struct CQuatern_t", "auto": -0x50},
+        {"name": "fScale", "type": "float", "reg": 17},
+        {"name": "nCount", "type": "int", "static": 0x800C0000},
+    ]
+    assert glob == {"global": "s_after", "address": 0x800C1000, "static": True, "type": "int"}
 
 
 def obj(record: bytes, section: int = 2) -> bytes:
