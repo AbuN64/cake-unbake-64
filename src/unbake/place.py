@@ -14,7 +14,7 @@ A table or pool that other functions also read is placed with the function asked
 reader links by the symbol's address and a C reader declares the symbol `extern`, so both keep reading the same bytes;
 the plan's note names them; a word array of another file for the same bytes is superseded by the row (sync drops it).
 What it refuses (nothing is written then): leftover bytes with no file after them to hold a stand-in, a piece it would
-supersede that also holds another function's bytes after the function's data (place.remainder), and, when the
+supersede that also holds another function's bytes after the function's data when no version splits it (place.remainder), and, when the
 version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment,
 content).
 """
@@ -25,7 +25,7 @@ import bisect
 import re
 import struct
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,9 @@ class Placement:
     split_from: str = ""  # when that file also owns data before the table: `after` is a new sibling taking `split`
     split: tuple[str, ...] = ()  # the names split_from owns at or after `rest`, moved into `after`
     junk: tuple[tuple[str, int], ...] = ()  # (name, rom) of unread rows inside the table
+    tail: str = (
+        ""  # the alias row that keeps the bytes of a shared piece after the function's data as a piece of their own
+    )
 
     @property
     def row(self) -> str:
@@ -207,6 +210,10 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
     found: list[Placement] = []
     refused: list[Finding] = []
     siblings: dict[str, str] = {}
+    tails: list[tuple[int, int, Finding]] = []  # (index into found, rom where the shared piece's rest starts, refusal)
+    owners: dict[
+        str, set[str]
+    ] = {}  # function -> the owner address of the pool piece that follows its data in a version
     nothing = {f: True for f in functions}
     for v in config.project.versions:
         table = api.symbols(config, v)
@@ -281,19 +288,23 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                 if _foreign_table(follow, spans, function) == 0:
                     rest = end
             held = _piece_tail(pieces, rom, max(end, rest))
-            if held:  # the piece the row supersedes holds more than the function's data: sync would drop those bytes
+            if held:  # the piece the row supersedes holds more than the function's data: split it at the data's end
                 start, stop, piece = held
-                refused.append(
-                    Finding(
-                        "place.remainder",
-                        f"{v}: {function}: its data is 0x{rom:X}-0x{end:X}, but the piece {piece} "
-                        f"(0x{start:X}-0x{stop:X}) that the row supersedes also holds the bytes "
-                        f"0x{max(end, rest):X}-0x{stop:X} after it (another function's data) that nothing else would "
-                        f"hold: split the piece at 0x{end:X} first (a row or array of its own for the rest, as the "
-                        "versions where it is already split have)",
-                        path=module.path,
-                        unit=function,
-                        versions=(v,),
+                tails.append(
+                    (
+                        len(found),
+                        max(end, rest),
+                        Finding(
+                            "place.remainder",
+                            f"{v}: {function}: its data is 0x{rom:X}-0x{end:X}, but the piece {piece} "
+                            f"(0x{start:X}-0x{stop:X}) that the row supersedes also holds the bytes "
+                            f"0x{max(end, rest):X}-0x{stop:X} after it (another function's data) that nothing else "
+                            f"would hold, and no version splits it the way a row of its own needs naming: split the "
+                            f"piece at 0x{end:X} first (a row or array of its own for the rest)",
+                            path=module.path,
+                            unit=function,
+                            versions=(v,),
+                        ),
                     )
                 )
             aka = {n: [m for m, f in table.items() if f[0] == table[n][0]] for n in names}  # second names, same bytes
@@ -355,6 +366,15 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                     tuple((n, table[n][1] or 0) for n in junk),
                 )
             )
+            if (token := _next_pool(pieces, rom)) is not None:
+                owners.setdefault(function, set()).add(token)
+    for index, start, finding in tails:  # split the shared piece the way a version that already splits it names it
+        p = found[index]
+        name = _tail_name(p, start, owners.get(p.function, ()))
+        if not name:
+            refused.append(finding)
+            continue
+        found[index] = replace(p, tail=f"{name} = 0x{p.vram + start - p.rom:08X};")
     refused.extend(
         Finding("place.none", f"{f} has no read-only data of its own to place in any version", unit=f)
         for f, empty in nothing.items()
@@ -363,6 +383,29 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
     if refused:
         raise Refusal(*refused)
     return found
+
+
+_POOL = re.compile(r"D_auto_src_rw_pool_([0-9A-Fa-f]{8})_[0-9A-F]+_\w+$")
+
+
+def _next_pool(pieces: Sequence[tuple[int, str, str]], rom: int) -> str | None:
+    """The owner address in the name of the piece right after the one holding `rom` when that piece is a pool of its own
+    (`D_auto_src_rw_pool_<owner>_<ROM>_<version>`: a version that already splits the function's data from the next
+    function's pool), else None."""
+    at = bisect.bisect_right(pieces, (rom, "\uffff")) - 1
+    if at < 0 or at + 1 >= len(pieces):
+        return None
+    m = _POOL.search(pieces[at + 1][2])
+    return m[1] if m else None
+
+
+def _tail_name(p: Placement, start: int, owners: Collection[str]) -> str:
+    """The name of the row that keeps the bytes after the function's data in version `p.version`: the one a version
+    that already splits there gives its piece, with this version's ROM offset and name. '' when no version splits it
+    (or two disagree)."""
+    if len(owners) != 1:
+        return ""
+    return f"D_auto_src_rw_pool_{next(iter(owners))}_{start:X}_{p.version.replace('-', '_')}"
 
 
 def _owner_from(current: Any, v: str, table: Mapping[str, Any], rom: int, own: str) -> str:
@@ -550,7 +593,7 @@ def rows(placements: Sequence[Placement], texts: Mapping[str, str]) -> dict[str,
             kept = "".join(x for x in text.splitlines(True) if not gone.match(x))
             if kept != text:
                 out[path] = kept
-        for row in (p.row, p.leftover):
+        for row in (p.row, p.leftover, p.tail):
             text = out.get(p.file, texts.get(p.file, ""))
             if row and row not in text.splitlines():
                 out[p.file] = text + ("" if not text or text.endswith("\n") else "\n") + row + "\n"

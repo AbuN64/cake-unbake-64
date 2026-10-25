@@ -188,6 +188,8 @@ def test_a_fresh_object_with_no_rodata_refuses_the_move(monkeypatch, tmp_path):
     with pytest.raises(Refusal) as refused:
         place.plan(config, _tree(), [F])
     assert refused.value.findings[0].key == "place.object" and "no .rodata" in refused.value.findings[0].reason
+
+
 def test_an_eight_aligned_rodata_cannot_sit_on_a_four_aligned_address(monkeypatch, tmp_path):
     facts = _facts({"jtbl_800E1500": (0x800E1504, TABLE[1], None, "data")})
     config = _world(monkeypatch, tmp_path, facts=facts)
@@ -500,7 +502,6 @@ def test_a_data_file_on_both_sides_of_a_pool_with_nothing_left_over_is_split_at_
     assert "INCLUDE_RODATA" in new and "D_auto_rodata" not in new
 
 
-
 def test_a_piece_shared_with_the_next_functions_pool_is_refused_not_cut(monkeypatch, tmp_path):
     """REV1-ONE-40 01:3x: one 18-word array held Nav_PrepareProbeSegments' 10 words and func_80210EFC_de's 8-word pool;
     the 0x28 row superseded the whole piece and the 8 words vanished (every later address 0x20 off). Refused now."""
@@ -541,3 +542,50 @@ def test_a_piece_that_ends_with_the_functions_data_is_no_remainder(monkeypatch, 
     assert place._piece_tail([(0x2000, "rodata", "d/literals_f"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008) is None
     got = place._piece_tail([(0x2000, "rodata", "d/x"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008)
     assert got == (0x2000, 0x2010, "d/x")
+
+
+def test_a_shared_piece_is_split_at_the_functions_data_as_the_reference_version_names_it(monkeypatch, tmp_path):
+    """REV1-ONE-40: one version already holds the next function's pool as its own piece (D_auto_src_rw_pool_<owner>_...);
+    the versions that hold both in one blob get a row of that name for the rest instead of a refusal."""
+    facts = _facts(
+        {
+            "D_800E1500": (0x800E1500, 0x2000, None, "data"),
+            "D_800E1504": (0x800E1504, 0x2004, None, "data"),
+            "D_800E1508": (0x800E1508, 0x2008, None, "data"),
+            "D_800E150C": (0x800E150C, 0x200C, None, "data"),
+        }
+    )
+    del facts["jtbl_800E1500"]
+    floats = (0x3F800000, 0x40000000, 0x40400000, 0x40800000)
+    config = _world(
+        monkeypatch,
+        tmp_path,
+        facts=facts,
+        words=floats,
+        asm={G: "lui $at, %hi(D_800E1508)\nlwc1 $f0, %lo(D_800E1508)($at)\nlwc1 $f2, %lo(D_800E150C)($at)\n"},
+    )
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text(
+        "lui $at, %hi(D_800E1500)\nlwc1 $f0, %lo(D_800E1500)($at)\nlwc1 $f2, %lo(D_800E1504)($at)\n"
+    )
+    config.project.versions = ("ref", "b-x")
+    ref = (
+        "  - [0x2000, rodata, d/D_auto_src_rw_pool_80400100_2000_ref]\n"
+        "  - [0x2008, rodata, d/D_auto_src_rw_pool_80400100_2008_ref]\n  - [0x2010, rodata, d/D_800E1510]\n"
+    )
+    for v, yaml in (
+        ("ref", ref),
+        ("b-x", "  - [0x2000, rodata, d/D_blob_shared]\n  - [0x2010, rodata, d/D_800E1510]\n"),
+    ):
+        (config.project.root / f"versions/{v}").mkdir(parents=True)
+        (config.project.root / f"versions/{v}/splat.yaml").write_text(yaml)
+    current = _tree()
+    module = current.modules[0]
+    for v in config.project.versions:
+        module.owns[v], module.stand_ins[v], module.sections[v] = (F,), (), {F: ".text"}
+    found = place.plan(config, current, [F])
+    tails = {p.version: p.tail for p in found}
+    assert tails["ref"] == ""
+    assert tails["b-x"] == "D_auto_src_rw_pool_80400100_2008_b_x = 0x800E1508;"
+    written = place.rows(found, {})
+    assert "D_auto_src_rw_pool_80400100_2008_b_x = 0x800E1508;" in written["versions/b-x/aliases.txt"].decode()
+    assert "rw_pool" not in written["versions/ref/aliases.txt"].decode()
