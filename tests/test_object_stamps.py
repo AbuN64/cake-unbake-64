@@ -243,6 +243,51 @@ def test_records_append_without_a_lock_and_the_sweep_folds_them_in(tmp_path):
     assert any(k.endswith(".i.ok") for k in state)
 
 
+def test_the_c_record_writes_the_python_record_and_a_tree_without_a_compiler_still_records(tmp_path):
+    """A python record per output was 20 ms (two per unit: 70% of a no-op header rebuild). build/stamprec writes the
+    same line; without a host compiler the python record runs."""
+    import json
+    import shutil
+
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("one\n")
+    tree.write("int a;\n")
+    tree.make(deps=True)
+    rec = tmp_path / "build/stamprec"
+    if shutil.which("cc") is None:
+        return
+    assert rec.is_file()
+    stamp = "build/us/src/a.c.i.ok"
+    d = tmp_path / "build/us/src/a.c.d"
+    d.write_text(f"{stamp}: src/a.c \\\n src/h.h src/gone.h build\r\nsrc/h.h:\n\nsrc/a.c: src/h.h\n")
+    (tmp_path / "asm/us/b.s").write_text("b")
+    (tmp_path / "asm/us/a.s").write_text("a")
+    log = tmp_path / "build/.inputs.log"
+    obj = ["build/us/src/a.c.o", "asm/us/b.s", "asm/us/a.s", "asm/us/b.s", "asm/us/none.s"]
+    lines = []
+    for argv in ([stamp], obj, ["build/us/src/nodeps.i.ok"]):
+        log.write_text("")
+        subprocess.run([sys.executable, "-I", "build/stamp-sweep.py", "record", *argv], cwd=tmp_path, check=False)
+        subprocess.run([str(rec), "record", *argv], cwd=tmp_path, check=True)
+        lines.append([json.loads(x) for x in log.read_text().splitlines()])
+    assert len(lines[0]) == 2 and lines[0][0] == lines[0][1]
+    assert len(lines[1]) == 2 and lines[1][0] == lines[1][1]
+    assert lines[2] == []  # no .d: no key, no record, exit 0
+    assert subprocess.run([str(rec), "record", 'build/q"uote.i.ok'], cwd=tmp_path).returncode == 2  # JSON escapes it
+
+    bare = Tree(tmp_path / "bare") if (tmp_path / "bare").mkdir() is None else None
+    (bare.root / "src/h.h").write_text("one\n")
+    bare.write("int a;\n")
+    env = os.environ.get("HOSTCC")
+    os.environ["HOSTCC"] = "false"
+    try:
+        bare.make(deps=True)
+    finally:
+        os.environ.pop("HOSTCC") if env is None else os.environ.__setitem__("HOSTCC", env)
+    assert not (bare.root / "build/stamprec").exists()
+    assert any(".i.ok" in x for x in (bare.root / "build/.inputs.log").read_text().splitlines())
+
+
 def test_asm_deps_is_replaced_whole_and_the_scripts_are_not_rewritten_unchanged(tmp_path):
     """REV1-ONE-40: `build/asm.deps:157: missing separator`: a make -included asm.deps another make of the same tree was
     rewriting in place (shell redirect). It is now written to a temporary file and replaced, and the generated scripts

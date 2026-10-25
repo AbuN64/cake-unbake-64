@@ -863,6 +863,199 @@ $$(HDRKEY): Makefile
 	$$(Q)mkdir -p build
 	$$(file >build/hdrkey.c,$$(HDRKEY_C))
 	$$(Q)$$(HOSTCC) -O2 -o $$@ build/hdrkey.c 2>/dev/null || rm -f $$@
+# Each made output appends its record (the input key the next sweep compares) to build/.inputs.log. The record is a
+# small C tool (stamprec, below) built like hdrkey: a python record per output cost 20 ms, 70% of a no-op header
+# rebuild. Without a C compiler the python record runs instead.
+STAMPREC := build/stamprec
+define STAMPREC_C
+/* stamprec: one stamp record, appended to build/.inputs.log exactly as `stamp-sweep.py record` writes it.
+ *
+ * A record per output costs a python start and a hash of every header the unit read (20 ms; two per unit, so a
+ * header edit that preprocesses 2000 units again spent 80 of its 117 CPU s on records). This is the same record
+ * in C: the key of a preprocess stamp is the SHA-1 of the SHA-1s of the files its .d names (" "-joined, "-" for one
+ * that cannot be read); the key of an object is that of the extracted files named after it, sorted and once each.
+ * Exit 0 with no line when the stamp has no .d (as the python record); exit 2, before writing, for a path JSON
+ * would escape, so the caller falls back to the python record.
+ *
+ *   stamprec record PATH [EXTRACTED...]
+ */
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+typedef struct { uint32_t h[5]; uint64_t n; unsigned char b[64]; int k; } Sha;
+
+static uint32_t rol(uint32_t x, int s) { return (x << s) | (x >> (32 - s)); }
+
+static void sha_block(Sha *c, const unsigned char *p) {
+    uint32_t w[80], A, B, C, D, E, f, k, t;
+    int i;
+    for (i = 0; i < 16; i++)
+        w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
+    for (; i < 80; i++) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    A = c->h[0]; B = c->h[1]; C = c->h[2]; D = c->h[3]; E = c->h[4];
+    for (i = 0; i < 80; i++) {
+        if (i < 20) { f = (B & C) | (~B & D); k = 0x5A827999u; }
+        else if (i < 40) { f = B ^ C ^ D; k = 0x6ED9EBA1u; }
+        else if (i < 60) { f = (B & C) | (B & D) | (C & D); k = 0x8F1BBCDCu; }
+        else { f = B ^ C ^ D; k = 0xCA62C1D6u; }
+        t = rol(A, 5) + f + E + k + w[i];
+        E = D; D = C; C = rol(B, 30); B = A; A = t;
+    }
+    c->h[0] += A; c->h[1] += B; c->h[2] += C; c->h[3] += D; c->h[4] += E;
+}
+
+static void sha_init(Sha *c) {
+    c->h[0] = 0x67452301u; c->h[1] = 0xEFCDAB89u; c->h[2] = 0x98BADCFEu; c->h[3] = 0x10325476u; c->h[4] = 0xC3D2E1F0u;
+    c->n = 0; c->k = 0;
+}
+
+static void sha_add(Sha *c, const unsigned char *p, size_t n) {
+    c->n += n;
+    while (n) {
+        size_t room = (size_t)(64 - c->k), take = room < n ? room : n;
+        memcpy(c->b + c->k, p, take);
+        c->k += take; p += take; n -= take;
+        if (c->k == 64) { sha_block(c, c->b); c->k = 0; }
+    }
+}
+
+static void sha_hex(Sha *c, char out[41]) {
+    uint64_t bits = c->n * 8;
+    unsigned char pad = 0x80, zero = 0, len[8];
+    int i;
+    sha_add(c, &pad, 1);
+    while (c->k != 56) sha_add(c, &zero, 1);
+    for (i = 0; i < 8; i++) len[i] = (unsigned char)(bits >> (56 - 8 * i));
+    sha_add(c, len, 8);
+    for (i = 0; i < 20; i++) sprintf(out + 2 * i, "%02x", (unsigned)(c->h[i / 4] >> (24 - 8 * (i % 4))) & 0xFF);
+    out[40] = 0;
+}
+
+/* the SHA-1 of a file's bytes, or "-" when it cannot be opened or read (a directory, a missing file) */
+static void digest(const char *path, char out[41]) {
+    static unsigned char buf[1 << 16];
+    Sha c;
+    ssize_t got;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { strcpy(out, "-"); return; }
+    sha_init(&c);
+    while ((got = read(fd, buf, sizeof buf)) > 0) sha_add(&c, buf, (size_t)got);
+    close(fd);
+    if (got < 0) { strcpy(out, "-"); return; }
+    sha_hex(&c, out);
+}
+
+static char *slurp(const char *path, long *size) {
+    FILE *f = fopen(path, "rb");
+    char *text;
+    long n;
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) || (n = ftell(f)) < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return 0; }
+    text = malloc(n + 1);
+    if (!text || (long)fread(text, 1, n, f) != n) { fclose(f); free(text); return 0; }
+    fclose(f);
+    text[n] = 0;
+    *size = n;
+    return text;
+}
+
+static int is_space(char ch) { return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f'; }
+
+/* the key over NAMES (in order, repeats kept): SHA-1 of their digests joined by one space */
+static void key_of(char **names, int count, char out[41]) {
+    Sha c;
+    char d[41];
+    int i;
+    sha_init(&c);
+    for (i = 0; i < count; i++) {
+        digest(names[i], d);
+        if (i) sha_add(&c, (const unsigned char *)" ", 1);
+        sha_add(&c, (const unsigned char *)d, strlen(d));
+    }
+    sha_hex(&c, out);
+}
+
+/* the names after the first ": " of each line of a make dependency file, backslash-newlines joined (stamp-sweep.py's
+   dependencies()); -1 when the file cannot be read */
+static int dependencies(const char *dfile, char ***names) {
+    long size = 0, i, j;
+    int count = 0, cap = 64;
+    char *text = slurp(dfile, &size), *line, *end, *colon, *p;
+    if (!text) return -1;
+    for (i = j = 0; i < size; i++) {  /* "\\\n" -> " " */
+        if (text[i] == '\\' && i + 1 < size && text[i + 1] == '\n') { text[j++] = ' '; i++; }
+        else text[j++] = text[i];
+    }
+    text[j] = 0;
+    *names = malloc(cap * sizeof **names);
+    for (line = text; line && *line; line = end ? end + 1 : 0) {
+        end = line + strcspn(line, "\n\r");
+        if (*end) *end = 0; else end = 0;
+        colon = strstr(line, ": ");
+        if (!colon) continue;
+        for (p = colon + 2;;) {
+            while (*p && is_space(*p)) p++;
+            if (!*p) break;
+            if (count == cap) *names = realloc(*names, (cap *= 2) * sizeof **names);
+            (*names)[count++] = p;
+            while (*p && !is_space(*p)) p++;
+            if (*p) *p++ = 0;
+        }
+        if (!end) break;
+    }
+    return count;
+}
+
+static int by_bytes(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+int main(int argc, char **argv) {
+    char key[41], line[8192], **names = 0;
+    const char *path;
+    size_t n;
+    int count, i, fd;
+    struct stat st;
+    if (argc < 3 || strcmp(argv[1], "record")) { fprintf(stderr, "usage: stamprec record PATH [EXTRACTED...]\n"); return 64; }
+    path = argv[2];
+    for (i = 0; path[i]; i++)
+        if ((unsigned char)path[i] < 0x20 || (unsigned char)path[i] >= 0x80 || path[i] == '"' || path[i] == '\\') return 2;
+    n = strlen(path);
+    if (n > 5 && !strcmp(path + n - 5, ".i.ok")) {
+        char dfile[4096];
+        if (n - 5 + 3 > sizeof dfile) return 2;
+        memcpy(dfile, path, n - 5);
+        strcpy(dfile + n - 5, ".d");
+        count = dependencies(dfile, &names);
+        if (count < 0) return 0;  /* no .d: no key, no record */
+        key_of(names, count, key);
+    } else {
+        names = argv + 3;
+        count = argc - 3;
+        qsort(names, count, sizeof *names, by_bytes);
+        for (i = 1, n = count ? 1 : 0; i < count; i++)
+            if (strcmp(names[i], names[n - 1])) names[n++] = names[i];
+        key_of(names, (int)n, key);
+    }
+    if (stat(path, &st)) return 1;
+    i = snprintf(line, sizeof line, "[\"%s\", %lld, \"%s\"]\n", path,
+                 (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec, key);
+    if (i < 0 || i >= (int)sizeof line) return 2;
+    fd = open("build/.inputs.log", O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (fd < 0) return 1;
+    if (write(fd, line, (size_t)i) != i) { close(fd); return 1; }
+    close(fd);
+    return 0;
+}
+endef
+$$(STAMPREC): Makefile
+	$$(Q)mkdir -p build
+	$$(file >build/stamprec.c,$$(STAMPREC_C))
+	$$(Q)$$(HOSTCC) -O2 -o $$@ build/stamprec.c 2>/dev/null || rm -f $$@
+RECORD = { [ -x $$(STAMPREC) ] && $$(STAMPREC) record $$(1); } || python3 -I build/stamp-sweep.py record $$(1)
 shq = '$$(subst ','\'',$$(1))'
 CC_FLAGS = $$(TC) $$(CC_$$(TC)) $$(CFLAGS) $$(ASFLAGS) $$(DEFINES)
 PP_FLAGS = $$(TC) $$(CPPFLAGS) $$(DEFINES)
@@ -871,7 +1064,7 @@ flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(CC_FLAG
 pp_flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(PP_FLAGS),$$(file <$$@.flags)),,flags-changed))
 .PHONY: flags-changed
 flags-changed:
-build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY)
+build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY) $$(STAMPREC)
 	$$(Q)mkdir -p $$(@D)
 	$$(PREPROCESS_$$(TC))
 	$$(Q)n=$$(@:.ok=.new); i=$$(@:.ok=); k=$$(@:.ok=.key); \
@@ -884,14 +1077,14 @@ build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY
 	fi
 	$$(Q)printf '%s\n' $$(call shq,$$(PP_FLAGS)) > $$@.flags
 	$$(Q)touch $$@
-	$$(Q)python3 -I build/stamp-sweep.py record $$@
-build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS)
+	$$(Q)$$(call RECORD,$$@)
+build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS) $$(STAMPREC)
 	$$(Q)$$(call FACTS_CHECK,$$(call ver,$$*))
 	$$(Q)if [ -z "$$(filter-out %.i.ok,$$?)$$(flags_changed)" ] && [ "x$$(file <$$@.textsize)" = "x$$(TEXTSIZE)" ] && [ -f $$@ ] && \
 	[ $$(@:.o=.i) -ot $$@ ]; then printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; touch $$@; \
 	else $$(COMPILE_$$(TC)) && if [ -f $$@.same ]; then rm -f $$@.same; else $$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE),true) && \
 	printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize; fi && printf '%s\n' $$(call shq,$$(CC_FLAGS)) > $$@.flags; fi
-	$$(Q)python3 -I build/stamp-sweep.py record $$@ $$(filter-out %/.extracted,$$(filter asm/%,$$^))
+	$$(Q)$$(call RECORD,$$@ $$(filter-out %/.extracted,$$(filter asm/%,$$^)))
 build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
 	$$(Q)mkdir -p $$(@D)
 	$$(Q)$$(AS) $$(ASFLAGS) $$(ASDEFS) $$(ASINC) -Iinclude $$< -o $$@
