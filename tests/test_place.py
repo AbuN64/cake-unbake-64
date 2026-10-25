@@ -180,6 +180,14 @@ def test_an_object_whose_rodata_differs_or_is_too_long_refuses(monkeypatch, tmp_
     assert "0x40 bytes" in refused.value.findings[0].reason
 
 
+def test_a_fresh_object_with_no_rodata_refuses_the_move(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path)
+    _built(config, bytes(4))
+    obj = config.project.root / "build/a/src/m.c.o"
+    obj.write_bytes(b"\x7fELF no sections")  # the C reads the pool through an extern: the object has no .rodata at all
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert refused.value.findings[0].key == "place.object" and "no .rodata" in refused.value.findings[0].reason
 def test_an_eight_aligned_rodata_cannot_sit_on_a_four_aligned_address(monkeypatch, tmp_path):
     facts = _facts({"jtbl_800E1500": (0x800E1504, TABLE[1], None, "data")})
     config = _world(monkeypatch, tmp_path, facts=facts)

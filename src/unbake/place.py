@@ -442,7 +442,12 @@ def _object(root: Path, v: str, path: str, image: bytes, rom: int, end: int, vra
         return "object not built after the last edit: the link proves the bytes", ""
     read = _elf(obj)
     if read is None:
-        return "object has no .rodata: the link proves the bytes", ""
+        # a fresh object with no .rodata carries none of the pool: its C still reads the bytes through an extern of
+        # another unit, and moving the rows broke all five ROMs (10-24 TOOL-SPEED-14, an extern read of a 4 byte pool)
+        return "", (
+            f"its built object has no .rodata but the ROM data it takes the place of is 0x{end - rom:X} bytes: "
+            "the function reads the pool through an extern, so write the literal in its C first"
+        )
     data, align, reloc = read
     size = len(data)
     if size != end - rom:
