@@ -434,13 +434,7 @@ def _base_made(root: Path, base: str, headers: Sequence[str]) -> Callable[[str],
         data = process.blob(root, base, h)
         digests[h] = hashlib.sha1(data).hexdigest() if data is not None else "-"
 
-    def digest(name: str) -> str:
-        if name not in digests:
-            try:
-                digests[name] = hashlib.sha1((root / name).read_bytes()).hexdigest()
-            except OSError:
-                digests[name] = "-"
-        return digests[name]
+    digest = _digester(root, digests)
 
     def made(stamp: str) -> bool:
         rec = state.get(stamp)
@@ -455,6 +449,22 @@ def _base_made(root: Path, base: str, headers: Sequence[str]) -> Callable[[str],
         return deps is not None and hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest() == rec[1]
 
     return made
+
+
+def _digester(root: Path, known: dict[str, str] | None = None) -> Callable[[str], str]:
+    """The SHA-1 of a file under ROOT ("-" when unreadable), each read once: what the stamp sweep hashes a .d's names by
+    (KNOWN: digests given beforehand, as a header's at another revision)."""
+    digests = {} if known is None else known
+
+    def digest(name: str) -> str:
+        if name not in digests:
+            try:
+                digests[name] = hashlib.sha1((root / name).read_bytes()).hexdigest()
+            except OSError:
+                digests[name] = "-"
+        return digests[name]
+
+    return digest
 
 
 def _dependencies(dfile: Path) -> list[str] | None:
@@ -545,15 +555,7 @@ def sign(root: Path, stamps: Sequence[str]) -> int:
     includers per version the data check had proved unreachable, 186-619 CPU s). The stamp keeps its date, so it stays
     pristine for the next narrowing. Returns the number of records written (a stamp without a .d gets none)."""
     root = Path(root)
-    digests: dict[str, str] = {}
-
-    def digest(name: str) -> str:
-        if name not in digests:
-            try:
-                digests[name] = hashlib.sha1((root / name).read_bytes()).hexdigest()
-            except OSError:
-                digests[name] = "-"
-        return digests[name]
+    digest = _digester(root)
 
     lines = []
     for stamp in stamps:
@@ -575,32 +577,32 @@ def sign(root: Path, stamps: Sequence[str]) -> int:
     return len(lines)
 
 
-def resign(root: Path, headers: Sequence[str]) -> int:
-    """After a tree is reset to the commit its build marker names (a reused stamp slot, its diff reverted): sign again
-    the includer stamps of HEADERS that no build touched since the marker. Their preprocessed text is the commit's
-    and the headers hold the commit's bytes again, but their records name the bytes a diff's narrowing signed them
-    under, so the next make's stamp sweep would drop every one (2,000-4,500 includers per version, A2 10-25).
-    Returns the number of records written (none when the tree is not at its marker's commit)."""
+def resign(root: Path, headers: Sequence[str], before: dict[str, list]) -> int:
+    """After a tree's diff is reverted (a reused stamp slot reset): sign again each includer stamp of HEADERS whose
+    record BEFORE the diff (`records`, read before it was applied) names the stamp's date now and the bytes its inputs
+    hold again. No build touched such a stamp since (same date) and that record proves its text was made from these
+    bytes; the record the diff's narrowing wrote names the diff's header bytes, so the next make's stamp sweep would
+    drop every one (2,000-4,500 includers per version, A2 10-25). Returns the number of records written."""
     root = Path(root)
-    try:
-        marker = root / BUILT_MARKER if (root / BUILT_MARKER).is_file() else root / EXTRACTED_MARKER
-        base, since = marker.read_text().strip(), marker.stat().st_mtime_ns
-    except OSError:
-        return 0
-    head = process.tree_id(root, "HEAD")
-    if not base or not head or process.tree_id(root, base) != head or process.changed(root, "HEAD") != []:
-        return 0
     versions = sorted(
         p.name for p in (root / "build").iterdir() if p.is_dir() and (root / "versions" / p.name).is_dir()
     )
+    digest = _digester(root)
+
     stamps = []
     for v in versions:
         for u in includers(root, v, headers):
             stamp = f"build/{v}/{u}.i.ok"
+            rec = before.get(stamp)
+            deps = _dependencies(root / f"build/{v}/{u}.d")
             try:
-                when = (root / stamp).stat().st_mtime_ns
+                same = bool(rec) and len(rec) == 2 and (root / stamp).stat().st_mtime_ns == rec[0]
             except OSError:
                 continue
-            if when != DROPPED_NS and when <= since:
+            if (
+                same
+                and deps is not None
+                and hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest() == rec[1]
+            ):
                 stamps.append(stamp)
     return sign(root, stamps)
