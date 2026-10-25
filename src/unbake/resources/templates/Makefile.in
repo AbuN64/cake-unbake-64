@@ -304,12 +304,26 @@ def stamp_key(stamp):
     return None if deps is None else hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest()
 def object_key(obj, extracted):
     return hashlib.sha1(" ".join(digest(a) for a in sorted(set(extracted))).encode()).hexdigest()
+log_path = "build/.inputs.log"
+def replay(state, path):
+    try:
+        with open(path) as handle:
+            for line in handle:
+                try:
+                    name, when, key = json.loads(line)
+                except ValueError:
+                    continue
+                state[name] = [when, key]
+    except OSError:
+        pass
 def load():
     try:
         with open(state_path) as handle:
-            return json.load(handle)
+            state = json.load(handle)
     except (OSError, ValueError):
-        return {}
+        state = {}
+    replay(state, log_path)
+    return state
 def save(state):
     os.makedirs("build", exist_ok=True)
     tmp = state_path + "." + str(os.getpid())
@@ -320,14 +334,21 @@ if sys.argv[1] == "record":
     path, key = sys.argv[2], None
     key = stamp_key(path) if path.endswith(".i.ok") else object_key(path, sys.argv[3:])
     if key is not None:
-        import fcntl
-        with open(state_path + ".lock", "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            state = load()
-            state[path] = [os.stat(path).st_mtime_ns, key]
-            save(state)
+        line = (json.dumps([path, os.stat(path).st_mtime_ns, key]) + chr(10)).encode()
+        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
     sys.exit(0)
+pending = log_path + "." + str(os.getpid())
+try:
+    os.replace(log_path, pending)
+except OSError:
+    pending = None
 state = load()
+if pending:
+    replay(state, pending)
 asm = {}
 if os.path.exists("build/asm.deps"):
     for line in open("build/asm.deps"):
@@ -365,6 +386,8 @@ for here, _, names in os.walk("build"):
             obj = stamp[: -len(".i.ok")] + ".o"
             check(obj, object_key(obj, asm.get(twin(obj), [])))
 save(state)
+if pending:
+    os.unlink(pending)
 if removed:
     sys.stderr.write("stamp sweep: %d outputs made from other bytes than their inputs now hold were dropped\n" % removed)
 endef

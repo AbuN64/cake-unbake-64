@@ -194,8 +194,26 @@ def test_a_tree_without_recorded_inputs_is_trusted(tmp_path):
     tree.write("int a;\n")
     tree.make(deps=True)
     (tmp_path / "build/.inputs.json").unlink()
+    (tmp_path / "build/.inputs.log").unlink(missing_ok=True)
     tree.age()
     (tmp_path / "src/h.h").write_text("two\n")
     _old(tmp_path / "src/h.h")
     tree.make(deps=True)
     assert (tmp_path / "preprocessed").read_text() == ""
+
+
+def test_records_append_without_a_lock_and_the_sweep_folds_them_in(tmp_path):
+    """A record was a global flock + rewrite of the whole state (6.5 MB on a full tree): a cold make -j12 of all versions
+    ran one record at a time (POOL-SRC refresh 21+ min at 11 s make CPU). A record now appends one line."""
+    import json
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("one\n")
+    tree.write("int a;\n")
+    tree.make(deps=True)
+    log = tmp_path / "build/.inputs.log"
+    assert not (tmp_path / "build/.inputs.json.lock").exists()
+    assert log.exists() and any(".i.ok" in line for line in log.read_text().splitlines())
+    tree.age()
+    tree.make(deps=True)  # the sweep folds the log into the state; this run's records start a new log
+    state = json.loads((tmp_path / "build/.inputs.json").read_text())
+    assert any(k.endswith(".i.ok") for k in state)
