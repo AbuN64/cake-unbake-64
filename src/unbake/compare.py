@@ -910,36 +910,56 @@ def _probe_dumps(
     return [str(kept / f) for f in [*files, f"{name}.diff"]]
 
 
+def probe_placement(config: Config, params: Json) -> tuple[dict[str, bytes], str, str, Placed, Resolved]:
+    """(the change-set files, the version, the function, the module text the candidate is measured as, the candidate
+    placed in it) of a probe-style command: the one file that owns the function, found without the tree capture."""
+    extras = _extras(
+        config, [Path(s) for s in params.get("extras") or ()], Path(params["file"]) if params.get("file") else None
+    )
+    file = Path(params["file"])
+    source = _source(file)
+    version = params.get("version") or config.project.names_from
+    if version not in config.project.versions:
+        raise Refusal(
+            Finding(
+                "land.request",
+                reason=f"{version} is not a version of the project",
+                versions=tuple(config.project.versions),
+                action="pass --version one of the project's versions",
+            )
+        )
+    name = params.get("function") or next((i.name for i in publish.items(source) if i.kind == "function"), "")
+    owner = _quick_owner(config, version, name, extras) if name else None
+    if owner is None:  # the whole tree names the owner, or why there is none
+        resolved = _resolve(config, file, params.get("function"), version, extras)
+        name, owner = resolved.name, next(p.owner for p in resolved.placed if version in p.owner.versions)
+    given = extras.get(owner.path)
+    current = given.decode() if given is not None else (config.project.root / owner.path).read_text("utf-8")
+    text, origins = _text(current, owner.segment, name, source)
+    placed = Placed(publish.Owner(owner.path, owner.segment, (version,)), text, tuple(origins))
+    return extras, version, name, placed, Resolved(name, file, source, (placed,))
+
+
+def probe_overrides(params: Json) -> dict[str, Any]:
+    """The toolchain and flag overrides a probe-style command's options name."""
+    return _overrides(params)
+
+
+def probe_diff(
+    config: Config, version: str, name: str, path: str, proof: Proof, extras: Mapping[str, bytes], params: Json
+) -> tuple[list[str], dict[str, int]]:
+    """(the instruction diff lines shown, the word counts) of one measured proof, as probe prints them."""
+    shown, built, target, _ = _verdict(config, version, name, path, proof, extras, params)
+    return shown, _words(built, target)
+
+
 def probe_command(config: Config, params: Json) -> Json:
     """Compile only the module that owns the function, the candidate in place of its stand-in, in one version, and
     diff that function against the ROM: the measure score makes, without the tree capture, the source rules, the
     other versions or the landing checks. Writes nothing but --dumps DIR."""
     with effort.stage("compare.probe"):
-        extras = _extras(
-            config, [Path(s) for s in params.get("extras") or ()], Path(params["file"]) if params.get("file") else None
-        )
-        file = Path(params["file"])
-        source = _source(file)
-        version = params.get("version") or config.project.names_from
-        if version not in config.project.versions:
-            raise Refusal(
-                Finding(
-                    "land.request",
-                    reason=f"{version} is not a version of the project",
-                    versions=tuple(config.project.versions),
-                    action="pass --version one of the project's versions",
-                )
-            )
-        name = params.get("function") or next((i.name for i in publish.items(source) if i.kind == "function"), "")
-        owner = _quick_owner(config, version, name, extras) if name else None
-        if owner is None:  # the whole tree names the owner, or why there is none
-            resolved = _resolve(config, file, params.get("function"), version, extras)
-            name, owner = resolved.name, next(p.owner for p in resolved.placed if version in p.owner.versions)
-        given = extras.get(owner.path)
-        current = given.decode() if given is not None else (config.project.root / owner.path).read_text("utf-8")
-        text, origins = _text(current, owner.segment, name, source)
-        placed = Placed(publish.Owner(owner.path, owner.segment, (version,)), text, tuple(origins))
-        resolved = Resolved(name, file, source, (placed,))
+        extras, version, name, placed, resolved = probe_placement(config, params)
+        owner, text = placed.owner, placed.text
         proof = _sited(native.measure(config, version, name, owner.path, text, _overrides(params), extras), resolved)
         shown, built, target, everything = _verdict(config, version, name, owner.path, proof, extras, params)
         result: dict[str, Any] = {

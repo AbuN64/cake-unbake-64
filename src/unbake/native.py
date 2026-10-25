@@ -176,6 +176,34 @@ def objects(
         return obj, tuple(results)
 
 
+def chain_inputs(
+    snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe
+) -> tuple[str, tuple[compile.Step, ...]]:
+    """(the preprocessed text, the compile and assemble steps) of one unit: what `objects` runs, for a caller that
+    runs the steps itself (a compile under a debugger) and links the result with `link_object`."""
+    text, steps, *_ = _compile_inputs(snapshot, unit, version, recipe, _include(snapshot, version))
+    return text, steps
+
+
+def link_object(
+    snapshot: Snapshot, unit: UnitSpec, version: str, name: str, recipe: Recipe, text: str, obj: Path, work: Path
+) -> Proof:
+    """The proof of `name` in an object some caller built from the module `text`: linked and compared like `measure`."""
+    facts = symbol_facts(snapshot.config, version, snapshot.overlays)
+    return _link(
+        snapshot,
+        unit,
+        version,
+        name,
+        recipe,
+        sha256(text.encode()),
+        obj,
+        work,
+        facts,
+        frozenset(_WORD_RE.findall(text)),
+    )
+
+
 def recorded(snapshot: Snapshot, unit: UnitSpec, version: str, recipe: Recipe) -> tuple[str, ...] | None:
     """The refused warnings a compile of this unit kept; None when none was kept; never compiles."""
     cfg = snapshot.config

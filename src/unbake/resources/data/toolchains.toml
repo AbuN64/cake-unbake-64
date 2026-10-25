@@ -236,6 +236,10 @@ preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
 assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
 
+[toolchain."gcc-2.8.1-sn64".whatif]
+# reg_note values the cc1 passes to add_dependence (gcc 2.8 rtl.h): REG_DEP_ANTI, REG_DEP_OUTPUT; a true dependence is 0
+kinds = { anti = 14, output = 15, true = 0 }
+
 [toolchain."gcc-2.8.1-sn64".pins]
 "cc1" = "d1ddfe21dfa61840a83f833c8bd45ed7e2f606c3d9c351d2ec732fb6e4f97c89"
 

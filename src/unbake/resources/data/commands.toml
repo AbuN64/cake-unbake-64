@@ -92,6 +92,31 @@ params = [
   { name = "dumps", kind = "option", type = "path", required = false, multiple = false, help = "copy every pass dump of the compile (-da where the toolchain takes it), its -g assembly, its .i and the whole instruction diff into DIR" },
 ]
 
+[command.whatif]
+help = "Compile one function's candidate with the scheduler told one thing more (artificial dependences A>B, or the single-set top priority off for chosen insns), made in the toolchain's own cc1 under a batch gdb, and score it like probe; --search finds the smallest change set that makes it exact."
+handler = "whatif.whatif_command"
+params = [
+  { name = "file", kind = "argument", type = "path", required = true, multiple = false, help = "C source" },
+  { name = "extras", kind = "argument", type = "path", required = false, multiple = true, help = "change-set files as for probe" },
+  { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member the file implements" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version to compile, default the names-from version" },
+  { name = "toolchain", kind = "option", type = "str", required = false, multiple = false, help = "override the unit's toolchain" },
+  { name = "flag", kind = "option", type = "str", required = false, multiple = true, help = "add one compiler option" },
+  { name = "omit-flag", kind = "option", type = "str", required = false, multiple = true, help = "remove one compiler option" },
+  { name = "kind", kind = "option", type = "str", required = false, multiple = false, help = "deps (default): add scheduler dependences; top-priority: turn the single-set top priority off for --insn UIDs" },
+  { name = "dep", kind = "option", type = "str", required = false, multiple = true, help = "A>B[:KIND]: insn A depends on insn B (stays after it); uids as the sched1 dump (-dS) shows; KIND anti (default), output or true" },
+  { name = "insn", kind = "option", type = "str", required = false, multiple = true, help = "insn uid whose single-set top priority is off (with --kind top-priority)" },
+  { name = "block", kind = "option", type = "int", required = false, multiple = false, help = "basic block the changes act in, default 0" },
+  { name = "search", kind = "option", type = "str", required = false, multiple = false, help = "singles, pairs or greedy: find the smallest set of extra changes of --kind that makes the function exact (greedy grows one set, then drops every member it can do without)" },
+  { name = "only", kind = "option", type = "str", required = false, multiple = true, help = "search only among these insn uids" },
+  { name = "direction", kind = "option", type = "str", required = false, multiple = false, help = "forward (default): B is scheduled before A in the block; any: B may follow A too" },
+  { name = "window", kind = "option", type = "int", required = false, multiple = false, help = "search dependences between insns at most this many apart in the block, default 8" },
+  { name = "top", kind = "option", type = "int", required = false, multiple = false, help = "pairs are built from this many best singles (those that changed the code first), default 40; with greedy the most changes a set grows to" },
+  { name = "jobs", kind = "option", type = "int", required = false, multiple = false, help = "parallel compiles, default 4" },
+  { name = "cpu-budget", kind = "option", type = "int", required = false, multiple = false, help = "stop the search after this many CPU seconds, default 240" },
+  { name = "lines", kind = "option", type = "int", required = false, multiple = false, help = "instruction diff lines shown" },
+  { name = "short", kind = "flag", type = "str", required = false, multiple = false, help = "show only the changed diff lines" },
+]
 [command.order]
 help = "Climb the statement order of one function toward the ROM: move one statement at a time inside a window, never across a statement it shares a variable with, probe each order, keep the best; writes the best source to --out."
 handler = "order.order_command"

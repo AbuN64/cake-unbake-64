@@ -1,0 +1,36 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.whatif",
+ "type": "object",
+ "properties": {
+  "unit": {"type": "string", "minLength": 1},
+  "members": {"type": "array", "items": {"type": "string", "minLength": 1}},
+  "version": {"type": "string", "minLength": 1},
+  "kind": {"enum": ["deps", "top-priority"]},
+  "block": {"type": "integer", "minimum": 0},
+  "baseline": {
+   "type": "object",
+   "properties": {"exact": {"type": "boolean"}, "score": {"type": "number", "minimum": 0, "maximum": 1}},
+   "required": ["exact", "score"],
+   "additionalProperties": false
+  },
+  "changes": {"type": "array", "items": {"type": "string"}},
+  "missing": {"type": "array", "items": {"type": "string"}},
+  "exact": {"type": "boolean"},
+  "score": {"type": "number", "minimum": 0, "maximum": 1},
+  "words": {
+   "type": "object",
+   "properties": {
+    "built": {"type": "integer", "minimum": 0},
+    "target": {"type": "integer", "minimum": 0},
+    "matched": {"type": "integer", "minimum": 0}
+   },
+   "required": ["built", "target", "matched"],
+   "additionalProperties": false
+  },
+  "diff": {"type": "array", "items": {"type": "string"}},
+  "search": {"type": "object"}
+ },
+ "required": ["unit", "members", "version", "kind", "block", "baseline", "changes", "missing", "exact", "score", "words", "diff"],
+ "additionalProperties": false
+}

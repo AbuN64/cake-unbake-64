@@ -270,6 +270,14 @@
       ],
       "additionalProperties": false
      },
+     "whatif": {
+      "type": "object",
+      "properties": {
+       "kinds": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}, "minProperties": 1}
+      },
+      "required": ["kinds"],
+      "additionalProperties": false
+     },
      "probe_flags": {
       "type": "array",
       "items": {
