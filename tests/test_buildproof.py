@@ -101,6 +101,8 @@ def _clean(tree: SimpleNamespace) -> bool:
 
     out = subprocess.run(["git", "status", "--porcelain"], cwd=tree.config.project.root, capture_output=True, text=True)
     return out.stdout.strip() == ""
+
+
 def _keys(refused: pytest.ExceptionInfo[Refusal]) -> set[str]:
     return {f.key for f in refused.value.findings}
 
@@ -201,3 +203,47 @@ def test_faults_tell_an_absent_unit_from_a_failure() -> None:
     assert buildproof._faults(needed, ["build/de/x.o"])[1]  # type: ignore[arg-type]
     silent = SimpleNamespace(exit=2, stderr=b"")
     assert buildproof._faults(silent, ["build/de/x.o"]) == (set(), ["make exit 2"])  # type: ignore[arg-type]
+
+
+def _minted(tree: SimpleNamespace, key: str) -> None:
+    """The tree as a pool mint leaves it: a header of droppable declarations, a.c's unit keys for both versions."""
+    import os
+    import time
+
+    root = tree.root
+    (root / "include/h.h").write_text("extern int Thing(void);\nextern int Other(void);\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "mint")
+    marker = root / "build/.pool-extracted-at"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_git(root, "rev-parse", "HEAD").strip() + "\n")
+    later = time.time() + 5
+    os.utime(marker, (later, later))
+    for v in VERSIONS:
+        base = root / f"build/{v}/src/a.c.i"
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text("preprocessed")
+        (base.parent / "a.c.i.key").write_text(key)
+        (base.parent / "a.c.i.ok").write_text("")
+
+
+def test_a_header_edit_no_key_names_builds_nothing_and_still_passes(tree: SimpleNamespace) -> None:
+    _minted(tree, "int A(void){return Thing();}")
+
+    def edit(root: Path) -> None:
+        (root / "include/h.h").write_text("extern int Thing(void);\nextern long Other(void);\n")
+
+    result = _run(tree, _patch(tree, "narrow.diff", edit))
+    assert result["narrowed"]["skipped"] == 2 and result["compared"] == 0
+    assert tree.log == [[], []]  # nothing was built, before or after
+    assert _clean(tree)
+
+
+def test_a_header_edit_a_key_names_is_built_and_compared(tree: SimpleNamespace) -> None:
+    _minted(tree, "int A(void){return Other();}")
+
+    def edit(root: Path) -> None:
+        (root / "include/h.h").write_text("extern int Thing(void);\nextern long Other(void);\n")
+
+    result = _run(tree, _patch(tree, "keep.diff", edit))
+    assert result["narrowed"]["skipped"] == 0 and result["compared"] == 2

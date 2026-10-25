@@ -299,3 +299,40 @@ def tracked(root: Path) -> set[str]:
     """The files git tracks under root; empty when root is no repository."""
     done = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False)
     return {name for name in done.stdout.decode().split("\0") if name}
+
+
+def tree_id(root: Path, rev: str) -> str:
+    """The tree object id of REV in the repository at root; empty when there is none."""
+    done = subprocess.run(["git", "-C", str(root), "rev-parse", f"{rev}^{{tree}}"], capture_output=True, check=False)
+    return done.stdout.decode().strip() if done.returncode == 0 else ""
+
+
+def show(root: Path, rev: str, path: str) -> str | None:
+    """The text of PATH at REV; None when REV does not hold it."""
+    done = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output=True, check=False)
+    return done.stdout.decode(errors="replace") if done.returncode == 0 else None
+
+
+def patched(root: Path, patches: Sequence[Path], paths: Sequence[str], index: Path) -> dict[str, str | None] | None:
+    """The text of PATHS at HEAD with the PATCHES applied, read from a scratch index (the work tree and the
+    real index stay as they are); None when a patch does not apply. A path the patches delete or HEAD lacks maps to
+    None."""
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.unlink(missing_ok=True)
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False, env=env)
+
+    try:
+        if git("read-tree", "HEAD").returncode:
+            return None
+        if any(git("apply", "--cached", str(p)).returncode for p in patches):
+            return None
+        out = {}
+        for path in paths:
+            done = git("cat-file", "-p", f":{path}")
+            out[path] = done.stdout.decode(errors="replace") if done.returncode == 0 else None
+        return out
+    finally:
+        index.unlink(missing_ok=True)

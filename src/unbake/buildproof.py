@@ -24,7 +24,7 @@ from typing import Any
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 
-from unbake import build, process, store, symbols
+from unbake import build, hdrnarrow, process, store, symbols
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, NativeResult, Refusal
 
@@ -157,6 +157,34 @@ def _targets(versions: Sequence[str], units: Iterable[str]) -> list[str]:
     return [f"build/{v}/{u}.o" for v in versions for u in sorted(units)]
 
 
+def _narrow(
+    config: Config, patches: Sequence[Path], headers: set[str], units: set[str], versions: Sequence[str], holder: Path
+) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+    """({(version, unit)} the header edits of the patches cannot change the object of, what it did). The edit's
+    text comes
+    from a scratch index with the patches applied, so the work tree is not touched. See `hdrnarrow` for the proof; any
+    doubt keeps the unit."""
+    texts = process.patched(config.project.root, patches, sorted(headers), holder / "index")
+    if texts is None:
+        return set(), {"headers": len(headers), "includers": len(units), "skipped": 0, "why": "a patch does not apply"}
+    skipped: set[tuple[str, str]] = set()
+    ordered = sorted(units)
+    stats: dict[str, Any] = {"headers": len(headers), "includers": len(units), "skipped": 0, "why": ""}
+    for v in versions:
+        keep, got = hdrnarrow.narrow(config, v, sorted(headers), ordered, "build/{v}/{unit}.o", texts.get)
+        stats["why"] = stats["why"] or got["why"]
+        kept = set(keep)
+        skipped |= {(v, u) for u in ordered if u not in kept}
+    stats["skipped"] = len(skipped)
+    return skipped, stats
+
+
+def _pair(target: str) -> tuple[str, str]:
+    """(version, unit) of a build/<version>/<unit>.o target."""
+    _, v, unit = target.split("/", 2)
+    return v, unit.removesuffix(".o")
+
+
 def _restore(config: Config, applied: Sequence[Path], made: Sequence[str]) -> None:
     """Take the patches off again, last first: the proof leaves the tree as it found it (10-24 REV1-ONE-16C: it left
     its patch applied). Intent-to-add entries go first, so the reverse apply removes the files they named."""
@@ -196,10 +224,16 @@ def buildproof_command(config: Config, params: Json) -> Json:
     post_units = {n for n in new_of.values() if n} | {a for a in added if configuration.is_source(a)}
     holder = process.state(root) / "buildproof"
     shutil.rmtree(holder, ignore_errors=True)
+    skipped: set[tuple[str, str]] = set()
+    narrowing: dict[str, Any] = {}
+    edited = {p for p in touched if configuration.is_header(p)}
+    includers = base_units - touched
+    if edited and includers and all(final.get(p) == p for p in edited):
+        skipped, narrowing = _narrow(config, patches, edited, includers, versions, holder)
     out: dict[str, Any] = {"against": against, "patches": [str(p) for p in patches], "versions": versions}
     findings: list[Finding] = []
 
-    old_targets = _targets(versions, base_units)
+    old_targets = [t for t in _targets(versions, base_units) if _pair(t) not in skipped]
     absent_old, bad = _build(config, old_targets, jobs)
     if bad:
         raise Refusal(
@@ -210,6 +244,8 @@ def buildproof_command(config: Config, params: Json) -> Json:
     kept: dict[str, Path] = {}
     for v in versions:
         for u in base_units:
+            if (v, u) in skipped:
+                continue
             src = root / f"build/{v}/{u}.o"
             if f"build/{v}/{u}.o" not in absent_old and src.is_file():
                 dest = holder / v / f"{new_of[u] or u}.o"
@@ -231,7 +267,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
                 extracted.append(v)
                 build.extract(config, v)
 
-        new_targets = _targets(versions, post_units)
+        new_targets = [t for t in _targets(versions, post_units) if _pair(t) not in skipped]
         absent_new, bad = _build(config, new_targets, jobs)
         if bad:
             findings.append(
@@ -272,6 +308,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
         extra=extra[:50],
         added=len(built_added),
         absent=len(absent_new),
+        **({"narrowed": narrowing} if narrowing else {}),
     )
     if differ:
         findings.append(Finding("buildproof.differs", f"{len(differ)} objects differ", missing=tuple(differ[:SHOWN])))
@@ -283,7 +320,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
                 missing=tuple((missing + extra)[:SHOWN]),
             )
         )
-    if not compared and not findings:
+    if not compared and not findings and not skipped:
         findings.append(Finding("buildproof.empty", "no object could be compared: the change reaches no built unit"))
     if findings:
         raise Refusal(*findings)
