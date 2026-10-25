@@ -344,7 +344,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(without_hdrkey(text).splitlines()) < 420
+    assert len(without_hdrkey(text).splitlines()) < 430
     assert "src/f1.c" not in text
 
 
@@ -1053,7 +1053,8 @@ def test_undefined_syms_waits_for_every_object_it_reads_and_reads_no_object(tmp_
     complete once the object is built) and feeds its sed the fact files only, never a binary object."""
     text = build.makefile(make_config(tmp_path)).decode()
     rule = text[text.index("build/%/undefined_syms.ld:") :].split("\n", 2)
-    assert "$$(OBJS_$$*)" in rule[0] and "asm/%/.extracted" in rule[0]
+    assert "asm/%/.extracted" in rule[0] and "OBJS_" not in rule[0]  # make 4.4.1 segfaults on it as a second expansion
+    assert "eval build/$(v)/undefined_syms.ld: $(OBJS_$(v))" in text
     assert "$(filter-out %.o,$^) > $@" in rule[1]
 
 

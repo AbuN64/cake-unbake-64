@@ -909,10 +909,13 @@ build/%/link.ld: $$(NAME).ld
 # label the assembler keeps out of the object, or a label inside bytes a C file compiles.
 # Preprocessed sources retain auto-address references even when a new extraction no longer spells that label.
 # Every object of the version is a prerequisite (the .i/.s the grep reads are complete once it is built) but never an input of the sed.
-build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(OBJS_$$$$*) $$$$(wildcard versions/$$$$*/aliases.txt)
+build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(wildcard versions/$$$$*/aliases.txt)
 	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$(filter-out %.o,$$^) > $$@
 	$$(Q)grep -rhoE --include='*.s' --include='*.i' '${label}[0-9A-F]{8}\b' asm/$$* build/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
 # splat writes these while it extracts the version.
+# The objects are prerequisites of each version's list by a plain rule, not by the pattern rule's second expansion:
+# GNU make 4.4.1 segfaults expanding $$(OBJS_$$*) there once build/<v>/undefined_syms_auto.txt exists (train down 02:12-02:50).
+$$(foreach v,$$(VERSIONS),$$(eval build/$$(v)/undefined_syms.ld: $$(OBJS_$$(v))))
 build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt: | asm/%/.extracted
 	$$(Q)test -f $$@ || { echo "$$@ is missing: run make extract-$$*" >&2; exit 1; }
 build/%/$$(NAME).elf: $$$$(OBJS_$$$$*) build/%/link.ld build/%/undefined_syms.ld
