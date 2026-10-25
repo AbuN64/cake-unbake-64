@@ -319,9 +319,9 @@ nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)
 $(foreach v,$(VERSIONS),$(eval OBJS_nm_$(v) := $(patsubst build/$(v)/%,build/nm/$(v)/%,$(OBJS_$(v)))))
 -include $(foreach v,$(VERSIONS),$(patsubst build/$(v)/%,build/nmraw/$(v)/%,$(OBJS_$(v):.o=.d)))
 # A raw object follows the extracted files its matching twin names, and takes the same text sizes.
-$(shell sed -E 's@^build/@build/nmraw/@' build/asm.deps > build/asm-nmraw.deps)
+$(shell sed -E 's@^build/@build/nmraw/@' build/asm.deps > build/asm-nmraw.deps.$$$$ && mv build/asm-nmraw.deps.$$$$ build/asm-nmraw.deps)
 -include build/asm-nmraw.deps
-$(shell cat $(VERSIONS:%=versions/%/text_sizes.mk) | sed -E 's@^build/@build/nmraw/@' > build/text_sizes_nmraw.mk)
+$(shell cat $(VERSIONS:%=versions/%/text_sizes.mk) | sed -E 's@^build/@build/nmraw/@' > build/text_sizes_nmraw.mk.$$$$ && mv build/text_sizes_nmraw.mk.$$$$ build/text_sizes_nmraw.mk)
 -include build/text_sizes_nmraw.mk
 build/nm/%.o: build/nmraw/%.o build/%.o
 	$(Q)mkdir -p $(@D)
