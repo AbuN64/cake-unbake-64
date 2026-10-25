@@ -782,7 +782,10 @@ def _score_one(config: Config, params: Json) -> Json:
             continue
         break
     path, text = resolved.at(version).owner.path, resolved.at(version).text
-    proofs = [measured(v) for v in held if v != version]
+    # --quick --version V (a search loop: one candidate after another): V alone is measured, not every version that
+    # holds the function (5 compiles a variant), and `exact` speaks for V (A16, 10-25)
+    alone = bool(params.get("quick") and params.get("version"))
+    proofs = [] if alone else [measured(v) for v in held if v != version]
     proofs.insert(0, proof)
     shown, built, target, everything = _verdict(config, version, name, path, proof, extras, params)
     snapshot, unit, recipe, _ = native.candidate(config, version, path, text, overrides, extras, [name])
