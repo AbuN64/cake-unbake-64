@@ -241,3 +241,26 @@ def test_asm_deps_is_replaced_whole_and_the_scripts_are_not_rewritten_unchanged(
     assert script.stat().st_mtime_ns == 10**9 and sweep.stat().st_mtime_ns == 10**9  # unchanged text: not rewritten
     assert not list((tmp_path / "build").glob("asm.deps.*"))
     assert when and swept
+
+
+def test_a_sweep_with_nothing_moved_does_not_walk_or_rewrite_the_state(tmp_path):
+    """WATCH-0153: every make ran a full walk and rehash (two cores held across trees). With every input and output as the
+    last sweep saw it, the sweep reads the small cache and leaves the state alone; a later record still joins it."""
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("one\n")
+    tree.write("int a;\n")
+    tree.make(deps=True)
+    tree.age()
+    tree.make(deps=True)  # the first sweep after the ageing walks and writes the cache
+    state = tmp_path / "build/.inputs.json"
+    assert (tmp_path / "build/.dep-stat.json").is_file()
+    before = state.stat().st_mtime_ns
+    tree.make(deps=True)
+    tree.make(deps=True)
+    assert state.stat().st_mtime_ns == before  # nothing was recorded or moved: no walk, no rewrite
+    tree.write("int a; int b;\n")  # a new record joins the cache without a walk
+    tree.make(deps=True)
+    (tmp_path / "src/h.h").write_text("two\n")
+    _old(tmp_path / "src/h.h")  # a header changed under a newer stamp is still found
+    tree.make(deps=True)
+    assert (tmp_path / "preprocessed").read_text() == "p\n"
