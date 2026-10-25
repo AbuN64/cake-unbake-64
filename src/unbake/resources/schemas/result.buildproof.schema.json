@@ -12,7 +12,9 @@
   "missing": {"type": "array", "items": {"type": "string"}},
   "extra": {"type": "array", "items": {"type": "string"}},
   "added": {"type": "integer", "minimum": 0},
-  "absent": {"type": "integer", "minimum": 0}
+  "absent": {"type": "integer", "minimum": 0},
+  "reference": {"type": "string"},
+  "narrowed": {"type": "object"}
  },
  "required": ["against", "patches", "versions", "compared", "identical", "differ", "missing", "extra", "added", "absent"],
  "additionalProperties": false

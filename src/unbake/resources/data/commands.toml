@@ -212,7 +212,8 @@ help = "Build proof of a change that must alter no object: PATCHes over the clea
 handler = "buildproof.buildproof_command"
 params = [
   { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the tree is checked out at" },
-  { name = "patch", kind = "option", type = "path", required = true, multiple = true, help = "a patch applied in order over the tree (repeat)" },
+  { name = "reference", kind = "option", type = "path", required = false, multiple = false, help = "a tree built clean at REV (the pool's POOL-SRC) whose objects are the before: the change is this tree's own edits over REV, no PATCH, no reset" },
+  { name = "patch", kind = "option", type = "path", required = false, multiple = true, help = "a patch applied in order over the tree (repeat)" },
   { name = "version", kind = "option", type = "str", required = false, multiple = true, help = "a version to prove (repeat); none means every version" },
   { name = "jobs", kind = "option", type = "int", required = false, multiple = false, help = "make jobs the build expects (default: the host's share)" },
 ]

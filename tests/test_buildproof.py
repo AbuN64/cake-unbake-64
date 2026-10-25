@@ -276,3 +276,28 @@ def test_objects_the_change_built_are_compared_even_when_restoring_the_extractio
 
     result = _run(tree, _patch(tree, "facts.diff", edit))
     assert extracted == ["us", "us"] and result["compared"] == 2 and result["identical"] == 2
+
+
+def test_a_dirty_lease_tree_proves_against_a_reference_built_at_rev(tree: SimpleNamespace, tmp_path: Path) -> None:
+    """RO3 (REV1-ONE-74): a lane's leased tree is never clean and may not be reset. With --reference the change is the
+    tree's own edits over REV and the objects before are the reference tree's (the pool's clean build at REV)."""
+    reference = tmp_path / "pool"
+    subprocess.run(["git", "clone", "-q", str(tree.root), str(reference)], check=True)
+    for v in VERSIONS:  # the reference's clean build, made the way the fake make makes objects
+        for unit in ("src/a.c", "src/c.c"):
+            obj = reference / f"build/{v}/{unit}.o"
+            obj.parent.mkdir(parents=True, exist_ok=True)
+            obj.write_text(" ".join((reference / unit).read_text().split()))
+    params = {"against": "HEAD", "reference": str(reference), "version": [], "jobs": 1}
+    (tree.root / "src/c.c").write_text("int C(void) { /* a comment */ return 3; }\n")
+    done = buildproof.buildproof_command(tree.config, params)
+    assert done["compared"] == 2 and done["reference"] == str(reference)
+    assert not _clean(tree)  # the lane's edit stays: nothing was reset
+    (tree.root / "src/c.c").write_text("int C(void) { return 4; }\n")
+    with pytest.raises(Refusal) as refused:
+        buildproof.buildproof_command(tree.config, params)
+    assert _keys(refused) == {"buildproof.differs"}
+    (reference / "src/c.c").write_text("edited\n")
+    with pytest.raises(Refusal) as refused:
+        buildproof.buildproof_command(tree.config, params)
+    assert _keys(refused) == {"buildproof.reference"}

@@ -10,7 +10,10 @@ quietly, when:
 - nothing at all could be compared (`buildproof.empty`): a proof of zero objects proves nothing.
 The objects to build are named from the files, never read from earlier build output, so a file never built before is
 built (and counted) like any other. A unit of any kind is covered (.c, .CPP, .s); a unit a patch adds is built and
-reported as added. Anything else (a moved function, a changed type) differs and fails: only a build can say so."""
+reported as added. Anything else (a moved function, a changed type) differs and fails: only a build can say so.
+With --reference TREE the change is the work tree's own edits over REV (no PATCH; a lane's leased tree is never clean
+and may not be reset) and the objects before are TREE's: a clean build at REV (the pool's POOL-SRC). Only the objects
+the change reaches are built, here; REV is never checked out (REV1-ONE-74 compared POOL-SRC's objects by hand)."""
 
 from __future__ import annotations
 
@@ -198,7 +201,91 @@ def _restore(config: Config, applied: Sequence[Path], made: Sequence[str]) -> No
             (root / path).unlink()
 
 
+def _reaches(config: Config, patches: Sequence[Path]) -> tuple[dict[str, str | None], set[str], set[str], set[str]]:
+    """(original -> final path, added paths, units before, units after) the PATCHes reach: every touched unit and every
+    unit including a touched header."""
+    root = config.project.root
+    rules = configuration.load_resource("repo.toml")["cheat"]
+    final, added = _compose(patches)
+    tracked = sorted(process.tracked(root))
+    _, includes = _graph(root, tracked, rules["source"])
+    touched = set(final)
+    units = {p for p in tracked if configuration.is_source(p) and p.split("/", 1)[0] in rules["source"]}
+    base_units = (touched & units) | (_consumers({p for p in touched if configuration.is_header(p)}, includes) & units)
+    post_units = {final.get(u, u) for u in base_units} - {None} | {a for a in added if configuration.is_source(a)}
+    return final, added, base_units, {u for u in post_units if u}
+
+
+def _by_reference(config: Config, params: Json) -> Json:
+    """--reference: the work tree's edits over REV built here, compared with the reference tree's objects of REV."""
+    root, reference = config.project.root, Path(params["reference"]).resolve()
+    against, versions = params["against"], list(params.get("version") or config.project.versions)
+    rev = process.tree_id(root, against)
+    if not rev or process.tree_id(reference, "HEAD") != rev:
+        raise Refusal(Finding("buildproof.reference", f"{reference} is not at {against}: give a tree built at REV"))
+    if process.dirty(reference):
+        raise Refusal(Finding("buildproof.reference", f"{reference} has uncommitted edits: its objects are not REV's"))
+    holder = process.state(root) / "buildproof"
+    shutil.rmtree(holder, ignore_errors=True)
+    holder.mkdir(parents=True)
+    change = holder / "change.patch"
+    diff = process.git(config, "diff", "--binary", "-M", against).stdout
+    change.write_bytes(diff if isinstance(diff, bytes) else diff.encode())
+    final, added, base_units, post_units = _reaches(config, [change])
+    old_of = {new: old for old, new in final.items() if new} | {u: u for u in base_units if u not in final}
+    targets = _targets(versions, post_units)
+    absent, bad = _build(config, targets, int(params.get("jobs") or 0))
+    findings = [Finding("buildproof.make", "the build of the change failed: " + "; ".join(bad[:SHOWN]))] if bad else []
+    compared, differ, missing, unbuilt = 0, [], [], []
+    for target in targets:
+        v, unit = target.split("/", 2)[1], target.split("/", 2)[2].removesuffix(".o")
+        obj, was = root / target, reference / f"build/{v}/{old_of.get(unit, unit)}.o"
+        if unit in added or target in absent:
+            continue
+        if not was.is_file():
+            unbuilt.append(str(was.relative_to(reference)))
+        elif not obj.is_file():
+            missing.append(target)
+        else:
+            compared += 1
+            if _shape(was) != _shape(obj):
+                differ.append(target)
+    if differ:
+        findings.append(Finding("buildproof.differs", f"{len(differ)} objects differ", missing=tuple(differ[:SHOWN])))
+    if missing:
+        findings.append(
+            Finding("buildproof.set", f"{len(missing)} objects of REV are gone", missing=tuple(missing[:SHOWN]))
+        )
+    if unbuilt:
+        findings.append(
+            Finding(
+                "buildproof.reference",
+                f"{reference} holds no object for {len(unbuilt)} units it should build",
+                missing=tuple(unbuilt[:SHOWN]),
+            )
+        )
+    if not compared and not findings:
+        findings.append(Finding("buildproof.empty", "no object could be compared: the change reaches no built unit"))
+    if findings:
+        raise Refusal(*findings)
+    return {
+        "against": against,
+        "patches": [],
+        "versions": versions,
+        "reference": str(reference),
+        "compared": compared,
+        "identical": compared,
+        "differ": [],
+        "missing": [],
+        "extra": [],
+        "added": len(added),
+        "absent": len(absent),
+    }
+
+
 def buildproof_command(config: Config, params: Json) -> Json:
+    if params.get("reference"):
+        return _by_reference(config, params)
     root = config.project.root
     patches = [Path(p).resolve() for p in params["patch"]]
     versions = list(params.get("version") or config.project.versions)
@@ -212,6 +299,8 @@ def buildproof_command(config: Config, params: Json) -> Json:
     head = process.git(config, "rev-parse", "HEAD^{tree}").stdout.strip()
     if head != process.git(config, "rev-parse", f"{against}^{{tree}}").stdout.strip():
         raise Refusal(Finding("buildproof.tree", f"the tree is not at {against}: check it out first"))
+    if not patches:
+        raise Refusal(Finding("land.request", "buildproof needs --patch (a clean tree at REV) or --reference TREE"))
     for patch in patches:
         process.git(config, "apply", "--check", str(patch))
     final, added = _compose(patches)

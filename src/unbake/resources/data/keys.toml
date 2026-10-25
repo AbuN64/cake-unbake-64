@@ -576,6 +576,10 @@ sentence = "an object differs in section bytes or relocations after the change"
 owner = "buildproof"
 sentence = "the build proof compared no object, so it proves nothing"
 
+[key."buildproof.reference"]
+owner = "buildproof"
+sentence = "the reference tree is not a clean build at REV, or lacks an object of a unit the change reaches"
+
 [key."blobs.proof"]
 owner = "blobs"
 sentence = "a pinned blob proof input or typed byte coverage failed; no decoded credit was granted"

@@ -307,6 +307,14 @@ def tree_id(root: Path, rev: str) -> str:
     return done.stdout.decode().strip() if done.returncode == 0 else ""
 
 
+def dirty(root: Path) -> bool:
+    """Whether the tracked files of the tree at root differ from its HEAD (untracked aside); True when git fails."""
+    done = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"], capture_output=True, check=False
+    )
+    return done.returncode != 0 or bool(done.stdout.strip())
+
+
 def changed(root: Path, rev: str) -> list[str] | None:
     """The paths the work tree changes over REV, committed or not (`git diff --name-only REV`); None when git fails."""
     done = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "-z", rev], capture_output=True, check=False)
