@@ -539,4 +539,5 @@ def test_a_piece_shared_with_the_next_functions_pool_is_refused_not_cut(monkeypa
 def test_a_piece_that_ends_with_the_functions_data_is_no_remainder(monkeypatch, tmp_path):
     assert place._piece_tail([(0x2000, "rodata", "d/x"), (0x2008, "rodata", "d/y")], 0x2000, 0x2008) is None
     assert place._piece_tail([(0x2000, "rodata", "d/literals_f"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008) is None
-    assert place._piece_tail([(0x2000, "rodata", "d/x"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008) == (0x2000, 0x2010, "d/x")
+    got = place._piece_tail([(0x2000, "rodata", "d/x"), (0x2010, "rodata", "d/y")], 0x2000, 0x2008)
+    assert got == (0x2000, 0x2010, "d/x")

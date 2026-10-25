@@ -137,14 +137,14 @@ def _pieces(root: Path, v: str) -> list[tuple[int, str, str]]:
 
 def _piece_tail(pieces: Sequence[tuple[int, str, str]], rom: int, end: int) -> tuple[int, int, str] | None:
     """(start, stop, name) of the data piece holding `rom` when it runs past `end` (bytes after the function's own data
-    that only this piece holds), else None. REV1-ONE-40 01:3x: de/eu/eu-x/us held Nav_PrepareProbeSegments' 10 words and
-    func_80210EFC_de's 8-word pool in one 18-word array; the 0x28 row superseded it and the 8 words vanished (SHA off)."""
+    that only this piece holds), else None. REV1-ONE-40 01:3x: de/eu/eu-x/us held Nav_PrepareProbeSegments' 10 words
+    and func_80210EFC_de's 8-word pool in one 18-word array; the 0x28 row superseded it and the 8 words vanished."""
     at = bisect.bisect_right(pieces, (rom, "\uffff")) - 1
     if at < 0 or at + 1 >= len(pieces):
         return None
     start, kind, name = pieces[at]
     stop = pieces[at + 1][0]
-    if kind not in ("rodata", "data") or name.rpartition("/")[2].startswith(tree.LITERALS) or stop <= end:
+    if kind != "rodata" or name.rpartition("/")[2].startswith(tree.LITERALS) or stop <= end:
         return None
     return start, stop, name
 
@@ -286,10 +286,11 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                 refused.append(
                     Finding(
                         "place.remainder",
-                        f"{v}: {function}: its data is 0x{rom:X}-0x{end:X}, but the piece {piece} (0x{start:X}-0x{stop:X}) "
-                        f"that the row supersedes also holds 0x{stop - max(end, rest):X} bytes after it (0x{max(end, rest):X}-"
-                        f"0x{stop:X}, another function's data) that nothing else would hold: split the piece at 0x{end:X} "
-                        "first (a row or array of its own for the rest, as the versions where it is already split have)",
+                        f"{v}: {function}: its data is 0x{rom:X}-0x{end:X}, but the piece {piece} "
+                        f"(0x{start:X}-0x{stop:X}) that the row supersedes also holds the bytes "
+                        f"0x{max(end, rest):X}-0x{stop:X} after it (another function's data) that nothing else would "
+                        f"hold: split the piece at 0x{end:X} first (a row or array of its own for the rest, as the "
+                        "versions where it is already split have)",
                         path=module.path,
                         unit=function,
                         versions=(v,),
