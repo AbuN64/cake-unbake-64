@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import sys
 import traceback
 from collections.abc import Sequence
@@ -186,7 +187,19 @@ def _group(outcome: dict[str, int], argv: Sequence[str]) -> click.Group:
     return group
 
 
+def unwind_on_signals() -> None:
+    """A SIGTERM or SIGHUP (`timeout`, a closed terminal) raises SystemExit, so the `except BaseException` and `finally`
+    blocks that put a trial landing's files back run: the default action ends the process at once and left a lane's
+    unit file deleted in its tree (10-24 `score --alloc` under `timeout`)."""
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(number, lambda sig, _frame: sys.exit(128 + sig))
+        except ValueError:  # not the main thread
+            return
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    unwind_on_signals()
     human.attach(sys.stderr, sys.stderr.isatty())
     args = list(sys.argv[1:] if argv is None else argv)
     outcome: dict[str, int] = {"code": 0}
