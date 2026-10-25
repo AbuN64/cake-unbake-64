@@ -240,3 +240,11 @@ def test_operand_pairs_give_the_target_register_at_each_aligned_site() -> None:
 
     named, pairs = symptoms.operand_pairs(mtc1(4), mtc1(5))
     assert named == [["$a1", "$f4"]] and pairs == {0: [("$a1", "$a1"), ("$f4", "$f5")]}
+
+
+def test_a_register_shared_by_variables_is_unknown_not_the_first_one():
+    assert alloc._label(["fmt"], 3) == "fmt"
+    assert alloc._label(["fmt", "fmt"], 3) == "fmt"
+    assert alloc._label(None, 3) == "pseudo 3"
+    named = alloc._label(["previous", "table"], 7)
+    assert named.startswith("unknown pseudo 7") and "previous/table" in named

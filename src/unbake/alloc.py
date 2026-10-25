@@ -135,6 +135,17 @@ _RTX = re.compile(r"\n(?=\((?:insn|jump_insn|call_insn|note|code_label|barrier)(
 _LINE = re.compile(r'\(note(?:/[a-z]+)? \d+ \d+ \d+ \("[^"]*"\) (\d+)\)')
 
 
+def _label(vars_: list[str] | None, pseudo: int) -> str:
+    """The name of a pseudo from the debug records of its register. One variable names it; several variables share the
+    register in different live ranges and the records do not say which one this pseudo is, so it is `unknown` with the
+    candidates, never the first one (10-24: a loop's table address was named `previous`)."""
+    if not vars_:
+        return f"pseudo {pseudo}"
+    if len(set(vars_)) == 1:
+        return vars_[0]
+    return f"unknown pseudo {pseudo} (one of {'/'.join(dict.fromkeys(vars_))})"
+
+
 def lines(lreg: str, function: str, pseudos: set[int]) -> dict[int, list[Json]]:
     """Per pseudo, its references in each source line of the function's local-alloc dump: {line, depth, refs,
     weighted}. flow counts a reference once per loop the insn sits in plus one (REG_N_REFS), so weighted is refs times
@@ -216,7 +227,7 @@ def report(
             "pseudo": pseudo,
             "refs": refs,
             "length": span,
-            "name": "/".join(named.get(reg, [f"pseudo {pseudo}"])),
+            "name": _label(named.get(reg), pseudo),
             "priority": round(priority(refs, span), 4),
             "allocator": "global" if reg in winner else "local",
             "lines": by_line.get(pseudo, []),
@@ -311,8 +322,9 @@ def rotations(rows: list[Json], site: Callable[[int], str] | None = None) -> lis
         wanted = sorted(temps, key=lambda t: HARD[edge[t["register"]]["register"]])
         names = ", ".join(f"`{t['name']}`" for t in wanted)
         files = "f" if all(t["register"].startswith("$f") for t in temps) else "i"
-        loose = [t for t in temps if not t["name"].startswith("pseudo") and len(t["lines"]) <= 2] or temps[:1]
-        loose.sort(key=lambda t: (t["name"].startswith("pseudo"), len(t["lines"])))
+        anon = ("pseudo", "unknown")
+        loose = [t for t in temps if not t["name"].startswith(anon) and len(t["lines"]) <= 2] or temps[:1]
+        loose.sort(key=lambda t: (t["name"].startswith(("pseudo", "unknown")), len(t["lines"])))
         generic = [
             {
                 "kind": "fold-temp",
