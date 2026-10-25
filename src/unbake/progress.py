@@ -11,6 +11,10 @@ from unbake import config as configuration
 from unbake.contracts import Finding, Json, Refusal
 
 _C_STATES = frozenset({"c", "fuzzy"})
+# What a map's scores mean. Bump it whenever the same source and ROM would score differently (a consumer comparing two
+# maps, like the train's exact ratchet, then re-bases instead of blaming the change that happened to land first):
+# 1 = byte scores; 2 = an exact build through a FAKEMATCH scores `fakematch.SCORE`, below 100 (10-25).
+SCORER = 2
 
 
 def locations(config: Any, tree: Any) -> dict[tuple[str, str], int]:
@@ -103,6 +107,7 @@ def _map(config: Any, tree: Any, current: Json, version: str, lines: dict[tuple[
     ]
     return {
         "schema": 1,
+        "scorer": SCORER,
         "version": version,
         "rom_size": current["versions"][version]["rom_size"],
         "fns": sorted(fns, key=lambda row: (row[1], row[0])),

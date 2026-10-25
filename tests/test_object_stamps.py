@@ -349,3 +349,32 @@ def test_a_recursive_make_never_sweeps_the_objects_its_parent_is_about_to_link(t
     _old(asm)
     assert tree.make(deps=True, level=1) == (0, 0)  # a sub-make leaves the object where the parent's link expects it
     assert tree.make(deps=True) == (1, 1)  # the top-level make's sweep still drops it
+
+
+def test_a_stamp_signed_under_the_new_header_bytes_survives_the_sweep(tmp_path):
+    """hdrnarrow.sign: a unit the narrowing proved unreachable keeps its stamp and object when a later make skips the
+    header by date (`make -o`); unsigned, the sweep drops it (same date, other bytes) and it is preprocessed again."""
+    import json
+
+    from unbake import hdrnarrow
+
+    tree = Tree(tmp_path)
+    (tmp_path / "src/h.h").write_text("one\n")
+    tree.write("int a;\n")
+    tree.make(deps=True)
+    tree.age()
+    tree.make(deps=True)
+    stamp = "build/us/src/a.c.i.ok"
+    when = (tmp_path / stamp).stat().st_mtime_ns
+    (tmp_path / "src/h.h").write_text("two\n")
+    _old(tmp_path / "src/h.h")  # make skips the header by date, as `make -o src/h.h` does
+    assert hdrnarrow.sign(tmp_path, [stamp, "build/us/src/none.c.i.ok"]) == 1
+    last = (tmp_path / "build/.inputs.log").read_text().splitlines()[-1]
+    assert json.loads(last)[:2] == [stamp, when]
+    assert tree.make(deps=True) == (0, 0)
+    assert (tmp_path / "preprocessed").read_text() == ""
+    assert (tmp_path / stamp).stat().st_mtime_ns == when  # still pristine for the next narrowing
+    (tmp_path / "src/h.h").write_text("three\n")  # unsigned: the sweep drops the stamp
+    _old(tmp_path / "src/h.h")
+    tree.make(deps=True)
+    assert (tmp_path / "preprocessed").read_text() == "p\n"

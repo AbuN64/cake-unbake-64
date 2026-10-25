@@ -27,6 +27,9 @@ edit can reach (a widely included header: 3400 units over five versions, 527 CPU
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -368,3 +371,56 @@ def narrow_tree(
         else:
             stats["skipped"] += 1
     return keep, stats
+
+
+def _dependencies(dfile: Path) -> list[str] | None:
+    """The files a make dependency file names after its targets: the reading of the Makefile's stamp sweep."""
+    try:
+        text = dfile.read_text(errors="replace")
+    except OSError:
+        return None
+    names: list[str] = []
+    for line in text.replace("\\\n", " ").splitlines():
+        _, colon, named = line.partition(": ")
+        if colon and named.strip():
+            names += named.split()
+    return names
+
+
+def sign(root: Path, stamps: Sequence[str]) -> int:
+    """Sign STAMPS (build/<v>/<unit>.i.ok, relative to ROOT) again under the bytes their inputs hold now: append to
+    build/.inputs.log the record the Makefile's stamp record writes (path, the stamp's own mtime, the SHA-1 of the
+    SHA-1s of the files its .d names). Only for units `narrow_tree` dropped: their preprocessed text and object stay
+    valid under the new header bytes; without a fresh record the stamp sweep of the next make drops every one of them
+    (same date, other input bytes) and the build remakes them all (10-25: a stamp's ROM check rebuilt the 2,000-4,000
+    includers per version the data check had proved unreachable, 186-619 CPU s). The stamp keeps its date, so it stays
+    pristine for the next narrowing. Returns the number of records written (a stamp without a .d gets none)."""
+    root = Path(root)
+    digests: dict[str, str] = {}
+
+    def digest(name: str) -> str:
+        if name not in digests:
+            try:
+                digests[name] = hashlib.sha1((root / name).read_bytes()).hexdigest()
+            except OSError:
+                digests[name] = "-"
+        return digests[name]
+
+    lines = []
+    for stamp in stamps:
+        deps = _dependencies(root / (stamp[: -len(".i.ok")] + ".d"))
+        try:
+            when = (root / stamp).stat().st_mtime_ns
+        except OSError:
+            continue
+        if deps is None:
+            continue
+        key = hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest()
+        lines.append(json.dumps([stamp, when, key]) + "\n")
+    if lines:
+        fd = os.open(root / "build/.inputs.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, "".join(lines).encode())
+        finally:
+            os.close(fd)
+    return len(lines)

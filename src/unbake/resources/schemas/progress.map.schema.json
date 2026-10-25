@@ -6,6 +6,10 @@
   "schema": {
    "const": 1
   },
+  "scorer": {
+   "type": "integer",
+   "minimum": 1
+  },
   "version": {
    "type": "string"
   },
