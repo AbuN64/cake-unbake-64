@@ -73,6 +73,7 @@ params = [
   { name = "jobs", kind = "option", type = "int", required = false, multiple = false, help = "permuter threads, default min(8, host workers)" },
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "with --permute, where the permuted candidate goes, default FILE.permuted.c" },
   { name = "keep-dumps", kind = "option", type = "path", required = false, multiple = false, help = "with --alloc (implied): copy the compile's gcc dumps (.greg, .lreg, .sched, .sched2, the -g assembly and its .i) into DIR, which outlives the command" },
+  { name = "quick", kind = "flag", type = "str", required = false, multiple = false, help = "with --alloc: skip the source rules (about 13 s of the command) and print the allocation table in seconds" },
 ]
 
 [command.probe]

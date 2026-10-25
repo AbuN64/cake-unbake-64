@@ -148,6 +148,41 @@ def _written(command: str, result: Json | None) -> list[str]:
     return lines
 
 
+def _pseudos(rows: Sequence[Json]) -> list[str]:
+    """The allocation table (score --alloc): every pseudo with its priority and registers, MISMATCH rows explained."""
+    if not rows:
+        return []
+    out = [
+        f"{'pseudo':>6} {'source name':<14} {'refs':>4} {'live':>5} {'prio':>7} {'alloc':<6} {'rank':>4} "
+        f"{'got':<5} {'ROM':<9} flag"
+    ]
+    for r in rows:
+        out.append(
+            f"{r['pseudo']:>6} {r['name'][:14]:<14} {r['refs']:>4} {r['length']:>5} {r['priority']:>7} "
+            f"{r['allocator']:<6} {'-' if r['rank'] is None else r['rank']:>4} {r['register']:<5} "
+            f"{r['target_register'] or '?':<9} " + ("MISMATCH" if r["mismatch"] else "")
+        )
+        if r["mismatch"]:
+            out.append(f"       {r['source']}" if r["source"] else "       (no source line)")
+            out.append(f"       why: {r['why']}")
+            for t in r.get("took", ()):
+                out.append(
+                    f"       conflicts with {t['name']} (pseudo {t['pseudo']}, {t['allocator']}"
+                    f"{'' if t['rank'] is None else ' rank ' + str(t['rank'])}, prio {t['priority']}"
+                    f"{', placed first' if t['earlier'] else ''}) which holds the ROM register here"
+                )
+            d = r.get("delta")
+            if d:
+                out.append(
+                    f"       delta: needs priority +{d['needs']} to pass {d['above']}: "
+                    f"{d['more_refs']} more weighted refs, or {d['shorter_by']} fewer live insns"
+                )
+            out.extend(
+                f"       the ROM gives {r['register']} to pseudo {g.split('->')[1]}" for g in r.get("rom_gives", ())
+            )
+    return out
+
+
 def _score(result: Json) -> list[str]:
     """What a score found besides its diff: where the words part, the source rules, and the registers' priorities."""
     shift, lines = result.get("shift") or {}, []
@@ -159,6 +194,7 @@ def _score(result: Json) -> list[str]:
         )
     lines.extend(x for x in (shift.get("frame"), shift.get("folded")) if x)
     lines.extend(f"source rule {f['key']} at line {f['line']}: {f['reason']}" for f in result.get("source", ()))
+    lines.extend(_pseudos(result.get("pseudos", ())))
     for row in result.get("alloc", ()):
         won, lost, flip = row["candidate"], row["target"], row["flip"]
         lines.append(

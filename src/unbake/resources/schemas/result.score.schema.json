@@ -24,6 +24,7 @@
   "source": {"type": "array", "items": {"type": "object"}},
   "alloc": {"type": "array", "items": {"type": "object"}},
   "rotations": {"type": "array", "items": {"type": "object"}},
+  "pseudos": {"type": "array", "items": {"type": "object"}},
   "sched": {"type": "array", "items": {"type": "object"}},
   "diff": {"type": "array", "items": {"type": "string"}},
   "proofs": {"type": "array", "items": {"type": "object"}},

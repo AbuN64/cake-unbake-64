@@ -254,6 +254,19 @@ def register_votes(built: bytes, target: bytes) -> dict[str, Counter[str]]:
     return votes
 
 
+def operand_pairs(built: bytes, target: bytes) -> tuple[list[list[str]], dict[int, list[tuple[str, str]]]]:
+    """(the registers each built instruction names, in operand order; per aligned built instruction the (built, target)
+    register pairs of its operands): the per-site form of register_votes, for pinning a register to one pseudo."""
+    b, t = _lines(built), _lines(target)
+    named = [re.findall(r"\$\w+", ",".join(x[1])) for x in b]
+    pairs: dict[int, list[tuple[str, str]]] = {}
+    for block in _common([_blind(x) for x in b], [_blind(x) for x in t]).get_matching_blocks():
+        for k in range(block.size):
+            want = re.findall(r"\$\w+", ",".join(t[block.b + k][1]))
+            pairs[block.a + k] = list(zip(named[block.a + k], want, strict=True))
+    return named, pairs
+
+
 def from_missing(missing: Sequence[str]) -> Json:
     facts = {}
     for gap in missing:

@@ -491,8 +491,9 @@ def _compact(diff: Sequence[str], limit: int) -> list[str]:
 def score_command(config: Config, params: Json) -> Json:
     """Score candidates in one version and write nothing (no journal, inbox, landing or artifacts): the ordered
     match against the ROM with the differing lines, where they part (diagnostic), the source rules broken, and with
-    --alloc the registers and the instruction order. --variants scores a JSON list of {file, overlays} in one process,
-    side by side."""
+    --alloc the registers (a table of every pseudo with its priority, the target's register and who took it) and the
+    instruction order; --quick drops the source rules to answer in seconds. --variants scores a JSON list of
+    {file, overlays} in one process, side by side."""
     with effort.stage("compare.score"):
         if params.get("variants"):
             return _score_variants(config, params)
@@ -785,7 +786,7 @@ def _score_one(config: Config, params: Json) -> Json:
     proofs.insert(0, proof)
     shown, built, target, everything = _verdict(config, version, name, path, proof, extras, params)
     snapshot, unit, recipe, _ = native.candidate(config, version, path, text, overrides, extras, [name])
-    source_findings = policy.evaluate(snapshot, path, text, None, False)
+    source_findings = [] if params.get("quick") else policy.evaluate(snapshot, path, text, None, False)
     result: dict[str, Any] = {
         "unit": path,
         "members": [name],
@@ -846,6 +847,15 @@ def _score_one(config: Config, params: Json) -> Json:
         site = _siter(config, resolved.at(version), resolved)
         result["alloc"] = alloc.report(name, greg, lreg, asm, symptoms.register_votes(built, target), site)
         result["rotations"] = alloc.rotations(result["alloc"], site)
+        named, pairs = symptoms.operand_pairs(built, target)
+        final = passes.get("sched2") or greg
+        result["pseudos"] = alloc.table(
+            name,
+            greg,
+            lreg,
+            alloc.pseudo_votes(name, lreg, final, alloc.placement(greg, lreg, name), named, pairs),
+            site,
+        )
         vram = native.symbol_facts(config, version, extras)[name][0]
         result["sched"] = sched.report(name, passes, symptoms.listing(built, vram), everything)
     return result

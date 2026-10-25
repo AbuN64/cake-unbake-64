@@ -4,7 +4,7 @@ from collections import Counter
 
 import pytest
 
-from unbake import alloc
+from unbake import alloc, symptoms
 
 GREG = (
     ";; Function f\n\n;; 4 regs to allocate: 81 93 88 116 (2)\n;; Register dispositions:\n"
@@ -171,3 +171,72 @@ def test_rotations_see_a_swap_of_float_temps_and_prefer_the_precedent_of_the_sam
 def test_rotations_ignore_a_register_the_target_does_not_return_to_the_chain() -> None:
     a, b = _pseudo("$v0", "a", 1.0, [1]), _pseudo("$v1", "b", 1.0, [2])
     assert alloc.rotations([_row("$v1", "$v0", a, b, 3)]) == []
+
+
+TGREG = (
+    ";; Function f\n\n;; 3 regs to allocate: 85 81 90\n;; 81 conflicts: 81 85 90 2\n;; 85 conflicts: 81 85 90\n"
+    ";; 90 conflicts: 81 85 90\n\n;; Register dispositions:\n"
+    "81 in 20  85 in 19  90 in 21  \n;; Hard regs used: 19 20 21\n"
+)
+TLREG = (
+    ";; Function f\n"
+    '(note 1 0 2 ("f.c") 10)\n'
+    "(insn 4 2 6 (set (reg/v:SI 90) (const_int 0)) -1 (nil))\n"
+    '(note 5 4 6 ("f.c") 11)\n'
+    "(insn 7 6 8 (set (reg:SI 85) (mult:SI (reg/v:SI 90) (const_int 1180))) -1 (nil))\n"
+    '(note 8 7 9 ("f.c") 12)\n'
+    '(insn 9 8 10 (set (reg/v:SI 81) (symbol_ref:SI ("D_1"))) -1 (nil))\n'
+    "Register 85 used 9 times across 105 insns; dies in 0 places.\n"
+    "Register 81 used 34 times across 678 insns; dies in 0 places.\n"
+    "Register 90 used 8 times across 108 insns; dies in 0 places.\n"
+)
+SOURCE = {10: "n = 0;", 11: "giv = n * 1180;", 12: "res = &D_1;"}
+
+
+def test_table_names_each_pseudo_and_explains_who_took_the_register_the_target_uses() -> None:
+    votes = {85: Counter({"$s4": 5}), 81: Counter({"$s5": 7}), 90: Counter({"$s3": 4})}
+    rows = {r["pseudo"]: r for r in alloc.table("f", TGREG, TLREG, votes, lambda n: f"f.c:{n}  `{SOURCE[n]}`")}
+    n, giv, res = rows[90], rows[85], rows[81]
+    assert [r["pseudo"] for r in alloc.table("f", TGREG, TLREG, votes)] == [85, 81, 90]  # the allocation order
+    assert (n["name"], n["refs"], n["length"], n["priority"], n["rank"]) == ("n", 8, 108, 0.2222, 2)
+    assert (giv["priority"], res["priority"]) == (0.2571, 0.2507)  # the three priorities of func_8040FB94_de
+    assert (n["register"], n["target_register"], n["mismatch"]) == ("$s5", "$s3", True)
+    assert [(t["name"], t["earlier"]) for t in n["took"]] == [
+        ("tmp@11", True)
+    ]  # the giv holds $s3 and was placed first
+    assert n["delta"]["more_refs"] == 2 and n["delta"]["above"] == 0.2571  # 8 refs need 10 to pass the giv
+    assert "taken first by tmp@11" in n["why"] and n["rom_gives"] == ["$s5->81"]
+    assert res["took"][0]["pseudo"] == 90 and res["took"][0]["earlier"] is False  # n sits in $s5, placed after res
+    assert not any(r["mismatch"] for r in alloc.table("f", TGREG, TLREG, {85: Counter({"$s3": 5})}))
+
+
+def test_table_flags_one_site_that_differs_and_leaves_an_unvoted_pseudo_unknown() -> None:
+    votes = {90: Counter({"$s5": 9, "$s6": 1})}
+    rows = {r["pseudo"]: r for r in alloc.table("f", TGREG, TLREG, votes)}
+    assert (rows[90]["target_register"], rows[90]["mismatch"], rows[90]["support"]) == ("$s5/$s6", True, "$s5x9 $s6x1")
+    assert "not blocked" in rows[90]["why"]  # no pseudo of f holds $s6
+    assert (rows[81]["target_register"], rows[81]["mismatch"]) == (None, False)
+
+
+def test_pseudo_votes_pin_a_register_to_the_pseudo_whose_instruction_names_it() -> None:
+    lreg = (
+        ";; Function f\n(insn 6 4 8 (set (reg/v:SF 81) (reg:SF 5 a1)) 192 {m} (nil))\n"
+        "(insn 9 8 10 (set (reg:SI 82) (reg:SI 4 a0)) 1 (nil))\n"
+    )
+    final = (
+        ";; Function f\n(insn 9 4 6 (set (reg:SI 3 v1) (reg:SI 4 a0)) 1 (nil))\n"
+        "(insn 6 9 8 (set (reg/v:SF 36 $f4) (reg:SF 5 a1)) 192 {m} (nil)\n"
+        "    (expr_list:REG_DEAD (reg:SF 5 a1) (nil)))\n"
+    )
+    named = [["$v1", "$a0"], ["$a1", "$f4"]]  # the built code in final order
+    pairs = {0: [("$v1", "$v1"), ("$a0", "$a0")], 1: [("$a1", "$a1"), ("$f4", "$f5")]}
+    votes = alloc.pseudo_votes("f", lreg, final, {81: 36, 82: 3}, named, pairs)
+    assert votes == {81: Counter({"$f5": 1}), 82: Counter({"$v1": 1})}
+
+
+def test_operand_pairs_give_the_target_register_at_each_aligned_site() -> None:
+    def mtc1(fs: int) -> bytes:  # mtc1 $a1, $fN
+        return (0x44850000 | fs << 11).to_bytes(4, "big")
+
+    named, pairs = symptoms.operand_pairs(mtc1(4), mtc1(5))
+    assert named == [["$a1", "$f4"]] and pairs == {0: [("$a1", "$a1"), ("$f4", "$f5")]}

@@ -6,6 +6,8 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable
+from difflib import SequenceMatcher
+from typing import Any
 
 from unbake.contracts import Json
 
@@ -356,3 +358,247 @@ def rotations(rows: list[Json], site: Callable[[int], str] | None = None) -> lis
             }
         )
     return found
+
+
+# ---------------------------------------------------------------- the per-pseudo table
+_REGEXP = re.compile(r"\(reg(/[a-z]+)*:([A-Z]+) (\d+)\)")
+_ASSIGN = re.compile(r"(?:^|[;{(]|\b\w+\s+\**)\s*\**(\w+)\s*(?:[-+*/|&^]|<<|>>)?=(?!=)")
+_WIDE = {"DF", "DI", "TI"}
+_QUOTED = re.compile(r"`(.*)`$")
+
+
+def _modes(lreg: str, function: str) -> dict[int, tuple[str, bool]]:
+    """Per pseudo of the function's local-alloc dump, the machine mode of its first reference and whether it is a user
+    variable (gcc marks one `reg/v`)."""
+    found: dict[int, tuple[str, bool]] = {}
+    for flags, mode, number in _REGEXP.findall(_part(lreg, function)):
+        found.setdefault(int(number), (mode, "/v" in flags))
+    return found
+
+
+def _spelled(site: Callable[[int], str] | None, line: int) -> str:
+    quoted = _QUOTED.search(site(line)) if site and line else None
+    return quoted[1] if quoted else ""
+
+
+def _source_name(row_lines: list[Json], user: bool, site: Callable[[int], str] | None) -> tuple[str, str]:
+    """(name, source text) of a pseudo from the source lines that reference it: a user variable is the identifier its
+    first line assigns (`near = ...`, `f32 near = ...`); a temporary is `tmp@LINE` over that line's text."""
+    first = row_lines[0]["line"] if row_lines else 0
+    text = _spelled(site, first)
+    assigned = _ASSIGN.search(text)
+    if user and assigned:
+        return assigned[1], text
+    if assigned and not user:
+        return f"tmp@{first}", text
+    for r in row_lines[1:]:  # the first line may only read it (a parameter): take the first line that assigns
+        later = _ASSIGN.search(_spelled(site, r["line"]))
+        if user and later:
+            return later[1], text
+    return (f"var@{first}" if user else f"tmp@{first}") if first else "?", text
+
+
+_ARGUMENT = {HARD[r]: i for i, r in enumerate(("$a0", "$a1", "$a2", "$a3"))} | {HARD["$f12"]: 0, HARD["$f14"]: 1}
+_COPY = re.compile(r"\(insn(?:/[a-z]+)? \d+ \d+ \d+ \(set \(reg\S* (\d+)\)\s+\(reg\S* (\d+) \w+\)\)")
+
+
+def _arguments(lreg: str, function: str) -> dict[int, int]:
+    """Per pseudo that the function first sets from an argument register, the position of that parameter."""
+    out: dict[int, int] = {}
+    for chunk in _RTX.split(_part(lreg, function)):
+        if (m := _COPY.match(chunk)) and int(m[2]) in _ARGUMENT:
+            out.setdefault(int(m[1]), _ARGUMENT[int(m[2])])
+    return out
+
+
+def _parameter(signature: str, index: int) -> str | None:
+    """The name of parameter `index` in the one-line signature `f32 f(void *arg0, f32 speed)`."""
+    inner = signature.partition("(")[2].rpartition(")")[0].split(",")
+    found = re.search(r"(\w+)\s*(?:\[\d*\])?\s*$", inner[index]) if index < len(inner) else None
+    return found[1] if found else None
+
+
+def _holders(placed: dict[int, int], conflicts: list[int], reg: int) -> list[int]:
+    return [q for q in conflicts if placed.get(q) == reg]
+
+
+def placement(greg: str, lreg: str, function: str) -> dict[int, int]:
+    """Pseudo -> hard register the candidate gave it: global dispositions, then local-alloc's own choices."""
+    given = _part(greg, function).partition(";; Register dispositions:")[2].partition(";; Hard regs")[0]
+    placed = {int(p): int(r) for p, r in re.findall(r"(\d+) in (\d+)", given)}
+    for p, r in re.findall(r"^;; Register (\d+) in (\d+)\.", _part(lreg, function), re.M):
+        placed.setdefault(int(p), int(r))
+    return placed
+
+
+_NUMBER = re.compile(r"\(reg\S* (\d+)")
+
+
+def _insns(text: str, function: str) -> list[tuple[int, str]]:
+    """(uid, rtl) of each insn of the function's dump, in the dump's order."""
+    out = []
+    for chunk in _RTX.split(_part(text, function)):
+        if m := re.match(r"\((?:insn|jump_insn|call_insn)(?:/[a-z]+)? (\d+) ", chunk):
+            out.append((int(m[1]), chunk))
+    return out
+
+
+def pseudo_votes(
+    function: str,
+    lreg: str,
+    final: str,
+    placed: dict[int, int],
+    named: list[list[str]],
+    pairs: dict[int, list[tuple[str, str]]],
+) -> dict[int, Counter[str]]:
+    """Per pseudo, the registers the target has where the candidate has the pseudo's register. A built instruction is
+    tied to an insn of the final dump (`final`, hard registers, the uids of the local-alloc dump) by the registers both
+    name; its operands holding the register of a pseudo that insn references in the local-alloc dump vote for it."""
+    free = {HARD[r] for r in ("$zero", "$at")}
+    mine = [
+        (u, tuple(sorted({int(n) for n in _NUMBER.findall(rtl.split("(expr_list:REG_", 1)[0]) if int(n) < 64} - free)))
+        for u, rtl in _insns(final, function)
+    ]
+    mine = [(u, k) for u, k in mine if k]
+    built = [(i, tuple(sorted({HARD[r] for r in regs if r in HARD} - free))) for i, regs in enumerate(named)]
+    built = [(i, k) for i, k in built if k]
+    tie = SequenceMatcher(None, [k for _, k in mine], [k for _, k in built], autojunk=False)
+    uid_of = {built[b + n][0]: mine[a + n][0] for a, b, size in tie.get_matching_blocks() for n in range(size)}
+    users = {
+        u: {int(n) for n in _NUMBER.findall(rtl.split("(expr_list:REG_", 1)[0])} & placed.keys()
+        for u, rtl in _insns(lreg, function)
+    }
+    votes: dict[int, Counter[str]] = {}
+    for i, uid in uid_of.items():
+        for p in users.get(uid, ()):
+            hard = _SHOWN.get(placed[p])
+            for have, want in pairs.get(i, ()):
+                if have == hard:
+                    votes.setdefault(p, Counter())[want] += 1
+    return votes
+
+
+def _why(name: str, got: str, want: str, hard: bool, took: list[Json], is_global: bool) -> str:
+    """One sentence for a mismatch: what keeps the target register `want` from `name`, which has `got`."""
+    first = [t for t in took if t["earlier"]]
+    if hard:
+        return f"{want} is held by hard register conflict (live across {name})"
+    if first:
+        return f"{want} was taken first by " + ", ".join(f"{t['name']} ({t['priority']})" for t in first)
+    if not is_global:
+        return (
+            f"{want} is not blocked: local-alloc (find_free_reg) gives {name} the lowest register not live over its "
+            f"life, {got}; the target has {got} occupied there by a value the candidate does not keep"
+        )
+    return (
+        f"{want} is not blocked in the candidate: {name} took {got}, the first free register in the order; "
+        f"the target keeps another value live in {got} across {name}"
+    )
+
+
+def table(
+    function: str, greg: str, lreg: str, votes: dict[int, Counter[str]], site: Callable[[int], str] | None = None
+) -> list[Json]:
+    """A row per pseudo of the function, the allocator's view of the whole function and not only of the registers that
+    differ: source name and text, weighted references, live insns, priority (global.c, size counted for DF/DI pairs),
+    local or global allocation and its rank in the allocation order, the hard register the candidate gave it and the one
+    the target uses in the aligned operands, a MISMATCH flag, and for a mismatch the pseudos in conflict that hold the
+    target's register in the candidate (who took it first), the hard registers live across it, the target's pseudos in
+    the candidate's register, and the priority delta that puts it above the first one that took the register."""
+    graph, local = _part(greg, function), _part(lreg, function)
+    listed = re.search(r";; \d+ regs to allocate: (.*)", graph)
+    order = [int(t) for t in listed[1].split() if t.isdigit()] if listed else []
+    rank = {p: i for i, p in enumerate(order)}
+    placed = placement(greg, lreg, function)
+    conflicts = {
+        int(n): [int(t) for t in rest.split()] for n, rest in re.findall(r"^;; (\d+) conflicts: (.*)$", graph, re.M)
+    }
+    stats = {
+        int(n): (int(r), int(s)) for n, r, s in re.findall(r"Register (\d+) used (\d+) times across (\d+) insns", local)
+    }
+    blocks = {
+        int(n): int(b) for n, b in re.findall(r"Register (\d+) used \d+ times across \d+ insns in block (\d+)", local)
+    }
+    modes = _modes(lreg, function)
+    params = _arguments(lreg, function)
+    pseudos = sorted(({*stats, *conflicts} & placed.keys()) | set(order))
+    by_line = lines(lreg, function, set(pseudos))
+    hard_of = {i: n for n, i in HARD.items()} | {64: "$hi", 65: "$lo"}
+
+    def shown(reg: int | None) -> str:
+        return "mem" if reg is None else hard_of.get(reg, str(reg))
+
+    def prio(p: int) -> float:
+        refs, span = stats.get(p, (0, 1))
+        return priority(refs, span, 2 if modes.get(p, ("", False))[0] in _WIDE else 1)
+
+    def wanted(p: int) -> tuple[int | None, str, str]:
+        """(the target register that differs from the candidate's, most voted first, else the most voted; the names of
+        every register the target has at the pseudo's sites; their counts): one site that differs is a mismatch."""
+        counted = [(w, c) for w, c in votes.get(p, Counter()).most_common() if w in HARD]
+        if not counted:
+            return None, "", ""
+        differ = [w for w, _ in counted if HARD[w] != placed.get(p)]
+        names = "/".join(w for w, _ in counted)
+        return HARD[differ[0] if differ else counted[0][0]], names, " ".join(f"{w}x{c}" for w, c in counted)
+
+    rows: list[Json] = []
+    for p in pseudos:
+        got = placed.get(p)
+        refs, span = stats.get(p, (0, 1))
+        mode, user = modes.get(p, ("", False))
+        name, text = _source_name(by_line.get(p, []), user, site)
+        if p in params:
+            name = _parameter(text, params[p]) or f"arg{params[p]}"
+        want, seen, support = wanted(p)
+        wrong = want is not None and want != got
+        row: dict[str, Any] = {
+            "pseudo": p,
+            "name": name,
+            "source": text[:70],
+            "mode": mode,
+            "refs": refs,
+            "length": span,
+            "priority": round(prio(p), 4),
+            "allocator": "global" if p in rank else "local",
+            "rank": rank.get(p),
+            "register": shown(got),
+            "target_register": seen or None,
+            "support": support,
+            "mismatch": wrong,
+            "lines": by_line.get(p, []),
+        }
+        if wrong and got is not None and want is not None:
+            near = conflicts.get(p, [])
+            if p in rank:
+                took = [q for q in _holders(placed, near, want) if q != p]
+                hard = [shown(want)] if want in near and want < 64 else []
+            else:  # local-alloc: the pseudos of its own block hold what it may not take
+                took = [q for q, b in blocks.items() if b == blocks.get(p) and q != p and placed.get(q) == want]
+                hard = []
+            first = sorted(took, key=lambda q: (rank.get(q, -1), -prio(q)))
+            beat = prio(first[0]) if first else None
+            row["took"] = [
+                {
+                    "pseudo": q,
+                    "name": _source_name(by_line.get(q, []), modes.get(q, ("", False))[1], site)[0],
+                    "priority": round(prio(q), 4),
+                    "allocator": "global" if q in rank else "local",
+                    "rank": rank.get(q),
+                    "earlier": q not in rank or p not in rank or rank[q] < rank[p],
+                }
+                for q in first
+            ]
+            row["hard_conflict"] = hard
+            row["rom_gives"] = [
+                shown(got) + "->" + str(q) for q in near if q != p and wanted(q)[0] == got and placed.get(q) != got
+            ]
+            row["delta"] = (
+                {"above": round(beat, 4), "needs": round(beat - prio(p), 4), **flip(refs, span, beat)}
+                if beat is not None and beat >= prio(p)
+                else None
+            )
+            row["why"] = _why(name, shown(got), shown(want), bool(hard), row["took"], p in rank)
+        rows.append(row)
+    rows.sort(key=lambda r: (r["rank"] is None, r["rank"] if r["rank"] is not None else -r["priority"], r["pseudo"]))
+    return rows
