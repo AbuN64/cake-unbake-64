@@ -342,3 +342,78 @@ def test_a_split_moves_only_the_placed_versions_blobs_and_leaves_the_other_versi
     assert "1, 2" in kept and "VERSION_DE" in kept and "3," not in kept and "4," not in kept
     assert "VERSION_DE" not in new and "1, 2" not in new
     assert "3," in new and "4," in new and new.count("#if") == new.count("#endif")
+
+
+# --- bounds: a row holds only what the function owns (10-24 REV1-ONE-11 / ONE-8B) -----------------------------------
+H = "func_80400200_de"  # another function, whose own table follows F's
+
+
+def test_a_pool_stops_where_another_functions_jump_table_begins(monkeypatch, tmp_path):
+    # no splat row for H's table: F's pool row would run on over it (us/eu: "took the next two tables")
+    facts = {
+        F: (0x80400000, 0x1000, 0x100, "func"),
+        H: (0x80400200, 0x1200, 0x100, "func"),
+        "D_800E1520": (0x800E1520, 0x2020, None, "data"),
+        "D_far": (0x800E1600, 0x2100, None, "data"),
+    }
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    rom = bytearray((tmp_path / "rom").read_bytes())
+    pool = (0x3F800000, 0x40000000, 0, 0, 0x00400210, 0x00400218, 0x00400220, 0x00400228)  # 4 own words, H's table
+    rom[0x2020 : 0x2020 + 4 * len(pool)] = b"".join(w.to_bytes(4, "big") for w in pool)
+    (tmp_path / "rom").write_bytes(bytes(rom))
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("lwc1 $f0, %lo(D_800E1520)($at)\n")
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row.endswith("size:0x10"), found.row  # the pool's 4 words, not H's table behind it
+    assert found.end == 0x2030 and found.leftover == ""
+
+
+def test_a_row_is_never_sized_across_rows_the_function_does_not_read(monkeypatch, tmp_path):
+    # F reads two pools with an unread row between them: one literals_ row would hold foreign bytes
+    facts = _facts(
+        {
+            "D_800E1520": (0x800E1520, 0x2020, None, "data"),
+            "D_800E1530": (0x800E1530, 0x2030, None, "data"),
+            "D_800E1540": (0x800E1540, 0x2040, None, "data"),
+        }
+    )
+    config = _world(monkeypatch, tmp_path, facts=facts, words=(0x3F800000,) * 4)
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text(
+        "lwc1 $f0, %lo(D_800E1520)($at)\nlwc1 $f2, %lo(D_800E1540)($at)\n"
+    )
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert "place.gap" in {f.key for f in refused.value.findings} and "D_800E1530" in str(refused.value)
+
+
+def test_a_row_read_only_past_an_offset_starts_there_not_at_the_foreign_blob_before_it(monkeypatch, tmp_path):
+    # de: the table is reached as `D_blob + 0xC`; the 12 bytes before it are not F's
+    facts = {
+        F: (0x80400000, 0x1000, 0x100, "func"),
+        G: (0x80400100, 0x1100, 0x100, "func"),
+        "D_blob": (0x800E14F4, 0x1FF4, None, "data"),
+        "D_next": (0x800E1510, 0x2010, None, "data"),
+    }
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    words = (0xDEAD0000, 0xBEEF0000, 0x12345678, *WORDS)
+    rom = bytearray((tmp_path / "rom").read_bytes())
+    rom[0x1FF4:0x2010] = b"".join(w.to_bytes(4, "big") for w in words)
+    (tmp_path / "rom").write_bytes(bytes(rom))
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("lw $v0, %lo(D_blob + 0xC)($at)\n")
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row == f"literals_{F} = 0x800E1500; // rom:0x2000 size:0x10"
+
+
+def test_a_file_with_another_functions_row_still_places_this_function(monkeypatch, tmp_path):
+    # DispatchCurrentScreenEvent: the file placed DispatchElementEvent's table; the second function got no row and rc 0
+    facts = _facts({f"literals_{G}": (0x800E1580, 0x2080, None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    (found,) = place.plan(config, _tree(compiled=(F, G), literals=f"literals_{G}"), [F])
+    assert found.function == F and found.row.startswith(f"literals_{F} = 0x800E1500;")
+
+
+def test_nothing_placed_in_any_version_is_a_refusal_not_a_silent_success(monkeypatch, tmp_path):
+    config = _world(monkeypatch, tmp_path, words=(0, 0, 0, 0))
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("jr $ra\n")
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(compiled=(F, G), literals=f"literals_{G}"), [F])
+    assert refused.value.findings[0].key == "place.none"

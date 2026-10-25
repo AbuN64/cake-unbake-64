@@ -134,16 +134,31 @@ def _is_rodata(pieces: Sequence[tuple[int, str, str]], rom: int) -> bool:
     return at >= 0 and pieces[at][1] == "rodata"
 
 
-def _asm_names(root: Path, config: Config, v: str, function: str, table: Mapping[str, Any]) -> set[str]:
-    """The symbol names the extracted assembly of `function` in version `v` mentions (none: no such file)."""
+_REF = re.compile(r"\b([A-Za-z_]\w*)\b(?:\s*\+\s*(0[xX][0-9A-Fa-f]+|\d+))?")
+
+
+def _asm_refs(root: Path, config: Config, v: str, function: str, table: Mapping[str, Any]) -> dict[str, int]:
+    """name -> the smallest byte offset past it that the extracted assembly of `function` in version `v` uses (`sym`: 0,
+    `sym + 0xC`: 12): the data the function reads begins there, not at the start of a row that also holds foreign bytes
+    before it. Empty: no such file."""
     try:
         file = root / api.asm_path(config, v, function)
     except Refusal:
-        return set()
+        return {}
     if not file.is_file():
-        return set()
+        return {}
     text = re.sub(r"/\*.*?\*/", "", file.read_text())
-    return {n for n in _NAME.findall(text) if n in table}
+    refs: dict[str, int] = {}
+    for m in _REF.finditer(text):
+        if m[1] in table:
+            at = int(m[2], 0) if m[2] else 0
+            refs[m[1]] = min(refs.get(m[1], at), at)
+    return refs
+
+
+def _asm_names(root: Path, config: Config, v: str, function: str, table: Mapping[str, Any]) -> set[str]:
+    """The symbol names the extracted assembly of `function` in version `v` mentions (none: no such file)."""
+    return set(_asm_refs(root, config, v, function, table))
 
 
 def _readers(
@@ -197,18 +212,48 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             module = compiled.get(function)
             if module is None:
                 continue  # not C in this version: its assembly keeps its data
-            if any(n.startswith(tree.LITERALS) and current.owned(v, n) == module.path for n in table):
+            own = tree.LITERALS + function
+            if own in table and current.owned(v, own) == module.path:
                 nothing[function] = False
-                continue  # the file already places read-only data here
-            rows = _data_rows(table, roms, image, spans, pieces, function, _asm_names(root, config, v, function, table))
+                continue  # this function's data is already placed (another function's row in the file does not count)
+            rows = _data_rows(table, roms, image, spans, pieces, function, _asm_refs(root, config, v, function, table))
             if not rows:
-                continue
+                continue  # nothing of its own here; no version placing anything is the place.none refusal below
             nothing[function] = False
-            names = [n for n, _ in rows]
+            names = [n for n, _, _ in rows]
             first, last = names[0], names[-1]
-            vram, rom = table[first][0], table[first][1] or 0
-            end = (table[last][1] or 0) + rows[-1][1]
+            vram, rom = table[first][0] + rows[0][1], (table[first][1] or 0) + rows[0][1]
+            end = (table[last][1] or 0) + rows[-1][1] + rows[-1][2]
+            inside = sorted(
+                n
+                for n, f in table.items()
+                if f[1] is not None
+                and rom < f[1] < end
+                and n not in names
+                and f[3] not in ("func", "label")
+                and not n.startswith(tree.LITERALS)
+                and f[1] not in {table[x][1] for x in names}
+            )
+            if (
+                inside
+            ):  # a single row cannot hold bytes of other data between the function's own: name them, write nothing
+                refused.append(
+                    Finding(
+                        "place.gap",
+                        f"{v}: {function}: its data spans 0x{rom:X}-0x{end:X}, which holds rows it does not read: "
+                        + ", ".join(inside[:4]),
+                        path=module.path,
+                        unit=function,
+                        versions=(v,),
+                    )
+                )
             rest = _after(roms, table[last][1] or 0)
+            if (
+                rest > end and image
+            ):  # what follows the function's data is another function's table: not ours, no stand-in
+                follow = [int.from_bytes(image[i : i + 4], "big") for i in range(end, rest - 3, 4)]
+                if _foreign_table(follow, spans, function) == 0:
+                    rest = end
             aka = {n: [m for m, f in table.items() if f[0] == table[n][0]] for n in names}  # second names, same bytes
             left = set(symbols.superseded_asm(root, v, table))
             shared: list[str] = []
@@ -316,6 +361,16 @@ def _after(roms: Sequence[int], rom: int) -> int:
     return roms[at] if at < len(roms) else rom
 
 
+def _foreign_table(words: Sequence[int], spans: Sequence[tuple[int, int, str]], function: str) -> int:
+    """Index of the first word where two or more consecutive words are jump targets into functions other than `function`
+    (another function's table), or len(words)."""
+    for i in range(len(words) - 1):
+        a, b = jump_target([words[i], words[i + 1]], spans), jump_target([words[i + 1], words[i + 1]], spans)
+        if a is not None and a != function and a == b:
+            return i
+    return len(words)
+
+
 def _data_rows(
     table: Mapping[str, Any],
     roms: Sequence[int],
@@ -323,24 +378,32 @@ def _data_rows(
     spans: Sequence[tuple[int, int, str]],
     pieces: Sequence[tuple[int, str, str]],
     function: str,
-    read: Collection[str],
-) -> list[tuple[str, int]]:
-    """The rodata rows of a version that belong to `function` with the length of each: the ones its assembly reads (up
-    to the next row) and the ones whose leading words are its jump table (those words), by address (one row per
-    address; `literals_` rows never)."""
-    picked: dict[int, tuple[str, int]] = {}
+    read: Collection[str] | Mapping[str, int],
+) -> list[tuple[str, int, int]]:
+    """The rodata rows of a version that belong to `function` as (name, bytes skipped at the row's start, length): the
+    ones its assembly reads and the ones whose leading words are its jump table, by address (one row per address;
+    `literals_` rows never). Each is bounded to what the function owns: a row read only past an offset (`sym + 0xC`)
+    starts there (the bytes before are another function's), and a pool stops where another function's jump table
+    begins, so a row is never sized to the next splat row across foreign data."""
+    placed = {f[1] for n, f in table.items() if n.startswith(tree.LITERALS) and f[1] is not None}
+    offsets = read if isinstance(read, Mapping) else dict.fromkeys(read, 0)
+    picked: dict[int, tuple[str, int, int]] = {}
     for n, fact in table.items():
         rom = fact[1]
-        if rom is None or fact[3] in ("func", "label") or n.startswith(tree.LITERALS):
+        if rom is None or fact[3] in ("func", "label") or n.startswith(tree.LITERALS) or rom in placed:
             continue
         end = _after(roms, rom)
-        words = [int.from_bytes(image[i : i + 4], "big") for i in range(rom, end - 3, 4)] if image else []
+        skip = 0
+        if n in offsets and offsets[n] > 0:
+            skip = min(offsets[n] & ~3, max(end - rom - 4, 0))
+        words = [int.from_bytes(image[i : i + 4], "big") for i in range(rom + skip, end - 3, 4)] if image else []
         run = next((i for i, w in enumerate(words) if jump_target([w, w], spans) != function), len(words))
         is_table = run >= 2 and 4 * run <= TABLE_MAX
-        if n in read and (not pieces or _is_rodata(pieces, rom)):
-            picked.setdefault(rom, (n, 4 * run if is_table else end - rom))  # a table's own words, a pool's whole row
+        if n in offsets and (not pieces or _is_rodata(pieces, rom)):
+            size = 4 * run if is_table else min(end - rom - skip, 4 * _foreign_table(words, spans, function))
+            picked.setdefault(rom, (n, skip, size))
         elif is_table and 4 * run == end - rom:
-            picked.setdefault(rom, (n, end - rom))
+            picked.setdefault(rom, (n, 0, end - rom))
     return [picked[r] for r in sorted(picked)]
 
 
