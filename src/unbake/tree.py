@@ -441,10 +441,17 @@ def _meaning(data: bytes) -> bytes:
 _HEADER_DIRECTIVE = re.compile(rb"[ \t]*#")
 
 
+def _extern_declaration(chunk: Sequence[bytes]) -> bool:
+    """A top-level `extern ...;` declaration (a variable or a prototype, no brace): the scan skips every statement that
+    holds `extern` (`_statement`), so adding, dropping or renaming one never changes a source's names. A rename in a
+    prototype of a header every source includes (TYPES.H) re-keyed all 13.5k parses, 340 CPU s in `unbake cheat`."""
+    return chunk[0] == b"extern" and chunk[-1] == b";" and b"{" not in chunk
+
+
 def _skeleton(data: bytes) -> bytes:
     """`data` (a header, comments gone) without the declarations that cannot change which names a source defines:
-    every top-level type definition (typedef, struct, union, enum) and static inline function. Directives stay as
-    written, and so does any run of lines that is not whole declarations (a struct body split by a conditional). A
+    every top-level type definition (typedef, struct, union, enum), static inline function and extern declaration.
+    Directives stay as written, and so does any run of lines that is not whole declarations (a struct body split by a conditional). A
     header edit that only adds, drops or changes such declarations keeps this text, so a parse keyed on it is reused
     where the preprocessor would otherwise run again for every source that includes the header."""
     out: list[bytes] = []
@@ -456,7 +463,7 @@ def _skeleton(data: bytes) -> bytes:
             text = b"\n".join(run)
             run.clear()
             if cc_cache.complete(text):
-                kept = [c for c in cc_cache.chunks(text) if cc_cache.defined(c) is None]
+                kept = [c for c in cc_cache.chunks(text) if cc_cache.defined(c) is None and not _extern_declaration(c)]
                 out.append(b" ".join(b" ".join(c) for c in kept))
             else:
                 out.append(text)

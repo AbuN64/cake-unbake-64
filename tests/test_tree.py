@@ -506,7 +506,7 @@ def test_a_comment_edit_of_a_shared_header_parses_nothing_again(
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) == runs
-    (root / "include/shared.h").write_text("typedef struct S {\n    int arena;\n} S;\nextern int round;\n")
+    (root / "include/shared.h").write_text("typedef struct S {\n    int arena;\n} S;\nint round_tbl[2];\n")
     monkeypatch.setattr(effort, "_memo", {})
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) > runs
@@ -766,7 +766,7 @@ def test_skeleton_drops_only_declarations_that_cannot_define_a_name() -> None:
     )
     kept = tree._skeleton(header)
     assert b"typedef" not in kept and b"enum" not in kept and b"pick" not in kept
-    assert b"#define M 1" in kept and b"extern int ext ;" in kept and b"table" in kept and b"fn" in kept
+    assert b"#define M 1" in kept and b"ext" not in kept and b"table" in kept and b"fn" in kept
     assert b"struct Split {" in kept  # a run cut by a conditional is kept as written
     grown = header.replace(b"struct Q { int b; };", b"struct Q { int b; int d; };\ntypedef long L;")
     assert tree._skeleton(grown) == kept
@@ -783,6 +783,19 @@ def test_a_header_edit_of_unnamed_types_parses_nothing_again(tmp_path: Path) -> 
     edit(config, "include/t.h", "typedef int T;\nstruct Fresh { int q; };\nint g(void) { return 2; }\n")
     tree.capture(config)
     assert fixture.cpp_runs(tmp_path) > before  # a function in the header can define a name: the source parses again
+
+
+def test_a_header_edit_of_extern_declarations_parses_nothing_again(tmp_path: Path) -> None:
+    """A prototype renamed in a header every source includes (TYPES.H) re-keyed every parse: `extern` statements are
+    skipped by the scan, so they are no part of the second key."""
+    sources = {"src/main/c_func.c": '#include "t.h"\ns32 c_func(void) { return 1; }\n'}
+    header = "extern int old_name(int);\nextern int d;\n"
+    config = fixture.config(tmp_path, sources=sources, extra={"include/t.h": header})
+    tree.capture(config)
+    before = fixture.cpp_runs(tmp_path)
+    edit(config, "include/t.h", "extern int new_name(int);\n")
+    held = tree.capture(config)
+    assert fixture.cpp_runs(tmp_path) == before and held.owner("a", "c_func") == "src/main/c_func.c"
 
 
 def test_an_address_named_file_binds_its_unlisted_definition_to_the_fact_at_that_address(tmp_path: Path) -> None:
