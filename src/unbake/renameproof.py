@@ -13,6 +13,9 @@ The pieces of the proof, each a reason to refuse:
   compares as words with its line indents; a token that differs must be an identifier on both sides, and the
   (old, new) pairs read off the differences are the map; one old name has one new name and no two share one;
 - the map applied to every old token gives the new file (a name renamed in one place and left in another refuses);
+- a member name that one rename sends to different names in different structs (`unk58` is `modeState` in one struct
+  and `phase` in another) is typed by its declaration: each struct body renames it once, no two members of a body
+  take one new name, and every access `p->unk58` that changed reads a new name some declaration gives that old name;
 - a string differs only inside inline assembly text, where the map is the symbol rename it stands for; any other
   string, number or operator is equal exactly;
 - no old name remains as a code token in an unchanged file, and no new name was already a code token in the old tree
@@ -262,6 +265,37 @@ def _declares(tokens: Sequence[str], lo: int, n: int) -> bool:
     return sum(_is_id(t) for t in lead) >= 2
 
 
+def _bodies(tokens: Sequence[str]) -> dict[int, list[int]]:
+    """The struct and union bodies of a C token list: for each body (the index of its `{`) the token index of every
+    member it declares. An enum body is not one, a nested body holds its own members."""
+    found: dict[int, list[int]] = {}
+    stack: list[tuple[int, int]] = []  # (body index or -1, parenthesis depth)
+    for n, token in enumerate(tokens):
+        if token == "{":
+            back = n - 2 if n and _is_id(tokens[n - 1]) and tokens[n - 1] not in ("struct", "union") else n - 1
+            kind = back >= 0 and tokens[back] in ("struct", "union")
+            stack.append((n if kind else -1, 0))
+            if kind:
+                found[n] = []
+        elif token == "}":
+            if stack:
+                stack.pop()
+        elif stack:
+            body, depth = stack[-1]
+            if token in ("(", "["):
+                stack[-1] = (body, depth + 1)
+            elif token in (")", "]"):
+                stack[-1] = (body, max(depth - 1, 0))
+            if body < 0 or not _is_id(token) or n + 1 >= len(tokens) or not n:
+                continue
+            before, after = tokens[n - 1], tokens[n + 1]
+            plain = depth == 0 and after in (";", ",", "[", ":") and (_is_id(before) or before in ("*", ",", "}", ")"))
+            pointer = depth == 1 and after == ")" and before == "*" and tokens[n - 2 : n - 1] == ["("]
+            if (plain or pointer) and before not in ("struct", "union", "enum", "return", "goto", "case"):
+                found[body].append(n)
+    return found
+
+
 Macros = dict[str, list[tuple[list[str], list[str]]]]
 
 
@@ -348,6 +382,8 @@ class _Proof:
         self.tag: dict[str, str] = {}  # struct/union/enum tags renamed (their own namespace: `Message` may be both)
         self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
         self.owner: dict[str, list[int]] = {}
+        self.typed: dict[str, set[str]] = {}  # member old name -> its new names, one per struct that declares it
+        self.slots: dict[str, set[int]] = {}  # per path: token indices of struct member declarations
         self.proto: dict[str, set[int]] = {}
         self.spans: dict[str, list[tuple[int, int]]] = {}
         self.texts: dict[str, tuple[str, str]] = {}
@@ -397,6 +433,9 @@ class _Proof:
         local: dict[tuple[str, int, str], str] = {}
         local_sources: dict[tuple[str, int, str], str] = {}
         declared: dict[tuple[str, int, str], bool] = {}
+        members: dict[str, dict[str, set[str]]] = {}  # old member name -> new name -> where (declaration or access)
+        decls: dict[str, set[str]] = {}  # old member name -> new names given by a struct declaration
+        taken: dict[tuple[str, int, str], str] = {}  # (path, body, new name) -> old name, one struct's new members
         shared: dict[str, set[str]] = {}  # new name -> the old names that share it (checked per version below)
         seen: dict[str, set[str]] = {}  # old name -> versions/<v>/ directories where its token changes
         files: dict[str, set[str]] = {}  # old name -> the other files where its token changes
@@ -413,6 +452,11 @@ class _Proof:
                 continue
             owner, spans = _spans(a) if c else ([-1] * len(a), [])
             self.owner[path], self.spans[path] = owner, spans
+            slots: dict[int, int] = {}
+            if c:
+                for body, indices in _bodies(a).items():
+                    slots.update(dict.fromkeys(indices, body))
+            self.slots[path] = set(slots)
             protos = _prototype_parameters(a, owner) if c else set()
             self.proto[path] = protos
             for n, (x, y) in enumerate(zip(a, b, strict=True)):
@@ -431,6 +475,15 @@ class _Proof:
                         self.refuse(f"tag {x} is renamed to both {tags[x]} and {y}", path)
                     elif tag_sources.setdefault(y, x) != x:
                         self.refuse(f"tags {tag_sources[y]} and {x} are both renamed to {y}", path)
+                    continue
+                if n in slots or _member(a, n):
+                    members.setdefault(x, {}).setdefault(y, set()).add(path)
+                    if n in slots:
+                        decls.setdefault(x, set()).add(y)
+                        if taken.setdefault((path, slots[n], y), x) != x:
+                            self.refuse(
+                                f"{taken[(path, slots[n], y)]} and {x} are both renamed to {y} in one struct", path
+                            )
                     continue
                 if fn >= 0 and not _member(a, n):
                     key = (path, fn, x)
@@ -476,12 +529,23 @@ class _Proof:
                 self.refuse(
                     f"{' and '.join(sorted(olds))} are both renamed to {y} (and are not copies for disjoint versions)"
                 )
+        for x, targets in sorted(members.items()):
+            if x in pairs:
+                self.refuse(f"{x} is renamed as a member to {', '.join(sorted(targets))} and elsewhere to {pairs[x]}")
+            for y in sorted(set(targets) - decls.get(x, set())):
+                self.refuse(f"a member {x} is renamed to {y} where no struct declaration renames it so")
+            for y in sorted(set(targets) & set(sources)):
+                self.refuse(f"{y} is the new name of a member and of a renamed global")
+            self.typed[x] = set(targets)
         self.map = pairs
         self.tag = tags
         self.local = local
 
     def pairs(self) -> list[tuple[str, str]]:
-        return sorted({*self.map.items(), *self.tag.items(), *((key[2], new) for key, new in self.local.items())})
+        typed = ((x, y) for x, ys in self.typed.items() for y in ys)
+        return sorted(
+            {*self.map.items(), *self.tag.items(), *typed, *((key[2], new) for key, new in self.local.items())}
+        )
 
     def apply(self) -> None:
         """The map over every old file must give the new file: a partial rename and an asm string both end here."""
@@ -493,9 +557,11 @@ class _Proof:
         for path, before in self.old.items():
             owner = self.owner[path]
             keep = self.proto[path]
+            slots = self.slots[path]
             mapped = [
                 self.new[path][n]
                 if n in keep
+                or (t in self.typed and (n in slots or _member(before, n)) and self.new[path][n] in self.typed[t])
                 else text(t)
                 if t[:1] == ASM_MARK
                 else tags.get(t, t)
@@ -528,6 +594,7 @@ class _Proof:
     def capture(self) -> None:
         """No new name was a code token in the old tree and no old name remains one in an unchanged file."""
         keys, values = {*self.map, *self.tag}, {*self.map.values(), *self.tag.values()}
+        self.typed_capture()
         for names, rev, spec, what in (
             (values - keys, self.base, f"{self.base}:", "already a code token in the old tree (it would capture)"),
             (keys - values, None, ":0:", "still a code token after the change"),
@@ -546,6 +613,20 @@ class _Proof:
                     found = self.visible(tokens, found, keys) if _is_c(path) else found
                 if found:
                     self.refuse(f"{sorted(found)[0]} is {what}", path)
+
+    def typed_capture(self) -> None:
+        """A member renamed per struct names no struct by its tokens, so its new names must be unused in the old
+        tree (a member of another struct by that name would be reached by a misplaced access)."""
+        news = {y for ys in self.typed.values() for y in ys} - set(self.typed)
+        if not news:
+            return
+        for path in self._hits(sorted(news), self.base):
+            data = self.repo.blobs([f"{self.base}:{path}"])[f"{self.base}:{path}"]
+            if data is None or b"\0" in data:
+                continue
+            found = news & set(_tokens(data.decode("latin-1"), _is_c(path)))
+            if found:
+                self.refuse(f"{sorted(found)[0]} is a member name already used in the old tree", path)
 
     def visible(self, tokens: list[str], names: set[str], keys: set[str]) -> set[str]:
         """The new names a file uses where a renamed global could be captured: a use that is not a member and not in

@@ -364,3 +364,72 @@ def test_a_tag_renamed_in_one_place_and_left_in_another_is_refused(repo: Path) -
     _git(repo, "commit", "-q", "-m", "tag")
     (repo / "include/m.h").write_text("struct CMsg_t { int a; };\nextern struct Message *g;\n")
     assert _refused(repo)
+
+
+STRUCTS = {
+    "include/s.h": "typedef struct A { int unk58; int unk60; } A;\ntypedef struct B { int unk58; } B;\n"
+    "typedef struct C { int unk58; } C;\nenum E { unk58x };\n",
+    "src/m.c": "int Run(A *a, B *b, C *c) { a->unk58 = 1; b->unk58 = 2; return a->unk60 + c->unk58; }\n",
+}
+
+
+@pytest.fixture
+def structs(repo: Path) -> Path:
+    for name, text in STRUCTS.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "structs")
+    return repo
+
+
+def _edit(root: Path, path: str, *pairs: tuple[str, str]) -> None:
+    text = (root / path).read_text()
+    for old, new in pairs:
+        assert old in text
+        text = text.replace(old, new)
+    (root / path).write_text(text)
+
+
+def test_one_member_name_renamed_differently_in_two_structs_is_a_rename(structs: Path) -> None:
+    _edit(
+        structs,
+        "include/s.h",
+        ("struct A { int unk58;", "struct A { int modeState;"),
+        ("struct B { int unk58;", "struct B { int phase;"),
+    )
+    _edit(structs, "src/m.c", ("a->unk58", "a->modeState"), ("b->unk58", "b->phase"))
+    result = _prove(structs)
+    assert ["unk58", "modeState"] in result["map"] and ["unk58", "phase"] in result["map"]
+
+
+def test_a_member_access_no_declaration_renames_that_way_is_refused(structs: Path) -> None:
+    _edit(structs, "include/s.h", ("struct A { int unk58;", "struct A { int modeState;"))
+    _edit(structs, "src/m.c", ("a->unk58", "a->modeState"), ("b->unk58", "b->other"))
+    _edit(structs, "include/s.h", ("struct B { int unk58;", "struct B { int phase;"))
+    assert "no struct declaration renames it so" in _refused(structs)
+
+
+def test_two_members_of_one_struct_renamed_to_one_name_are_refused(structs: Path) -> None:
+    _edit(
+        structs,
+        "include/s.h",
+        ("int unk58; int unk60; }", "int same; int same; }"),
+        ("struct B { int unk58;", "struct B { int phase;"),
+    )
+    _edit(structs, "src/m.c", ("a->unk58", "a->same"), ("a->unk60", "a->same"), ("b->unk58", "b->phase"))
+    assert "both renamed to same" in _refused(structs)
+
+
+def test_a_typed_member_name_already_used_in_the_tree_is_refused(structs: Path) -> None:
+    (structs / "src/z.c").write_text("typedef struct Z { int phase; } Z;\n")
+    _git(structs, "add", "-A")
+    _git(structs, "commit", "-q", "-m", "z")
+    _edit(
+        structs,
+        "include/s.h",
+        ("struct A { int unk58;", "struct A { int modeState;"),
+        ("struct B { int unk58;", "struct B { int phase;"),
+    )
+    _edit(structs, "src/m.c", ("a->unk58", "a->modeState"), ("b->unk58", "b->phase"))
+    assert "already used in the old tree" in _refused(structs)
