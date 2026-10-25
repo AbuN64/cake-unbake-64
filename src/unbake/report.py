@@ -13,7 +13,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from unbake import blobs, effort, platform, present, rescore, store
+from unbake import blobs, effort, fakematch, platform, present, rescore, store
 from unbake import config as configuration
 from unbake.contracts import Finding, Json, Refusal, sha256_file
 
@@ -167,12 +167,15 @@ def build_credits(
     scored: Mapping[str, Mapping[str, float]],
     broken: frozenset[str],
     extents: Mapping[str, Mapping[str, int]] | None = None,
+    faked: Mapping[str, frozenset[str]] | None = None,
 ) -> tuple[Credit, ...]:
     """One row per (name, version) of the symbol_addrs facts. A name is exact in a version when C defines it and the
     version links exact; otherwise it earns its cached fuzzy score, and none when its module does not compile. A name
     with no ROM address (an absolute symbol) holds no ROM bytes and gets no row. A data name no file owns (a label)
     that lies inside the compiled size of a C-built object (`extents`: version -> name -> ELF st_size) is that
-    object's bytes and earns its credit; a label outside every compiled extent stays unowned."""
+    object's bytes and earns its credit; a label outside every compiled extent stays unowned. A function that builds
+    exact only through a FAKEMATCH (`faked`: version -> names, `fakematch.tainted`) is no exact credit: it scores
+    `fakematch.SCORE`, below 100."""
     modules = {m.path: m for m in tree.modules}
     rows = []
     for v in versions:
@@ -201,10 +204,12 @@ def build_credits(
                 and (not configuration.is_assembly(module.path) or getattr(module, "library", False))
             )
             function = kind == "func"
+            fake = built and function and name in (faked or {}).get(v, ())
+            built = built and not fake
             state = "unowned" if module is None else "stand-in" if stand_in else "c"
             state = "fuzzy" if module is not None and stand_in and name in module.fuzzy else state
             code, data = (size, 0) if function else (0, size)
-            score = 0.0 if built else scored.get(name, {}).get(v, 0.0)
+            score = 0.0 if built else fakematch.SCORE if fake else scored.get(name, {}).get(v, 0.0)
             if module is not None and module.path in broken and not built:
                 score = 0.0  # it does not compile: no credit
             rows.append(
@@ -265,11 +270,23 @@ def _rows(
     config: Any, tree: Any, exact: frozenset[str], scored: Mapping[str, Mapping[str, float]]
 ) -> tuple[Credit, ...]:
     held = facts(config)
-    rows = build_credits(
-        list(config.project.version), tree, held, exact, scored, _broken(config, tree), _extents(config, tree)
-    )
+    versions = list(config.project.version)
+    faked = fakematch.by_version(_sources(config), versions)
+    rows = build_credits(versions, tree, held, exact, scored, _broken(config, tree), _extents(config, tree), faked)
     spans = {v: blobs.merge(platform.ranges(config, v)) for v in config.project.version}
     return off_platform(rows, spans)
+
+
+def _sources(config: Any) -> dict[str, str]:
+    """Every C source and header of the project (src/, include/) by path: where FAKEMATCH notes and the inline
+    functions and macros that carry them live."""
+    root = Path(config.project.root)
+    out: dict[str, str] = {}
+    for top in ("src", "include"):
+        for path in sorted((root / top).rglob("*")) if (root / top).is_dir() else ():
+            if path.suffix.lower() in (".c", ".cpp", ".h", ".hpp", ".inc") and path.is_file():
+                out[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
+    return out
 
 
 def credits(config: Any, tree: Any) -> tuple[Credit, ...]:

@@ -92,6 +92,15 @@ def test_exact_fuzzy_and_stand_in_give_the_old_numbers(project, monkeypatch, sco
     assert tally["fuzzy_percent"] == report._pct(20 + 21, 79)
 
 
+def test_an_exact_build_through_a_fakematch_scores_below_100(project):
+    tree = _tree([_module("src/a.c", ["fake", "real"])], "fake")
+    facts = _facts(fake=(0x1000, 20, "func"), real=(0x1014, 8, "func"))
+    rows = report.build_credits(["a"], tree, facts, frozenset({"a"}), {}, frozenset(), faked={"a": frozenset({"fake"})})
+    by = {r.name: r for r in rows}
+    assert (by["fake"].exact, by["fake"].kept, report.percent(by["fake"])) == (False, 0, 99.0)
+    assert report.fuzzy(by["fake"]) and (by["real"].exact, report.percent(by["real"])) == (True, 100.0)
+
+
 def test_a_name_is_exact_only_in_a_version_that_links_exact(project):
     tree = _tree([_module("src/a.c", ["f"], versions=("a", "b"))], "links")
     facts = {v: {"f": (0x80000000, 0x1000, 16, "func")} for v in ("a", "b")}

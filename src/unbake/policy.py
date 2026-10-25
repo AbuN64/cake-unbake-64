@@ -17,6 +17,7 @@ from unbake import (
     config,
     delta,
     effort,
+    fakematch,
     lookalike,
     naming_baseline,
     native,
@@ -946,7 +947,7 @@ def _findings(
         comment_lines = scopes["comments"].splitlines()
         for n in sorted(hits):
             adjacent = "\n".join(comment_lines[max(0, n - 2) : n])
-            waivers = re.findall(r"/\*\s*FAKEMATCH:((?:[^*]|\*(?!/))*)\*/", adjacent)
+            waivers = fakematch.WAIVER.findall(adjacent)
             if rule["waivable"] and any(reason.strip() for reason in waivers):
                 continue
             subject = hits[n] or (lines[n - 1].strip()[:120] if n <= len(lines) else "")
