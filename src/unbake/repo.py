@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import bisect
+import io
 import itertools
 import json
 import os
 import re
 import shutil
+import tarfile
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict
@@ -1174,7 +1176,9 @@ def extract_job(job: tuple[Config, str]) -> bool:
     try:
         if renames is None or not _rename_extraction(config, v, aside, *renames):
             shutil.rmtree(asm, ignore_errors=True)  # a refused rename extraction leaves a part-made directory
-            _checked(build.extract(config, v), "setup.splat", f"extract {v}")
+            if not _restore_extraction(config, v, key):
+                _checked(build.extract(config, v), "setup.splat", f"extract {v}")
+                _save_extraction(config, v, key)
     finally:
         shutil.rmtree(aside, ignore_errors=True)
     stamp.parent.mkdir(parents=True, exist_ok=True)
@@ -1184,6 +1188,78 @@ def extract_job(job: tuple[Config, str]) -> bool:
     _snapshot_inputs(config, v)
     store.write(stamp, key.encode())
     _stamp_make(config, v)
+    return True
+
+
+
+_SPLIT_KIND = "split"  # host cache kind: a version's whole extraction, keyed by _extract_key
+
+
+def _split_files(config: Config, v: str) -> dict[str, Path]:
+    """What `make extract-<v>` writes: asm/<v>/ (not unbake records), the splat link script and the _auto lists."""
+    found = dict(_asm_files(config, v))
+    ld = config.project.root / "build" / v / "splat.ld"
+    if ld.is_file():
+        found[str(ld.relative_to(config.project.root))] = ld
+    return found
+
+
+def _save_extraction(config: Config, v: str, key: str) -> None:
+    """Keep this splat run in the host content cache under the extraction key, so another slot, the train tree or a pool
+    refresh with the same ROM, yaml, facts, splat and recipe copies it instead of splitting again (stamp, check and
+    pool re-extractions of one diff each paid ~40 CPU s per version). Best effort."""
+    try:
+        files = _split_files(config, v)
+        if not (config.project.root / "asm" / v / ".extracted").is_file():
+            return  # a run that did not finish its recipe is no extraction
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for rel, path in files.items():
+                info = tar.gettarinfo(str(path), arcname=rel)
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                with path.open("rb") as handle:
+                    tar.addfile(info, handle)
+        store.put(config, _SPLIT_KIND, f"extract-v1:{key}", buf.getvalue(), named=True)
+    except (OSError, tarfile.TarError, Refusal, AttributeError):  # AttributeError: a config with no host cache
+        pass
+
+
+def _restore_extraction(config: Config, v: str, key: str) -> bool:
+    """Write the cached extraction of `key` into the tree (private copies, fresh mtimes); false on a miss or bad entry,
+    with nothing left behind so splat can run."""
+    try:
+        blob = store.get(config, _SPLIT_KIND, f"extract-v1:{key}", named=True)
+    except (OSError, Refusal, AttributeError):
+        return False
+    effort.count("split-cache", blob is not None)
+    if blob is None:
+        return False
+    root = config.project.root
+    written: list[Path] = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r") as tar:
+            members = [m for m in tar.getmembers() if m.isreg()]
+            if not any(m.name == f"asm/{v}/.extracted" for m in members):
+                return False
+            for m in members:
+                if ".." in Path(m.name).parts or not m.name.startswith((f"asm/{v}/", f"build/{v}/")):
+                    raise tarfile.TarError(m.name)
+                target = root / m.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                written.append(target)
+                target.unlink(missing_ok=True)
+                data = tar.extractfile(m)
+                if data is None:
+                    raise tarfile.TarError(m.name)
+                with target.open("wb") as out:
+                    shutil.copyfileobj(data, out)
+                target.chmod(m.mode & 0o7777 | 0o200)
+    except (OSError, tarfile.TarError):
+        for path in written:
+            path.unlink(missing_ok=True)
+        shutil.rmtree(root / "asm" / v, ignore_errors=True)
+        return False
     return True
 
 

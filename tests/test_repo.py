@@ -155,7 +155,7 @@ def _config(root, host=None):
     project = SimpleNamespace(
         root=root, name="demo", versions=("a", "b"), version=version, files={}, toolchain="gcc-test"
     )
-    host = host or SimpleNamespace(slots=4, workers=4, move_wait_s=1, tools={"splat": root / "splat", "git": "git"})
+    host = host or SimpleNamespace(slots=4, workers=4, move_wait_s=1, cache_dir=root.parent / "cache", cache_max_bytes=10**9, tools={"splat": root / "splat", "git": "git"})
     return SimpleNamespace(project=project, host=host, digest="config-digest")
 
 
@@ -1204,3 +1204,20 @@ def test_extraction_removes_the_assembly_an_earlier_name_left_behind(world, monk
     assert repo._prune_superseded(world.cfg, "a")
     assert sorted(p.name for p in seg.iterdir()) == ["f_main.s", "func_80009999.s"]  # an auto-named function stays
     assert not repo._prune_superseded(world.cfg, "a")
+
+
+def test_a_split_another_tree_made_is_copied_not_split_again(world):
+    """The extraction of one input is kept in the host cache: a fresh tree with the same input copies it (no splat)."""
+    world.setup()
+    assert sorted(world.extracts) == ["a", "b"]
+    key = repo._extract_key(world.cfg, "a")
+    saved = repo.store.get(world.cfg, "split", f"extract-v1:{key}", named=True)
+    if saved is None:  # the fake splat writes no .extracted mark: write one the way the recipe does and keep it
+        (world.root / "asm/a/.extracted").write_text("")
+        repo._save_extraction(world.cfg, "a", key)
+    import shutil
+
+    shutil.rmtree(world.root / "asm/a")
+    assert repo._restore_extraction(world.cfg, "a", key) is True
+    assert (world.root / "asm/a/.extracted").is_file()
+    assert repo._restore_extraction(world.cfg, "a", "0" * 64) is False  # another input: a miss
