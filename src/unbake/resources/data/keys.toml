@@ -655,3 +655,13 @@ sentence = "a function the tree defines as returning a record by value is declar
 [key."source.value-alias"]
 owner = "policy"
 sentence = "a function is aliased to a _value twin that wraps a struct return; keep one by-value body"
+
+[key."order.function"]
+owner = "order"
+sentence = "the file has no definition of the function to reorder"
+[key."order.file"]
+owner = "order"
+sentence = "the candidate file to reorder does not exist"
+[key."order.probe"]
+owner = "order"
+sentence = "the candidate does not probe as it is, so no order of it can be measured"

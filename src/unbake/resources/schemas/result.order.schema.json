@@ -1,0 +1,19 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.order",
+ "type": "object",
+ "properties": {
+  "function": {"type": "string", "minLength": 1},
+  "start": {"type": "object"},
+  "best": {"type": "object"},
+  "improved": {"type": "boolean"},
+  "exact": {"type": "boolean"},
+  "steps": {"type": "array", "items": {"type": "object"}},
+  "probes": {"type": "integer", "minimum": 0},
+  "stopped": {"type": "string", "enum": ["exact", "budget", "no move helps"]},
+  "out": {"type": "string"},
+  "next": {"type": "string"}
+ },
+ "required": ["function", "start", "best", "improved", "exact", "steps", "probes", "stopped", "out", "next"],
+ "additionalProperties": false
+}

@@ -92,6 +92,22 @@ params = [
   { name = "dumps", kind = "option", type = "path", required = false, multiple = false, help = "copy every pass dump of the compile (-da where the toolchain takes it), its -g assembly, its .i and the whole instruction diff into DIR" },
 ]
 
+[command.order]
+help = "Climb the statement order of one function toward the ROM: move one statement at a time inside a window, never across a statement it shares a variable with, probe each order, keep the best; writes the best source to --out."
+handler = "order.order_command"
+params = [
+  { name = "file", kind = "argument", type = "path", required = true, multiple = false, help = "C source holding the candidate function" },
+  { name = "function", kind = "option", type = "str", required = true, multiple = false, help = "the function to reorder" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = false, help = "version to probe, default the names-from version" },
+  { name = "window", kind = "option", type = "int", required = false, multiple = false, help = "statements a move may travel either way, default 6" },
+  { name = "rounds", kind = "option", type = "int", required = false, multiple = false, help = "moves kept per block, default 3" },
+  { name = "budget", kind = "option", type = "int", required = false, multiple = false, help = "at most this many probes (about a CPU second each), default 150" },
+  { name = "toolchain", kind = "option", type = "str", required = false, multiple = false, help = "override the unit toolchain" },
+  { name = "flag", kind = "option", type = "str", required = false, multiple = true, help = "add one compiler option" },
+  { name = "omit-flag", kind = "option", type = "str", required = false, multiple = true, help = "remove one compiler option (with its operand)" },
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "where the best source goes, default FILE.ordered.c" },
+]
+
 [command.submit]
 help = "Admit sources and put exact (or improved fuzzy) candidates in the landing inbox; landing starts if idle."
 handler = "compare.submit_command"
