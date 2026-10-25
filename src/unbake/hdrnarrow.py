@@ -31,7 +31,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -419,8 +418,8 @@ def _base_made(root: Path, base: str, headers: Sequence[str]) -> Callable[[str],
     state = records(root)
     digests: dict[str, str] = {}
     for h in headers:
-        done = subprocess.run(["git", "-C", str(root), "show", f"{base}:{h}"], capture_output=True, check=False)
-        digests[h] = hashlib.sha1(done.stdout).hexdigest() if done.returncode == 0 else "-"
+        data = process.blob(root, base, h)
+        digests[h] = hashlib.sha1(data).hexdigest() if data is not None else "-"
 
     def digest(name: str) -> str:
         if name not in digests:

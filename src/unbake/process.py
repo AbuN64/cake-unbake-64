@@ -307,10 +307,16 @@ def tree_id(root: Path, rev: str) -> str:
     return done.stdout.decode().strip() if done.returncode == 0 else ""
 
 
+def blob(root: Path, rev: str, path: str) -> bytes | None:
+    """The bytes of PATH at REV; None when REV does not hold it."""
+    done = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output=True, check=False)
+    return done.stdout if done.returncode == 0 else None
+
+
 def show(root: Path, rev: str, path: str) -> str | None:
     """The text of PATH at REV; None when REV does not hold it."""
-    done = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output=True, check=False)
-    return done.stdout.decode(errors="replace") if done.returncode == 0 else None
+    data = blob(root, rev, path)
+    return data.decode(errors="replace") if data is not None else None
 
 
 def patched(root: Path, patches: Sequence[Path], paths: Sequence[str], index: Path) -> dict[str, str | None] | None:
