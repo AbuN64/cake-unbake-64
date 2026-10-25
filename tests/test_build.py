@@ -1048,6 +1048,15 @@ def test_undefined_syms_provide_the_aliases_too(tmp_path):
     assert "PROVIDE(D_auto_800CAB8E = 0x800CAB8E);" in rows
 
 
+def test_undefined_syms_waits_for_every_object_it_reads_and_reads_no_object(tmp_path):
+    """The rule that writes undefined_syms.ld depends on every object of the version (the .i and .s it greps are
+    complete once the object is built) and feeds its sed the fact files only, never a binary object."""
+    text = build.makefile(make_config(tmp_path)).decode()
+    rule = text[text.index("build/%/undefined_syms.ld:") :].split("\n", 2)
+    assert "$$(OBJS_$$*)" in rule[0] and "asm/%/.extracted" in rule[0]
+    assert "$(filter-out %.o,$^) > $@" in rule[1]
+
+
 def test_segments_sharing_a_name_are_pieces_of_one_tag(tmp_path):
     """Rows of one version may share a name (one data segment the link cuts around a blob): splat and the link name
     each piece apart, a later one `<name>_<ROM>`, its asm keeps the shared folder, and each lists only its own range."""
