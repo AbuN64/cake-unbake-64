@@ -305,3 +305,25 @@ def test_a_later_parameter_with_a_typed_name_is_a_local_of_its_function(repo: Pa
     (repo / "src/loc.c").write_text(re.sub(r"\barg1\b", "entry", one) + "int Two" + re.sub(r"\barg1\b", "box", two))
     result = _prove(repo)
     assert result["map"] == [["arg1", "box"], ["arg1", "entry"]]
+
+
+def test_a_tag_and_a_typedef_of_one_name_may_take_different_names(repo: Path) -> None:
+    (repo / "include/m.h").write_text(
+        "struct Message;\nstruct Message { int a; };\ntypedef struct Message Message;\nextern Message *g;\n"
+        "extern struct Message *h;\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "tag")
+    (repo / "include/m.h").write_text(
+        "struct CMsg_t;\nstruct CMsg_t { int a; };\ntypedef struct CMsg_t CMsg;\nextern CMsg *g;\n"
+        "extern struct CMsg_t *h;\n"
+    )
+    assert _prove(repo)["map"] == [["Message", "CMsg"], ["Message", "CMsg_t"]]
+
+
+def test_a_tag_renamed_in_one_place_and_left_in_another_is_refused(repo: Path) -> None:
+    (repo / "include/m.h").write_text("struct Message { int a; };\nextern struct Message *g;\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "tag")
+    (repo / "include/m.h").write_text("struct CMsg_t { int a; };\nextern struct Message *g;\n")
+    assert _refused(repo)

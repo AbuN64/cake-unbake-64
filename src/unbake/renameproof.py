@@ -194,6 +194,11 @@ def _spans(tokens: Sequence[str]) -> tuple[list[int], list[tuple[int, int]]]:
     return owner, spans
 
 
+def _tagged(tokens: Sequence[str], n: int) -> bool:
+    """A name after `struct`, `union` or `enum` is a tag, which has its own namespace beside variables and typedefs."""
+    return n > 0 and tokens[n - 1] in ("struct", "union", "enum")
+
+
 def _member(tokens: Sequence[str], n: int) -> bool:
     """A name after `.` or `->` is a member, which has its own namespace."""
     return n > 0 and (tokens[n - 1] == "." or (n > 1 and tokens[n - 1] == ">" and tokens[n - 2] == "-"))
@@ -291,6 +296,7 @@ class _Proof:
         self.commit = commit.decode().strip() or self.base
         self.reasons: list[Finding] = []
         self.map: dict[str, str] = {}  # names renamed everywhere they are visible
+        self.tag: dict[str, str] = {}  # struct/union/enum tags renamed (their own namespace: `Message` may be both)
         self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
         self.owner: dict[str, list[int]] = {}
         self.spans: dict[str, list[tuple[int, int]]] = {}
@@ -336,6 +342,8 @@ class _Proof:
     def derive(self, line_sensitive: bool) -> None:
         pairs: dict[str, str] = {}
         sources: dict[str, str] = {}
+        tags: dict[str, str] = {}
+        tag_sources: dict[str, str] = {}
         local: dict[tuple[str, int, str], str] = {}
         local_sources: dict[tuple[str, int, str], str] = {}
         declared: dict[tuple[str, int, str], bool] = {}
@@ -359,6 +367,14 @@ class _Proof:
                     self.refuse(f"token {n} changed from {x[:40]!r} to {y[:40]!r}, which is not an identifier", path)
                     break
                 fn = owner[n]
+                if _tagged(
+                    a, n
+                ):  # a tag: one-to-one among tags only, whatever a typedef or variable of that name becomes
+                    if tags.setdefault(x, y) != y:
+                        self.refuse(f"tag {x} is renamed to both {tags[x]} and {y}", path)
+                    elif tag_sources.setdefault(y, x) != x:
+                        self.refuse(f"tags {tag_sources[y]} and {x} are both renamed to {y}", path)
+                    continue
                 if fn >= 0 and not _member(a, n):
                     key = (path, fn, x)
                     if key not in declared:
@@ -396,14 +412,15 @@ class _Proof:
                     f"{' and '.join(sorted(olds))} are both renamed to {y} (and are not copies for disjoint versions)"
                 )
         self.map = pairs
+        self.tag = tags
         self.local = local
 
     def pairs(self) -> list[tuple[str, str]]:
-        return sorted({*self.map.items(), *((key[2], new) for key, new in self.local.items())})
+        return sorted({*self.map.items(), *self.tag.items(), *((key[2], new) for key, new in self.local.items())})
 
     def apply(self) -> None:
         """The map over every old file must give the new file: a partial rename and an asm string both end here."""
-        names = self.map
+        names, tags = self.map, self.tag
 
         def text(token: str) -> str:
             return ASM_MARK + _WORD.sub(lambda m: names.get(m.group(), m.group()), token[1:])
@@ -413,6 +430,8 @@ class _Proof:
             mapped = [
                 text(t)
                 if t[:1] == ASM_MARK
+                else tags.get(t, t)
+                if _tagged(before, n)
                 else self.local.get((path, owner[n], t), names.get(t, t))
                 if owner[n] >= 0 and not _member(before, n)
                 else names.get(t, t)
@@ -440,7 +459,7 @@ class _Proof:
 
     def capture(self) -> None:
         """No new name was a code token in the old tree and no old name remains one in an unchanged file."""
-        keys, values = set(self.map), set(self.map.values())
+        keys, values = {*self.map, *self.tag}, {*self.map.values(), *self.tag.values()}
         for names, rev, spec, what in (
             (values - keys, self.base, f"{self.base}:", "already a code token in the old tree (it would capture)"),
             (keys - values, None, ":0:", "still a code token after the change"),
@@ -519,7 +538,7 @@ class _Proof:
         name may be a macro or a macro's free name anywhere (a macro expands inside the function)."""
         if not self.local:
             return
-        values = set(self.map.values())
+        values = {*self.map.values(), *self.tag.values()}
         for (path, fn, old), new in sorted(self.local.items()):
             tokens = self.old[path]
             lo, hi = self.spans[path][fn]
