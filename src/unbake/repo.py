@@ -1187,6 +1187,7 @@ def extract_job(job: tuple[Config, str]) -> bool:
             _snapshot_inputs(config, v)  # the key says these facts and pieces made this extraction
         if not (config.project.root / "build" / f".extract-key-{v}").is_file():
             _stamp_make(config, v)  # a tree made before the Makefile skipped unchanged versions
+        _mark_facts(config, v)  # the key says these facts made it: an older mark (empty) learns the hash
         return False
     # "Present" is not "correct": what the extraction generated was missing or changed, so it is made again, and the
     # linker scripts built from it (build/<v>/*.ld) go too, for make to render them from the fresh files.

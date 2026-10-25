@@ -1021,6 +1021,8 @@ def test_a_rename_of_facts_renames_the_last_extraction_and_runs_no_splat(tmp_pat
     assert repo._asm_damaged(config, "us") == []
     assert repo._facts_snapshot(config, "us").read_text() == RENAME_FACTS.replace("func_8021A2D4_de", "Render_Draw")
     assert repo.extract_job((config, "us")) is False
+    # the extraction records the facts it was made from in the mark
+    assert (asm / ".extracted").read_text() == repo._facts_hash(tmp_path, "us") + "\n"
 
 
 def test_a_name_already_in_the_text_makes_the_rename_extraction_run_splat(tmp_path, monkeypatch):
@@ -1123,6 +1125,26 @@ def test_a_dropped_fact_no_text_names_and_a_renamed_piece_run_no_splat(tmp_path,
 
 def test_a_dropped_fact_the_text_uses_runs_splat(tmp_path, monkeypatch):
     assert _drop_job(tmp_path, monkeypatch, "lw $a0, %lo(D_80100004_de)($a1)\n") == ["us", "us"]
+
+
+def test_a_current_extraction_with_an_empty_mark_learns_the_facts_hash_and_keeps_its_time(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(project=SimpleNamespace(root=tmp_path, versions=["us"]))
+    _write(tmp_path, "versions/us/symbol_addrs.txt", RENAME_FACTS)
+    _write(tmp_path, "versions/us/splat.yaml", "a: 1\n")
+    _write(tmp_path, "asm/us/.extracted", "")
+    old = 1_000_000_000_000_000_000
+    os.utime(tmp_path / "asm/us/.extracted", ns=(old, old))
+    monkeypatch.setattr(repo, "_extract_key", lambda c, v, facts=None, yaml=None: "K")
+    monkeypatch.setattr(repo, "_stamp_make", lambda c, v: None)
+    repo._write_asm_manifest(config, "us")
+    repo.store.write(repo._extract_stamp(config, "us"), b"K")
+    assert repo.extract_job((config, "us")) is False
+    mark = tmp_path / "asm/us/.extracted"
+    assert mark.read_text() == repo._facts_hash(tmp_path, "us") + "\n" and mark.stat().st_mtime_ns == old
+    assert repo._asm_damaged(config, "us") == []  # the mark's new content is not damage
+    assert repo.extract_job((config, "us")) is False
 
 
 def test_a_current_extraction_without_a_facts_snapshot_gets_one(tmp_path, monkeypatch):
