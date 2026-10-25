@@ -248,6 +248,11 @@ def _makefile_generated(config: Config, git: _Git, head: str, rows: re.Pattern[s
     return bool(strip(generated)) and strip(generated) == strip(git("show", f"{head}:Makefile"))
 
 
+def _behind_generator(git: _Git, head: str) -> bool:
+    """HEAD's Makefile names another generator version than the deployed one (a stamp compare, never a date)."""
+    return build.generator_of(git("show", f"{head}:Makefile", ok=(0, 128))) != build.generator_version()
+
+
 def _defined_at(git: _Git, base: str, name: str, roots: Sequence[str]) -> bool:
     """Whether a file under the roots at `base` defines `name` in C."""
     files = git("grep", "-lw", name, base, "--", *roots, ok=(0, 1)).splitlines()
@@ -357,16 +362,10 @@ def cheat_command(config: Config, params: Json) -> Json:
             findings.append(
                 Finding("cheat.makefile", "Makefile change beyond per-object compiler rows", missing=tuple(changed[:8]))
             )
-    if shown == WORKTREE and not changed and not _makefile_generated(config, git, head, rows):
-        # the round regenerates the Makefile with the deployed generator before its own cheat: a lane whose base Makefile is
-        # older than the generator passed here and was dropped there (REV1-ONE-16B, 10-24)
-        findings.append(
-            Finding(
-                "cheat.makefile-stale",
-                "the Makefile is older than the generator (`unbake sync --makefile --check` differs): run `unbake sync --makefile`"
-                " and include the regenerated Makefile in the diff, as the round does",
-            )
-        )
+    if makefile == "unchanged" and _behind_generator(git, head):
+        # a Makefile older than the generator is main's lag, not the lane's: the train regenerates it on its own
+        # round once a generator is deployed, so the lane is not refused for it and carries no regeneration
+        makefile = "behind"
     scan = re.compile("|".join(rules["added"]))
     stand_ins: list[str] = []
     hits: list[str] = []

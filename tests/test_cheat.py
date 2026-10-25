@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,8 @@ from typing import Any
 
 import pytest
 
-from unbake import api, cheat, symbols, tree
+from unbake import api, build, cheat, symbols, tree
+from unbake import config as configuration
 from unbake.contracts import Finding, Refusal
 
 STAND_IN = 'INCLUDE_RODATA("data_800C", D_auto_rodata_func_8040BB40_de_800DD07C);\n'
@@ -174,7 +176,7 @@ def test_makefile_rows_pass_other_lines_fail_unless_generated(
     repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     row = "$(foreach v,$(VERSIONS),build/$(v)/src/a.o): TC := ido\n"
-    assert repo.check(Makefile="all:\n" + row)["makefile"] == "unchanged"
+    assert repo.check(Makefile="all:\n" + row)["makefile"] == "behind"  # row-only edit, unstamped Makefile
     assert _refused(repo, Makefile="all:\n" + row + "evil:\n\tcp a b\n") == {"cheat.makefile"}
     monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
     assert cheat.cheat_command(repo.config, {"against": repo.base})["makefile"] == "generated"
@@ -264,7 +266,9 @@ def test_a_blobs_toml_that_fails_verification_is_refused(
     assert _refused(repo, blobs_toml="schema = 1\n") == {"blobs.evidence"}
 
 
-def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_uncommitted_tree_is_checked_without_a_commit(
+    repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
     head = _git(repo.root, "rev-parse", "HEAD")
     (repo.root / "src/a.c").write_text(A + "int g;\n")  # tracked change, not committed
@@ -279,15 +283,35 @@ def test_the_uncommitted_tree_is_checked_without_a_commit(repo: SimpleNamespace,
     assert _git(repo.root, "status", "--porcelain") == "M src/a.c"
 
 
-def test_the_uncommitted_tree_with_a_stale_makefile_is_refused(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_makefile_behind_the_generator_is_mains_lag_not_a_refusal(
+    repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
     (repo.root / "src/a.c").write_text(A + "int g;\n")
-    with pytest.raises(Refusal) as refused:
-        cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})
-    assert {f.key for f in refused.value.findings} == {"cheat.makefile-stale"}
-    monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
-    assert cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})["makefile"] == "unchanged"
-    assert cheat.cheat_command(repo.config, {"against": repo.base})["head"] == "HEAD"  # a committed head is the round's own check
-def test_the_uncommitted_tree_still_refuses_added_assembly(repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = lambda: cheat.cheat_command(repo.config, {"against": repo.base, "head": "WORKTREE"})["makefile"]  # noqa: E731
+    monkeypatch.setattr(build, "generator_version", lambda: "abc123def456")
+    assert run() == "behind"  # the committed Makefile has no generator stamp
+    (repo.root / "Makefile").write_text("# t\n# generator: 000000000000\nall:\n")
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "other generator")
+    repo.base = _git(repo.root, "rev-parse", "HEAD")
+    assert run() == "behind"  # another generator version
+    (repo.root / "Makefile").write_text("# t\n# generator: abc123def456\nall:\n")
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "current generator")
+    repo.base = _git(repo.root, "rev-parse", "HEAD")
+    assert run() == "unchanged"  # the deployed generator wrote it: nothing behind
+
+
+def test_the_generator_version_follows_the_template_and_stamps_the_makefile() -> None:
+    first = build.generator_version()
+    assert re.fullmatch(r"[0-9a-f]{12}", first) and build.generator_version() == first
+    assert build.generator_of(f"# t: matching build.\n# generator: {first}\nNAME := x\n") == first
+    assert "# generator: ${generator}" in configuration.template("Makefile.in")
+
+
+def test_the_uncommitted_tree_still_refuses_added_assembly(
+    repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
     (repo.root / "src/a.c").write_text(A + 'void h(void) { __asm__("nop"); }\n')
     with pytest.raises(Refusal) as refused:

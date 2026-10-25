@@ -14,7 +14,8 @@
   "makefile": {
    "enum": [
     "unchanged",
-    "generated"
+    "generated",
+    "behind"
    ]
   },
   "stand_ins": {

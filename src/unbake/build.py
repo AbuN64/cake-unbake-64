@@ -358,6 +358,27 @@ $(VERSIONS:%=build/nm/%/$(NAME).z64): build/nm/%/$(NAME).z64: build/nm/%/$(NAME)
 """
 
 
+def generator_version() -> str:
+    """Identity of the Makefile generator (template, its data and this renderer): a Makefile carries it on its
+    second line, so a tree's Makefile is behind the generator when the two differ, whatever the files' dates."""
+    from hashlib import sha1 as _sha1
+
+    digest_ = _sha1()
+    digest_.update(configuration.template("Makefile.in").encode())
+    digest_.update(Path(__file__).read_bytes())
+    digest_.update(json.dumps(_REPO["make"], sort_keys=True).encode())
+    return digest_.hexdigest()[:12]
+
+
+_GENERATOR_LINE = re.compile(r"^# generator: ([0-9a-f]+)$", re.M)
+
+
+def generator_of(text: str) -> str | None:
+    """The generator version a Makefile text carries, None when it has no stamp."""
+    found = _GENERATOR_LINE.search(text)
+    return found.group(1) if found else None
+
+
 def makefile(config: Config) -> bytes:
     """The one Makefile of a repository: the same body for every game, whatever the number of files."""
     with effort.stage("build.makefile"):
@@ -403,6 +424,7 @@ def makefile(config: Config) -> bytes:
             ]
         text = Template(configuration.template("Makefile.in")).substitute(
             title=project.title,
+            generator=generator_version(),
             name=project.name,
             versions=" ".join(project.versions),
             tool_defaults="\n".join(tools),
