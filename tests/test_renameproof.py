@@ -508,3 +508,57 @@ def test_an_assembly_file_renamed_with_its_symbol_is_part_of_the_rename(repo: Pa
 def test_an_added_file_that_is_no_renamed_assembly_file_still_refuses(repo: Path) -> None:
     (repo / "src/new.c").write_text("int x;\n")
     assert "added or removed" in _refused(repo)
+
+
+def _twins(repo: Path, existing: str, extra: dict[str, str] | None = None) -> None:
+    """src/aux.c holds EXISTING and a US-only `func_80100400_us`, renamed to the name EXISTING spells."""
+    (repo / "versions/us").mkdir()
+    (repo / "versions/us/symbol_addrs.txt").write_text("func_80100400_us = 0x80100400; // type:func\n")
+    (repo / "src/aux.c").write_text(
+        existing + "#if defined(VERSION_US)\nint func_80100400_us(int a) { return a; }\n#endif\n"
+    )
+    for name, text in (extra or {}).items():
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "twins")
+    _rename(
+        repo, "func_80100400_us", "alAuxBusPull", only=("src/aux.c", "versions/us/symbol_addrs.txt", *(extra or {}))
+    )
+
+
+DE_PULL = "#if defined(VERSION_DE)\nint alAuxBusPull(int a) { return a + 1; }\n#endif\n\n"
+
+
+def test_a_new_name_that_only_a_disjoint_version_holds_is_no_capture(repo: Path) -> None:
+    _twins(repo, DE_PULL)
+    assert ["func_80100400_us", "alAuxBusPull"] in _prove(repo)["map"]
+
+
+def test_a_new_name_held_by_the_same_version_is_still_a_capture(repo: Path) -> None:
+    _twins(repo, DE_PULL.replace("VERSION_DE", "VERSION_US"))
+    assert "already a code token" in _refused(repo)
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "int alAuxBusPull(int a);\n",  # every version reads it
+        "#if defined(VERSION_DE) || defined(VERSION_US)\nint alAuxBusPull(int a);\n#endif\n",
+        "#if SOME_SWITCH\nint alAuxBusPull(int a);\n#endif\n",  # a condition no version settles
+        "#ifdef NON_MATCHING\nint alAuxBusPull(int a);\n#endif\n",  # read by no matching build: no evidence
+    ],
+)
+def test_a_new_name_with_ambiguous_version_evidence_is_refused(repo: Path, existing: str) -> None:
+    _twins(repo, existing)
+    assert "already a code token" in _refused(repo)
+
+
+def test_a_new_name_in_a_file_no_version_owns_is_refused(repo: Path) -> None:
+    _twins(repo, "", {"tools/names.txt": "alAuxBusPull\n"})
+    assert "already a code token" in _refused(repo)
+
+
+def test_a_renamed_symbol_with_no_version_evidence_is_refused(repo: Path) -> None:
+    _twins(repo, DE_PULL, {"tools/names.txt": "func_80100400_us\n"})
+    assert "already a code token" in _refused(repo)

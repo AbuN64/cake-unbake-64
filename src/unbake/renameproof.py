@@ -41,6 +41,7 @@ from typing import Any
 
 from unbake import process
 from unbake.contracts import Finding, Json, Refusal
+from unbake.non_matching import _directives, _project
 
 C_SUFFIXES = (".c", ".cpp", ".cc", ".h", ".hpp")
 NOT_CODE = (":(exclude)*.md", ":(exclude)*.tsv", ":(exclude)*.json", ":(exclude)*.svg")  # prose and tables of names
@@ -413,6 +414,8 @@ class _Proof:
         self.texts: dict[str, tuple[str, str]] = {}
         self.old: dict[str, list[str]] = {}
         self.new: dict[str, list[str]] = {}
+        self.places: dict[str, set[str]] = {}  # old name -> the files where its global token changes
+        self.universe: list[str] | None = None  # the versions/<v>/ directories of the old tree
 
     def refuse(self, reason: str, path: str = "") -> None:
         self.reasons.append(Finding("renameproof.not_rename", reason, path=path, action="prove it with the build"))
@@ -554,6 +557,7 @@ class _Proof:
                     self.refuse(f"{x} is renamed to both {pairs[x]} and {y}", path)
                 elif sources.setdefault(y, x) != x:
                     shared.setdefault(y, {sources[y]}).add(x)
+                self.places.setdefault(x, set()).add(path)
                 if path.startswith("versions/"):
                     seen.setdefault(x, set()).add(path.split("/")[1])
                 else:
@@ -684,8 +688,48 @@ class _Proof:
                 found = names & set(tokens)
                 if found and rev:
                     found = self.visible(tokens, found, keys) if _is_c(path) else found
+                    found = self.shared_versions(path, data.decode("latin-1"), found)
                 if found:
                     self.refuse(f"{sorted(found)[0]} is {what}", path)
+
+    def versions(self, path: str, text: str, names: set[str]) -> set[str] | None:
+        """The versions whose build can read one of NAMES in TEXT of PATH: a versions/<v>/ file is version <v>'s alone,
+        a C file is read once per version and per NON_MATCHING side with the conditions each can settle (what it
+        cannot settle stays in). None when there is no evidence: another kind of file, no versions/ directory, or a
+        name no version reads."""
+        if path.startswith("versions/"):
+            return {path.split("/")[1]}
+        if self.universe is None:
+            tree = self.repo.run("ls-tree", "-d", "--name-only", self.base, "versions/", own=False)
+            self.universe = [PurePosixPath(line).name for line in tree.decode().splitlines()]
+        if not _is_c(path) or not self.universe:
+            return None
+        directives = _directives(text)
+        read = {
+            v
+            for v in self.universe
+            for on in (False, True)
+            if names & set(_tokens(_project(text, directives, on, v), True))
+        }
+        return read or None
+
+    def shared_versions(self, path: str, text: str, found: set[str]) -> set[str]:
+        """The new names FOUND in an old file that a version renaming them can also read: one that only versions the
+        renamed symbol never builds in (`#if VERSION_DE` beside the renamed `#if VERSION_US`) is no capture."""
+        inverse: dict[str, set[str]] = {}
+        for x, y in self.map.items():
+            inverse.setdefault(y, set()).add(x)
+        kept = set()
+        for y in found:
+            theirs = self.versions(path, text, {y}) if y in inverse else None
+            mine: set[str] | None = set()
+            for x in inverse.get(y, ()):
+                for place in sorted(self.places.get(x, ())):
+                    read = self.versions(place, self.texts[place][0], {x})
+                    mine = None if read is None or mine is None else mine | read
+            if theirs is None or mine is None or theirs & mine:
+                kept.add(y)
+        return kept
 
     def typed_capture(self) -> None:
         """A member renamed per struct names no struct by its tokens, so its new names must be unused in the old
