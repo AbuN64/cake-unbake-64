@@ -60,6 +60,12 @@ def test_file_components_and_windows_devices(path):
     assert api.name_issues(path, "file")
 
 
+@pytest.mark.parametrize("path", ["src/aimIcon.c", "src/Nucon.c", "src/auxiliary/screen_con.h", "src/ccon", "src/Icon"])
+def test_a_name_that_only_ends_in_a_windows_device_word_is_no_device(path):
+    """`aimIcon` was refused as a file name (the 'con' it ends in) and its refusal stopped a 400-row name batch."""
+    assert not api.name_issues(path, "file")
+
+
 def test_collision_targets_and_section_limits():
     why = api.name_issues("Draw", taken=("draw",))
     assert len(why) == 1 and "coff-mingw" in why[0] and "msvc" in why[0] and "elf-gcc" not in why[0]
