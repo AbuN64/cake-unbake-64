@@ -108,6 +108,24 @@ def test_a_file_that_already_places_its_data_gets_no_row_and_is_no_refusal(monke
     assert place.plan(config, _tree(literals=f"literals_{F}"), [F]) == []
 
 
+def test_a_built_object_larger_than_the_existing_placement_is_refused_with_both_sizes(monkeypatch, tmp_path):
+    facts = _facts({f"literals_{F}": (TABLE[0], TABLE[1], 0x6C, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    _built(config, bytes(0x70))
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(literals=f"literals_{F}"), [F])
+    (finding,) = refused.value.findings
+    assert finding.key == "place.object"
+    assert F in finding.reason and "0x6C bytes" in finding.reason and "0x70 bytes" in finding.reason
+
+
+def test_a_built_object_the_size_of_the_existing_placement_is_no_refusal(monkeypatch, tmp_path):
+    facts = _facts({f"literals_{F}": (TABLE[0], TABLE[1], 0x70, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    _built(config, bytes(0x70))
+    assert place.plan(config, _tree(literals=f"literals_{F}"), [F]) == []
+
+
 def test_a_function_with_nothing_to_place_is_refused(monkeypatch, tmp_path):
     config = _world(monkeypatch, tmp_path, words=(0, 0, 0, 0))
     (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("jr $ra\n")

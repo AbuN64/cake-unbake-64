@@ -376,6 +376,12 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             own = tree.LITERALS + function
             if own in table and current.owned(v, own) == module.path:
                 nothing[function] = False
+                if bad := _placed(root, v, module.path, own, table, roms):
+                    refused.append(
+                        Finding(
+                            "place.object", f"{v}: {function}: {bad}", path=module.path, unit=function, versions=(v,)
+                        )
+                    )
                 continue  # this function's data is already placed (another function's row in the file does not count)
             rows = _data_rows(table, roms, image, spans, pieces, function, _asm_refs(root, config, v, function, table))
             if rows and (extern := _extern_rows(config, v, table, rows, module.path, externs)):
@@ -634,6 +640,25 @@ def _data_rows(
             rows.append(picked[r])
             covered = r + skip + size
     return rows
+
+
+def _placed(root: Path, v: str, path: str, own: str, table: Mapping[str, Any], roms: Sequence[int]) -> str:
+    """The refusal when the built object of the file is newer than its source and its .rodata is not the size of the
+    `literals_` placement it already has (the link would overlap the next piece or leave a hole); "" when the sizes
+    agree or the object is not built after the last edit (then the link proves it)."""
+    obj, src = root / "build" / v / f"{path}.o", root / path
+    if not obj.is_file() or not src.is_file() or obj.stat().st_mtime < src.stat().st_mtime:
+        return ""
+    read = _elf(obj)
+    rom = table[own][1] or 0
+    placed = table[own][2] or _after(roms, rom) - rom
+    measured = len(read[0]) if read else 0
+    if measured == placed:
+        return ""
+    return (
+        f"its placement {own} is 0x{placed:X} bytes but its built object's .rodata is 0x{measured:X} bytes: "
+        "the whole placement must be updated (its size and the rows after it), so nothing is proved"
+    )
 
 
 def _object(root: Path, v: str, path: str, image: bytes, rom: int, end: int, vram: int) -> tuple[str, str]:
