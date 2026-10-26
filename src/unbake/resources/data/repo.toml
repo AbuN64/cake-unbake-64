@@ -103,6 +103,7 @@ infra = ["local.mk", "include/include_asm.h", "rom.toml", "roms", "tools", "ci",
 facts = ["config.toml", "versions", "blobs.toml"]
 blobs = ["blobs.toml"]  # a facts file that changes the counting: when it differs, `blobs.verify` must pass
 source = ["src", "include"]
+declaration_files = '\.(h|H)$'  # a header under a source root in infra: declaration-only edits are not infrastructure
 asm_home = ["src/sdk/"]  # path prefixes where a new `.s` may be added if every global symbol it defines is handwritten
 source_suffix = '\.(c|C|CPP|cpp|h|H|inc)$'
 makefile_row = '^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/src/[^ ]+\.o\): (TC|CPPFLAGS|CFLAGS) :='

@@ -172,6 +172,56 @@ def test_infrastructure_edits_fail(repo: SimpleNamespace) -> None:
     assert _refused(repo, local_mk="X=1\n") == {"cheat.infra"}
 
 
+HEADER = (
+    '#ifndef INCLUDE_ASM_H\n#define INCLUDE_ASM_H\n#include "TYPES.H"\n'
+    "#define INCLUDE_ASM(SEG, NAME) \\\n    __asm__(NAME)\n#endif\n"
+    "extern void func_80289970_de(int a);\nextern int D_800C0000;\n"
+)
+
+
+def _header(repo: SimpleNamespace, text: str) -> dict[str, Any]:
+    """Check HEADER -> TEXT as include/include_asm.h, an infrastructure path, over its own base."""
+    path = repo.root / "include/include_asm.h"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(HEADER)
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "header")
+    base = _git(repo.root, "rev-parse", "HEAD")
+    path.write_text(text)
+    _git(repo.root, "add", "-A")
+    _git(repo.root, "commit", "-qm", "edit")
+    return cheat.cheat_command(repo.config, {"against": base})
+
+
+def test_a_declaration_removed_from_a_mixed_header_is_not_infrastructure(repo: SimpleNamespace) -> None:
+    assert _header(repo, HEADER.replace("extern void func_80289970_de(int a);\n", ""))["against"]
+
+
+def test_a_declaration_added_or_edited_in_a_mixed_header_is_not_infrastructure(repo: SimpleNamespace) -> None:
+    assert _header(repo, HEADER.replace("(int a)", "(int a, int b)") + "extern void g(void);\n")["against"]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ("#define INCLUDE_ASM(SEG, NAME) \\\n    __asm__(NAME)", "#define INCLUDE_ASM(SEG, NAME) \\\n    __asm__(SEG)"),
+        ("#endif\nextern void func", "#endif\n#define X 1\nextern void func"),
+        ('#include "TYPES.H"\n', ""),
+        ("extern int D_800C0000;", "int D_800C0000 = 1;"),
+    ],
+)
+def test_a_macro_include_or_definition_edit_of_a_mixed_header_stays_infrastructure(repo, edit) -> None:
+    with pytest.raises(Refusal) as refused:
+        _header(repo, HEADER.replace(*edit))
+    assert "cheat.infra" in {f.key for f in refused.value.findings}
+
+
+def test_a_declaration_edit_cannot_carry_an_asm_line_in(repo: SimpleNamespace) -> None:
+    with pytest.raises(Refusal) as refused:
+        _header(repo, HEADER + "#pragma weak x\nextern void g(void);\n")
+    assert {f.key for f in refused.value.findings} >= {"cheat.infra", "cheat.added"}
+
+
 def test_makefile_rows_pass_other_lines_fail_unless_generated(
     repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

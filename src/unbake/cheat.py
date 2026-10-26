@@ -318,6 +318,35 @@ def _worktree_tree(git: _Git) -> str:
         index.unlink(missing_ok=True)
 
 
+# A header line that only declares: one statement ending in `;` with no preprocessor, brace, string, initializer or
+# macro continuation in it (an extern variable, a prototype).
+_DECLARATION = re.compile(r"^[^#{}\"\\=]*;$")
+
+
+def _skeleton(text: str) -> list[str]:
+    """The lines of a header that are not declaration statements: every preprocessor line, macro body (continued lines
+    included), definition and string. Two texts with the same skeleton differ only in declarations."""
+    kept: list[str] = []
+    continued = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if continued or (line and not _DECLARATION.match(line)):
+            kept.append(line)
+        continued = line.endswith("\\")
+    return kept
+
+
+def _declarations_only(git: _Git, base: str, head: str, path: str, rules: dict[str, Any]) -> bool:
+    """Whether PATH, a header under a source root, changed only by declaration lines (a prototype or extern added,
+    removed or edited) and no macro, conditional, include or definition. A mixed header such as include_asm.h holds
+    both the INCLUDE_ASM macros that decide what is compiled and the declarations any lane may retire; only the macros
+    are infrastructure. The added lines still pass the asm/pragma scan."""
+    if not re.search(rules["declaration_files"], path) or not any(path.startswith(f"{r}/") for r in rules["source"]):
+        return False
+    old, new = (git("show", f"{rev}:{path}", ok=(0, 128)) for rev in (base, head))
+    return bool(old and new) and _skeleton(old) == _skeleton(new)
+
+
 def _merge_base(git: _Git, base: str, head: str) -> str:
     """The revision `head` branched from `base` at: a head behind `base` (main moved on) must not be charged with what
     main
@@ -341,13 +370,18 @@ def cheat_command(config: Config, params: Json) -> Json:
     base = _merge_base(git, base, "HEAD" if shown == WORKTREE else head)
     roots = rules["source"]
     findings: list[Finding] = []
-    infra = [p for p in git("diff", "--name-only", base, head, "--", *rules["infra"]).splitlines() if p]
+    infra = [
+        p
+        for p in git("diff", "--name-only", base, head, "--", *rules["infra"]).splitlines()
+        if p and not _declarations_only(git, base, head, p, rules)
+    ]
     if infra:
         findings.append(
             Finding(
                 "cheat.infra",
-                "build/compare infrastructure changed (ci/, tools/, asm/, roms/, rom.toml, local.mk, include_asm.h are"
-                " infrastructure; a project data file, such as findings, notes or a feed, lives in docs/)",
+                "build/compare infrastructure changed (ci/, tools/, asm/, roms/, rom.toml, local.mk and the macros of"
+                " include_asm.h are infrastructure; a declaration line in a header is not; a project data file, such as"
+                " findings, notes or a feed, lives in docs/)",
                 missing=tuple(infra),
             )
         )

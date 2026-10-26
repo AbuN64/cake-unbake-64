@@ -292,6 +292,10 @@
       "minLength": 1
      }
     },
+    "declaration_files": {
+     "type": "string",
+     "minLength": 1
+    },
     "source_suffix": {
      "type": "string",
      "minLength": 1
@@ -308,6 +312,7 @@
     "source",
     "added",
     "asm_home",
+    "declaration_files",
     "source_suffix",
     "makefile_row"
    ],
