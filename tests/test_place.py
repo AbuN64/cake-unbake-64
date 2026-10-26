@@ -51,6 +51,7 @@ def _world(monkeypatch, tmp_path, facts=None, words=WORDS, asm=None):
     (tmp_path / "rom").write_bytes(bytes(rom))
     monkeypatch.setattr(place.api, "symbols", lambda config, v: facts or _facts())
     monkeypatch.setattr(place.api, "asm_path", lambda config, v, n: f"asm/a/nonmatchings/seg/{n}.s")
+    monkeypatch.setattr(place.api, "preprocess", lambda config, path, v: "")
     monkeypatch.setattr(place.configuration, "rom", lambda project, v: tmp_path / "rom")
     return SimpleNamespace(project=SimpleNamespace(versions=("a",), root=root))
 
@@ -524,9 +525,10 @@ def test_a_data_file_on_both_sides_of_a_pool_with_nothing_left_over_is_split_at_
     assert "INCLUDE_RODATA" in new and "D_auto_rodata" not in new
 
 
-def test_a_piece_shared_with_the_next_functions_pool_is_refused_not_cut(monkeypatch, tmp_path):
+def test_a_piece_shared_with_the_next_functions_pool_is_split_not_cut(monkeypatch, tmp_path):
     """REV1-ONE-40 01:3x: one 18-word array held Nav_PrepareProbeSegments' 10 words and func_80210EFC_de's 8-word pool;
-    the 0x28 row superseded the whole piece and the 8 words vanished (every later address 0x20 off). Refused now."""
+    the 0x28 row superseded the whole piece and the 8 words vanished (every later address 0x20 off). No version
+    splits it: the rest gets a row of its own named for the function and its address."""
     facts = _facts(
         {
             "D_800E1500": (0x800E1500, 0x2000, None, "data"),
@@ -551,12 +553,8 @@ def test_a_piece_shared_with_the_next_functions_pool_is_refused_not_cut(monkeypa
     (config.project.root / "versions/a/splat.yaml").write_text(
         "  - [0x2000, rodata, data_x/D_blob_shared]\n  - [0x2010, rodata, data_x/D_800E1510]\n"
     )
-    with pytest.raises(Refusal) as refused:
-        place.plan(config, _tree(), [F])
-    keys = [f.key for f in refused.value.findings]
-    assert "place.remainder" in keys, refused.value.findings
-    msg = next(f.reason for f in refused.value.findings if f.key == "place.remainder")
-    assert "D_blob_shared" in msg and "0x2008-0x2010" in msg
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.tail == f"D_auto_rodata_{F}_800E1508 = 0x800E1508;"
 
 
 def test_a_piece_that_ends_with_the_functions_data_is_no_remainder(monkeypatch, tmp_path):
@@ -621,3 +619,23 @@ def test_a_far_constant_other_functions_read_stays_a_shared_row_not_part_of_the_
     )
     (found,) = place.plan(config, _tree(), [F])
     assert found.names == ("D_800E1520",) and found.end == 0x2030
+
+
+def test_a_row_the_functions_c_declares_extern_is_read_not_placed(monkeypatch, tmp_path):
+    # g_name[18] lives in another file; F's pool would take 16 of its 18 bytes and leave "k\0" to the next piece
+    facts = _facts({"g_name": (0x800E1520, 0x2020, None, "data"), "D_800E1530": (0x800E1530, 0x2030, None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts, words=(0x3F800000, 0x40000000))
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("lw $a3, %lo(g_name)($at)\n")
+    monkeypatch.setattr(place.api, "preprocess", lambda config, path, v: "extern u8 g_name[];\nvoid f(void);\n")
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert {f.key for f in refused.value.findings} == {"place.none"}  # nothing of F's own: widen tolerates this
+
+
+def test_a_row_the_functions_c_does_not_declare_extern_is_still_placed(monkeypatch, tmp_path):
+    facts = _facts({"D_800E1520": (0x800E1520, 0x2020, None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts, words=(0x3F800000, 0x40000000))
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text("lw $a3, %lo(D_800E1520)($at)\n")
+    monkeypatch.setattr(place.api, "preprocess", lambda config, path, v: "extern u8 D_800E1530[];\n")
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.names == ("D_800E1520",)
