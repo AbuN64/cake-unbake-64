@@ -416,3 +416,31 @@ def test_narrow_apply_lets_make_skip_the_header_and_rebuild_only_what_the_edit_r
     assert got["versions"]["us"]["skipped"] == 0 and got["dropped"] == 1
     tree.make(deps=True, extra=("-o", "src/h.h"))
     assert (tmp_path / "preprocessed").read_text() == "p\n"
+
+
+def test_a_process_of_an_older_venv_still_names_the_link(tmp_path):
+    old, live = tmp_path / "venv-decomp.0123456789ab", tmp_path / "venv-decomp.ba9876543210"
+    for v in (old, live):
+        (v / "lib").mkdir(parents=True)
+    (tmp_path / "venv-decomp").symlink_to(live)  # a deploy moved the link while a keeper ran from OLD
+    assert build._stable(old / "lib/cc_front.sh") == tmp_path / "venv-decomp/lib/cc_front.sh"
+    stranger = tmp_path / "venv-other.0123456789ab"
+    stranger.mkdir()
+    assert build._stable(stranger / "x") == stranger / "x"  # no link of its family: its own spelling
+
+
+def test_narrow_apply_that_cannot_narrow_refuses(tmp_path, monkeypatch):
+    import pytest
+
+    from unbake import hdrnarrow, process
+    from unbake.contracts import Refusal
+
+    monkeypatch.setattr(process, "changed", lambda root, rev: ["include/w.h"])
+    monkeypatch.setattr(hdrnarrow, "includers", lambda root, v, headers: ["src/a.c"])
+    why = {"includers": 4305, "skipped": 0, "why": "4305 includers unsafe"}
+    monkeypatch.setattr(hdrnarrow, "narrow_tree", lambda *a, **k: (["src/a.c"], why))
+    params = {"project": str(tmp_path), "against": "HEAD", "version": ["us"]}
+    assert hdrnarrow.narrow_command(params)["applied"] is False  # a report: nothing was asked to apply
+    with pytest.raises(Refusal) as refused:
+        hdrnarrow.narrow_command({**params, "apply": True})
+    assert refused.value.findings[0].key == "narrow.unsafe"

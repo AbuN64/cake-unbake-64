@@ -74,7 +74,7 @@ def _spelled_in_c(config: Config) -> dict[str, list[tuple[str, int, str]]]:
     return found
 
 
-def _ram(config: Config, version: str, address: int) -> tuple[int | None, str | None]:
+def rom_of_ram(config: Config, version: str, address: int) -> tuple[int | None, str | None]:
     """(rom, segment) of a RAM address in a loaded segment of the version, else (None, None)."""
     for low, high, rom in symbols.spans(config, version):
         if low <= address < high:
@@ -100,7 +100,7 @@ def _classify(config: Config, version: str, name: str, rows: list[tuple[str, int
     if named:
         return {**row, "class": "c", "symbol": named[0]}
     if address < 0x80000000:
-        rom, segment = _ram(config, version, address)
+        rom, segment = rom_of_ram(config, version, address)
         ram = None
         for low, high, start in symbols.spans(config, version):
             if start <= address < start + high - low:
@@ -108,7 +108,7 @@ def _classify(config: Config, version: str, name: str, rows: list[tuple[str, int
         return {**row, "class": "b", "ram": ram, "segment": segment, "proposed": f"D_{address:08X}_{_tag(version)}"}
     if address >= 0xA0000000:  # an uncached (KSEG1) or hardware register address: no segment holds it
         return {**row, "class": "a", "kind": "data", "proposed": f"D_{address:08X}", "register": True}
-    rom, segment = _ram(config, version, address)
+    rom, segment = rom_of_ram(config, version, address)
     if rom is None and (wants_code or address >= RAM_END):
         return {**row, "class": "d", "reason": "no loaded segment of the version holds this address"}
     kind = "func" if wants_code else "data"
@@ -177,9 +177,9 @@ def write(config: Config, document: Json) -> Json:
     written: dict[str, list[str]] = {}
     for version, body in document["versions"].items():
         add = [r for r in body["rows"] if r["class"] in ("a", "b") and not r.get("register")]
-        written[version] = _append(config, symbols.path(version), add, "proposed", lambda r: line(r))
+        written[version] = append(config, symbols.path(version), add, "proposed", lambda r: line(r))
         kept = [r for r in add if r["in_c"]]
-        _append(
+        append(
             config,
             symbols.aliases_path(version),
             kept,
@@ -189,7 +189,7 @@ def write(config: Config, document: Json) -> Json:
     return written
 
 
-def _append(config: Config, where: str, rows: list[Json], key: str, render: Any) -> list[str]:
+def append(config: Config, where: str, rows: list[Json], key: str, render: Any) -> list[str]:
     file: Path = config.project.root / where
     text = file.read_text() if file.exists() else ""
     have = symbols.parse(text, where)

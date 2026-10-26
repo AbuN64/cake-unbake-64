@@ -677,3 +677,39 @@ sentence = "the candidate does not probe as it is, so no order of it can be meas
 [key."deadcode.file"]
 owner = "deadcode"
 sentence = "the source to scan for dead statements does not exist"
+
+[key."widen.request"]
+owner = "compare"
+sentence = "--widen names versions of the project other than the --from version, and FILE is a file of the project"
+
+[key."widen.none"]
+owner = "compare"
+sentence = "nothing to widen: no function of the file sits in a conditional that names the reference, or every asked version already builds its C"
+
+[key."widen.condition"]
+owner = "compare"
+sentence = "a conditional that decides the ported code names a widened version beside a macro the widening cannot judge"
+
+[key."widen.row"]
+owner = "compare"
+sentence = "a widened version has no symbol row of the ported function under the name the C defines"
+
+[key."widen.symbol"]
+owner = "compare"
+sentence = "a data symbol the ported C spells has no single address the widened version's words build where the reference builds it"
+
+[key."widen.score"]
+owner = "compare"
+sentence = "a ported function does not build exact in a widened version: every file was put back"
+
+[key."boundary.request"]
+owner = "repo"
+sentence = "boundary names versions of the project"
+
+[key."boundary.spelled"]
+owner = "repo"
+sentence = "a row the move removes is spelled by the source other than in its INCLUDE_ASM stand-in: the source must change first"
+
+[key."narrow.unsafe"]
+owner = "build"
+sentence = "narrow --apply could not prove every includer of the changed headers safe in some version, so it signed and dropped nothing"

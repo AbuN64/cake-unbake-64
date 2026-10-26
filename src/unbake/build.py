@@ -906,7 +906,13 @@ def _stable(path: Path) -> Path:
     path = Path(path)
     for folder in path.parents:
         name, dot, _ = folder.name.rpartition(".")
-        if dot and name and (link := folder.with_name(name)).is_symlink() and link.resolve() == folder.resolve():
+        if not (dot and name and (link := folder.with_name(name)).is_symlink()):
+            continue
+        live = link.resolve()
+        # the link names the live venv of the same family even when this process runs from an older one (a keeper
+        # started before a deploy): spelling its own hashed path put a path into local.mk and every .o.flags that the
+        # next stamp spelled through the link, so every deploy rebuilt the warm trees (10-25 pool refresh 811 CPU s)
+        if live == folder.resolve() or (live.parent == folder.resolve().parent and live.name.startswith(name + ".")):
             return link / path.relative_to(folder)
     return path
 

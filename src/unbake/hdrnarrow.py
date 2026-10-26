@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from unbake import process
-from unbake.contracts import Config, Refusal
+from unbake.contracts import Config, Finding, Refusal
 
 KEYWORDS = frozenset(
     [
@@ -536,6 +536,8 @@ def narrow_command(params: dict[str, Any]) -> dict[str, Any]:
         plans[v] = ([u for u in units if u not in kept], keep)
         if stats["why"] and stats["why"] != "no declaration changed":
             out["why"] = f"{v}: {stats['why']}"
+            if params.get("apply"):  # asked to apply and could not: a refusal, not a success with applied false
+                raise Refusal(Finding("narrow.unsafe", f"nothing applied: {out['why']}", versions=(v,)))
             return out
     if params.get("apply"):
         stamp = "build/{v}/{u}.i.ok"

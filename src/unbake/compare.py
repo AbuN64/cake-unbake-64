@@ -354,6 +354,11 @@ def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, e
 
 
 def run(config: Config, params: Json) -> Json:
+    if params.get("widen"):
+        from unbake import widen
+
+        with effort.stage("compare.widen"):
+            return widen.run(config, params)
     with effort.stage("compare.run"):
         done = _attempt(config, [Path(params["file"])], params, "compare", False)
         proofs, found, entry = done["proofs"], done["found"], done["submission"]
@@ -393,6 +398,10 @@ def submit_command(config: Config, params: Json) -> Json:
             from unbake import batch_data
 
             return batch_data.run(config, params)
+        if params.get("boundary"):
+            from unbake import boundary
+
+            return boundary.run(config, params)
         if params.get("pad_split"):
             from unbake import padsplit
 

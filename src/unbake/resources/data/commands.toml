@@ -51,6 +51,9 @@ params = [
   { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member the file implements when its name does not say" },
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "new directory for artifacts" },
   { name = "note", kind = "option", type = "str", required = false, multiple = false, help = "a free-text note recorded with the submission" },
+  { name = "widen", kind = "option", type = "str", required = false, multiple = false, help = "V,..: port the C the --from version matches in FILE to these versions (guards widened, their data symbols read from the code, sync --place, scored exact in each or nothing kept); writes the tree and a diff" },
+  { name = "from", kind = "option", type = "str", required = false, multiple = false, help = "with --widen: the version whose C is ported (default: the project names_from)" },
+  { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "with --widen: show the edits and derived symbols, write nothing" },
 ]
 
 [command.score]
@@ -149,6 +152,9 @@ params = [
   { name = "files", kind = "argument", type = "path", required = false, multiple = true, help = "C sources, then change-set files: PATH=FILE replaces the project file PATH (a header) with FILE" },
   { name = "batch-data", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {member, file}: prove extracted data together (written, built and linked whole under the exclusive tree lock), then restore the tracked tree and write the change as a patch" },
   { name = "pad-split", kind = "option", type = "path", required = false, multiple = false, help = "JSON list of {member, version, rom, vram} (the function's current row, per version that has an alignment pad word before its prologue): write the symbol rows of the pad word, the function moved to a file of its own and the pad's stand-in as a patch, tree restored" },
+  { name = "boundary", kind = "flag", type = "str", required = false, multiple = false, help = "move the function rows a split put in the wrong place (a pad or the last word of the function before, a function cut in two, a prologue word alone) to where an exact function of another version sits in the ROM: symbol_addrs rows, the stand-ins of rows that go, sync, and a diff; rows no counterpart explains are described" },
+  { name = "version", kind = "option", type = "str", required = false, multiple = true, help = "with --boundary: a version to search (repeat; default every version but names_from)" },
+  { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "with --boundary: report the moves, write nothing" },
   { name = "patch", kind = "option", type = "path", required = false, multiple = false, help = "with --batch-data or --pad-split, where the patch goes (default .unbake/batch-data|pad-split/<digest>.patch)" },
   { name = "function", kind = "option", type = "str", required = false, multiple = false, help = "member, only with exactly one file" },
   { name = "bulk", kind = "flag", type = "str", required = false, multiple = false, help = "each source, with the PATH=FILE change-set files that follow it, is one candidate (member from the source name): admit all groups independently, a refusal blocks no other group, then run land once" },
@@ -295,3 +301,4 @@ params = [
   { name = "patch", kind = "option", type = "path", required = false, multiple = false, help = "carry: where to write the patch, default .unbake/layout/carry.patch" },
   { name = "old", kind = "option", type = "path", required = false, multiple = false, help = "verify: a directory holding the build tree and link script from before the move" },
 ]
+
