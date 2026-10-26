@@ -13,9 +13,10 @@ names it owns from the leftover on move to a new sibling file (`<stem>_<n>`) tha
 A table or pool that other functions also read is placed with the function asked for, its first owner: an assembly
 reader links by the symbol's address and a C reader declares the symbol `extern`, so both keep reading the same bytes;
 the plan's note names them; a word array of another file for the same bytes is superseded by the row (sync drops it).
-What it refuses (nothing is written then): leftover bytes with no file after them to hold a stand-in and, when the
-version's object is built and newer than its source, a compiled .rodata that is not the ROM's bytes (size, alignment,
-content).
+What it refuses (nothing is written then): a function that reads two places of the ROM more than a table's length
+apart (`place.apart`, final: one `literals_` row cannot hold both, so it keeps its stand-ins); leftover bytes with no
+file after them to hold a stand-in and, when the version's object is built and newer than its source, a compiled
+.rodata that is not the ROM's bytes (size, alignment, content).
 """
 
 from __future__ import annotations
@@ -255,15 +256,12 @@ def _extent(
 
 
 def _apart(table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]]) -> str:
-    """The note for a span that is really two places: the function reads rows more than a table's length apart (the
+    """The sentence for a span that is really two places: the function reads rows more than a table's length apart (the
     ROM keeps them in different pieces, so no one pool can hold both)."""
     for (a, skip, size), (b, _, _) in itertools.pairwise(rows):
         gap = (table[b][1] or 0) - ((table[a][1] or 0) + skip + size)
         if gap > TABLE_MAX:
-            return (
-                f"; it reads {a} (0x{table[a][1]:X}) and {b} (0x{table[b][1]:X}), "
-                f"0x{gap:X} bytes apart: two places, not one pool"
-            )
+            return f"it reads {a} (0x{table[a][1]:X}) and {b} (0x{table[b][1]:X}), 0x{gap:X} bytes apart"
     return ""
 
 
@@ -390,7 +388,17 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             if inside and (trimmed := _trim_shared(root, current, v, table, rows, function, zero)):
                 rows, (names, vram, rom, end, inside, junk) = trimmed
             last = names[-1]
-            if (
+            if apart := _apart(table, rows):  # final: two places of the ROM, no one literals_ row can hold both
+                refused.append(
+                    Finding(
+                        "place.apart",
+                        f"{v}: {function}: {apart}: two places, not one pool, so the function keeps its stand-ins",
+                        path=module.path,
+                        unit=function,
+                        versions=(v,),
+                    )
+                )
+            elif (
                 inside
             ):  # a single row cannot hold bytes of other data between the function's own: name them, write nothing
                 refused.append(
@@ -398,8 +406,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                         "place.gap",
                         f"{v}: {function}: its data spans 0x{rom:X}-0x{end:X}, which holds rows it does not read: "
                         + ", ".join(f"{n} (0x{table[n][1]:X})" for n in inside[:6])
-                        + "; they are read by other code or owned by a file, so they are no junk to remove"
-                        + _apart(table, rows),
+                        + "; they are read by other code or owned by a file, so they are no junk to remove",
                         path=module.path,
                         unit=function,
                         versions=(v,),

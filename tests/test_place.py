@@ -662,4 +662,5 @@ def test_a_function_reading_two_places_far_apart_is_refused_naming_both(monkeypa
     (tmp_path / "rom").write_bytes((tmp_path / "rom").read_bytes().ljust(0x8000, b"\0"))
     with pytest.raises(Refusal) as refused:
         place.plan(config, _tree(), [F])
+    assert refused.value.findings[0].key == "place.apart"
     assert "bytes apart: two places, not one pool" in refused.value.findings[0].reason

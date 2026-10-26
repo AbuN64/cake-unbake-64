@@ -409,6 +409,10 @@ sentence = "the function has no read-only data of its own to place in any versio
 owner = "repo"
 sentence = "the function's read-only data spans rows it does not read, which one placed row cannot skip"
 
+[key."place.apart"]
+owner = "repo"
+sentence = "the function reads read-only data in two places of the ROM, which no single placed row can hold"
+
 [key."place.leftover"]
 owner = "repo"
 sentence = "bytes after a function's own data have no other file before them to hold their stand-in"
