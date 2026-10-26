@@ -7,6 +7,11 @@ result under a hash of (compiler identity, every argument, the exact bytes of th
 assembly instead of compiling it again. A miss runs the compiler and stores the result; anything the front cannot
 parse (no -o, no input file) runs the compiler as given.
 
+The same front answers the preprocessor (`--preprocess`): one source under the same arguments preprocesses to the
+same text while every file it included has the bytes it had. An entry keeps the text, the dependency file and the
+hash of each included file; a hit reads those files again and compares them, so the versions of a unit and every
+tree preprocess it once while nothing it includes moved.
+
 The key is exact: no "similar" text is ever answered with another text's assembly (10-22: a reuse of the last text for
 texts that only reordered statements served stale assembly, and a stale answer that happens to match passes the ROM
 check). The chunk parser below serves tree.py's parse key, never this cache.
@@ -283,6 +288,120 @@ def run(cache: str, compiler: str, args: list[str]) -> int:
     return code
 
 
+def pack(parts: list[bytes]) -> bytes:
+    return b"".join(len(p).to_bytes(8, "big") + p for p in parts)
+
+
+def unpack(data: bytes) -> list[bytes]:
+    parts, at = [], 0
+    while at < len(data):
+        size = int.from_bytes(data[at : at + 8], "big")
+        parts.append(data[at + 8 : at + 8 + size])
+        at += 8 + size
+    return parts
+
+
+def preprocessor_identity(preprocessor: str) -> bytes:
+    """The preprocessor as its output can depend on it: the driver and the program it runs (cc1), by path, size and
+    date. Not the files beside it: a host cpp lives in /usr/bin."""
+    import subprocess
+
+    names = [os.path.realpath(preprocessor)]
+    asked = subprocess.run([preprocessor, "-print-prog-name=cc1"], capture_output=True, check=False)
+    found = asked.stdout.decode(errors="surrogateescape").strip()
+    if asked.returncode == 0 and os.path.isabs(found):
+        names.append(os.path.realpath(found))
+    digest = sha256(b"")
+    for name in names:
+        try:
+            info = os.stat(name)
+            digest.update(f"{name}\0{info.st_size}\0{info.st_mtime_ns}\0".encode(errors="surrogateescape"))
+        except OSError:
+            digest.update(name.encode(errors="surrogateescape") + b"\0")
+    return digest.digest()
+
+
+def preprocess_parse(args: list[str]) -> tuple[str, str] | None:
+    """(source, dependency file) of a preprocess command the cache can answer: the source is the last argument, the
+    dependency file has a phony rule per header (-MP: the one way every included file is named) and the text goes to
+    standard output."""
+    if "-MP" not in args or "-o" in args or "-MF" not in args or args.index("-MF") + 1 >= len(args):
+        return None
+    return (args[-1], args[args.index("-MF") + 1]) if not args[-1].startswith("-") else None
+
+
+def included(depfile: bytes) -> list[str]:
+    """The files a dependency file names beyond the source: its phony rules (`header:`)."""
+    names = []
+    for line in depfile.decode(errors="surrogateescape").splitlines():
+        if line.endswith(":") and not line.startswith((" ", "\t")):
+            names.append(line[:-1].replace("\\ ", " "))
+    return names
+
+
+def digests(names: list[str]) -> bytes | None:
+    """`<sha256> <name>` per included file; None when one cannot be read (no entry can be made)."""
+    lines = []
+    for name in names:
+        try:
+            lines.append(f"{sha256(read(name)).hexdigest()} {name}")
+        except OSError:
+            return None
+    return "\n".join(lines).encode(errors="surrogateescape")
+
+
+def unchanged(recorded: bytes) -> bool:
+    """Every included file an entry names still has the bytes it had."""
+    for line in recorded.decode(errors="surrogateescape").splitlines():
+        want, _, name = line.partition(" ")
+        try:
+            if sha256(read(name)).hexdigest() != want:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def run_preprocess(cache: str, preprocessor: str, args: list[str]) -> int:
+    """Preprocess as `preprocessor args` would: from the cache when this source under these arguments last gave a text
+    whose included files still have their bytes, else run it and keep the result."""
+    import subprocess
+
+    cache = os.fspath(cache)
+    parsed = preprocess_parse(args)
+    if parsed is None:
+        return call(preprocessor, args)
+    source, depfile = parsed
+    try:
+        head = preprocessor_identity(preprocessor) + b"\0" + "\0".join(args).encode(errors="surrogateescape")
+        name = sha256(b"pp\0" + head + b"\0" + read(source)).hexdigest()
+    except OSError:
+        return call(preprocessor, args)
+    entry = os.path.join(cache, name[:2], name[2:])
+    try:
+        recorded, made_dep, text, errors = unpack(zlib.decompress(read(entry)))
+    except (OSError, zlib.error, ValueError):
+        recorded = None
+    if recorded is not None and unchanged(recorded):
+        os.utime(entry)  # a hit keeps it alive
+        write(depfile, made_dep)
+        sys.stdout.buffer.write(text)
+        sys.stderr.buffer.write(errors)
+        return 0
+    made = subprocess.run([preprocessor, *args], capture_output=True, check=False)
+    sys.stdout.buffer.write(made.stdout)
+    sys.stderr.buffer.write(made.stderr)
+    if made.returncode == 0:
+        try:
+            made_dep = read(depfile)
+            if (hashes := digests(included(made_dep))) is not None:
+                store(entry, pack([hashes, made_dep, made.stdout, made.stderr]))
+        except OSError:
+            pass
+    maybe_prune(cache)
+    return made.returncode
+
+
 SEPARATOR = "\x1f"  # between the fields of a compile command the front records (cc_front.sh)
 
 
@@ -321,8 +440,10 @@ def main(argv: list[str]) -> int:
     if len(argv) == 7 and argv[1] == "--batch":
         batch(argv[2], argv[3], argv[4], int(argv[5]), int(argv[6]))
         return 0
+    if len(argv) >= 4 and argv[1] == "--preprocess":
+        return run_preprocess(argv[2], argv[3], argv[4:])
     if len(argv) < 3:
-        sys.stderr.write("usage: cc_cache.py CACHE_DIR REAL_CC ARGS...\n")
+        sys.stderr.write("usage: cc_cache.py [--preprocess] CACHE_DIR REAL_CC ARGS...\n")
         return 2
     return run(argv[1], argv[2], argv[3:])
 

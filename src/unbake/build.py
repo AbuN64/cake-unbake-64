@@ -153,6 +153,7 @@ def _recipe(id: str) -> str:
     values = {
         **{k: [v] for k, v in _MAKE.items()},
         "cc": [f"$(CC_{key})"],
+        "cpp": ["$(PPFRONT) $(CPP)"],  # PPFRONT (local.mk): the cached preprocessor front, empty without a cache
         "as": [f"$(AS_{key})"],
         # -MP: a phony rule per header, so a header a later commit deletes never stops an incremental build
         "cppflags": ["$(CPPFLAGS) -MMD -MP -MF $(@:.i.ok=.d) -MT $@"],
@@ -930,10 +931,21 @@ def _cached_cc(config: Config, compiler: Path) -> str:
     return " ".join(shlex.quote(str(p)) for p in ("sh", script, cache, compiler))
 
 
+def _preprocess_front(config: Config) -> str:
+    """The command that puts a preprocessor behind cc_cache.py's `--preprocess`, in the same cache as the compiler, so
+    a source whose included files did not move is not preprocessed again for another version or tree."""
+    cache = front.cache(config.host)
+    if cache is None:
+        return ""
+    script = _stable(Path(__file__).parent / "resources" / "cc_cache.py")
+    return " ".join(["python3", "-I", "-S", *(shlex.quote(str(p)) for p in (script, "--preprocess", cache))])
+
+
 def local_mk(config: Config) -> bytes:
     with effort.stage("build.local_mk"):
         assignments = [
             f"JOBS := {config.host.workers}",
+            f"PPFRONT := {_preprocess_front(config)}",
             *(
                 f"{var} := {_stable(config.host.tools[row['host']]) if row['host'] in config.host.tools else ''}"
                 for var, row in sorted(_REPO["make"]["tools"].items())

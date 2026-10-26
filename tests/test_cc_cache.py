@@ -291,3 +291,104 @@ def test_a_batch_skips_a_command_it_cannot_key_and_an_unreadable_source(tmp_path
     manifest.write_text(f"{cc}\x1f-E\x1fy.c\n{cc}\x1f-quiet\x1fgone.i\x1f-o\x1fgone.s\n")
     assert cc_cache.batch(str(cache), str(root), str(manifest), 0, 1) == 0
     assert not list(root.glob("*.cc"))
+
+
+def fake_cpp(tmp_path: Path) -> Path:
+    """A preprocessor that counts its runs, answers `-print-prog-name=cc1`, and writes the source followed by each
+    `-I`-less `#include "x"` file's text to standard output with a dependency file naming them (-MP)."""
+    cpp = tmp_path / "cpp"
+    cpp.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = -print-prog-name=cc1 ]; then echo cc1; exit 0; fi\n'
+        'set -e\necho run >> "$0.runs"\n'
+        'while [ $# -gt 0 ]; do case "$1" in -MF) mf=$2; shift;; -M*|-I*|-D*) ;; *) src=$1;; esac; shift; done\n'
+        'cat "$src"; echo "x.o: $src h.h \\\\" > "$mf"; echo " " >> "$mf"; echo "h.h:" >> "$mf"; cat h.h\n'
+    )
+    cpp.chmod(0o755)
+    return cpp
+
+
+def pp(cache: Path, cpp: Path, root: Path, *flags: str) -> subprocess.CompletedProcess:
+    script = Path(cc_cache.__file__)
+    args = [
+        "python3",
+        "-I",
+        "-S",
+        str(script),
+        "--preprocess",
+        str(cache),
+        str(cpp),
+        "-MMD",
+        "-MP",
+        "-MF",
+        "x.d",
+        *flags,
+        "x.c",
+    ]
+    return subprocess.run(args, cwd=root, capture_output=True, check=False)
+
+
+def source_tree(tmp_path: Path, name: str, header: str) -> Path:
+    root = tmp_path / name
+    root.mkdir()
+    (root / "x.c").write_text("int x;\n")
+    (root / "h.h").write_text(header)
+    return root
+
+
+def test_a_second_tree_copies_the_text_of_a_source_whose_headers_did_not_move(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    first, second = source_tree(tmp_path, "a", "#define A 1\n"), source_tree(tmp_path, "b", "#define A 1\n")
+    one, two = pp(cache, cpp, first), pp(cache, cpp, second)
+    assert one.stdout == two.stdout == b"int x;\n#define A 1\n" and one.returncode == two.returncode == 0
+    assert runs(cpp) == 1
+    assert (second / "x.d").read_bytes() == (first / "x.d").read_bytes() and b"h.h:" in (second / "x.d").read_bytes()
+
+
+def test_a_changed_header_or_source_or_flag_preprocesses_again(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    pp(cache, cpp, root)
+    (root / "h.h").write_text("#define A 2\n")
+    assert pp(cache, cpp, root).stdout == b"int x;\n#define A 2\n"
+    (root / "x.c").write_text("int y;\n")
+    assert pp(cache, cpp, root).stdout == b"int y;\n#define A 2\n"
+    assert pp(cache, cpp, root, "-DV=1").returncode == 0
+    assert runs(cpp) == 4
+    assert pp(cache, cpp, root, "-DV=1").returncode == 0 and runs(cpp) == 4
+
+
+def test_a_deleted_header_is_a_miss(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    pp(cache, cpp, root)
+    (root / "h.h").unlink()
+    assert pp(cache, cpp, root).returncode != 0 and runs(cpp) == 2
+
+
+def test_a_failed_preprocess_is_not_stored_and_a_command_without_a_dependency_file_runs_as_given(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    (root / "x.c").unlink()
+    assert pp(cache, cpp, root).returncode != 0 and not cache.exists()
+    (root / "x.c").write_text("int x;\n")
+    script = Path(cc_cache.__file__)
+    bare = subprocess.run(
+        ["python3", "-I", "-S", str(script), "--preprocess", str(cache), str(cpp), "-MF", "x.d", "x.c"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    assert bare.returncode == 0 and runs(cpp) == 2 and not cache.exists()
+
+
+def test_local_mk_puts_the_preprocessor_behind_the_front(tmp_path):
+    host = SimpleNamespace(
+        workers=4, tools={}, toolchain_root=Path("/chains"), cache_dir=Path("/home/x/.cache/unbake/content")
+    )
+    text = build.local_mk(SimpleNamespace(host=host)).decode()
+    line = next(row for row in text.splitlines() if row.startswith("PPFRONT :="))
+    assert line.startswith("PPFRONT := python3 -I -S ") and line.endswith(
+        "/resources/cc_cache.py --preprocess /home/x/.cache/unbake/content.cc"
+    )
+    assert "$(PPFRONT) $(CPP)" in build._recipe("gcc-2.8.1-sn64")
