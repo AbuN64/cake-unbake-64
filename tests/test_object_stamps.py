@@ -218,6 +218,25 @@ def test_an_included_asm_naming_a_renamed_callee_remakes_the_object_under_an_old
     assert tree.make(deps=True) == (0, 0)
 
 
+def test_an_extraction_inside_the_make_that_renamed_an_included_asm_remakes_the_object(tmp_path):
+    """A make that extracts while it builds has read the file's old date (no sweep runs in a sub-make, level 1), and the
+    object's other prerequisite is a newer .i: the shortcuts would keep the object that names the old callee."""
+    tree = Tree(tmp_path)
+    asm = tmp_path / "asm/us/nonmatchings/seg/f.s"
+    asm.parent.mkdir(parents=True)
+    asm.write_text("glabel f\n  jal func_802A037C_de\n")
+    tree.write('INCLUDE_ASM("seg", f);\n')
+    assert tree.make(deps=True, level=1) == (1, 1)
+    tree.age()
+    tree.make(deps=True, level=1)
+    assert tree.make(deps=True, level=1) == (0, 0)
+    asm.write_text("glabel f\n  jal Resmgr_CopyString\n")
+    _old(asm)
+    os.utime(tmp_path / "build/us/src/a.c.i.ok")  # only the stamp is newer: the shortcut is what decides
+    assert tree.make(deps=True, level=1)[1] == 1
+    assert tree.make(deps=True, level=1) == (0, 0)
+
+
 def test_a_tree_without_recorded_inputs_is_trusted(tmp_path):
     tree = Tree(tmp_path)
     (tmp_path / "src/h.h").write_text("one\n")
