@@ -554,7 +554,7 @@ def test_a_piece_shared_with_the_next_functions_pool_is_split_not_cut(monkeypatc
         "  - [0x2000, rodata, data_x/D_blob_shared]\n  - [0x2010, rodata, data_x/D_800E1510]\n"
     )
     (found,) = place.plan(config, _tree(), [F])
-    assert found.tail == f"D_auto_rodata_{F}_800E1508 = 0x800E1508;"
+    assert found.tail == f"D_auto_rodata_{F}_800E1508 = 0x800E1508; // rom:0x2008"
 
 
 def test_a_piece_that_ends_with_the_functions_data_is_no_remainder(monkeypatch, tmp_path):
@@ -639,3 +639,12 @@ def test_a_row_the_functions_c_does_not_declare_extern_is_still_placed(monkeypat
     monkeypatch.setattr(place.api, "preprocess", lambda config, path, v: "extern u8 D_800E1530[];\n")
     (found,) = place.plan(config, _tree(), [F])
     assert found.names == ("D_800E1520",)
+
+
+def test_a_jump_table_cut_by_facts_symbols_inside_it_is_one_row(monkeypatch, tmp_path):
+    """J007 eu: symbols on words 2 and 4 of a 4-word table sized the pool 0x4; the table is the function's 0x10."""
+    facts = _facts({"D_800E1504": (0x800E1504, 0x2004, None, "data"), "D_800E150C": (0x800E150C, 0x200C, None, "data")})
+    config = _world(monkeypatch, tmp_path, facts=facts)
+    (found,) = place.plan(config, _tree(), [F])
+    assert found.row == f"literals_{F} = 0x800E1500; // rom:0x2000 size:0x10"
+    assert {n for n, _ in found.junk} == {"D_800E1504", "D_800E150C"}

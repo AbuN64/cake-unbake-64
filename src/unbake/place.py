@@ -465,7 +465,10 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
     for index, start in tails:  # split the shared piece the way a version that already splits it names it
         p = found[index]
         name = _tail_name(p, start, owners.get(p.function, ()))
-        found[index] = replace(p, tail=f"{name} = 0x{p.vram + start - p.rom:08X};")
+        where = (
+            "" if _POOL.search(name) else f" // rom:0x{start:X}"
+        )  # a pool name spells its offset; any other needs it
+        found[index] = replace(p, tail=f"{name} = 0x{p.vram + start - p.rom:08X};{where}")
     refused.extend(
         Finding("place.none", f"{f} has no read-only data of its own to place in any version", unit=f)
         for f, empty in nothing.items()
@@ -590,13 +593,25 @@ def _data_rows(
             skip += 4 * pad
             words = words[pad:]
         run = next((i for i, w in enumerate(words) if jump_target([w, w], spans) != function), len(words))
+        if n in offsets and image and run * 4 == end - rom - skip and run:
+            # the table runs on past the next symbol: rows cut inside a jump table (a facts symbol on one of its
+            # words) are no boundary of it, whatever name they carry (J007 eu: 0x24 bytes cut at 0xC)
+            more = [int.from_bytes(image[i : i + 4], "big") for i in range(end, rom + skip + TABLE_MAX, 4)]
+            run += next((i for i, w in enumerate(more) if jump_target([w, w], spans) != function), len(more))
         is_table = run >= 2 and 4 * run <= TABLE_MAX
         if n in offsets and (not pieces or _is_rodata(pieces, rom)):
             size = 4 * run if is_table else min(end - rom - skip, 4 * _foreign_table(words, spans, function))
             picked.setdefault(rom, (n, skip, size))
         elif is_table and 4 * run == end - rom:
             picked.setdefault(rom, (n, 0, end - rom))
-    return [picked[r] for r in sorted(picked)]
+    rows: list[tuple[str, int, int]] = []
+    covered = 0  # a row inside the bytes of the row before it (a symbol on a word of a jump table) is part of it
+    for r in sorted(picked):
+        n, skip, size = picked[r]
+        if r >= covered:
+            rows.append(picked[r])
+            covered = r + skip + size
+    return rows
 
 
 def _object(root: Path, v: str, path: str, image: bytes, rom: int, end: int, vram: int) -> tuple[str, str]:
