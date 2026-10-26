@@ -609,6 +609,21 @@ def test_sync_shrinks_a_word_array_to_the_words_before_a_literals_row(world, mon
     assert (world.root / "src/main/chunk.c").read_text() == "const unsigned int d_chunk[1] = {\n    0x00000000,\n};\n"
 
 
+def test_sync_puts_a_shrunk_array_before_the_function_whose_literals_follow_it(world, monkeypatch):
+    code = '#include "a.h"\n#if defined(X)\nint pre;\n#endif\nvoid f(int *p) {\n    *p = 1;\n}\n'
+    words = "    0x00000000, 0x00000001, 0x00000002, 0x00000003, 0x00000004,\n"
+    array = "#if defined(VERSION_A)\nconst unsigned int d_chunk[5] = {\n" + words + "};\n#endif\n"
+    _write(world.root, "src/main/chunk.c", code + array)
+    facts = {"d_chunk": (0x80100000, 0x2000, 0x14, "data"), "literals_f": (0x80100004, 0x2004, None, "data")}
+    monkeypatch.setattr(repo.api, "symbols", lambda config, v: facts)
+    world.tree = _tree({"src/main/chunk.c": {"a": ("d_chunk",), "b": ("d_chunk",)}}, sections={"d_chunk": ".rodata"})
+    repo.sync(world.cfg, {"check": False})
+    kept = "#if defined(VERSION_A)\nconst unsigned int d_chunk[1] = {\n    0x00000000,\n};\n#endif\n"
+    assert (world.root / "src/main/chunk.c").read_text() == code.replace("void f", kept + "void f")
+    repo.sync(world.cfg, {"check": False})
+    assert (world.root / "src/main/chunk.c").read_text().count("d_chunk[1]") == 1
+
+
 def test_a_name_in_no_segment_is_refused(world):
     world.tree = _tree({}, {"a": ["f_main"], "b": ()})
     monkey = {"f_main": (0x1, 0x10, 0, "func")}

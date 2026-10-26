@@ -389,6 +389,35 @@ def _shrink(lines: list[str], name: str, words: int) -> bool:
     return True
 
 
+def _hoist(lines: list[str], name: str, function: str) -> bool:
+    """Move the word array `name`, with an `#if` around it that holds nothing else, in front of the definition of
+    `function` (and of any `#if` that definition sits in): the object's .rodata holds a module's data in source order
+    and the function's own literals (a jump table) where it is defined, so an array the ROM has before them must be
+    defined before it. False when the array is already first or either is not found."""
+    found = _array_of(lines, name)
+    definition = re.compile(rf"^[A-Za-z_][\w \t\*]*\b{re.escape(function)}\s*\([^;]*$")
+    at = next((i for i, line in enumerate(lines) if definition.match(line)), None)
+    if found is None or at is None or found[0] < at:
+        return False
+    first, last = found
+    opened = _CONDITIONAL.match(lines[first - 1]) if first > 0 else None
+    closed = _CONDITIONAL.match(lines[last + 1]) if last + 1 < len(lines) else None
+    guarded = bool(opened and opened[1] != "endif" and closed and closed[1] == "endif")
+    low, high = (first - 1, last + 2) if guarded else (first, last + 1)
+    open_ifs: list[int] = []
+    for i, line in enumerate(lines[:at]):
+        if (kind := _CONDITIONAL.match(line)) is not None:
+            if kind[1] != "endif":
+                open_ifs.append(i)
+            elif open_ifs:
+                open_ifs.pop()
+    at = open_ifs[0] if open_ifs else at
+    block = lines[low:high]
+    del lines[low:high]
+    lines[at:at] = block
+    return True
+
+
 def _held_back(lines: Sequence[str]) -> bool:
     """A file with no code, data or stand-in left: only blank lines, comments and preprocessor lines."""
     return all(not line.strip() or line.lstrip().startswith(("#", "//", "/*", "*")) for line in lines)
@@ -399,9 +428,14 @@ def _narrowed(config: Config, current: Any, lines: Callable[[str], list[str]]) -
     before the row: the array names the bytes up to the next name, and the row now names the rest. The paths touched.
     Versions that would cut one definition differently leave it as it is."""
     cuts: dict[tuple[str, str], set[int]] = {}
+    owners: dict[tuple[str, str], set[str]] = {}
     for v in config.project.versions:
         facts = api.symbols(config, v)
-        starts = sorted(f[1] for n, f in facts.items() if n.startswith(tree.LITERALS) and f[1] is not None)
+        starts = sorted(
+            (f[1], n[len(tree.LITERALS) :])
+            for n, f in facts.items()
+            if n.startswith(tree.LITERALS) and f[1] is not None
+        )
         if not starts:
             continue
         for module in current.modules:
@@ -415,12 +449,17 @@ def _narrowed(config: Config, current: Any, lines: Callable[[str], list[str]]) -
                     or not module.sections.get(v, {}).get(name, "").startswith(".rodata")
                 ):
                     continue
-                after = next((s for s in starts if s > rom), None)
-                if after is not None and (after - rom) % 4 == 0:
-                    cuts.setdefault((module.path, name), set()).add((after - rom) // 4)
+                after = next((s for s in starts if s[0] > rom), None)
+                if after is not None and (after[0] - rom) % 4 == 0:
+                    cuts.setdefault((module.path, name), set()).add((after[0] - rom) // 4)
+                    owners.setdefault((module.path, name), set()).add(after[1])
     touched: set[str] = set()
     for (path, name), counts in sorted(cuts.items()):
-        if len(counts) == 1 and _shrink(lines(path), name, next(iter(counts))):
+        if len(counts) != 1:
+            continue
+        shrunk = _shrink(lines(path), name, next(iter(counts)))
+        functions = owners[(path, name)]
+        if (len(functions) == 1 and _hoist(lines(path), name, next(iter(functions)))) or shrunk:
             touched.add(path)
     return touched
 
