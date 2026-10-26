@@ -113,6 +113,40 @@ def test_a_new_name_that_already_exists_would_capture(repo: Path) -> None:
     assert "already a code token" in _refused(repo)
 
 
+def test_a_new_name_a_file_defines_for_itself_is_no_capture(repo: Path) -> None:
+    (repo / "src/b.c").write_text("static int Game_Init(int a) { return a; }\nint use(void) { return Game_Init(1); }\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "b")
+    _rename(repo, "func_80100000_de", "Game_Init", only=("include/api.h", "src/a.c", "versions/de/symbol_addrs.txt"))
+    assert ["func_80100000_de", "Game_Init"] in _prove(repo)["map"]
+
+
+def test_a_defining_file_that_uses_the_renamed_name_would_still_capture(repo: Path) -> None:
+    (repo / "src/b.c").write_text(
+        "static int Game_Init(int a) { return a; }\nint use(void) { return func_80100000_de(1); }\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "b")
+    _rename(repo, "func_80100000_de", "Game_Init")
+    assert "already a code token" in _refused(repo)
+
+
+def test_a_static_definition_beside_the_renamed_definition_is_still_a_capture(repo: Path) -> None:
+    (repo / "src/a.c").write_text("static int Game_Init(int a) { return a; }\n" + (repo / "src/a.c").read_text())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "a")
+    _rename(repo, "func_80100000_de", "Game_Init")
+    assert "already a code token" in _refused(repo)
+
+
+def test_a_non_static_definition_in_another_file_is_still_a_capture(repo: Path) -> None:
+    (repo / "src/b.c").write_text("int Game_Init(int a) { return a; }\nint use(void) { return Game_Init(1); }\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "b")
+    _rename(repo, "func_80100000_de", "Game_Init")
+    assert "already a code token" in _refused(repo)
+
+
 def test_two_names_renamed_to_one_are_refused(repo: Path) -> None:
     _rename(repo, "func_80100000_de", "Game_Init")
     _rename(repo, "func_80100100_de", "Game_Init")

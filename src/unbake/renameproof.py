@@ -167,6 +167,14 @@ NOT_TYPES = frozenset(
 DECL_END = frozenset({";", "=", ",", ")", "["})
 
 
+def _statement(tokens: Sequence[str], at: int) -> Sequence[str]:
+    """The tokens of the file-level declaration that precedes the token AT, back to the previous `;` or brace."""
+    start = at
+    while start and tokens[start - 1] not in (";", "{", "}"):
+        start -= 1
+    return tokens[start:at]
+
+
 def _spans(tokens: Sequence[str]) -> tuple[list[int], list[tuple[int, int]]]:
     """The function definitions of a C token list: for each token the index of the function whose parameters or body
     holds it (-1 for none), and each function's (first, last) token. A function is a `{` at file level that follows a
@@ -689,6 +697,7 @@ class _Proof:
                 if found and rev:
                     found = self.visible(tokens, found, keys) if _is_c(path) else found
                     found = self.shared_versions(path, data.decode("latin-1"), found)
+                    found = self.unbound(tokens, found, keys) if _is_c(path) else found
                 if found:
                     self.refuse(f"{sorted(found)[0]} is {what}", path)
 
@@ -730,6 +739,24 @@ class _Proof:
             if theirs is None or mine is None or theirs & mine:
                 kept.add(y)
         return kept
+
+    def unbound(self, tokens: list[str], names: set[str], keys: set[str]) -> set[str]:
+        """The new names NAMES a file binds to its own internal definition: a function the file defines `static` at file
+        scope has internal linkage, so every token of that name in the file is that definition and a symbol renamed to
+        it elsewhere is another binding, no capture. A file that also uses a renamed old name would bind that use to
+        the definition, so it keeps them all."""
+        owner, spans = _spans(tokens)
+        heads = {
+            n
+            for n in range(len(tokens) - 1)
+            if tokens[n + 1] == "("
+            and owner[n] < 0 <= owner[n + 1]
+            and spans[owner[n + 1]][0] == n + 1
+            and "static" in _statement(tokens, n)
+        }
+        if any(token in keys and n not in heads for n, token in enumerate(tokens)):
+            return names
+        return names - {tokens[n] for n in heads}
 
     def typed_capture(self) -> None:
         """A member renamed per struct names no struct by its tokens, so its new names must be unused in the old
