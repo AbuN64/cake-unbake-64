@@ -28,14 +28,40 @@ from abucache.store import CacheFull, ContentCache, absorb_touched, everything, 
 from unbake import effort, process
 from unbake.contracts import Config, Finding, Host, Json, Refusal, pickled, sha256
 
+_JOURNALS: list[dict[Path, bytes | None]] = []
+
+
+@contextmanager
+def journal() -> Iterator[dict[Path, bytes | None]]:
+    """Every file `write` changes inside the block, with the bytes it had before (None: it did not exist): the first
+    write of a file is the one recorded. `undo` puts them back."""
+    seen: dict[Path, bytes | None] = {}
+    _JOURNALS.append(seen)
+    try:
+        yield seen
+    finally:
+        _JOURNALS.remove(seen)
+
+
+def undo(seen: dict[Path, bytes | None]) -> None:
+    for path, before in seen.items():
+        if before is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(before)
+    effort.forget("pin", "includes", "closure", "listing")
+
 
 def write(path: Path, content: bytes) -> bool:
     """The one way a file reaches the project: written atomically and only when its bytes differ (mtime kept)."""
     try:
-        if path.read_bytes() == content:
+        before: bytes | None = path.read_bytes()
+        if before == content:
             return False
     except FileNotFoundError:
-        pass
+        before = None
+    for seen in _JOURNALS:
+        seen.setdefault(path, before)
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(f".{uuid.uuid4().hex}.part")  # the name alone may already sit near the 255-byte limit
     part.write_bytes(content)

@@ -471,3 +471,19 @@ def test_a_blocked_lock_says_who_holds_it(tmp_path, monkeypatch):
         pass
     holder.wait()
     assert said and f"pid {holder.pid}" in said[0] and "held.lock" in said[0]
+
+
+def test_a_journal_undoes_what_was_written_in_it(tmp_path: Path) -> None:
+    kept, changed, made = tmp_path / "kept", tmp_path / "changed", tmp_path / "made"
+    kept.write_bytes(b"k")
+    changed.write_bytes(b"old")
+    with store.journal() as seen:
+        store.write(kept, b"k")  # same bytes: nothing written, nothing recorded
+        store.write(changed, b"one")
+        store.write(changed, b"two")  # the first write holds the original
+        store.write(made, b"new")
+    assert seen == {changed: b"old", made: None}
+    store.undo(seen)
+    assert (kept.read_bytes(), changed.read_bytes(), made.exists()) == (b"k", b"old", False)
+    store.write(changed, b"after")  # outside a journal: recorded nowhere
+    assert seen == {changed: b"old", made: None}

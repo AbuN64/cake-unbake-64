@@ -30,7 +30,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from unbake import api, process, publish
+from unbake import api, process, publish, store
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Json, Refusal, macro
 
@@ -571,67 +571,65 @@ def run(config: Config, params: Json) -> Json:
             rom, _ = missing.rom_of_ram(config, v, a)
             rows.setdefault(v, []).append({"name": s, "address": a, "rom": rom, "aliased": a in by_vram})
     touched = {e.path for e in edits} | {symbols.path(v) for v in rows} | {symbols.aliases_path(v) for v in rows}
-    old = {p: (root / p).read_bytes() if (root / p).exists() else None for p in touched}
     written: set[str] = set()
     synced = False
-    try:
-        for e in edits:
-            (root / e.path).write_text(e.after, encoding="utf-8")
-        for v, rs in rows.items():
-            missing.append(
-                config,
-                symbols.aliases_path(v),
-                [r for r in rs if r["aliased"]],
-                "name",
-                lambda r: missing.line({"class": "b", "kind": "data", "proposed": r["name"], "address": r["address"]}),
-            )
-            missing.append(
-                config,
-                symbols.path(v),
-                [r for r in rs if not r["aliased"]],
-                "name",
-                lambda r: missing.line(
-                    {"class": "b", "kind": "data", "proposed": r["name"], "address": r["address"], "rom": r["rom"]}
-                ),
-            )
-        pools: list[str] = []
-        current = tree.capture(config)
-        for n in sorted(names):
-            try:
-                place.plan(config, current, [n])
-                pools.append(n)
-            except Refusal as refusal:
-                if not all(f.key == "place.none" for f in refusal.findings):
-                    raise
-        synced = True
-        done = repo.sync(config, {"place": pools} if pools else {})
-        written |= set(done.get("written", ()))
-        scores: dict[str, dict[str, float]] = {}
-        for v in u.widen:
+    with store.journal() as undone:
+        try:
             for e in edits:
-                held = [n for n in sorted(names) if n in tables[v] and pieces(e.after, [n]).get(n)]
-                for n in held:
-                    try:
-                        got = compare.score_functions(config, e.path, [n], v).get(n, 0.0)
-                    except Refusal:
-                        continue  # this file no longer builds it in V: the other file holding it does
-                    scores.setdefault(n, {})[v] = max(got, scores.get(n, {}).get(v, 0.0))
-        for n in sorted(names):
+                store.write(root / e.path, e.after.encode())
+            for v, rs in rows.items():
+                missing.append(
+                    config,
+                    symbols.aliases_path(v),
+                    [r for r in rs if r["aliased"]],
+                    "name",
+                    lambda r: missing.line(
+                        {"class": "b", "kind": "data", "proposed": r["name"], "address": r["address"]}
+                    ),
+                )
+                missing.append(
+                    config,
+                    symbols.path(v),
+                    [r for r in rs if not r["aliased"]],
+                    "name",
+                    lambda r: missing.line(
+                        {"class": "b", "kind": "data", "proposed": r["name"], "address": r["address"], "rom": r["rom"]}
+                    ),
+                )
+            pools: list[str] = []
+            current = tree.capture(config)
+            for n in sorted(names):
+                try:
+                    place.plan(config, current, [n])
+                    pools.append(n)
+                except Refusal as refusal:
+                    if not all(f.key == "place.none" for f in refusal.findings):
+                        raise
+            synced = True
+            done = repo.sync(config, {"place": pools} if pools else {})
+            written |= set(done.get("written", ()))
+            scores: dict[str, dict[str, float]] = {}
             for v in u.widen:
-                if n in tables[v]:
-                    scores.setdefault(n, {}).setdefault(v, 0.0)
-        short = [f"{n} {v} {s:.2f}" for n, by in sorted(scores.items()) for v, s in sorted(by.items()) if s < EXACT]
-        if short:
-            raise Refusal(*[Finding("widen.score", f"not exact after the widening: {s}") for s in short])
-    except BaseException:
-        for p, before in old.items():
-            if before is None:
-                (root / p).unlink(missing_ok=True)
-            else:
-                (root / p).write_bytes(before)
-        if synced:
-            repo.sync(config, {})
-        raise
+                for e in edits:
+                    held = [n for n in sorted(names) if n in tables[v] and pieces(e.after, [n]).get(n)]
+                    for n in held:
+                        try:
+                            got = compare.score_functions(config, e.path, [n], v).get(n, 0.0)
+                        except Refusal:
+                            continue  # this file no longer builds it in V: the other file holding it does
+                        scores.setdefault(n, {})[v] = max(got, scores.get(n, {}).get(v, 0.0))
+            for n in sorted(names):
+                for v in u.widen:
+                    if n in tables[v]:
+                        scores.setdefault(n, {}).setdefault(v, 0.0)
+            short = [f"{n} {v} {s:.2f}" for n, by in sorted(scores.items()) for v, s in sorted(by.items()) if s < EXACT]
+            if short:
+                raise Refusal(*[Finding("widen.score", f"not exact after the widening: {s}") for s in short])
+        except BaseException:
+            store.undo(undone)  # every file the widening and the placing wrote, as it was
+            if synced:
+                repo.sync(config, {})
+            raise
     written |= touched
     head = f"Port {sorted(names)[0]}{f' +{len(names) - 1}' if len(names) > 1 else ''} to {','.join(u.widen)}"
     out = Path(params["out"]) if params.get("out") else root / ".unbake" / "widen"

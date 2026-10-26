@@ -618,18 +618,14 @@ def _sync_placing(config: Config, params: Json) -> Json:
     ]
     if params.get("check"):
         return {"written": [], "stand_ins": {}, "placed": shown}
-    old: dict[str, bytes | None] = {path: _read(root / path) for path in writes}
-    for path, data in writes.items():
-        (root / path).write_bytes(data)
-    try:
-        result = sync(config, {k: v for k, v in params.items() if k != "place"})
-    except BaseException:
-        for path, before in old.items():
-            if before is None:
-                (root / path).unlink(missing_ok=True)
-            else:
-                (root / path).write_bytes(before)
-        raise
+    with store.journal() as undone:
+        try:
+            for path, data in writes.items():
+                store.write(root / path, data)
+            result = sync(config, {k: v for k, v in params.items() if k != "place"})
+        except BaseException:
+            store.undo(undone)
+            raise
     out = {**result, "placed": shown, "written": sorted({*result["written"], *writes})}
     if any(p.leftover for p in found):
         out["next"] = "run `make extract`: the leftover bytes have a new stand-in whose assembly is not extracted yet"
