@@ -70,51 +70,6 @@
     "type": "object"
    }
   },
-  "migrated": {
-   "type": "object",
-   "properties": {
-    "files": {
-     "type": "array",
-     "items": {
-      "type": "string"
-     }
-    },
-    "types": {
-     "type": "integer",
-     "minimum": 0
-    },
-    "platform": {
-     "type": "integer",
-     "minimum": 0
-    },
-    "before": {
-     "type": "object",
-     "additionalProperties": {
-      "type": "integer",
-      "minimum": 0
-     }
-    },
-    "after": {
-     "type": "object",
-     "additionalProperties": {
-      "type": "integer",
-      "minimum": 0
-     }
-    },
-    "readback": {
-     "const": true
-    }
-   },
-   "required": [
-    "files",
-    "types",
-    "platform",
-    "before",
-    "after",
-    "readback"
-   ],
-   "additionalProperties": false
-  },
   "scanned": {
    "type": "object",
    "additionalProperties": {

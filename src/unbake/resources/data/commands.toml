@@ -243,10 +243,10 @@ params = [
 ]
 
 [command.blobs]
-help = "The blobs of blobs.toml (non-code ROM content), their census and the byte partition of every version; `import PACKET` merges evidence; `land PACKET` lands a facts-only packet checked and all-or-nothing, no ROM build; `prove REQUEST RECEIPT` writes independent typed-view evidence without rescoring; `scan` proves the RNC1 streams and lists stream candidates in unknown bytes; `scan stale` lists the object files, object code a known body explains, code streams (whole functions of canonical instructions) and exact copies of accounted bytes that fill unknown bytes, as `prove` rows; `migrate` performs the reviewed five-type/platform cutover, uncommitted."
+help = "The blobs of blobs.toml (non-code ROM content), their census and the byte partition of every version; `import PACKET` merges evidence; `land PACKET` lands a facts-only packet checked and all-or-nothing, no ROM build; `prove REQUEST RECEIPT` writes independent typed-view evidence without rescoring; `scan` proves the RNC1 streams and lists stream candidates in unknown bytes; `scan stale` lists the object files, object code a known body explains, code streams (whole functions of canonical instructions) and exact copies of accounted bytes that fill unknown bytes, as `prove` rows."
 handler = "blobs.run"
 params = [
-  { name = "action", kind = "argument", type = "str", required = false, multiple = true, help = "prove REQUEST RECEIPT, import PACKET, land PACKET, scan [stale], migrate, or nothing to list" },
+  { name = "action", kind = "argument", type = "str", required = false, multiple = true, help = "prove REQUEST RECEIPT, import PACKET, land PACKET, scan [stale], or nothing to list" },
   { name = "json", kind = "flag", type = "str", required = false, multiple = false, help = "also return every blob as a row" },
 ]
 

@@ -639,10 +639,6 @@ def run(config: Config, params: Json) -> Json:
             return _result(
                 config, {"scanned": import_module("unbake.blob_stale").scan(config)}, bool(params.get("json"))
             )
-        if action == ["migrate"]:
-            from unbake import blob_migration
-
-            return _result(config, {"migrated": blob_migration.run(config)}, bool(params.get("json")))
         if action[:1] == ["import"]:
             if len(action) != 2:
                 raise Refusal(Finding("blobs.packet", "import takes exactly one packet file"))
@@ -662,8 +658,7 @@ def run(config: Config, params: Json) -> Json:
             raise Refusal(
                 Finding(
                     "blobs.packet",
-                    f"unknown {action[0]}; use prove REQUEST RECEIPT, import PACKET, land PACKET, scan [stale] or "
-                    "migrate",
+                    f"unknown {action[0]}; use prove REQUEST RECEIPT, import PACKET, land PACKET or scan [stale]",
                 )
             )
         return _result(config, {}, bool(params.get("json")))

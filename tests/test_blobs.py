@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace as N
 
+import fixture
 import pytest
 
-from unbake import blobs, human, report
+from unbake import blobs, cli, human, report
 from unbake.contracts import Refusal, sha1, sha256
 
 PLATFORM = [(0, 0x1000)]
@@ -646,3 +647,24 @@ def test_partition_preserves_scored_extents_without_measuring_bodies(tmp_path, m
     assert actual["code"] == 0x60 and actual["data"] == 0x20
     assert actual["platform"] == 0x1000 and actual["unknown"] == ROM - 0x1080
     assert actual["overlap"] == actual["outside"] == 0
+
+
+@pytest.mark.parametrize(
+    "kind", ["texture", "sprite", "font", "layout", "sound", "sequence", "level", "microcode", "blob"]
+)
+def test_reader_rejects_retired_types(tmp_path, kind):
+    config = _config(tmp_path)
+    data = blobs.emit({"schema": 1, "blob": {"x": {"type": kind, "state": "identified"}}})
+    with pytest.raises(Refusal, match=r"blobs\.schema"):
+        blobs.parse(config, data)
+
+
+def test_migrate_is_not_a_blobs_action(tmp_path, capsys, toolchains):
+    root = fixture.project(tmp_path, sources={}, symbols={"a": ""})
+    args = ["--json", "--host", str(fixture.host(tmp_path)), "--project", str(root)]
+    assert cli.main(["blobs", "migrate", *args]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert not output["ok"]
+    assert "unknown migrate" in output["findings"][0]["reason"]
+    assert cli.main(["blobs", *args]) == 0
+    assert json.loads(capsys.readouterr().out)["result"]["count"] == 0

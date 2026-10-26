@@ -524,10 +524,6 @@ sentence = "an RSP range is outside a known version or lacks its hash"
 owner = "platform"
 sentence = "an RSP span does not match its exact SHA-256"
 
-[key."blobs.migrate"]
-owner = "blob_migration"
-sentence = "the reviewed blob migration cannot preserve byte coverage or needs classification"
-
 [key."library-asm.source"]
 owner = "libasm"
 sentence = "library extraction would overwrite existing source"
