@@ -1274,6 +1274,18 @@ def test_a_split_another_tree_made_is_copied_not_split_again(world):
 
 
 # ---------------------------------------------------------------- the reason a setup extracts again
+def test_fact_delta_renames_a_misaddressed_auto_name_when_its_address_is_a_fact():
+    old = "D_800CB7F0 = 0x800CB700; // rom:0xCC300\nD_800CB7F0_us = 0x800CB7F0; // rom:0xCC3F0\n"
+    new = old.replace("D_800CB7F0 =", "g_soundVolumeScales =")
+    assert repo._fact_delta(old, new) == ({"D_800CB7F0": "g_soundVolumeScales"}, set())
+def test_fact_delta_refuses_a_misaddressed_auto_name_when_its_address_is_no_fact():
+    old = "D_800CB7F0 = 0x800CB700; // rom:0xCC300\n"
+    new = old.replace("D_800CB7F0 =", "g_soundVolumeScales =")
+    assert repo._fact_delta(old, new) is None
+    assert "misaddressed, e.g. D_800CB7F0" in repo._fact_why(old, new)
+def test_fact_why_names_an_auto_looking_new_name():
+    old = "a = 0x80000400; // type:func\n"
+    assert "look like splat's own names, e.g. func_80000400" in repo._fact_why(old, old.replace("a =", "func_80000400 ="))
 def test_fact_why_names_an_added_fact():
     old = "a = 0x80000400; // type:func\n"
     new = old + "b = 0x80000500; // type:func\n"

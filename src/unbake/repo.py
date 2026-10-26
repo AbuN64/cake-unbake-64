@@ -1009,6 +1009,16 @@ def _read_facts(text: str) -> tuple[dict[str, tuple[str, str]], list[str]] | Non
     return rows, sorted(other)
 
 
+def _auto_name_safe(name: str, before: Mapping[str, tuple[str, str]], after: Mapping[str, tuple[str, str]]) -> bool:
+    """Whether a fact named like splat's own name can be renamed in the text: its suffix is its own address, or the address
+    the suffix spells is a fact's address in both fact lists (splat prints that fact's name there, never the auto name,
+    so the token cannot stand for another symbol: D_800CB7F0 at 0x800CB700 beside D_800CB7F0_us at 0x800CB7F0)."""
+    if name[-8:].upper() == before[name][0][2:].upper().zfill(8):
+        return True
+    want = int(name[-8:], 16)
+    return all(any(int(a, 16) == want for a, _ in rows.values()) for rows in (before, after))
+
+
 def _fact_delta(old: str, new: str) -> tuple[dict[str, str], set[str]] | None:
     """What turned the facts `old` into `new` when that is only names and unused rows: (renames, drops). A rename is an
     old name that keeps its address and every attribute under a new name, {} when only the order of rows moved; a drop
@@ -1031,7 +1041,7 @@ def _fact_delta(old: str, new: str) -> tuple[dict[str, str], set[str]] | None:
         if not _IDENT.match(new_name) or _AUTO_NAME.match(new_name):
             return None
         # An old name that looks like splat's own name for another address cannot be told from that symbol's text.
-        if _AUTO_NAME.match(old_name) and old_name[-8:].upper() != before[0][old_name][0][2:].upper().zfill(8):
+        if _AUTO_NAME.match(old_name) and not _auto_name_safe(old_name, before[0], after[0]):
             return None
     return renames, {n for n in gone if n not in renames}
 
@@ -1113,7 +1123,12 @@ def _fact_why(old: str, new: str) -> str:
         return f"{len(added)} added facts (a fact with no old row), e.g. {', '.join(added[:3])}"
     if len(by_fact) != len(came) or len(set(gone.values())) != len(gone):
         return "two names share one fact"
-    return "a new name is not an identifier, is a splat auto name, or an old auto name is misaddressed"
+    ren = {n: next(k for k, f in came.items() if f == gone[n]) for n in gone}
+    bad_new = sorted(m for m in ren.values() if not _IDENT.match(m) or _AUTO_NAME.match(m))
+    if bad_new:
+        return f"{len(bad_new)} new names are not identifiers or look like splat's own names, e.g. {', '.join(bad_new[:3])}"
+    mis = sorted(n for n in ren if _AUTO_NAME.match(n) and not _auto_name_safe(n, before[0], after[0]))
+    return f"{len(mis)} old auto-looking names are misaddressed, e.g. {', '.join(mis[:3])}"
 
 
 def _read_why(config: Config, v: str) -> str:
