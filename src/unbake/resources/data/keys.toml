@@ -429,6 +429,14 @@ sentence = "the piece a literals_<function> row places runs to the next row over
 owner = "compare"
 sentence = "the candidate scores exact but sits only inside a NON_MATCHING side of its file, so the build still compiles the stand-in; submit it so land makes it live"
 
+[key."score.stale"]
+owner = "compare"
+sentence = "the tree's objects are older than their sources (or their source is gone), so a verdict here proves nothing about the tree; rebuild it"
+
+[key."score.link"]
+owner = "compare"
+sentence = "the version does not link in this tree, so a verdict here proves nothing about the tree; the undefined symbols are named"
+
 [key."score.implicit"]
 owner = "compare"
 sentence = "the candidate calls a name its unit never declares, so the measure compiled an implicit int function and its score proves nothing; declare it"

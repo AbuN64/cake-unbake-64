@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import compare, effort, publish, store, tree, view
+from unbake import compare, effort, linkdiag, publish, store, tree, view
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Proof, Refusal, sha256
 
@@ -701,3 +702,115 @@ def test_a_variants_list_over_the_cpu_cap_is_refused_with_the_split(world):
     with pytest.raises(Refusal) as refused:
         compare.score_command(world.cfg, {"variants": str(manifest)})
     assert "split the list into runs of at most 50" in refused.value.findings[0].action
+
+
+# ---------------------------------------------------------------- the tree behind a verdict
+def _build(world, version, objects, *, older=()):
+    """A built version: link.ld naming each object, the objects made after their sources unless named in `older`."""
+    root = world.cfg.project.root
+    build = root / "build" / version
+    build.mkdir(parents=True, exist_ok=True)
+    (build / "link.ld").write_text("".join(f"        {o}(.text);\n" for o in objects))
+    for o in objects:
+        source = root / o.removesuffix(".o")
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.touch()
+        (build / o).parent.mkdir(parents=True, exist_ok=True)
+        (build / o).write_bytes(b"\0")
+        when = source.stat().st_mtime_ns + (-10_000_000_000 if o in older else 10_000_000_000)
+        os.utime(build / o, ns=(when, when))
+
+
+def _ld(monkeypatch, exit, stderr=b""):
+    ran, real = [], linkdiag.process.run
+
+    def run(name, argv, cwd, **kw):
+        if name != "linkcheck":
+            return real(name, argv, cwd, **kw)
+        ran.append(cwd)
+        return fixture.native_result(argv, exit, stderr=stderr)
+
+    monkeypatch.setattr(linkdiag.process, "run", run)
+    return ran
+
+
+UNDEFINED = (
+    b"ld: build/b/src/main/c_func.c.o:(.text+0x48): undefined reference to `D_800CA4B0'\n"
+    b"ld: build/b/src/main/c_func.c.o:(.text+0x4c): undefined reference to `D_800CA4B0'\n"
+    b"ld: build/b/src/main/c_func.c.o:(.text+0xa0): undefined reference to `D_8011F5D0_us_rev1'\n"
+)
+
+
+def test_compare_refuses_a_tree_whose_objects_are_stale_against_its_sources(world, monkeypatch):
+    _build(world, "a", ["src/main/c_func.c.o", "src/main/stand_in.c.o"])
+    _build(world, "b", ["src/main/c_func.c.o", "src/main/stand_in.c.o"], older=["src/main/stand_in.c.o"])
+    ran = _ld(monkeypatch, 0)
+    with pytest.raises(Refusal) as refused:
+        compare.run(world.cfg, _params(world))
+    (finding,) = refused.value.findings
+    assert finding.key == "score.stale" and finding.versions == ("b",)
+    assert finding.missing == ("src/main/stand_in.c.o: older than its source src/main/stand_in.c",)
+    assert "src/main/stand_in.c.o" in finding.reason and world.measured == []  # nothing measured
+    assert ran == [world.cfg.project.root / "build" / "a"]  # b is refused before its link
+
+
+def test_stale_names_the_source_that_is_gone_and_the_object_never_made(world):
+    _build(world, "a", ["src/main/c_func.c.o", "src/main/gone.c.o"])
+    (world.cfg.project.root / "src/main/gone.c").unlink()
+    (world.cfg.project.root / "build/a/link.ld").write_text(
+        "src/main/c_func.c.o(.text);\nsrc/main/gone.c.o(.text);\nsrc/main/new.c.o(.text);\n"
+    )
+    assert linkdiag.stale(world.cfg, "a") == [
+        "src/main/gone.c.o: its source src/main/gone.c is gone",
+        "src/main/new.c.o: not built",
+    ]
+
+
+def test_a_version_never_built_has_nothing_stale_and_nothing_to_link(world, monkeypatch):
+    ran = _ld(monkeypatch, 1, UNDEFINED)
+    assert linkdiag.stale(world.cfg, "a") == [] and linkdiag.unsound(world.cfg, "a") is None
+    result = compare.run(world.cfg, _params(world))
+    assert result["exact"] is True and ran == []
+
+
+def test_compare_refuses_a_version_that_does_not_link_and_names_the_undefined_symbols(world, monkeypatch):
+    _build(world, "a", ["src/main/c_func.c.o"])
+    _build(world, "b", ["src/main/c_func.c.o"])
+    ran = _ld(monkeypatch, 1, UNDEFINED)
+    with pytest.raises(Refusal) as refused:
+        compare.run(world.cfg, _params(world))
+    assert {f.key for f in refused.value.findings} == {"score.link"}
+    assert {f.versions for f in refused.value.findings} == {("a",), ("b",)}
+    assert refused.value.findings[0].missing == ("D_800CA4B0", "D_8011F5D0_us_rev1")
+    assert "D_800CA4B0, D_8011F5D0_us_rev1" in refused.value.findings[0].reason and world.measured == []
+    assert ran and all(c.parent == world.cfg.project.root / "build" for c in ran)
+
+
+def test_a_link_that_fails_without_an_undefined_symbol_is_refused_with_the_linkers_words(world, monkeypatch):
+    _build(world, "a", ["src/main/c_func.c.o"])
+    _ld(monkeypatch, 1, b"ld: warning: x\nld: multiple definition of `f'\n")
+    finding = linkdiag.unsound(world.cfg, "a")
+    assert finding.key == "score.link" and "ld: multiple definition of `f'" in finding.reason
+
+
+def test_score_refuses_a_non_linking_tree_unless_the_one_version_asked_for_links(world, monkeypatch):
+    _build(world, "a", ["src/main/c_func.c.o"])
+    _build(world, "b", ["src/main/c_func.c.o"])
+    monkeypatch.setattr(linkdiag, "unlinked", lambda config, v: (["D_800CA4B0"], "") if v == "b" else ([], ""))
+    params = {"file": str(world.tmp / "stand_in.c"), "function": None, "version": "a", "lines": None, "short": False}
+    with pytest.raises(Refusal) as refused:
+        compare._score_one(world.cfg, params)
+    assert refused.value.findings[0].key == "score.link" and refused.value.findings[0].versions == ("b",)
+    monkeypatch.setattr(compare.native, "measure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("measured")))
+    with pytest.raises(Refusal):  # still refused before any measure, and --quick --version a alone is of a only
+        compare._score_one(world.cfg, params)
+    assert compare._sound(world.cfg, ["a"]) is None
+
+
+def test_a_linked_tree_keeps_its_exact_verdict_and_links_once_per_state(world, monkeypatch):
+    _build(world, "a", ["src/main/c_func.c.o"])
+    _build(world, "b", ["src/main/c_func.c.o"])
+    ran = _ld(monkeypatch, 0)
+    assert compare.run(world.cfg, _params(world))["exact"] is True
+    compare.run(world.cfg, _params(world))
+    assert len(ran) == 2  # a and b, then kept

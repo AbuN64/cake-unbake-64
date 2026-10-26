@@ -16,6 +16,7 @@ from unbake import (
     api,
     effort,
     land,
+    linkdiag,
     native,
     permute,
     policy,
@@ -323,6 +324,13 @@ def _request(name: str, file: Path, note: str | None) -> dict[str, Any]:
     return {"file": str(file), "function": name, "overrides": {"add": [], "omit": []}, "note": note or ""}
 
 
+def _sound(config: Config, versions: Sequence[str]) -> None:
+    """A verdict is of the tree it is measured in: refuse, naming the cause, when a version's objects are stale against
+    its sources or the version does not link, rather than call a function exact in a tree that does not build."""
+    if found := [f for v in versions if (f := linkdiag.unsound(config, v))]:
+        raise Refusal(*found)
+
+
 # ---------------------------------------------------------------- compare and submit
 def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, enter: bool) -> dict[str, Any]:
     """Measure one candidate in every holding version; with `enter`, put it in the inbox when it is exact (or a fuzzy
@@ -330,6 +338,8 @@ def _attempt(config: Config, files: Sequence[Path], params: Json, origin: str, e
     extras = _extras(config, files[1:], files[0])
     resolved = _resolve(config, files[0], params.get("function"), None, extras)
     name, source, held = resolved.name, resolved.source, resolved.held
+    if not enter:  # a submission lands in a clone of its own: this tree is not its evidence
+        _sound(config, held)
     proofs = _measure(config, resolved, None, extras)
     found = list(gaps(name, held, proofs))
     entry = None
@@ -781,6 +791,7 @@ def _score_one(config: Config, params: Json) -> Json:
             )
         return replace(proof, exact=False, score=0.0, missing=(why,), symptoms=symptoms.from_missing((why,)))
 
+    _sound(config, [version] if params.get("quick") and params.get("version") else held)
     order = [version] if params.get("version") else [version, *(v for v in held if v != version)]
     for version in order:
         try:  # an unasked-for version where the candidate sits in an inactive #if: the first version it is active in
