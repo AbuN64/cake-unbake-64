@@ -241,6 +241,77 @@ def changed_defs(old: str | None, new: str | None) -> tuple[set[str] | None, str
     return names, ""
 
 
+_INCLUDE = re.compile(r'\s*#\s*include\s+"([^"]+)"\s*$')
+
+
+def _guard(text: str) -> tuple[str, list[str]] | None:
+    """(the include guard macro, the lines inside it) when ONE `#ifndef G` / `#define G` pair wraps the whole text."""
+    lines = _COMMENT.sub(_blank, text.replace("\\\n", "  ")).split("\n")
+    at = [i for i, x in enumerate(lines) if x.strip()]
+    if len(at) < 3 or not re.match(r"\s*#\s*endif\b", lines[at[-1]]):
+        return None
+    a, b = re.match(r"\s*#\s*ifndef\s+(\w+)\s*$", lines[at[0]]), re.match(r"\s*#\s*define\s+(\w+)\s*$", lines[at[1]])
+    if not (a and b and a.group(1) == b.group(1)):
+        return None
+    depth = 0
+    for i in at:
+        if re.match(r"\s*#\s*if", lines[i]):
+            depth += 1
+        elif re.match(r"\s*#\s*endif\b", lines[i]):
+            depth -= 1
+            if depth == 0 and i != at[-1]:
+                return None
+    return a.group(1), lines[at[1] + 1 : at[-1]]
+
+
+def _inlined(
+    root: Path, base: str, text: str | None, new_text: Callable[[str], str | None], flags: Sequence[str] = ()
+) -> str | None:
+    """TEXT with each `#include "X"` of a header the revision BASE lacks written out as the header's own lines: textual
+    inclusion IS the lines in its place, so an edit that moves declarations into a new header leaves the preprocessed
+    unit unchanged. Only when the new header is guarded whole by a macro no other file spells (so a unit sees it once,
+    here) and each include it makes is one the text made earlier and is itself guarded (a repeated guarded include adds
+    nothing). Any other include stays an `__INC__` item, which `changed_defs` refuses."""
+    if text is None:
+        return None
+    dirs = [d[2:] for d in flags if d.startswith("-I") and len(d) > 2] or ["include"]
+
+    def locate(name: str) -> tuple[str, str] | None:
+        for d in dirs:
+            got = new_text(f"{d}/{name}")
+            if got is not None:
+                return f"{d}/{name}", got
+        return None
+
+    out: list[str] = []
+    earlier: set[str] = set()
+    for line in text.split("\n"):
+        m = _INCLUDE.match(line)
+        found = locate(m.group(1)) if m else None
+        if not m or found is None:
+            out.append(line)
+            if m:
+                earlier.add(m.group(1))
+            continue
+        path, body = found
+        wrapped = _guard(body)
+        ok = wrapped is not None and process.show(root, base, path) is None
+        if ok and wrapped is not None:
+            guard, inner = wrapped
+            spelled = process.spelling(root, guard)
+            ok = not [x for x in spelled if x != path]
+            for n in (_INCLUDE.match(x) for x in inner):
+                sub = locate(n.group(1)) if n else None
+                ok = ok and (n is None or (n.group(1) in earlier and sub is not None and _guard(sub[1]) is not None))
+        if not ok or wrapped is None:
+            out.append(line)
+            earlier.add(m.group(1))
+            continue
+        out.extend(x for x in wrapped[1] if not _INCLUDE.match(x))
+        earlier.add(m.group(1))
+    return "\n".join(out)
+
+
 BUILT_MARKER = "build/.pool-built-at"  # content: the commit; mtime: the end of the build that made every unit's .i.ok
 EXTRACTED_MARKER = "build/.pool-extracted-at"  # content: the commit; mtime: the extraction, before that build
 _DEFINE = re.compile(rb"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)", re.M)
@@ -348,7 +419,10 @@ def narrow_tree(
         if not h.lower().endswith(".h"):
             stats["why"] = f"{h} is not a header"
             return list(units), stats
-        got, why = changed_defs(process.show(root, base, h), new_text(h))
+        before = process.show(root, base, h)
+        if before is None:  # a header the base lacks: only a changed file includes it
+            continue
+        got, why = changed_defs(before, _inlined(root, base, new_text(h), new_text, flags))
         if got is None:
             stats["why"] = f"{h}: {why}"
             return list(units), stats

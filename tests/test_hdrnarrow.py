@@ -231,3 +231,50 @@ def test_resign_signs_again_the_includers_whose_record_before_the_diff_holds_for
     records = hn.records(tmp_path)
     assert records["build/v/src/a.CPP.i.ok"][1] == key
     assert records["build/v/src/b.CPP.i.ok"][1] != key and records["build/v/src/c.CPP.i.ok"][1] != key
+
+
+NEW = '#ifndef V_H\n#define V_H\n#include "TYPES.H"\nstruct V;\ntypedef struct V V;\nstruct V { f32 x; };\n#endif\n'
+HOST = '#ifndef A_H\n#define A_H\n#include "TYPES.H"\n{}\nextern u8 D_2;\n#endif\n'
+
+
+def split_vector(
+    tmp_path, units, new=NEW, host_before="struct V;\ntypedef struct V V;\nstruct V { f32 x; };", extra=""
+):
+    tree(tmp_path, units)
+    (tmp_path / "include/TYPES.H").write_text("#ifndef TYPES_H\n#define TYPES_H\n#endif\n")
+    (tmp_path / "include/H.H").write_text(HOST.format(host_before) + extra)
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "host")
+    marker = tmp_path / "build/.pool-extracted-at"
+    marker.write_text(git(tmp_path, "rev-parse", "HEAD").strip() + "\n")
+    t = time.time() + 5
+    os.utime(marker, (t, t))
+    (tmp_path / "include/V.H").write_text(new)
+    (tmp_path / "include/H.H").write_text(HOST.format('#include "V.H"'))
+    git(tmp_path, "add", "-A")
+
+
+def test_a_declaration_moved_into_a_new_guarded_header_changes_nothing_a_unit_names(tmp_path):
+    split_vector(tmp_path, {"a.CPP": "int f(void){return D_2;}", "b.CPP": "V v;"})
+    keep, stats = narrow(tmp_path, ["a.CPP", "b.CPP"], ("include/H.H", "include/V.H"))
+    assert keep == [] and stats["skipped"] == 2
+    assert stats["why"] == "no declaration changed"
+
+
+def test_a_new_header_with_a_second_user_of_its_guard_or_an_unseen_include_is_not_inlined(tmp_path):
+    split_vector(tmp_path, {"a.CPP": "int f(void){return D_2;}"})
+    (tmp_path / "other.c").write_text("#ifdef V_H\n#endif\n")
+    git(tmp_path, "add", "-A")
+    assert narrow(tmp_path, ["a.CPP"], ("include/H.H",))[0] == ["a.CPP"]
+    git(tmp_path, "rm", "-qf", "other.c")
+    (tmp_path / "include/V.H").write_text(NEW.replace('"TYPES.H"', '"OTHER.H"'))
+    (tmp_path / "include/OTHER.H").write_text("#ifndef O_H\n#define O_H\nextern u8 O;\n#endif\n")
+    git(tmp_path, "add", "-A")
+    keep, stats = narrow(tmp_path, ["a.CPP"], ("include/H.H",))
+    assert keep == ["a.CPP"] and "not a droppable declaration" in stats["why"]
+
+
+def test_a_changed_declaration_moved_into_a_new_header_still_keeps_the_units_that_name_it(tmp_path):
+    split_vector(tmp_path, {"a.CPP": "int f(void){return D_2;}", "b.CPP": "V v;"}, new=NEW.replace("f32 x;", "f32 y;"))
+    keep, _ = narrow(tmp_path, ["a.CPP", "b.CPP"], ("include/H.H", "include/V.H"))
+    assert keep == ["b.CPP"]

@@ -321,6 +321,14 @@ def changed(root: Path, rev: str) -> list[str] | None:
     return [p for p in done.stdout.decode(errors="replace").split("\0") if p] if done.returncode == 0 else None
 
 
+def spelling(root: Path, word: str) -> list[str]:
+    """The files of the work tree (tracked or not, ignored aside) that spell WORD as a whole word."""
+    done = subprocess.run(
+        ["git", "-C", str(root), "grep", "--untracked", "-lwF", "-e", word], capture_output=True, check=False
+    )
+    return done.stdout.decode(errors="replace").split()
+
+
 def blob(root: Path, rev: str, path: str) -> bytes | None:
     """The bytes of PATH at REV; None when REV does not hold it."""
     done = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output=True, check=False)
