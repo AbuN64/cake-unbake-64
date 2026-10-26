@@ -222,6 +222,15 @@ def test_sdk_reserved_names_pass_as_implementation_names_only():
     assert api.name_issues("__secret", implementation=True)
 
 
+def test_evidenced_reserved_names_pass_and_unevidenced_stay_refused():
+    assert api.name_issues("__secret")
+    assert api.name_issues("__secret", evidenced=True) == ()
+    assert api.name_issues("_Secret", evidenced=True) == ()
+    assert api.name_issues("__secret", implementation=True)  # an implementation pattern is not evidence
+    assert api.name_issues("class", evidenced=True)  # evidence lifts the reserved rule only
+    assert api.name_issues("__secret", taken=["__secret"], evidenced=True)
+
+
 def test_the_whole_tree_census_reads_an_unchanged_file_once():
     from unbake import symbol_names
 

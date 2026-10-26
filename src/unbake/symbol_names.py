@@ -27,13 +27,16 @@ def _table() -> Json:
 
 
 @cache
-def _issues(name: str, kind: str, global_scope: bool, implementation: bool = False) -> tuple[str, ...]:
+def _issues(
+    name: str, kind: str, global_scope: bool, implementation: bool = False, evidenced: bool = False
+) -> tuple[str, ...]:
     """Target-qualified reasons a symbol, section, or relative file path cannot be emitted."""
     if kind not in ("symbol", "section", "file"):
         raise ValueError(f"unknown name kind: {kind}")
     out: dict[str, list[str]] = {}
-    sdk = implementation and any(
-        re.fullmatch(pattern, name) for pattern in _table()["implementation_reserved"]["symbol_patterns"]
+    sdk = evidenced or (
+        implementation
+        and any(re.fullmatch(pattern, name) for pattern in _table()["implementation_reserved"]["symbol_patterns"])
     )
     for target, row in _table()["target"].items():
         why: list[str] = []
@@ -71,10 +74,13 @@ def issues(
     taken: Collection[str] = (),
     global_scope: bool = True,
     implementation: bool = False,
+    evidenced: bool = False,
 ) -> tuple[str, ...]:
     """All target-qualified reasons, including collisions in the caller's namespace. `implementation` admits the SDK's
-    own reserved names (`__osDisableInt`), as source admission does for every file."""
-    out = list(_issues(name, kind, global_scope, implementation))
+    own reserved names (`__osDisableInt`), as source admission does for every file. `evidenced`: the caller's project
+    evidence declares this name the original SDK name, so it is admitted whatever it looks like (target portability
+    other than the reserved-identifier rule still applies)."""
+    out = list(_issues(name, kind, global_scope, implementation, evidenced))
     collisions: dict[str, list[str]] = {}
     for target, row in _table()["target"].items():
         folded = kind == "file" and not row["file_case_sensitive"]

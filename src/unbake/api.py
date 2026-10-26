@@ -202,11 +202,12 @@ def tree_epoch(config: Config) -> int:
 
 
 def name_issues(
-    name: str, kind: str = "symbol", taken: Sequence[str] = (), implementation: bool = False
+    name: str, kind: str = "symbol", taken: Sequence[str] = (), implementation: bool = False, evidenced: bool = False
 ) -> tuple[str, ...]:
     """Portable naming policy, shared with source admission. Kinds: symbol, section, file. `implementation`: the SDK's
-    own reserved names (`__osDisableInt`, `_G_*`) pass, exactly as source admission lets them."""
-    return symbol_names.issues(name, kind, taken, implementation=implementation)
+    own reserved names (`__osDisableInt`, `_G_*`) pass, exactly as source admission lets them. `evidenced`: the
+    project's SDK evidence declares the name the original, so the reserved-identifier rule does not refuse it."""
+    return symbol_names.issues(name, kind, taken, implementation=implementation, evidenced=evidenced)
 
 
 def naming_findings(files: Mapping[str, str], cache: Path | None = None) -> tuple[Finding, ...]:
