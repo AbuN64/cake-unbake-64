@@ -21,6 +21,7 @@ content).
 from __future__ import annotations
 
 import bisect
+import itertools
 import re
 import struct
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -253,6 +254,19 @@ def _extent(
     return names, vram, rom, end, inside, junk
 
 
+def _apart(table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]]) -> str:
+    """The note for a span that is really two places: the function reads rows more than a table's length apart (the
+    ROM keeps them in different pieces, so no one pool can hold both)."""
+    for (a, skip, size), (b, _, _) in itertools.pairwise(rows):
+        gap = (table[b][1] or 0) - ((table[a][1] or 0) + skip + size)
+        if gap > TABLE_MAX:
+            return (
+                f"; it reads {a} (0x{table[a][1]:X}) and {b} (0x{table[b][1]:X}), "
+                f"0x{gap:X} bytes apart: two places, not one pool"
+            )
+    return ""
+
+
 def _shared_rows(
     root: Path, v: str, table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]], function: str
 ) -> set[str]:
@@ -384,7 +398,8 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                         "place.gap",
                         f"{v}: {function}: its data spans 0x{rom:X}-0x{end:X}, which holds rows it does not read: "
                         + ", ".join(f"{n} (0x{table[n][1]:X})" for n in inside[:6])
-                        + "; they are read by other code or owned by a file, so they are no junk to remove",
+                        + "; they are read by other code or owned by a file, so they are no junk to remove"
+                        + _apart(table, rows),
                         path=module.path,
                         unit=function,
                         versions=(v,),

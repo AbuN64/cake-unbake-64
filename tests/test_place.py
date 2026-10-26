@@ -648,3 +648,18 @@ def test_a_jump_table_cut_by_facts_symbols_inside_it_is_one_row(monkeypatch, tmp
     (found,) = place.plan(config, _tree(), [F])
     assert found.row == f"literals_{F} = 0x800E1500; // rom:0x2000 size:0x10"
     assert {n for n, _ in found.junk} == {"D_800E1504", "D_800E150C"}
+
+
+def test_a_function_reading_two_places_far_apart_is_refused_naming_both(monkeypatch, tmp_path):
+    """J028 eu: a jump table and a double 0x5000 bytes after it were reported as one span with unread rows inside."""
+    facts = _facts(
+        {"D_800E1514": (0x800E1514, 0x2014, None, "data"), "far_800E6600": (0x800E6600, 0x7100, None, "data")}
+    )
+    config = _world(monkeypatch, tmp_path, facts=facts, asm={G: "lw $v0, %lo(D_800E1514)($at)\n"})
+    (config.project.root / "asm/a/nonmatchings/seg" / f"{F}.s").write_text(
+        "lw $v0, %lo(jtbl_800E1500)($at)\nldc1 $f0, %lo(far_800E6600)($at)\n"
+    )
+    (tmp_path / "rom").write_bytes((tmp_path / "rom").read_bytes().ljust(0x8000, b"\0"))
+    with pytest.raises(Refusal) as refused:
+        place.plan(config, _tree(), [F])
+    assert "bytes apart: two places, not one pool" in refused.value.findings[0].reason
