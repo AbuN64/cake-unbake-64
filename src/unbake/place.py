@@ -24,7 +24,7 @@ from __future__ import annotations
 import bisect
 import re
 import struct
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,9 @@ class Placement:
     split_from: str = ""  # when that file also owns data before the table: `after` is a new sibling taking `split`
     split: tuple[str, ...] = ()  # the names split_from owns at or after `rest`, moved into `after`
     junk: tuple[tuple[str, int], ...] = ()  # (name, rom) of unread rows inside the table
+    pads: tuple[
+        tuple[str, str], ...
+    ] = ()  # (name, file) of the junk rows a file defines, all zero bytes: dropped from it
     tail: str = (
         ""  # the alias row that keeps the bytes of a shared piece after the function's data as a piece of their own
     )
@@ -218,10 +221,17 @@ def _readers(
 
 
 def _extent(
-    root: Path, current: Any, v: str, table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]], function: str
+    root: Path,
+    current: Any,
+    v: str,
+    table: Mapping[str, Any],
+    rows: Sequence[tuple[str, int, int]],
+    function: str,
+    zero: Callable[[str], bool] = lambda n: False,
 ) -> tuple[list[str], int, int, int, list[str], list[str]]:
     """(names, vram, rom, end, inside, junk) of the data rows of the function: the span they cover, rows that are
-    not its own inside the span that something reads or a file owns (inside), and those nothing reads (junk)."""
+    not its own inside the span that something reads or a file owns (inside), and those nothing reads (junk). A row
+    a file owns is junk too when `zero` says its ROM bytes are all zero: a pad the file defines as a zero array."""
     names = [n for n, _, _ in rows]
     first, last = names[0], names[-1]
     vram, rom = table[first][0] + rows[0][1], (table[first][1] or 0) + rows[0][1]
@@ -239,7 +249,7 @@ def _extent(
     junk: list[str] = []
     if inside:  # a row between the function's own is junk when nothing reads it and no file owns it
         seen = _readers(root, v, inside, f"{function}.s", set(symbols.superseded_asm(root, v, table)))
-        junk = [n for n in inside if n not in seen and not current.owned(v, n)]
+        junk = [n for n in inside if n not in seen and (not current.owned(v, n) or zero(n))]
         inside = [n for n in inside if n not in junk]
     return names, vram, rom, end, inside, junk
 
@@ -255,7 +265,13 @@ def _shared_rows(
 
 
 def _trim_shared(
-    root: Path, current: Any, v: str, table: Mapping[str, Any], rows: Sequence[tuple[str, int, int]], function: str
+    root: Path,
+    current: Any,
+    v: str,
+    table: Mapping[str, Any],
+    rows: Sequence[tuple[str, int, int]],
+    function: str,
+    zero: Callable[[str], bool] = lambda n: False,
 ) -> tuple[list[tuple[str, int, int]], tuple[Any, ...]] | None:
     """When the span of `rows` holds foreign rows, drop the shared rows at its ends one at a time (a constant other
     functions read stays its own shared row, declared extern by them) until the span is clean: (rows, extent), or None
@@ -269,7 +285,7 @@ def _trim_shared(
             cur = cur[1:]
         else:
             return None
-        got = _extent(root, current, v, table, cur, function)
+        got = _extent(root, current, v, table, cur, function, zero)
         if not got[4]:
             return cur, got
     return None
@@ -310,6 +326,11 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             for n, f in table.items()
             if f[3] == "func" and f[1] is not None and (size := f[2] or (_after(roms, f[1]) - f[1]))
         )
+
+        def zero(name: str, table=table, roms=roms, image=image) -> bool:
+            at = table[name][1]
+            return bool(image) and at is not None and _after(roms, at) > at and not any(image[at : _after(roms, at)])
+
         for function in functions:
             module = compiled.get(function)
             if module is None:
@@ -322,9 +343,9 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             if not rows:
                 continue  # nothing of its own here; no version placing anything is the place.none refusal below
             nothing[function] = False
-            names, vram, rom, end, inside, junk = _extent(root, current, v, table, rows, function)
+            names, vram, rom, end, inside, junk = _extent(root, current, v, table, rows, function, zero)
             # a constant other functions read, far from the data (REV1-ONE-54 D_800C913C_de), is no part of it
-            if inside and (trimmed := _trim_shared(root, current, v, table, rows, function)):
+            if inside and (trimmed := _trim_shared(root, current, v, table, rows, function, zero)):
                 rows, (names, vram, rom, end, inside, junk) = trimmed
             last = names[-1]
             if (
@@ -425,6 +446,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                     split_from,
                     split,
                     tuple((n, table[n][1] or 0) for n in junk),
+                    tuple((n, current.owned(v, n)) for n in junk if current.owned(v, n)),
                 )
             )
             if (token := _next_pool(pieces, rom)) is not None:
@@ -610,6 +632,16 @@ def sources(placements: Sequence[Placement], texts: Mapping[str, str]) -> dict[s
     for (source, sibling), names in moving.items():
         kept, new = _split(padsplit, texts.get(source, ""), names)
         out[source], out[sibling] = kept.splitlines(), new.splitlines()
+    for p in placements:  # the zero pads a data file defines inside the pool: the compiled .rodata holds their bytes
+        for name, path in p.pads:
+            kept = "\n".join(out.get(path, texts.get(path, "").splitlines())) + "\n"
+            try:
+                hulls = padsplit.hulls(kept, name, {tree.macro(p.version)})
+            except Refusal:
+                continue  # an earlier version's pass dropped it from this file
+            for start, end, _ in reversed(hulls):
+                kept = (kept[:start].rstrip() + "\n" + kept[end:].lstrip("\n")).lstrip("\n")
+            out[path] = _EMPTY_IF.sub("", kept).splitlines()
     for p in placements:
         if not p.leftover:
             continue

@@ -419,8 +419,30 @@ def test_a_row_between_the_pools_that_other_code_reads_stays_a_refusal(monkeypat
     assert "place.gap" in {f.key for f in refused.value.findings} and "D_800E1530" in str(refused.value)
 
 
+def test_a_zero_row_between_the_pools_that_a_file_defines_is_a_pad_to_drop_from_it(monkeypatch, tmp_path):
+    # the compiled .rodata holds the pad's bytes: its zero array and its symbol row go (rodata_unresolved_* arrays)
+    config = _gap_world(monkeypatch, tmp_path)
+    tree = _tree()
+    tree.owned = lambda v, n: "src/d.c" if n in (F, "D_800E1530") and n != F else ("src/m.c" if n == F else None)
+    (found,) = place.plan(config, tree, [F])
+    assert found.junk == (("D_800E1530", 0x2030),) and found.pads == (("D_800E1530", "src/d.c"),)
+    text = (
+        '#include "types.h"\n'
+        "const unsigned int D_800E1520[4] = {1, 2, 3, 4};\n"
+        "const unsigned int D_800E1530[4] = {\n    0,\n    0,\n    0,\n    0,\n};\n"
+        "const unsigned int D_800E1540[4] = {5, 6, 7, 8};\n"
+    )
+    kept = place.sources([found], {"src/d.c": text})["src/d.c"].decode()
+    assert "D_800E1530" not in kept and "D_800E1520" in kept and "D_800E1540" in kept
+    again = place.sources([found, found], {"src/d.c": text})["src/d.c"].decode()  # a second version: already gone
+    assert again == kept
+
+
 def test_a_row_between_the_pools_that_a_file_owns_stays_a_refusal(monkeypatch, tmp_path):
     config = _gap_world(monkeypatch, tmp_path)
+    rom = bytearray((tmp_path / "rom").read_bytes())
+    rom[0x2030:0x2034] = b"\x00\x00\x00\x01"  # not a pad: it holds data
+    (tmp_path / "rom").write_bytes(bytes(rom))
     tree = _tree()
     tree.owned = lambda v, n: "src/m.c" if n in (F, "D_800E1530") else None
     with pytest.raises(Refusal) as refused:
