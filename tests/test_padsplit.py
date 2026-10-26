@@ -125,3 +125,21 @@ def test_a_piece_in_the_else_branch_is_wrapped_by_the_branch_not_the_first_condi
     assert text[start:end] == "int D_y[1] = {7};" and wrappers == ["#if !(defined(VERSION_DE))"]
     text = "#if A\nint a;\n#elif B\nint b;\n#elif C\nint D_y;\nint D_w;\n#else\nint d;\n#endif\n"
     assert padsplit.hulls(text, "D_y")[0][2] == ["#if !(A) && !(B) && (C)"]
+
+
+def test_a_negated_version_condition_holds_for_the_other_versions():
+    text = (
+        "#if !(defined(VERSION_EU) || defined(VERSION_DE))\nint D_x[4];\n#else\nint D_x[8];\n#endif\n"
+        "#ifndef VERSION_US\nint D_y[4];\n#endif\n"
+    )
+    assert padsplit._ours([["#if !(defined(VERSION_EU) || defined(VERSION_DE))"]], ["VERSION_US"])
+    assert not padsplit._ours([["#if !(defined(VERSION_EU) || defined(VERSION_DE))"]], ["VERSION_DE"])
+    assert padsplit._ours([["#if !(defined(VERSION_EU) || defined(VERSION_DE))", "#else"]], ["VERSION_DE"])
+    assert not padsplit._ours([["#if !(defined(VERSION_EU) || defined(VERSION_DE))", "#else"]], ["VERSION_US"])
+    assert not padsplit._ours([["#ifndef VERSION_US"]], ["VERSION_US"]) and padsplit._ours(
+        [["#ifndef VERSION_US"]], ["VERSION_DE"]
+    )
+    assert padsplit._ours([["#if defined(VERSION_US) && !defined(VERSION_EU)"]], ["VERSION_US"])
+    assert (
+        len(padsplit.hulls(text, "D_x", ["VERSION_US"])) == 1 and len(padsplit.hulls(text, "D_y", ["VERSION_DE"])) == 1
+    )

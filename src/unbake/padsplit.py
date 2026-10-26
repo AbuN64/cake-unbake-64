@@ -72,9 +72,31 @@ def _guards(rows: Sequence[tuple[publish.Item, str]]) -> list[list[list[str]]]:
     return out
 
 
+def _holds(line: str, macro: str) -> bool:
+    """Whether the condition of an #if/#ifdef/#ifndef/#elif line is true when `macro` is the one version macro defined
+    (`!`, `defined`, `&&`, `||` and parentheses are read; any other name is taken as defined). A condition this cannot
+    read is true when it names the macro."""
+    expr = _condition(line)
+
+    def name(m: re.Match[str]) -> str:
+        word = m[1] or m[2] or m[0]
+        return "1" if not word.startswith("VERSION_") or word == macro else "0"
+
+    expr = re.sub(r"\bdefined\s*\(\s*(\w+)\s*\)|\bdefined\s+(\w+)|\b[A-Za-z_]\w*\b", name, expr)
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = re.sub(r"!(?!=)", " not ", expr)
+    if re.fullmatch(r"[\d\s()<>=!]*(?:(?:and|or|not)[\d\s()<>=!]*)*", expr):
+        try:
+            return bool(eval(expr, {"__builtins__": {}}))  # digits, operators and parentheses only
+        except (SyntaxError, TypeError):
+            pass
+    return bool(re.search(rf"\b{re.escape(macro)}\b", line))
+
+
 def _ours(guards: Sequence[Sequence[str]], macros: Collection[str] | None) -> bool:
-    """A piece belongs to the versions `macros` when the innermost conditional around it that names a version names one
-    of them (in an #else branch: when it leaves one of them out), or when no conditional names a version."""
+    """A piece belongs to the versions `macros` when the innermost conditional around it that names a version holds
+    for one of them (in an #else branch: when none of the branches before it does), or when no conditional names a
+    version."""
     if macros is None:
         return True
     named = re.compile(r"\bVERSION_\w+")
@@ -83,8 +105,8 @@ def _ours(guards: Sequence[Sequence[str]], macros: Collection[str] | None) -> bo
             continue
         branch = g[-1]
         if re.match(r"#\s*else\b", branch):
-            return any(not re.search(rf"\b{re.escape(m)}\b", " ".join(g[:-1])) for m in macros)
-        return any(re.search(rf"\b{re.escape(m)}\b", branch) for m in macros)
+            return any(not any(_holds(line, m) for line in g[:-1]) for m in macros)
+        return any(_holds(branch, m) and not any(_holds(line, m) for line in g[:-1]) for m in macros)
     return True
 
 
