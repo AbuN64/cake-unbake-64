@@ -316,6 +316,16 @@ def _load(tmp_path: Path, text: str, tracked: list[str] = TRACKED) -> Any:
     return _project(tmp_path, text, tracked, roms)
 
 
+def _with_map(spelled: str) -> str:
+    return RW.replace('names_from = "us-rev1"\n', f'names_from = "us-rev1"\nmodule_map = "{spelled}"\n')
+
+
+def test_module_map_is_a_repo_relative_path(tmp_path: Path) -> None:
+    assert _load(tmp_path, _with_map("docs/MODULES.tsv")).module_map == "docs/MODULES.tsv"
+    for bad in ("/etc/MODULES.tsv", "../MODULES.tsv"):
+        assert [f.path for f in _refusal(_load, tmp_path, _with_map(bad)).findings] == ["project:module_map"]
+
+
 def test_rw_and_bt_examples_validate(tmp_path: Path) -> None:
     rw = _load(tmp_path, RW)
     assert rw.versions == ("us", "us-rev1") and rw.libraries == ("src/libgcc/", "src/sdk/libgultra/")

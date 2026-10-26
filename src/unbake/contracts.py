@@ -379,6 +379,7 @@ class Project:
     origins: Mapping[str, Origin] = field(default_factory=dict)
     library_origin: Mapping[str, str] = field(default_factory=dict)  # [library] row path -> where it came from
     non_matching: str | None = None  # the macro of the NON_MATCHING build: set when config.toml has [non_matching]
+    module_map: str | None = None  # repo-relative module map (MODULES.tsv): the prefix authority
 
 
 def macro(version: str) -> str:

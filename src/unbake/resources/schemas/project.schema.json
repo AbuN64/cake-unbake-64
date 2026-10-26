@@ -73,6 +73,11 @@
    "minLength": 1,
    "description": "the page the README memory map links to, at the anchor <readme_map_repo>-<readme_map> when readme_map_repo is set"
   },
+  "module_map": {
+   "type": "string",
+   "minLength": 1,
+   "description": "repo-relative path of the module map (a TSV with unit, module and prefix columns): the one authority for the function-name prefix of each module"
+  },
   "readme_map_repo": {
    "type": "string",
    "minLength": 1,

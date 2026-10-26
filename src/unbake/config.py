@@ -441,6 +441,9 @@ def load_project(
         problems.append(bad("readme_map", f"{readme_map} is not a [version] table"))
     if document["toolchain"] not in load_resource("toolchains.toml")["toolchain"]:
         problems.append(bad("toolchain", f"{document['toolchain']} is not in toolchains.toml"))
+    spelled_map = document.get("module_map")
+    if spelled_map is not None and (Path(spelled_map).is_absolute() or ".." in Path(spelled_map).parts):
+        problems.append(bad("module_map", f"{spelled_map} must be a path inside the repository"))
     for folder in document.get("libraries", ()):
         if not _folder(folder, False):
             problems.append(bad("libraries", f"{folder} must be a source subdirectory"))
@@ -524,6 +527,7 @@ def load_project(
         origins=origins,
         library_origin={p: o for p, o in ((p, r.get("origin")) for p, r in document.get("library", {}).items()) if o},
         non_matching=(document["non_matching"].get("define", "NON_MATCHING") if "non_matching" in document else None),
+        module_map=spelled_map,
     )
 
 
