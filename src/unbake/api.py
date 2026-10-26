@@ -3,7 +3,7 @@ parallel map the tree's readers share. Nothing else of unbake is public."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
@@ -210,10 +210,13 @@ def name_issues(
     return symbol_names.issues(name, kind, taken, implementation=implementation, evidenced=evidenced)
 
 
-def naming_findings(files: Mapping[str, str], cache: Path | None = None) -> tuple[Finding, ...]:
+def naming_findings(
+    files: Mapping[str, str], cache: Path | None = None, evidenced: Collection[str] = ()
+) -> tuple[Finding, ...]:
     """Portable source and path names, without a host, compiler or ROM. `cache`: a file that keeps each source file's
-    census between runs, so a repeated call reads only the files that changed."""
-    return symbol_names.findings(files, cache)
+    census between runs, so a repeated call reads only the files that changed. `evidenced`: names the project's SDK
+    evidence declares original, which the reserved-identifier rule does not report (see `name_issues`)."""
+    return symbol_names.findings(files, cache, evidenced)
 
 
 def naming_debt(root: Path) -> Json:

@@ -303,14 +303,19 @@ def _save(cache: Path, files: Mapping[str, str]) -> None:
         pass  # a read-only tree only loses the speed-up
 
 
-def findings(files: Mapping[str, str], cache: Path | None = None) -> tuple[Finding, ...]:
+def findings(
+    files: Mapping[str, str], cache: Path | None = None, evidenced: Collection[str] = ()
+) -> tuple[Finding, ...]:
     """Whole source set naming census: source rules plus path and external-symbol case collisions. `cache` names a
     file that keeps each source file's census between runs (by path and content hash): only the files an edit changed
-    are read again (the whole tree was 9 s of a 10-row rename)."""
+    are read again (the whole tree was 9 s of a 10-row rename). `evidenced`: names the caller's project evidence
+    declares original (see `issues`); the reserved-identifier rule does not report them."""
     if cache is not None and not _DISK:
         _load(cache)
     try:
-        return _findings(files)
+        out = _findings(files)
+        heads = tuple(f"{name}: reserved identifier (" for name in evidenced)
+        return tuple(f for f in out if not f.reason.startswith(heads)) if heads else out
     finally:
         if cache is not None:
             _save(cache, files)

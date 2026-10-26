@@ -231,6 +231,13 @@ def test_evidenced_reserved_names_pass_and_unevidenced_stay_refused():
     assert api.name_issues("__secret", taken=["__secret"], evidenced=True)
 
 
+def test_a_census_does_not_report_a_reserved_name_the_caller_evidences():
+    files = {"src/a.c": "int __zorkHelper(void) { return 1; }\nint __other(void) { return 2; }\n"}
+    assert {f.reason.split(":")[0] for f in api.naming_findings(files)} == {"__zorkHelper", "__other"}
+    left = api.naming_findings(files, evidenced=["__zorkHelper"])
+    assert {f.reason.split(":")[0] for f in left} == {"__other"}
+
+
 def test_the_whole_tree_census_reads_an_unchanged_file_once():
     from unbake import symbol_names
 
