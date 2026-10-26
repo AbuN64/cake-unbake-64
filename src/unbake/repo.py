@@ -1010,9 +1010,10 @@ def _read_facts(text: str) -> tuple[dict[str, tuple[str, str]], list[str]] | Non
 
 
 def _auto_name_safe(name: str, before: Mapping[str, tuple[str, str]], after: Mapping[str, tuple[str, str]]) -> bool:
-    """Whether a fact named like splat's own name can be renamed in the text: its suffix is its own address, or the address
-    the suffix spells is a fact's address in both fact lists (splat prints that fact's name there, never the auto name,
-    so the token cannot stand for another symbol: D_800CB7F0 at 0x800CB700 beside D_800CB7F0_us at 0x800CB7F0)."""
+    """Whether a fact named like splat's own name can be renamed in the text: its suffix is its own address, or the
+    address the suffix spells is a fact's address in both fact lists (splat prints that fact's name there, never the
+    auto name, so the token cannot stand for another symbol: D_800CB7F0 at 0x800CB700 beside D_800CB7F0_us at
+    0x800CB7F0)."""
     if name[-8:].upper() == before[name][0][2:].upper().zfill(8):
         return True
     want = int(name[-8:], 16)
@@ -1126,7 +1127,10 @@ def _fact_why(old: str, new: str) -> str:
     ren = {n: next(k for k, f in came.items() if f == gone[n]) for n in gone}
     bad_new = sorted(m for m in ren.values() if not _IDENT.match(m) or _AUTO_NAME.match(m))
     if bad_new:
-        return f"{len(bad_new)} new names are not identifiers or look like splat's own names, e.g. {', '.join(bad_new[:3])}"
+        return (
+            f"{len(bad_new)} new names are not identifiers or look like splat's own names, "
+            f"e.g. {', '.join(bad_new[:3])}"
+        )
     mis = sorted(n for n in ren if _AUTO_NAME.match(n) and not _auto_name_safe(n, before[0], after[0]))
     return f"{len(mis)} old auto-looking names are misaddressed, e.g. {', '.join(mis[:3])}"
 
