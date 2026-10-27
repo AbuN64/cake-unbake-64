@@ -38,7 +38,7 @@ def test_data_that_is_not_all_zero_stays() -> None:
 def test_a_pad_without_a_symbol_fact_is_held_with_the_reason() -> None:
     text = guarded("a", "u32 pad_x[1] = { 0 };")
     got = run(text)
-    assert got.text == text and got.held[0]["why"] == "no ROM fact in a"
+    assert got.text == text and got.held[0]["why"] == "no data fact in a"
 
 
 def test_a_pad_the_rest_of_the_file_names_is_held() -> None:
@@ -56,6 +56,18 @@ def test_a_pad_between_two_data_definitions_of_its_version_is_held() -> None:
     assert run(text).held[0]["why"] == "between other data in a"
     other = "u32 one = 1;\n" + guarded("a", "u32 pad_a[1] = { 0 };") + guarded("b", "u32 two = 2;")
     assert [r["names"] for r in run(other).removed] == [["pad_a"]]  # version b's data does not touch a's pad
+
+
+def test_a_name_lies_in_data_when_the_fact_before_it_in_its_mapping_is_not_code() -> None:
+    table = {
+        "f": (0x80, 0x10, 8, "func"),
+        "after_code": (0x88, 0x18, 4, "data"),
+        "pad": (0x8C, 0x1C, 4, "data"),
+        "other_map": (0x200, 0x20, 4, "data"),
+        "first": (0x300, 0x4, 4, "data"),
+        "no_rom": (0x400, None, None, "data"),
+    }
+    assert pads.inside(table) == {"pad"}
 
 
 def test_text_without_zero_blocks_is_returned_as_is() -> None:
@@ -76,7 +88,7 @@ def _project(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "src/tbl.c").write_text("u32 head = 1;\n" + guarded("a", "u32 pad_a[1] = { 0 };"))
     (root / "src/plain.c").write_text("s32 x = 1;\n")
     monkeypatch.setattr(folders, "_tracked", lambda config: ["src/plain.c", "src/tbl.c"])
-    rows = {"a": {"pad_a": (0x100, None, None, "data")}, "b": {}}
+    rows = {"a": {"head": (0x100, 0x100, 4, "data"), "pad_a": (0x104, 0x104, 4, "data")}, "b": {}}
     monkeypatch.setattr(symbols, "load", lambda config, version: rows[version])
     return root
 

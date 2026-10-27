@@ -26,6 +26,19 @@ _COMMENT_OR_STRING = re.compile(r"(\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')|/
 _DIRECTIVE = re.compile(r"[ \t]*#")
 
 
+def inside(table: Mapping[str, tuple[int, int | None, int | None, str]]) -> set[str]:
+    """The names of one version whose bytes need no owner: the nearest fact before them in ROM order, in the same
+    mapping, is data (code before them would leave the bytes to a stand-in of their own, `repo.sync`)."""
+    out: set[str] = set()
+    before: tuple[int, str] | None = None  # (rom - vram, type) of the fact before
+    for rom, name in sorted((fact[1], n) for n, fact in table.items() if fact[1] is not None):
+        vram, kind = table[name][0], table[name][3]
+        if before is not None and before[0] == rom - vram and before[1] != "func":
+            out.add(name)
+        before = (rom - vram, kind)
+    return out
+
+
 @dataclass
 class Pads:
     text: str
@@ -103,7 +116,7 @@ def _content(lines: Sequence[str], skip: Collection[int]) -> list[int]:
 
 
 def pads(text: str, versions: Sequence[str], known: Mapping[str, Collection[str]]) -> Pads:
-    """The text of one file without its removable zero pads; `known` is, per version, the names with a ROM fact."""
+    """The text of one file without its removable zero pads; `known` is, per version, the names the layout keeps (`inside`)."""
     source = clean(text)
     lines = text.split("\n")
     cleaned = source.split("\n")
@@ -130,7 +143,7 @@ def pads(text: str, versions: Sequence[str], known: Mapping[str, Collection[str]
             and any(i >= b.end and v in active[i] for i in content)
         ]
         if lost:
-            result.held.append({**where, "why": f"no ROM fact in {', '.join(lost)}"})
+            result.held.append({**where, "why": f"no data fact in {', '.join(lost)}"})
         elif named:
             result.held.append({**where, "why": "named by other text of the file"})
         elif sandwiched:

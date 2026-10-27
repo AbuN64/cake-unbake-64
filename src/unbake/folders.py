@@ -868,7 +868,7 @@ def pads(config: Config, params: Json) -> Row:
         ]
         if only and not tracked:
             raise _refuse(f"pads: {only} is not a tracked source file")
-        known = {v: set(symbols.load(config, v)) for v in versions}
+        known = {v: padding.inside(symbols.load(config, v)) for v in versions}
         written: list[str] = []
         blocks = 0
         held: list[Row] = []

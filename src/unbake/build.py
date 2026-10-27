@@ -690,33 +690,38 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     in the segment, its section of that file's object (`.text` for code, the source's own section for data), the
     first of each in address order. A file's compiled read-only data sits where its `literals_` fact says; else a
     toolchain that keeps a function's literals with its object (`per-object`) has them follow the code unless the file
-    names rodata of its own in the segment."""
+    names rodata of its own in the segment. Every object is put at the offset of its first row (`MAX(., offset)` never
+    moves back): where its source dropped bytes the rows no longer own (a zero pad), the gap stays zeros and nothing
+    after it moves; where the rows are contiguous the line changes nothing."""
     named_rows = _named(config, held, v, piece)
     rows = [row[:3] for row in named_rows]
     named = {(path, section) for _, path, section in rows}
     doubled = _doubled(config, held, v, piece)
     apart = _apart_paths(config, held, v) if "function_sections" in configuration.toolchain(config.project.toolchain) else set()
-    items: list[tuple[str, str, int | None]] = []
+    items: list[tuple[str, str, int | None, bool]] = []  # (path, section, offset, whether the section is one function's)
     start, _, _ = _piece(config, v, piece)
     code = _functions(config, held, v, apart)
     pools = {name for _, path, section, name in named_rows if path in apart and section == ".rodata"}
+    seen: set[tuple[str, str]] = set()
     for rom, path, section, name in named_rows:
         if path in apart and section == ".text":
             # an object with a section per function: each at the offset its ROM address gives in the piece
-            items.append((path, f".text.{name}", rom - start))
+            items.append((path, f".text.{name}", rom - start, True))
         elif path in apart and section == ".rodata":
-            items.append((path, _covered(code.get(path, ()), pools, name), rom - start))  # each block where its row lies
-        elif (path, section, None) not in items:
-            items.append((path, section, None))
+            items.append((path, _covered(code.get(path, ()), pools, name), rom - start, True))  # each block where its row lies
+        elif (path, section) not in seen:
+            seen.add((path, section))
+            items.append((path, section, rom - start if rom > start else None, False))
             if per_object and section == ".text" and (path, ".rodata") not in named:
-                items.append((path, ".rodata", None))
+                items.append((path, ".rodata", None, False))
     _apart(held, v, [row for row in rows if row[1] not in apart], config)
     out: list[str] = []
-    for path, section, offset in items:
+    for path, section, offset, apart_section in items:
         if offset is not None:
             # an output section's `.` is relative to its start: never back, so a block that runs past the next row's
             # address (one block holding several rows) is followed on, and the ROM compare stops any real shift
             out.append(f". = MAX(., 0x{offset:X})")
+        if apart_section:
             for one in section.split():
                 if one.startswith(".rodata."):
                     # the assembler tagged the blocks it aligned to 8 (FSPLIT_PASS): `SUBALIGN(1)` drops that

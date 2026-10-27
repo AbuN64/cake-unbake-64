@@ -98,12 +98,15 @@ def test_linker_golden(tmp_path):
             "    .main 0x80200400 : AT(0x1000) SUBALIGN(1)",
             "#endif",
             "    {",
+            "        . = MAX(., 0x10);",
             "        src/a.c.o(.text);",
             "        src/a.c.o(.rodata .rdata);",
             "#if defined(VERSION_US)",
+            "        . = MAX(., 0x20);",
             "        src/b.c.o(.text);",
             "        src/b.c.o(.rodata .rdata);",
             "#endif",
+            "        . = MAX(., 0x30);",
             "        src/c.c.o(.text);",
             "        src/c.c.o(.rodata .rdata);",
             "    }",
@@ -141,7 +144,7 @@ def test_file_absent_in_one_version_is_grouped_under_if(tmp_path):
     text = build.linker(make_config(tmp_path), tree).decode()
     text_pass = text.split("    {\n", 1)[1].split("    }\n", 1)[0]
     assert text_pass.count("#if defined(VERSION_US)") == 1  # b and c share one block
-    assert "#if defined(VERSION_EU_1)\n        src/d.c.o(.text);\n        src/d.c.o(.rodata .rdata);\n#endif" in text
+    assert "#if defined(VERSION_EU_1)\n        . = MAX(., 0x40);\n        src/d.c.o(.text);\n        src/d.c.o(.rodata .rdata);\n#endif" in text
 
 
 @pytest.mark.usefixtures("per_object")
@@ -153,12 +156,12 @@ def test_conflicting_orders_fall_back_to_one_run_per_version(tmp_path):
     )
     text = build.linker(make_config(tmp_path), tree).decode()
     assert (
-        "#if defined(VERSION_EU_1)\n        src/c.c.o(.text);\n        src/c.c.o(.rodata .rdata);\n"
-        "        src/b.c.o(.text);" in text
+        "#if defined(VERSION_EU_1)\n        . = MAX(., 0x10);\n        src/c.c.o(.text);\n        src/c.c.o(.rodata .rdata);\n"
+        "        . = MAX(., 0x20);\n        src/b.c.o(.text);" in text
     )
     assert (
-        "#if defined(VERSION_US)\n        src/a.c.o(.text);\n        src/a.c.o(.rodata .rdata);\n"
-        "        src/b.c.o(.text);" in text
+        "#if defined(VERSION_US)\n        . = MAX(., 0x10);\n        src/a.c.o(.text);\n        src/a.c.o(.rodata .rdata);\n"
+        "        . = MAX(., 0x20);\n        src/b.c.o(.text);" in text
     )
 
 
@@ -1857,7 +1860,7 @@ def test_text_sizes_mark_the_apart_object_to_be_built_with_a_section_per_functio
 def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom_address(tmp_path):
     text = build.linker(make_config(tmp_path), _merged_unit()).decode()
     body = [l.strip() for l in text.splitlines() if l.strip().startswith(("src/", ". = ")) and ".bss" not in l]
-    assert body[:11] == [
+    assert body[:12] == [
         ". = MAX(., 0x8);",
         ". = DEFINED(__align8_literals_f_1) ? ALIGN(8) : .;",
         "src/a.c.o(.rodata.literals_f_1 .rdata.literals_f_1);",
@@ -1868,9 +1871,17 @@ def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom
         "src/a.c.o(.rodata.literals_f_2 .rdata.literals_f_2);",
         ". = MAX(., 0x20);",
         "src/a.c.o(.text.f_2);",
+        ". = MAX(., 0x50);",
         "src/b.c.o(.text);",
     ]
     assert "src/b.c.o(.text);" in body  # an object whole in the ROM keeps its one `.text`
+
+
+def test_every_object_is_placed_at_the_offset_of_its_first_row_so_a_dropped_gap_stays_zeros(tmp_path):
+    tree = make_tree(both("src/a.c", "f_1", "f_2"), both("src/b.c", "f_4"))  # rows are 0x10 long: 0x30 is owned by no file
+    text = build.linker(make_config(tmp_path), tree).decode()
+    body = [l.strip() for l in text.splitlines() if l.strip().startswith(("src/", ". = ")) and ".bss" not in l]
+    assert body[:4] == [". = MAX(., 0x10);", "src/a.c.o(.text);", ". = MAX(., 0x40);", "src/b.c.o(.text);"]
 
 
 def test_a_function_with_no_pool_row_of_its_own_has_its_pool_kept_with_the_function_before(tmp_path):
