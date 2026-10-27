@@ -54,6 +54,7 @@ class Decl:
     static: bool = False
     guard: tuple[str, ...] = ()
     drop: bool = field(default=False, compare=False)
+    joint: bool = False  # one of several names declared by one statement: reported, never dropped
 
 
 def mask(text: str) -> str:
@@ -148,10 +149,10 @@ def decls(body: str, unit: str) -> list[Decl]:
                 depth -= 1
             end_of = at + offset + 1
             if depth == 0 and char == ";":
-                out.append(_classify(buffer, unit, start, end_of, guard, False))
+                out.extend(_classify(buffer, unit, start, end_of, guard, False))
                 buffer = ""
             elif depth == 0 and char == "}" and _is_function(buffer):
-                out.append(_classify(buffer, unit, start, end_of, guard, True))
+                out.extend(_classify(buffer, unit, start, end_of, guard, True))
                 buffer = ""
         buffer += "\n"
         at = line_end + 1
@@ -163,22 +164,39 @@ def _is_function(buffer: str) -> bool:
     return bool(head.strip()) and "=" not in head and head.rstrip().endswith((")", "const")) and "(" in head
 
 
-def _classify(buffer: str, unit: str, start: int, end: int, guard: Sequence[str], body: bool) -> Decl:
+def _declarators(head: str) -> list[str]:
+    """The declarators of a data statement split at its top-level commas: `int a, *b[2]` -> [`int a`, `*b[2]`]."""
+    parts, depth, current = [], 0, ""
+    for char in head:
+        depth += char in "({["
+        depth -= char in ")}]"
+        if char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    return [*parts, current]
+
+
+def _classify(buffer: str, unit: str, start: int, end: int, guard: Sequence[str], body: bool) -> list[Decl]:
     text = buffer.strip()
     static = bool(re.match(r"(?:extern\s+)?static\b|(?:\w+\s+)*static\b", text.split("(")[0].split("=")[0]))
     where = tuple(guard)
     if body:
         name, sig = signature(text[: text.find("{")])
-        return Decl("def", name, sig, unit, start, end, static, where)
+        return [Decl("def", name, sig, unit, start, end, static, where)]
     head = text.rstrip(";").strip()
     if re.match(r"(typedef|struct|union|enum|class|template|using|namespace)\b", head) or not head:
-        return Decl("other", "", "", unit, start, end, static, where)
+        return [Decl("other", "", "", unit, start, end, static, where)]
     if "(" in head.split("=")[0] and not re.search(r"\)\s*\(", head.split("=")[0]) and "=" not in head:
         name, sig = signature(head)
-        return Decl("proto", name, sig, unit, start, end, static, where)
-    name, sig = _data_name(head)
+        return [Decl("proto", name, sig, unit, start, end, static, where)]
     kind = "extern" if re.match(r"extern\b", head) else "var"
-    return Decl(kind, name, sig, unit, start, end, static, where)
+    parts = _declarators(head)
+    first, _ = _data_name(parts[0])
+    base = parts[0][: parts[0].rfind(first)].rstrip(" *") if first else ""
+    named = [_data_name(parts[0])] + [_data_name(f"{base} {part}") for part in parts[1:]]
+    return [Decl(kind, n, sig, unit, start, end, static, where, joint=len(parts) > 1) for n, sig in named]
 
 
 def drop_pads(body: str, unit: str, droppable: Droppable) -> tuple[str, list[str]]:
@@ -349,6 +367,17 @@ def reconcile(
                     }
                 )
     for decl in every:
+        if decl.kind in ("proto", "extern") and decl.guard:
+            earlier = next((d for d in inherited if (d.name, d.kind) == (decl.name, decl.kind)), None)
+            if earlier is not None and not _alike(earlier.sig, decl.sig, names):
+                conflicts.append(
+                    {
+                        "kind": decl.kind,
+                        "name": decl.name,
+                        "detail": f"`{decl.sig}` in {decl.unit} (guarded) against `{earlier.sig}` in {earlier.unit}",
+                    }
+                )
+    for decl in every:
         if decl.kind not in ("proto", "extern") or decl.guard:
             continue
         kind = decl.kind
@@ -384,7 +413,7 @@ def reconcile(
                     "detail": f"`{earlier.sig}` in {earlier.unit} against `{decl.sig}` in {decl.unit}",
                 }
             )
-    return {unit: [d for d in group if d.drop] for unit, group in parts}, conflicts, retyped
+    return {unit: [d for d in group if d.drop and not d.joint] for unit, group in parts}, conflicts, retyped
 
 
 def _span(names: Sequence[str]) -> str:

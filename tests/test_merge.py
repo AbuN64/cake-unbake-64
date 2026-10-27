@@ -163,3 +163,19 @@ def test_names_that_disagree_the_same_way_are_one_finding_listing_them() -> None
     two = "".join(f"extern int K_{i};\n" for i in range(3))
     out = merge.merge([("one.c", one), ("two.c", two)], never)
     assert len(out["conflicts"]) == 1 and out["conflicts"][0]["name"] == "K_0..K_2 (3 names)"
+
+
+def test_names_declared_together_are_each_checked_and_the_statement_is_kept() -> None:
+    headers = {"h.h": "extern int a, b[4];\n"}
+    two = "extern int a;\nextern short b[4];\nint x, *y;\nextern int x;\n"
+    out = merge.merge([("one.c", '#include "h.h"\n'), ("two.c", two)], never, headers.get)
+    assert [(c["kind"], c["name"]) for c in out["conflicts"]] == [("extern", "b")]
+    assert "extern int a;" not in out["text"]
+
+
+def test_a_guarded_declaration_of_another_type_than_a_header_declaration_is_a_conflict() -> None:
+    headers = {"h.h": "extern char D_1;\n"}
+    two = "#if V\nextern char D_1[];\n#endif\n"
+    out = merge.merge([("one.c", '#include "h.h"\n'), ("two.c", two)], never, headers.get)
+    assert [(c["kind"], c["name"]) for c in out["conflicts"]] == [("extern", "D_1")]
+    assert "extern char D_1[];" in out["text"]
