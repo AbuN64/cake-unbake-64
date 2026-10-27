@@ -150,3 +150,8 @@ def test_spans_count_align_directives_and_other_modules_between_the_first_and_la
         with_parts(entry("b", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
     ]
     assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 16, 8)]
+
+
+def test_units_are_ordered_by_where_their_code_is_linked_not_their_first_data() -> None:
+    seq = [entry("a", "rodata", 8, ".rodata"), entry("b", "text", 8), entry("a", "text", 8), entry("c", "data", 8)]
+    assert mergecheck.code_order(["a", "b", "c"], {"us": seq}) == ["b", "a", "c"]

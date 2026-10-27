@@ -5,8 +5,10 @@ what it could not decide. It
   hoists and dedupes the `#include` lines that sit outside any `#if`,
   drops the all-zero pad arrays (a few bytes) that the linker's section alignment reproduces,
   drops the prototypes and `extern` declarations that the merged file itself now defines or already declares,
+  drops a prototype that disagrees with a definition standing earlier in the merged text (the definition wins),
   reports what is left as conflicts: a declaration whose type differs from a definition, from another declaration
-  of the same name or from one in an included header, and two `static` definitions of one name.
+  of the same name or from one in an included header, and two `static` definitions of one name. Types are compared
+  through the `typedef`s of the units and the included headers, and an empty parameter list matches any list.
 The text is read as top-level declarations (comments and strings masked, braces and parentheses counted); it needs no
 compiler and knows no project."""
 
@@ -205,9 +207,61 @@ def _cut(body: str, spans: Sequence[tuple[int, int]]) -> str:
     return body
 
 
-def _alike(one: str, two: str) -> bool:
-    """Whether two signatures name one type; an array of unknown size matches any size."""
-    return re.sub(r"\[[^\]]*\]", "[]", one) == re.sub(r"\[[^\]]*\]", "[]", two)
+def aliases(text: str) -> dict[str, str]:
+    """The simple `typedef`s of `text` as name -> type: `typedef unsigned int u32;`, `typedef struct T {..} U;`
+    (U -> T), `typedef char *str;`; function-pointer and array typedefs are skipped."""
+    masked = mask(text)
+    found: dict[str, str] = {}
+    for decl in decls(text, ""):
+        statement = masked[decl.start : decl.end].strip().rstrip(";").strip()
+        if decl.kind != "other" or not statement.startswith("typedef"):
+            continue
+        brace = statement.find("{")
+        if brace >= 0:
+            tag = _WORD.findall(statement[len("typedef") : brace])
+            tail = statement[statement.rfind("}") + 1 :]
+            names = [n.strip() for n in tail.split(",")]
+            if tag and tag[-1] not in _QUALIFIERS:
+                found.update({n: tag[-1] for n in names if _WORD.fullmatch(n) and n != tag[-1]})
+            continue
+        if "(" in statement or "[" in statement:
+            continue
+        words = _WORD.findall(statement)
+        if len(words) >= 3:
+            base = _norm(statement[len("typedef") : statement.rfind(words[-1])])
+            if base and base != words[-1]:
+                found[words[-1]] = base
+    return found
+
+
+_SIGNED = re.compile(r"\bsigned\b\s*(?=(?:int|char|short|long)\b)")
+_BARE = re.compile(r"\b(un)?signed\b(?!\s+(?:int|char|short|long)\b)")
+_INT = re.compile(r"\b(short|long)\s+int\b")
+
+
+def _canon(sig: str, names: dict[str, str]) -> str:
+    """`sig` with every typedef name replaced by its type and the integer spellings made one: `s32` and `int`, `u32` and
+    `unsigned int`, `long int` and `long` read alike."""
+    for _ in range(8):
+        again = _WORD.sub(lambda m: names.get(m[0], m[0]), sig)
+        if again == sig:
+            break
+        sig = again
+    sig = _SIGNED.sub("", sig)
+    sig = _BARE.sub(lambda m: "unsigned int" if m[1] else "int", sig)
+    return _INT.sub(r"\1", sig)
+
+
+def _alike(one: str, two: str, names: dict[str, str] | None = None) -> bool:
+    """Whether two signatures name one type; an array of unknown size matches any size and an empty parameter list
+    (unspecified arguments in C) matches any list of the same return type."""
+    one, two = (re.sub(r"\[[^\]]*\]", "[]", _canon(t, names or {})) for t in (one, two))
+    if one == two:
+        return True
+    open_one, open_two = one.find("("), two.find("(")
+    if open_one < 0 or open_two < 0 or one[:open_one] != two[:open_two]:
+        return False
+    return one[open_one:].startswith("()") or two[open_two:].startswith("()")
 
 
 def _units_of(group: Sequence[Decl]) -> str:
@@ -238,10 +292,12 @@ def _unguard(text: str) -> str:
     return "\n".join(out)
 
 
-def _header_decls(includes: Sequence[str], header: Header) -> list[Decl]:
+def _header_decls(includes: Sequence[str], header: Header) -> tuple[list[Decl], dict[str, str]]:
     """The unguarded prototypes and externs the quoted `#include` lines bring in, followed through the headers'
-    own includes; `header(name)` is the text of an include or None. A header's include guard is not a guard."""
+    own includes, and the typedefs of those headers; `header(name)` is the text of an include or None. A header's
+    include guard is not a guard."""
     found: list[Decl] = []
+    names: dict[str, str] = {}
     seen: set[str] = set()
     todo = [m[1] for line in includes if (m := _QUOTED.match(line))]
     while todo:
@@ -253,16 +309,21 @@ def _header_decls(includes: Sequence[str], header: Header) -> list[Decl]:
         text = _unguard(text)
         todo += [m[1] for line in text.split("\n") if (m := _QUOTED.match(line))]
         found += [d for d in decls(text, name) if d.name and not d.guard and d.kind != "other"]
-    return found
+        names.update(aliases(text))
+    return found, names
 
 
 def reconcile(
-    parts: Sequence[tuple[str, list[Decl]]], inherited: Sequence[Decl] = ()
-) -> tuple[dict[str, list[Decl]], list[Row]]:
-    """Mark the declarations a merged file no longer needs (`drop`) and list the conflicts left. Only unguarded
-    declarations are touched; a guarded one is left in place. `inherited` are the declarations of the included
-    headers: they stand before every unit's text."""
+    parts: Sequence[tuple[str, list[Decl]]], inherited: Sequence[Decl] = (), names: dict[str, str] | None = None
+) -> tuple[dict[str, list[Decl]], list[Row], list[str]]:
+    """Mark the declarations a merged file no longer needs (`drop`) and list the conflicts left and the prototypes
+    dropped although they disagreed with an earlier definition. Only unguarded declarations are touched; a guarded
+    one is left in place. `inherited` are the declarations of the included headers: they stand before every unit's
+    text; `names` are the typedefs in force."""
+    names = names or {}
     conflicts: list[Row] = []
+    retyped: list[str] = []
+    order = {unit: at for at, (unit, _) in enumerate(parts)}
     every = [d for _, group in parts for d in group if d.name]
     defined: dict[str, list[Decl]] = defaultdict(list)
     for decl in every:
@@ -279,7 +340,7 @@ def reconcile(
         for decl in group:
             kind = "proto" if decl.kind == "def" else "extern"
             earlier = declared.get((name, kind))
-            if earlier is not None and not _alike(earlier.sig, decl.sig):
+            if earlier is not None and not _alike(earlier.sig, decl.sig, names):
                 conflicts.append(
                     {
                         "kind": kind,
@@ -293,9 +354,14 @@ def reconcile(
         kind = decl.kind
         home = [d for d in defined.get(decl.name, ()) if d.kind == ("def" if kind == "proto" else "var")]
         if home:
-            same = [d for d in home if _alike(d.sig, decl.sig)]
+            same = [d for d in home if _alike(d.sig, decl.sig, names)]
             if same:
                 decl.drop = True
+            elif kind == "proto" and (order[home[0].unit], home[0].start) < (order[decl.unit], decl.start):
+                decl.drop = True
+                retyped.append(
+                    f"{decl.name}: `{decl.sig}` in {decl.unit} gives way to `{home[0].sig}` in {home[0].unit}"
+                )
             else:
                 conflicts.append(
                     {
@@ -308,7 +374,7 @@ def reconcile(
         earlier = declared.get((decl.name, decl.kind))
         if earlier is None:
             declared[(decl.name, decl.kind)] = decl
-        elif _alike(earlier.sig, decl.sig):
+        elif _alike(earlier.sig, decl.sig, names):
             decl.drop = True
         else:
             conflicts.append(
@@ -318,12 +384,26 @@ def reconcile(
                     "detail": f"`{earlier.sig}` in {earlier.unit} against `{decl.sig}` in {decl.unit}",
                 }
             )
-    return {unit: [d for d in group if d.drop] for unit, group in parts}, conflicts
+    return {unit: [d for d in group if d.drop] for unit, group in parts}, conflicts, retyped
+
+
+def _span(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else f"{names[0]}..{names[-1]} ({len(names)} names)"
+
+
+def _grouped(conflicts: Sequence[Row]) -> list[Row]:
+    """One conflict per kind and detail: names that disagree the same way (a header and a unit spelling a run of
+    constants differently) are one finding that lists its names."""
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for conflict in conflicts:
+        groups[conflict["kind"], conflict["detail"]].append(conflict["name"])
+    return [{"kind": kind, "name": _span(names), "detail": detail} for (kind, detail), names in groups.items()]
 
 
 def merge(units: Sequence[tuple[str, str]], droppable: Droppable, header: Header = lambda name: None) -> Row:
     """The merged text of `units` ((name, text) in link order) and the report:
-    {"text", "includes", "pads": [names], "dropped": n, "conflicts": [{kind, name, detail}]}."""
+    {"text", "includes", "pads": [names], "dropped": n, "conflicts": [{kind, name, detail}], "retyped": [text]}:
+    `retyped` lists the prototypes dropped for a differing earlier definition, whose callers may need a cast."""
     seen: list[str] = []
     bodies: list[tuple[str, str]] = []
     pads: list[str] = []
@@ -343,7 +423,10 @@ def merge(units: Sequence[tuple[str, str]], droppable: Droppable, header: Header
         pads += dropped
         bodies.append((name, body.strip("\n")))
     parts = [(name, decls(body, name)) for name, body in bodies]
-    marked, conflicts = reconcile(parts, _header_decls(seen, header))
+    inherited, names = _header_decls(seen, header)
+    for _, body in bodies:
+        names.update(aliases(body))
+    marked, conflicts, retyped = reconcile(parts, inherited, names)
     out = []
     removed = 0
     for name, body in bodies:
@@ -356,5 +439,6 @@ def merge(units: Sequence[tuple[str, str]], droppable: Droppable, header: Header
         "includes": len(seen),
         "pads": pads,
         "dropped": removed,
-        "conflicts": conflicts,
+        "conflicts": _grouped(conflicts),
+        "retyped": retyped,
     }

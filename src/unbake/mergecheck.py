@@ -176,6 +176,17 @@ def facts_of(
     return seqs, statics
 
 
+def code_order(units: Sequence[str], seqs: Mapping[str, Sequence[Row]]) -> list[str]:
+    """The units in the order their code is linked (the first version to place a unit decides); a unit without code
+    follows the code units, each group in the order given."""
+    first: dict[str, int] = {}
+    for seq in seqs.values():
+        for at, row in enumerate(seq):
+            if row["k"] == "entry" and row.get("n", 0) > 0 and "text" in row["cls"].split("+"):
+                first.setdefault(row["u"], at)
+    return sorted(units, key=lambda u: (u not in first, first.get(u, 0), units.index(u)))
+
+
 def verdicts(
     rows: Sequence[tuple[str, str]],
     seqs: Mapping[str, Sequence[Row]],

@@ -761,7 +761,8 @@ def merge(config: Config, params: Json) -> Row:
     """One module's units into one source file named by the module: refused with the hard findings of mergecheck
     before any file is touched; otherwise the units' text is merged in link order (see `unbake.merge`), the units are
     deleted, the files staged, sync run and, with `prove`, every ROM compared once. Type conflicts the text cannot
-    settle are returned as `conflicts`, and `prove` is then refused."""
+    settle are returned as `conflicts`, and `prove` is then refused; prototypes dropped for a differing earlier
+    definition are returned as `retyped`."""
     with effort.stage("layout.merge"):
         module = params.get("module")
         if not module:
@@ -771,12 +772,7 @@ def merge(config: Config, params: Json) -> Row:
         if not found:
             raise _refuse(f"{module} has fewer than two units in the module map")
         root = config.project.root
-        first: dict[str, int] = {}
-        for seq in seqs.values():
-            for at, row in enumerate(seq):
-                if row["k"] == "entry" and row.get("n", 0) > 0:
-                    first.setdefault(row["u"], at)
-        units = sorted((u for u, m in rows if m == module), key=lambda u: first.get(u, len(first)))
+        units = merging.code_order([u for u, m in rows if m == module], seqs)
         missing = [u for u in units if not (root / u).is_file()]
         if missing:
             raise _refuse(f"{len(missing)} units of {module} are not in the tree", missing=tuple(missing[:20]))
@@ -820,6 +816,7 @@ def merge(config: Config, params: Json) -> Row:
             "pads": merged["pads"],
             "dropped": merged["dropped"],
             "conflicts": report,
+            "retyped": merged["retyped"],
             "written": repo.sync(loaded, {})["written"],
         }
         if params.get("prove"):

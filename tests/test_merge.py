@@ -113,7 +113,7 @@ def test_declarations_are_checked_against_the_included_headers_followed_through_
     two = "extern u32 D_1[4];\nextern u16 count;\nvoid f(char a);\nvoid use(void) { f(1); }\n"
     out = merge.merge([("one.c", one), ("two.c", two)], never, HEADERS.get)
     kinds = sorted((c["kind"], c["name"]) for c in out["conflicts"])
-    assert kinds == [("extern", "count"), ("proto", "f")]
+    assert kinds == [("extern", "count")]
     assert "extern u32 D_1[4];" not in out["text"]
 
 
@@ -128,3 +128,38 @@ def test_a_header_whose_declarations_stand_inside_a_second_include_guard_is_stil
     headers = {"g.h": guard.format("struct T;\n" + inner)}
     out = merge.merge([("one.c", '#include "g.h"\n'), ("two.c", "extern void f(void *a);\n")], never, headers.get)
     assert [(c["kind"], c["name"]) for c in out["conflicts"]] == [("proto", "f")]
+
+
+def test_a_prototype_after_a_definition_of_another_type_gives_way_and_is_listed() -> None:
+    one = "void f(int a) { }\n"
+    two = "void f(char *a);\nvoid use(void) { f(0); }\n"
+    out = merge.merge([("one.c", one), ("two.c", two)], never)
+    assert out["conflicts"] == [] and "void f(char *a);" not in out["text"]
+    assert len(out["retyped"]) == 1 and out["retyped"][0].startswith("f:")
+
+
+def test_a_prototype_before_its_definition_of_another_type_is_still_a_conflict() -> None:
+    out = merge.merge([("one.c", "void f(char *a);\n"), ("two.c", "void f(int a) { }\n")], never)
+    assert [(c["kind"], c["name"]) for c in out["conflicts"]] == [("proto", "f")] and out["retyped"] == []
+
+
+def test_typedef_names_and_their_types_read_alike_and_an_empty_parameter_list_matches_any() -> None:
+    one = "typedef unsigned int u32;\ntypedef int s32;\ntypedef float f32;\nextern f32 D_1;\nu32 f(s32 a);\nint g();\n"
+    two = "extern float D_1;\nunsigned int f(int a) { }\nint g(void *p) { }\n"
+    out = merge.merge([("one.c", one), ("two.c", two)], never)
+    assert out["conflicts"] == [] and out["dropped"] == 3
+
+
+def test_typedefs_of_included_headers_count_and_unlike_types_still_conflict() -> None:
+    headers = {"t.h": "typedef unsigned short u16;\ntypedef struct Tag { int x; } Named;\n"}
+    one = '#include "t.h"\nextern u16 D_1;\nextern Named D_2;\nextern u16 D_3;\n'
+    two = "extern unsigned short D_1;\nextern struct Tag D_2;\nextern unsigned char D_3;\n"
+    out = merge.merge([("one.c", one), ("two.c", two)], never, headers.get)
+    assert [(c["kind"], c["name"]) for c in out["conflicts"]] == [("extern", "D_3")]
+
+
+def test_names_that_disagree_the_same_way_are_one_finding_listing_them() -> None:
+    one = "".join(f"extern float K_{i};\n" for i in range(3))
+    two = "".join(f"extern int K_{i};\n" for i in range(3))
+    out = merge.merge([("one.c", one), ("two.c", two)], never)
+    assert len(out["conflicts"]) == 1 and out["conflicts"][0]["name"] == "K_0..K_2 (3 names)"
