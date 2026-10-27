@@ -22,6 +22,9 @@ merge   `--module M --modules MAP`: the units of M in link order become one sour
 collapse  the version branches of each source file that differ only by the names they define become one definition
         (collapse.py); the other names of a version go to its aliases.txt; `--file F` limits it to one file; `--prove`
         builds and compares every ROM once.
+pads    the all-zero data a version carries between two tables, which the layout places by ROM offset, is dropped from
+        the source (pads.py); the blocks it must keep are listed with the reason; `--file F` limits it; `--prove`
+        builds and compares every ROM once.
 verify  compares the objects of a build made before the move with the build after it, through the map, and the link
         script of both.
 Everything about one project's folders is in its rules file; this module names no folder."""
@@ -47,6 +50,7 @@ from unbake import config as configuration
 from unbake import effort, hoist, process, repo, store, symbols
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
+from unbake import pads as padding
 from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
 
 Row = dict[str, Any]
@@ -849,6 +853,48 @@ def collapse(config: Config, params: Json) -> Row:
         return out
 
 
+def pads(config: Config, params: Json) -> Row:
+    """Each source file's version-gated all-zero data blocks whose names are symbol rows are removed: the layout places
+    the file's data at the ROM offset of its first remaining name, so the gap keeps the zeros (see `unbake.pads`).
+    Held blocks are returned with the reason; nothing is touched for them."""
+    with effort.stage("layout.pads"):
+        root = config.project.root
+        versions = list(config.project.versions)
+        only = params.get("file")
+        tracked = [
+            t
+            for t in _tracked(config)
+            if Path(t).suffix.lower() in hoist.SOURCE_SUFFIXES and (not only or t == posixpath.normpath(str(only)))
+        ]
+        if only and not tracked:
+            raise _refuse(f"pads: {only} is not a tracked source file")
+        known = {v: set(symbols.load(config, v)) for v in versions}
+        written: list[str] = []
+        blocks = 0
+        held: list[Row] = []
+        for path in tracked:
+            text = (root / path).read_text(errors="surrogateescape")
+            if "VERSION_" not in text:
+                continue
+            done = padding.pads(text, versions, known)
+            held += [{"file": path, **h} for h in done.held]
+            if not done.removed:
+                continue
+            blocks += len(done.removed)
+            written.append(path)
+            store.write(root / path, done.text.encode(errors="surrogateescape"))
+        out = {
+            "action": "pads",
+            "blocks_removed": blocks,
+            "held": held,
+            "written": written,
+            "next": "git add -A; unbake sync --check; make check",
+        }
+        if params.get("prove"):
+            out.update(prove(config, params))
+        return out
+
+
 def mergecheck(config: Config, params: Json) -> Row:
     """Which modules of a module map may become one source file and which must stay separate files, from the link
     order and the built objects of every version (`ld` and `obj` are patterns over {version} and {unit})."""
@@ -934,7 +980,7 @@ def merge(config: Config, params: Json) -> Row:
 
 
 def run(config: Config, params: Json) -> Row:
-    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, header, mergecheck, merge or collapse."""
+    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, header, mergecheck, merge, collapse, pads"""
     actions = {
         "plan": plan,
         "apply": apply,
@@ -946,6 +992,7 @@ def run(config: Config, params: Json) -> Row:
         "mergecheck": mergecheck,
         "merge": merge,
         "collapse": collapse,
+        "pads": pads,
     }
     action = params["action"]
     if action not in actions:

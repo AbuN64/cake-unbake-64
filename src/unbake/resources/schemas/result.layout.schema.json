@@ -16,6 +16,7 @@
     "reorg",
     "header",
     "collapse",
+    "pads",
     "mergecheck"
    ]
   },

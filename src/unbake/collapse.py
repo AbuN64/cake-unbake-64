@@ -24,9 +24,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 _TOKEN = re.compile(r"(\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')|/\*.*?\*/|//[^\n]*", re.S)
-_OPEN = re.compile(r"[ \t]*#[ \t]*(if|ifdef|ifndef)\b(.*)")
-_MID = re.compile(r"[ \t]*#[ \t]*(else|elif)\b")
-_END = re.compile(r"[ \t]*#[ \t]*endif\b")
+OPEN = re.compile(r"[ \t]*#[ \t]*(if|ifdef|ifndef)\b(.*)")
+MID = re.compile(r"[ \t]*#[ \t]*(else|elif)\b")
+END = re.compile(r"[ \t]*#[ \t]*endif\b")
 _GUARD = re.compile(r"\s*(defined\s*\(\s*VERSION_(\w+)\s*\)|defined\s+VERSION_(\w+)|[()!]|&&|\|\|)")
 _NAME = re.compile(r"[A-Za-z_]\w*")
 _TOKEN_OR_NAME = re.compile(r"(\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')|[A-Za-z_]\w*")
@@ -149,7 +149,7 @@ def blocks(lines: Sequence[str], versions: Sequence[str]) -> list[Block]:
     i = 0
     clean = [mask(line) for line in lines]  # block comments spanning lines are rare in these files; masked per line
     while i < len(lines):
-        found = _OPEN.match(lines[i])
+        found = OPEN.match(lines[i])
         if found is None or braces != 0:
             braces += clean[i].count("{") - clean[i].count("}")
             i += 1
@@ -158,12 +158,12 @@ def blocks(lines: Sequence[str], versions: Sequence[str]) -> list[Block]:
         j = i + 1
         simple = True
         while j < len(lines) and depth:
-            if _OPEN.match(lines[j]):
+            if OPEN.match(lines[j]):
                 depth += 1
                 simple = False
-            elif _END.match(lines[j]):
+            elif END.match(lines[j]):
                 depth -= 1
-            elif _MID.match(lines[j]) and depth == 1:
+            elif MID.match(lines[j]) and depth == 1:
                 simple = False
             j += 1
         if depth:
