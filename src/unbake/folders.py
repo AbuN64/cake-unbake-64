@@ -14,6 +14,9 @@ reorg   the one-command form: plan from a `--map` file (old path, new path per l
         every `#include` of a moved header (and the relative includes of moved files), and with `--prove` run
         `make check` once so every ROM is compared after the single move.
 mergecheck  reads a module map (unit, module) and the built objects and says which merges must stay separate files.
+merge   `--module M --modules MAP`: the units of M in link order become one source file named M (pad arrays the
+        alignment reproduces and redundant prototypes dropped, includes hoisted and deduped); refused when mergecheck
+        says M must stay separate; the type conflicts left are listed; `--prove` builds and compares every ROM once.
 verify  compares the objects of a build made before the move with the build after it, through the map, and the link
         script of both.
 Everything about one project's folders is in its rules file; this module names no folder."""
@@ -36,6 +39,7 @@ from elftools.elf.elffile import ELFFile
 
 from unbake import config as configuration
 from unbake import effort, process, repo, store
+from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
 
@@ -712,38 +716,123 @@ def reorg(config: Config, params: Json) -> Row:
         return out
 
 
+Facts = tuple[list[tuple[str, str]], dict[str, list[Row]], dict[str, set[str]]]
+
+
+def _module_facts(config: Config, params: Json) -> Facts:
+    path = params.get("modules")
+    if not path:
+        raise _refuse("needs --modules FILE (a TSV with `unit` and `module` columns)")
+    try:
+        rows = merging.read_modules(Path(path).read_text())
+        seqs, statics = merging.facts_of(
+            config.project.root,
+            config.project.versions,
+            params.get("ld") or "build/{version}/link.ld",
+            params.get("obj") or "build/{version}/{unit}.o",
+        )
+    except (OSError, ValueError) as error:
+        raise _refuse(f"cannot read the module facts: {error}") from error
+    return rows, seqs, statics
+
+
+def _verdicts(config: Config, params: Json) -> tuple[list[Row], list[tuple[str, str]], dict[str, list[Row]]]:
+    rows, seqs, statics = _module_facts(config, params)
+
+    def identity(unit: str) -> Any:
+        if unit.lower().endswith(".s"):
+            return "assembler"
+        row = file_facts(config.project, unit)
+        return (row.toolchain or config.project.toolchain, tuple(sorted(row.cflags)), tuple(sorted(row.omit)))
+
+    return merging.verdicts(rows, seqs, statics, identity), rows, seqs
+
+
 def mergecheck(config: Config, params: Json) -> Row:
     """Which modules of a module map may become one source file and which must stay separate files, from the link
     order and the built objects of every version (`ld` and `obj` are patterns over {version} and {unit})."""
     with effort.stage("layout.mergecheck"):
-        path = params.get("modules")
-        if not path:
-            raise _refuse("mergecheck needs --modules FILE (a TSV with `unit` and `module` columns)")
-        root = config.project.root
-        try:
-            rows = merging.read_modules(Path(path).read_text())
-            seqs, statics = merging.facts_of(
-                root,
-                config.project.versions,
-                params.get("ld") or "build/{version}/link.ld",
-                params.get("obj") or "build/{version}/{unit}.o",
-            )
-        except (OSError, ValueError) as error:
-            raise _refuse(f"mergecheck: {error}") from error
-
-        def identity(unit: str) -> Any:
-            if unit.lower().endswith(".s"):
-                return "assembler"
-            row = file_facts(config.project, unit)
-            return (row.toolchain or config.project.toolchain, tuple(sorted(row.cflags)), tuple(sorted(row.omit)))
-
-        modules = merging.verdicts(rows, seqs, statics, identity)
+        modules = _verdicts(config, params)[0]
         separate = sum(1 for m in modules if m["verdict"] == "separate")
         return {"action": "mergecheck", "modules": modules, "separate": separate, "mergeable": len(modules) - separate}
 
 
+def merge(config: Config, params: Json) -> Row:
+    """One module's units into one source file named by the module: refused with the hard findings of mergecheck
+    before any file is touched; otherwise the units' text is merged in link order (see `unbake.merge`), the units are
+    deleted, the files staged, sync run and, with `prove`, every ROM compared once. Type conflicts the text cannot
+    settle are returned as `conflicts`, and `prove` is then refused."""
+    with effort.stage("layout.merge"):
+        module = params.get("module")
+        if not module:
+            raise _refuse("merge needs --module NAME (a module of the --modules map)")
+        verdicts, rows, seqs = _verdicts(config, params)
+        found = [v for v in verdicts if v["module"] == module]
+        if not found:
+            raise _refuse(f"{module} has fewer than two units in the module map")
+        root = config.project.root
+        first: dict[str, int] = {}
+        for seq in seqs.values():
+            for at, row in enumerate(seq):
+                if row["k"] == "entry" and row.get("n", 0) > 0:
+                    first.setdefault(row["u"], at)
+        units = sorted((u for u, m in rows if m == module), key=lambda u: first.get(u, len(first)))
+        missing = [u for u in units if not (root / u).is_file()]
+        if missing:
+            raise _refuse(f"{len(missing)} units of {module} are not in the tree", missing=tuple(missing[:20]))
+        obj = params.get("obj") or "build/{version}/{unit}.o"
+
+        def droppable(unit: str, symbol: str, size: int, const: bool) -> bool:
+            seen = [
+                merging.fills(root / obj.format(version=v, unit=unit), symbol)
+                for v in config.project.versions
+                if (root / obj.format(version=v, unit=unit)).is_file()
+            ]
+            return any(s is not None for s in seen) and all(s is not False for s in seen)
+
+        def header(name: str) -> str | None:
+            for base in (root / "include", (root / module).parent):
+                if (base / name).is_file():
+                    return (base / name).read_text(errors="replace")
+            return None
+
+        merged = unitmerge.merge([(u, (root / u).read_text()) for u in units], droppable, header)
+        report = [f"{c['kind']} {c['name']}: {c['detail']}" for c in merged["conflicts"]]
+        if found[0]["hard"]:
+            raise _refuse(
+                f"{module} must stay separate files: {found[0]['hard'][0]}",
+                missing=tuple(found[0]["hard"][:5] + report[:40]),
+            )
+        for unit in units:
+            if unit != module:
+                (root / unit).unlink()
+        store.write(root / module, merged["text"].encode())
+        _git(config, "add", "-A", "--", module, *units)
+        tracked = sorted(set(_tracked(config)) | {module})
+        project = configuration.load_project(root, lambda path: (root / path).read_bytes(), lambda: tracked)
+        effort.forget("pin", "includes", "closure", "listing")
+        loaded = Config(project, config.host, digest((project.digest, config.host.digest)))
+        out: Row = {
+            "action": "merge",
+            "module": module,
+            "units": len(units),
+            "includes": merged["includes"],
+            "pads": merged["pads"],
+            "dropped": merged["dropped"],
+            "conflicts": report,
+            "written": repo.sync(loaded, {})["written"],
+        }
+        if params.get("prove"):
+            if report:
+                raise _refuse(
+                    f"{len(report)} type conflicts to settle before the ROMs can be built", missing=tuple(report[:20])
+                )
+            out.update(prove(loaded, params))
+        return out
+
+
 def run(config: Config, params: Json) -> Row:
-    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg or mergecheck."""
+    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, mergecheck or merge."""
     actions = {
         "plan": plan,
         "apply": apply,
@@ -752,6 +841,7 @@ def run(config: Config, params: Json) -> Row:
         "verify": verify,
         "reorg": reorg,
         "mergecheck": mergecheck,
+        "merge": merge,
     }
     action = params["action"]
     if action not in actions:

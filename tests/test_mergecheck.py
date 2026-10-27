@@ -101,3 +101,52 @@ def test_a_module_map_needs_unit_and_module_columns() -> None:
     assert mergecheck.read_modules("module\tunit\tx\nM\ta\t1\n# c\n\nM\tb\t2\n") == [("a", "M"), ("b", "M")]
     with pytest.raises(ValueError):
         mergecheck.read_modules("a\tb\n1\t2\n")
+
+
+def piece(size: int, align: int) -> list[tuple[int, int]]:
+    return [(size, align)]
+
+
+def with_parts(row: dict[str, Any], **parts: list[tuple[int, int]]) -> dict[str, Any]:
+    return {**row, "parts": parts}
+
+
+def test_pieces_that_pack_longer_in_one_object_are_a_hard_lma_finding() -> None:
+    rows = [("a", "M"), ("b", "M")]
+    seq = [
+        with_parts(entry("a", "rodata", 2, ".rodata"), rodata=piece(1, 1), data=piece(1, 1)),
+        with_parts(entry("b", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
+    ]
+    out = run(rows, seq)["M"]
+    assert out["verdict"] == "separate"
+    assert out["hard"] == ["lma: us .rodata merged 9 B against linked 8 B: overlaps the next section"]
+
+
+def test_an_align_directive_the_merged_object_lacks_is_a_hard_lma_gap() -> None:
+    rows = [("a", "M"), ("b", "M")]
+    seq = [
+        with_parts(entry("a", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
+        align(8),
+        with_parts(entry("b", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
+    ]
+    gap = "lma: us .rodata merged 8 B against linked 12 B: leaves a gap before the next section"
+    assert run(rows, seq)["M"]["hard"] == [gap]
+
+
+def test_pieces_that_pack_the_same_merge() -> None:
+    rows = [("a", "M"), ("b", "M")]
+    seq = [
+        with_parts(entry("a", "rodata", 8, ".rodata"), rodata=piece(8, 8)),
+        with_parts(entry("b", "rodata", 8, ".rodata"), rodata=piece(8, 8)),
+    ]
+    assert run(rows, seq)["M"]["verdict"] == "merge"
+
+
+def test_spans_count_align_directives_and_other_modules_between_the_first_and_last_unit() -> None:
+    seq = [
+        with_parts(entry("a", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
+        align(8),
+        with_parts(entry("x", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
+        with_parts(entry("b", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
+    ]
+    assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 16, 8)]
