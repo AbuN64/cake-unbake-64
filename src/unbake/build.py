@@ -146,7 +146,7 @@ def _flags(row: Json, config: Config, added: Sequence[str] = (), omit: Sequence[
 
 def _recipe(id: str) -> str:
     """The commands that turn one source into an object with a toolchain, spelled in make variables: PREPROCESS_<id>
-    writes the preprocessed text next to the object's .i (the rule keeps the .i when the bytes are the same), and
+    makes the stamp `.i.ok` whole, the text beside it in `.i` (kept when its compile key is the same), and
     COMPILE_<id> turns that .i into the object, as one shell command (the object rule runs it only when the .i or
     another input changed)."""
     row, key = configuration.toolchain(id), _key(id)
@@ -154,16 +154,20 @@ def _recipe(id: str) -> str:
     values = {
         **{k: [v] for k, v in _MAKE.items()},
         "cc": [f"$(CC_{key})"],
-        "cpp": ["$(PPFRONT) $(CPP)"],  # PPFRONT (local.mk): the cached preprocessor front, empty without a cache
+        "cpp": [
+            "$(PPUNIT) $@ $(call shq,$(PP_FLAGS)) $(HDRKEY) $(STAMPREC) $(CPP)"
+        ],  # PPUNIT (local.mk): the whole stamp recipe, one process
         "as": [f"$(AS_{key})"],
         # -MP: a phony rule per header, so a header a later commit deletes never stops an incremental build
         "cppflags": ["$(CPPFLAGS) -MMD -MP -MF $(@:.i.ok=.d) -MT $@"],
-        "codegen": ["$(CFLAGS)" + (" $(if $(FSPLIT)," + row["function_sections"] + ")" if "function_sections" in row else "")],
+        "codegen": [
+            "$(CFLAGS)" + (" $(if $(FSPLIT)," + row["function_sections"] + ")" if "function_sections" in row else "")
+        ],
         "asflags": ["$(ASFLAGS) $(ASINC)"],
         "defines": ["$(DEFINES)"],
         "includes": ["$(INCLUDES)"],
     }
-    preprocess = _shell(adapters.render(row["preprocess"], {**values, "source": ["$<"]})) + " > $(@:.ok=.new)"
+    preprocess = _shell(adapters.render(row["preprocess"], {**values, "source": ["$<"]}))
     lines = [_shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]}))]
     if row["emits_asm"]:
         keep = "$(@:.o=.s.prev)"
@@ -190,7 +194,7 @@ def _recipe(id: str) -> str:
                 ("{as}", "{asflags}", "{source}", "-o", "{out}"), {**values, "source": [split], "out": ["$@"]}
             )
             apart = f'{_shell(front)} > {norm} && python3 -I -c "$$FSPLIT_PASS" {norm} {split} && {_shell(plain)}'
-            assemble = [f"if [ -n \"$(FSPLIT)\" ]; then {apart}; else {assemble[0]}; fi"]
+            assemble = [f'if [ -n "$(FSPLIT)" ]; then {apart}; else {assemble[0]}; fi']
         if row.get("rdata_alloc"):
             assemble.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
         # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
@@ -697,8 +701,14 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     rows = [row[:3] for row in named_rows]
     named = {(path, section) for _, path, section in rows}
     doubled = _doubled(config, held, v, piece)
-    apart = _apart_paths(config, held, v) if "function_sections" in configuration.toolchain(config.project.toolchain) else set()
-    items: list[tuple[str, str, int | None, bool]] = []  # (path, section, offset, whether the section is one function's)
+    apart = (
+        _apart_paths(config, held, v)
+        if "function_sections" in configuration.toolchain(config.project.toolchain)
+        else set()
+    )
+    items: list[
+        tuple[str, str, int | None, bool]
+    ] = []  # (path, section, offset, whether the section is one function's)
     start, _, _ = _piece(config, v, piece)
     code = _functions(config, held, v, apart)
     pools = {name for _, path, section, name in named_rows if path in apart and section == ".rodata"}
@@ -708,7 +718,9 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
             # an object with a section per function: each at the offset its ROM address gives in the piece
             items.append((path, f".text.{name}", rom - start, True))
         elif path in apart and section == ".rodata":
-            items.append((path, _covered(code.get(path, ()), pools, name), rom - start, True))  # each block where its row lies
+            items.append(
+                (path, _covered(code.get(path, ()), pools, name), rom - start, True)
+            )  # each block where its row lies
         elif (path, section) not in seen:
             seen.add((path, section))
             items.append((path, section, rom - start if rom > start else None, False))
@@ -1028,21 +1040,20 @@ def _cached_cc(config: Config, compiler: Path) -> str:
     return " ".join(shlex.quote(str(p)) for p in ("sh", script, cache, compiler))
 
 
-def _preprocess_front(config: Config) -> str:
-    """The command that puts a preprocessor behind cc_cache.py's `--preprocess`, in the same cache as the compiler, so
-    a source whose included files did not move is not preprocessed again for another version or tree."""
+def _preprocess_unit(config: Config) -> str:
+    """The command that makes a whole `.i.ok` stamp (cc_cache.py's `--unit`) in one process, its preprocessor behind the
+    same cache as the compiler, so a source whose included files did not move is not preprocessed again for another
+    version or tree. The cache is empty on a host without one."""
     cache = front.cache(config.host)
-    if cache is None:
-        return ""
     script = _stable(Path(__file__).parent / "resources" / "cc_cache.py")
-    return " ".join(["python3", "-I", "-S", *(shlex.quote(str(p)) for p in (script, "--preprocess", cache))])
+    return " ".join(["python3", "-I", "-S", *(shlex.quote(str(p)) for p in (script, "--unit", cache or ""))])
 
 
 def local_mk(config: Config) -> bytes:
     with effort.stage("build.local_mk"):
         assignments = [
             f"JOBS := {config.host.workers}",
-            f"PPFRONT := {_preprocess_front(config)}",
+            f"PPUNIT := {_preprocess_unit(config)}",
             *(
                 f"{var} := {_stable(config.host.tools[row['host']]) if row['host'] in config.host.tools else ''}"
                 for var, row in sorted(_REPO["make"]["tools"].items())

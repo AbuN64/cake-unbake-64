@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,9 +13,16 @@ import pytest
 
 from unbake import adapters, build
 from unbake.contracts import FileFacts, Refusal, Segment
+from unbake.resources import cc_cache
 from unbake.tree import Module, Tree
 
 SHA = {"us": "a" * 40, "eu-1": "b" * 40}
+
+
+def _pp(variable: str, command: str) -> str:
+    """A make override that preprocesses with `command` as the real recipe does: the stamp's one process."""
+    unit = f"{sys.executable} -I -S {Path(cc_cache.__file__)} --unit ''"
+    return f"{variable}=@{unit} $@ $(call shq,$(PP_FLAGS)) $(HDRKEY) $(STAMPREC) {command}"
 
 
 def segments(version: str) -> tuple[Segment, ...]:
@@ -75,7 +83,9 @@ def per_object(monkeypatch):
 def no_apart(monkeypatch):
     """A toolchain row without function_sections: an object is one `.text` and one `.rodata`, whatever the ROM does."""
     real = build.configuration.toolchain
-    monkeypatch.setattr(build.configuration, "toolchain", lambda id: {k: v for k, v in real(id).items() if k != "function_sections"})
+    monkeypatch.setattr(
+        build.configuration, "toolchain", lambda id: {k: v for k, v in real(id).items() if k != "function_sections"}
+    )
 
 
 def both(path: str, *names: str, sections: dict[str, str] | None = None) -> Module:
@@ -144,7 +154,10 @@ def test_file_absent_in_one_version_is_grouped_under_if(tmp_path):
     text = build.linker(make_config(tmp_path), tree).decode()
     text_pass = text.split("    {\n", 1)[1].split("    }\n", 1)[0]
     assert text_pass.count("#if defined(VERSION_US)") == 1  # b and c share one block
-    assert "#if defined(VERSION_EU_1)\n        . = MAX(., 0x40);\n        src/d.c.o(.text);\n        src/d.c.o(.rodata .rdata);\n#endif" in text
+    assert (
+        "#if defined(VERSION_EU_1)\n        . = MAX(., 0x40);\n        src/d.c.o(.text);\n        src/d.c.o(.rodata .rdata);\n#endif"
+        in text
+    )
 
 
 @pytest.mark.usefixtures("per_object")
@@ -501,13 +514,16 @@ def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_pat
         both("src/d.c", "f_6"),
         both("src/e.s", "f_8"),
     )
-    assert build.text_sizes(make_config(tmp_path), tree, "us").decode().splitlines()[1:] == [
-        "build/us/src/a.c.o: TEXTSIZE := 0x20",
-        "build/us/src/b.c.o: TEXTSIZE := 0x10",
-        "build/us/src/d.c.o: TEXTSIZE := 0x10",
-        "build/us/src/e.s.o: TEXTSIZE := 0xF80",  # the code segment ends where the next one starts
-        "build/us/src/c.c.o: FSPLIT := fsplit",  # d's code lies between c's two functions: c is placed function by function
-    ]
+    assert (
+        build.text_sizes(make_config(tmp_path), tree, "us").decode().splitlines()[1:]
+        == [
+            "build/us/src/a.c.o: TEXTSIZE := 0x20",
+            "build/us/src/b.c.o: TEXTSIZE := 0x10",
+            "build/us/src/d.c.o: TEXTSIZE := 0x10",
+            "build/us/src/e.s.o: TEXTSIZE := 0xF80",  # the code segment ends where the next one starts
+            "build/us/src/c.c.o: FSPLIT := fsplit",  # d's code lies between c's two functions: c is placed function by function
+        ]
+    )
     assert "src/e.s" not in build.text_sizes(make_config(tmp_path), tree, "eu-1").decode()  # the last segment
 
 
@@ -602,7 +618,7 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
                 "STAMPS=",
                 "TC=stub",
                 f"AS={sys.executable} {compiler}",
-                "PREPROCESS_stub=@cp $< $(@:.ok=.new)",
+                _pp("PREPROCESS_stub", "cat $<"),
                 "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
             ],
@@ -639,7 +655,7 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
     pre.write_text(
         "from pathlib import Path\nimport sys\n"
         "text = Path(sys.argv[1]).read_text().splitlines(keepends=True)\n"
-        "Path(sys.argv[2]).write_text(''.join(t for t in text if not t.startswith('//')))\n"
+        "sys.stdout.write(''.join(t for t in text if not t.startswith('//')))\n"
         "with Path('preprocessed').open('a') as log: log.write(sys.argv[1] + '\\n')\n"
     )
     compiler = tmp_path / "compiler.py"
@@ -662,7 +678,7 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
                 "STAMPS=",
                 "TC=stub",
                 f"AS={sys.executable} {compiler}",
-                f"PREPROCESS_stub=@{sys.executable} {pre} $< $(@:.ok=.new)",
+                _pp("PREPROCESS_stub", f"{sys.executable} {pre} $<"),
                 "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
             ],
@@ -825,7 +841,7 @@ def test_an_object_follows_the_extracted_files_its_include_lines_name(tmp_path):
                 "STAMPS=",
                 "TC=stub",
                 f"AS={sys.executable} {compiler}",
-                "PREPROCESS_stub=@cp $< $(@:.ok=.new)",
+                _pp("PREPROCESS_stub", "cat $<"),
                 "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
             ],
@@ -1258,7 +1274,9 @@ def test_a_literals_row_on_an_8_byte_boundary_asks_the_linker_for_that_alignment
 
 
 @pytest.mark.usefixtures("no_apart")
-def test_literals_after_other_files_data_apart_from_their_file_are_refused_where_the_toolchain_cannot_place_apart(tmp_path):
+def test_literals_after_other_files_data_apart_from_their_file_are_refused_where_the_toolchain_cannot_place_apart(
+    tmp_path,
+):
     tree = make_tree(
         both("src/a.c", "f_1", "d_2", "literals_f_5", sections={"d_2": ".rodata", "literals_f_5": ".rodata"}),
         both("src/b.c", "f_3", "d_4", sections={"d_4": ".rodata"}),
@@ -1445,7 +1463,7 @@ def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_fa
             "build/us/src/a.c.o",
             "STAMPS=",
             "TC=gcc_2_8_1_sn64",
-            "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+            _pp("PREPROCESS_gcc_2_8_1_sn64", "cat $<"),
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -1466,7 +1484,7 @@ def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_fa
             "build/us/src/a.c.o",
             "STAMPS=",
             "TC=gcc_2_8_1_sn64",
-            "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+            _pp("PREPROCESS_gcc_2_8_1_sn64", "cat $<"),
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -1515,7 +1533,7 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
                 *targets,
                 "STAMPS=",
                 "TC=gcc_2_8_1_sn64",
-                "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)",
+                _pp("PREPROCESS_gcc_2_8_1_sn64", "cat $<"),
                 f"CC_gcc_2_8_1_sn64={sys.executable} {cc}",
                 f"N64LINK={sys.executable} {asm}",
                 "OBJCOPY=true",
@@ -1842,9 +1860,19 @@ def _merged_unit() -> Tree:
 
 
 def test_a_file_with_the_pools_of_several_functions_is_built_apart_and_the_others_are_not(tmp_path):
-    rows = [(0x10, "src/a.c", ".rodata", "literals_f_1"), (0x20, "src/a.c", ".rodata", "literals_f_2"), (0x30, "src/b.c", ".rodata", "literals_f_5")]
+    rows = [
+        (0x10, "src/a.c", ".rodata", "literals_f_1"),
+        (0x20, "src/a.c", ".rodata", "literals_f_2"),
+        (0x30, "src/b.c", ".rodata", "literals_f_5"),
+    ]
     assert build._merged(rows) == {"src/a.c"}
-    scattered = [(1, "x.c", ".text"), (2, "y.c", ".text"), (3, "x.c", ".text"), (4, "z.c", ".text"), (5, "z.c", ".rodata")]
+    scattered = [
+        (1, "x.c", ".text"),
+        (2, "y.c", ".text"),
+        (3, "x.c", ".text"),
+        (4, "z.c", ".text"),
+        (5, "z.c", ".rodata"),
+    ]
     assert build._scattered(scattered) == {"x.c"}
     assert build._apart_paths(make_config(tmp_path), _merged_unit(), "us") == {"src/a.c"}
 
@@ -1853,8 +1881,12 @@ def test_text_sizes_mark_the_apart_object_to_be_built_with_a_section_per_functio
     config = make_config(tmp_path)
     assert "build/us/src/a.c.o: FSPLIT := fsplit" in build.text_sizes(config, _merged_unit(), "us").decode()
     real = build.configuration.toolchain
-    monkeypatch.setattr(build.configuration, "toolchain", lambda id: {k: v for k, v in real(id).items() if k != "function_sections"})
-    assert "FSPLIT" not in build.text_sizes(config, _merged_unit(), "us").decode()  # a toolchain that cannot, is not asked
+    monkeypatch.setattr(
+        build.configuration, "toolchain", lambda id: {k: v for k, v in real(id).items() if k != "function_sections"}
+    )
+    assert (
+        "FSPLIT" not in build.text_sizes(config, _merged_unit(), "us").decode()
+    )  # a toolchain that cannot, is not asked
 
 
 def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom_address(tmp_path):
@@ -1878,7 +1910,9 @@ def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom
 
 
 def test_every_object_is_placed_at_the_offset_of_its_first_row_so_a_dropped_gap_stays_zeros(tmp_path):
-    tree = make_tree(both("src/a.c", "f_1", "f_2"), both("src/b.c", "f_4"))  # rows are 0x10 long: 0x30 is owned by no file
+    tree = make_tree(
+        both("src/a.c", "f_1", "f_2"), both("src/b.c", "f_4")
+    )  # rows are 0x10 long: 0x30 is owned by no file
     text = build.linker(make_config(tmp_path), tree).decode()
     body = [l.strip() for l in text.splitlines() if l.strip().startswith(("src/", ". = ")) and ".bss" not in l]
     assert body[:4] == [". = MAX(., 0x10);", "src/a.c.o(.text);", ". = MAX(., 0x40);", "src/b.c.o(.text);"]
@@ -1889,7 +1923,10 @@ def test_a_function_with_no_pool_row_of_its_own_has_its_pool_kept_with_the_funct
     assert build._covered(functions, rows, "literals_f_1") == ".rodata.literals_f_1 .rodata.literals_f_2"
     assert build._covered(functions, rows, "literals_f_3") == ".rodata.literals_f_3"
     rows = {"literals_f_1"}
-    assert build._covered(functions, rows, "literals_f_1") == ".rodata.literals_f_1 .rodata.literals_f_2 .rodata.literals_f_3"
+    assert (
+        build._covered(functions, rows, "literals_f_1")
+        == ".rodata.literals_f_1 .rodata.literals_f_2 .rodata.literals_f_3"
+    )
     assert build._covered(functions, rows, "d_9") == ".rodata.d_9"  # not a pool: its own section
 
 
@@ -1910,6 +1947,11 @@ def test_fsplit_pass_gives_each_function_and_each_read_only_block_a_section_of_i
         '.section .rdata\n.align 2\n.LC0:\n.word 2\n.section .f_2,"ax"\nf_2:\n jr $31\n',
     )  # fmt: skip
     sections = [line.split("\t", 1)[1] for line in out if line.startswith(".section")]
-    assert sections == ['.text.f_1,"ax",@progbits', '.rdata.D_blob_1,"a",@progbits', '.rdata.literals_f_1,"a",@progbits', '.text.f_2,"ax",@progbits']
+    assert sections == [
+        '.text.f_1,"ax",@progbits',
+        '.rdata.D_blob_1,"a",@progbits',
+        '.rdata.literals_f_1,"a",@progbits',
+        '.text.f_2,"ax",@progbits',
+    ]
     assert "\t.set __align8_D_blob_1, 0" in out  # a block aligned to 8 says so (SUBALIGN(1) drops the section's)
     assert not any("__align8_literals_f_1" in line for line in out)

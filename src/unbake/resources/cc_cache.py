@@ -7,10 +7,10 @@ result under a hash of (compiler identity, every argument, the exact bytes of th
 assembly instead of compiling it again. A miss runs the compiler and stores the result; anything the front cannot
 parse (no -o, no input file) runs the compiler as given.
 
-The same front answers the preprocessor (`--preprocess`): one source under the same arguments preprocesses to the
-same text while every file it included has the bytes it had. An entry keeps the text, the dependency file and the
-hash of each included file; a hit reads those files again and compares them, so the versions of a unit and every
-tree preprocess it once while nothing it includes moved.
+The same cache answers the preprocessor (`--unit`, the whole `X.i.ok` recipe in one process): one source under the
+same arguments preprocesses to the same text while every file it included has the bytes it had. An entry keeps the
+text, the dependency file and the hash of each included file; a hit reads those files again and compares them, so
+the versions of a unit and every tree preprocess it once while nothing it includes moved.
 
 The key is exact: no "similar" text is ever answered with another text's assembly (10-22: a reuse of the last text for
 texts that only reordered statements served stale assembly, and a stale answer that happens to match passes the ROM
@@ -19,6 +19,8 @@ check). The chunk parser below serves tree.py's parse key, never this cache.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import os
 import sys
 import zlib
@@ -301,6 +303,7 @@ def unpack(data: bytes) -> list[bytes]:
     return parts
 
 
+@functools.cache  # a batch asks for the same preprocessor once per unit: the driver is started once
 def preprocessor_identity(preprocessor: str) -> bytes:
     """The preprocessor as its output can depend on it: the driver and the program it runs (cc1), by path, size and
     date. Not the files beside it: a host cpp lives in /usr/bin."""
@@ -362,21 +365,24 @@ def unchanged(recorded: bytes) -> bool:
     return True
 
 
-def run_preprocess(cache: str, preprocessor: str, args: list[str]) -> int:
-    """Preprocess as `preprocessor args` would: from the cache when this source under these arguments last gave a text
-    whose included files still have their bytes, else run it and keep the result."""
+def preprocess(cache: str, preprocessor: str, args: list[str]) -> tuple[int, bytes, bytes]:
+    """(exit, text, errors) of `preprocessor args`: from the cache when this source under these arguments last gave a
+    text whose included files still have their bytes, else by running it and keeping the result. The dependency file
+    the arguments name is written either way."""
     import subprocess
 
     cache = os.fspath(cache)
-    parsed = preprocess_parse(args)
+    parsed = preprocess_parse(args) if cache else None
+    if parsed is not None:
+        source, depfile = parsed
+        try:
+            head = preprocessor_identity(preprocessor) + b"\0" + "\0".join(args).encode(errors="surrogateescape")
+            name = sha256(b"pp\0" + head + b"\0" + read(source)).hexdigest()
+        except OSError:
+            parsed = None
     if parsed is None:
-        return call(preprocessor, args)
-    source, depfile = parsed
-    try:
-        head = preprocessor_identity(preprocessor) + b"\0" + "\0".join(args).encode(errors="surrogateescape")
-        name = sha256(b"pp\0" + head + b"\0" + read(source)).hexdigest()
-    except OSError:
-        return call(preprocessor, args)
+        made = subprocess.run([preprocessor, *args], capture_output=True, check=False)
+        return made.returncode, made.stdout, made.stderr
     entry = os.path.join(cache, name[:2], name[2:])
     try:
         recorded, made_dep, text, errors = unpack(zlib.decompress(read(entry)))
@@ -385,12 +391,8 @@ def run_preprocess(cache: str, preprocessor: str, args: list[str]) -> int:
     if recorded is not None and unchanged(recorded):
         os.utime(entry)  # a hit keeps it alive
         write(depfile, made_dep)
-        sys.stdout.buffer.write(text)
-        sys.stderr.buffer.write(errors)
-        return 0
+        return 0, text, errors
     made = subprocess.run([preprocessor, *args], capture_output=True, check=False)
-    sys.stdout.buffer.write(made.stdout)
-    sys.stderr.buffer.write(made.stderr)
     if made.returncode == 0:
         try:
             made_dep = read(depfile)
@@ -399,7 +401,129 @@ def run_preprocess(cache: str, preprocessor: str, args: list[str]) -> int:
         except OSError:
             pass
     maybe_prune(cache)
-    return made.returncode
+    return made.returncode, made.stdout, made.stderr
+
+
+def same(a: str, b: str) -> bool:
+    """`cmp -s a b`: both files exist and hold the same bytes."""
+    try:
+        return read(a) == read(b)
+    except OSError:
+        return False
+
+
+def newer(a: str, b: str) -> bool:
+    """`[ a -nt b ]`: a exists and b is older or missing."""
+    try:
+        return not os.path.exists(b) or os.stat(a).st_mtime_ns > os.stat(b).st_mtime_ns
+    except OSError:
+        return False
+
+
+def compile_key(hdrkey: str, text: str, out: str) -> bool:
+    """`hdrkey text > out`; False when the tool is missing or fails."""
+    import subprocess
+
+    if not os.access(hdrkey, os.X_OK):
+        return False
+    with open(out, "wb") as handle:
+        return subprocess.run([hdrkey, text], stdout=handle, check=False).returncode == 0
+
+
+def settle(i: str, hdrkey: str) -> None:
+    """Put the text `i.new` where `i` is: the old `i` stays, with its date, when it has the same compile key (a header
+    edit that moves no code changes nothing the compiler sees); the key goes beside it (`i.key`)."""
+    new, key_file = i + ".new", i + ".key"
+    if same(new, i):
+        os.unlink(new)
+        return
+    kept = False
+    if compile_key(hdrkey, new, key_file + ".new"):
+        kept = (
+            os.path.isfile(i)
+            and (newer(key_file, i) or compile_key(hdrkey, i, key_file))
+            and same(key_file + ".new", key_file)
+        )
+    else:
+        _remove(key_file + ".new")
+    if kept:
+        os.unlink(new)
+        _remove(key_file + ".new")
+        return
+    os.replace(new, i)
+    if os.path.exists(key_file + ".new") and os.path.getsize(key_file + ".new"):
+        os.replace(key_file + ".new", key_file)
+    else:
+        _remove(key_file)
+        _remove(key_file + ".new")
+
+
+def _remove(path: str) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+
+
+def record_stamp(stamprec: str, stamp: str) -> int:
+    """The stamp's input record (build/.inputs.log): the C tool when it was built, else the sweep script."""
+    import subprocess
+
+    if os.access(stamprec, os.X_OK) and subprocess.run([stamprec, "record", stamp], check=False).returncode == 0:
+        return 0
+    return subprocess.run(["python3", "-I", "build/stamp-sweep.py", "record", stamp], check=False).returncode
+
+
+def unit(
+    cache: str,
+    stamp: str,
+    flags: str,
+    hdrkey: str,
+    stamprec: str,
+    preprocessor: str,
+    args: list[str],
+    retry: bool = False,
+) -> int:
+    """The whole recipe of one `X.i.ok` stamp in this one process: preprocess (through the cache), put the text in
+    `X.i` (settle), write the flags it was made with, date the stamp and record its inputs. `retry`: the caller's make
+    runs the recipe again when this fails, so a failure says nothing here."""
+    os.makedirs(os.path.dirname(stamp) or ".", exist_ok=True)
+    code, text, errors = preprocess(cache, preprocessor, args)
+    if code == 0 or not retry:
+        sys.stderr.buffer.write(errors)
+        sys.stderr.buffer.flush()
+    i = stamp[: -len(".ok")]
+    write(i + ".new", text)
+    if code != 0:
+        return code
+    settle(i, hdrkey)
+    write(stamp + ".flags", (flags + "\n").encode(errors="surrogateescape"))
+    with open(stamp, "ab"):
+        pass
+    os.utime(stamp)
+    return record_stamp(stamprec, stamp)
+
+
+INLINE_UNITS = (
+    64  # units one make preprocesses itself before it asks for a batch: the first run of a small edit stays one run
+)
+
+
+def defer(manifest: str, row: list[str]) -> bool:
+    """Collect mode (resources/cc_front.sh explains the two makes): record the unit's command for the batch, unless
+    fewer than INLINE_UNITS units came first; True: the unit is recorded and fails (125)."""
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    fd = os.open(manifest + ".n", flags, 0o644)
+    try:
+        os.write(fd, b".")
+        if os.fstat(fd).st_size <= INLINE_UNITS:
+            return False
+    finally:
+        os.close(fd)
+    fd = os.open(manifest, flags, 0o644)
+    try:
+        os.write(fd, (SEPARATOR.join(row) + "\n").encode(errors="surrogateescape"))  # one write: never interleaves
+    finally:
+        os.close(fd)
+    return True
 
 
 SEPARATOR = "\x1f"  # between the fields of a compile command the front records (cc_front.sh)
@@ -436,14 +560,33 @@ def batch(cache: str, root: str, manifest: str, index: int, count: int) -> int:
     return done
 
 
+def units(cache: str, manifest: str, index: int, count: int) -> int:
+    """Make, without the preprocessor's own make recipe, every recorded stamp whose number is `index` modulo `count`
+    (`unit`): a stamp that fails here is left to the second make, which runs the recipe again and names the error.
+    Returns how many it made."""
+    done = 0
+    for number, (stamp, row) in enumerate(commands(manifest)):
+        if number % count == index and len(row) >= 4:
+            flags, hdrkey, stamprec, preprocessor, *args = row
+            done += unit(cache, stamp, flags, hdrkey, stamprec, preprocessor, args, retry=True) == 0
+    return done
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 7 and argv[1] == "--batch":
         batch(argv[2], argv[3], argv[4], int(argv[5]), int(argv[6]))
         return 0
-    if len(argv) >= 4 and argv[1] == "--preprocess":
-        return run_preprocess(argv[2], argv[3], argv[4:])
+    if len(argv) == 6 and argv[1] == "--units":
+        units(argv[2], argv[3], int(argv[4]), int(argv[5]))
+        return 0
+    if len(argv) >= 9 and argv[1] == "--unit":
+        # --unit CACHE_DIR STAMP FLAGS HDRKEY STAMPREC PREPROCESSOR ARGS...
+        if (collect := os.environ.get("ABU_PP_COLLECT")) and defer(collect, argv[3:]):
+            return 125
+        stamp, flags, hdrkey, stamprec, preprocessor = argv[3:8]
+        return unit(argv[2], stamp, flags, hdrkey, stamprec, preprocessor, argv[8:])
     if len(argv) < 3:
-        sys.stderr.write("usage: cc_cache.py [--preprocess] CACHE_DIR REAL_CC ARGS...\n")
+        sys.stderr.write("usage: cc_cache.py CACHE_DIR REAL_CC ARGS...\n")
         return 2
     return run(argv[1], argv[2], argv[3:])
 

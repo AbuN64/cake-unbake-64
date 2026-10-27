@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from test_build import make_config
+from test_build import _pp, make_config
 
 from unbake import build
 
@@ -61,8 +61,12 @@ class Tree:
                 "TC=gcc_2_8_1_sn64",
                 f"CFLAGS={cflags}",
                 f"CPPFLAGS={cppflags}",
-                "PREPROCESS_gcc_2_8_1_sn64=@cp $< $(@:.ok=.new)"
-                + (" && echo p >> preprocessed && printf '%s: %s src/h.h\\n' $@ $< > $(@:.i.ok=.d)" if deps else ""),
+                _pp(
+                    "PREPROCESS_gcc_2_8_1_sn64",
+                    'sh -c \'cat "$$2"'
+                    + ('; echo p >> preprocessed; printf "%s: %s src/h.h\\n" "$$1" "$$2" > "$$3"' if deps else "")
+                    + "' sh $@ $< $(@:.i.ok=.d)",
+                ),
                 f"CC_gcc_2_8_1_sn64={sys.executable} {self.cc}",
                 f"N64LINK={sys.executable} {self.asm}",
                 "OBJCOPY=true",

@@ -1404,19 +1404,24 @@ def main(argv: Sequence[str]) -> int:
         with jobserver(host, work) as (j, env, fds):
             argv = [a.replace("{j}", str(j)) for a in command] if not fds else [a for a in command if a != "-j{j}"]
 
-            def start(record: str | None) -> int:
+            def start(record: str | None, preprocess: bool) -> int:
                 if record is None:
                     return subprocess.run(argv, env={**os.environ, **env}, pass_fds=fds).returncode
                 # the recording run: a failed unit never stops it, and its output is noise unless it recorded nothing
                 # (then it was the build)
                 done = subprocess.run(
                     [*argv, *([] if "-k" in argv else ["-k"])],
-                    env={**os.environ, **env, "ABU_CC_COLLECT": record},
+                    env={
+                        **os.environ,
+                        **env,
+                        "ABU_CC_COLLECT": record,
+                        **({"ABU_PP_COLLECT": record + ".pp"} if preprocess else {}),
+                    },
                     pass_fds=fds,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                 )
-                if not Path(record).exists():
+                if not Path(record).exists() and not Path(record + ".pp").exists():
                     sys.stdout.flush()
                     sys.stdout.buffer.write(done.stdout)
                     sys.stdout.buffer.flush()

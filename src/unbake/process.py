@@ -270,22 +270,26 @@ def make(config: Config, targets: Sequence[str], jobs: int = 0) -> NativeResult:
     with effort.stage("make"), pool.jobserver(config.host, jobs) as (granted, env, fds):
         argv = [tool(config, "make"), "-k", *targets]
 
-        def start(record: str | None) -> NativeResult:
-            extra = {"ABU_CC_COLLECT": record} if record else {}
+        def start(record: str | None, preprocess: bool) -> NativeResult:
+            extra: dict[str, str] = {"ABU_CC_COLLECT": record} if record else {}
+            if record and preprocess:
+                extra["ABU_PP_COLLECT"] = record + ".pp"
             return run("make", argv, root, tmp=scratch(root), env={**env, **extra}, pass_fds=fds)
 
         # the batch is plain CPU work between the two makes: it takes every host slot, not the share make started with
         return front.build(start, root, front.cache(config.host), max(granted, config.host.slots))
 
 
-def batch(store: Path, root: Path, manifest: Path, workers: int) -> None:
-    """Run the compiler front's batch (resources/cc_cache.py) over the recorded compile commands in `workers`
-    processes. A worker that fails answers fewer units; the build then compiles them, each named by make's own error."""
+def batch(store: Path, root: Path, manifest: Path, workers: int, mode: str = "--batch") -> None:
+    """Run the compiler front's batch (resources/cc_cache.py) over the recorded commands in `workers` processes: the
+    compile commands (`--batch`) or the preprocess stamps (`--units`). A worker that fails answers fewer units; the
+    build then runs them, each named by make's own error."""
     script = Path(__file__).parent / "resources" / "cc_cache.py"
     count = max(1, workers)
+    where = [str(root)] if mode == "--batch" else []
     procs = [
         subprocess.Popen(
-            [sys.executable, "-I", str(script), "--batch", str(store), str(root), str(manifest), str(i), str(count)],
+            [sys.executable, "-I", str(script), mode, str(store), *where, str(manifest), str(i), str(count)],
             cwd=root,
             stdin=subprocess.DEVNULL,
         )

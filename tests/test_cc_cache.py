@@ -308,24 +308,32 @@ def fake_cpp(tmp_path: Path) -> Path:
     return cpp
 
 
-def pp(cache: Path, cpp: Path, root: Path, *flags: str) -> subprocess.CompletedProcess:
-    script = Path(cc_cache.__file__)
-    args = [
-        "python3",
-        "-I",
-        "-S",
-        str(script),
-        "--preprocess",
-        str(cache),
-        str(cpp),
-        "-MMD",
-        "-MP",
-        "-MF",
-        "x.d",
-        *flags,
-        "x.c",
-    ]
-    return subprocess.run(args, cwd=root, capture_output=True, check=False)
+def tools(tmp_path: Path) -> tuple[Path, Path]:
+    """(hdrkey, stamprec) stand-ins: the key is the text less its COMMENT lines; the record only says it was asked."""
+    hdrkey, stamprec = tmp_path / "hdrkey", tmp_path / "stamprec"
+    hdrkey.write_text('#!/bin/sh\ngrep -v COMMENT "$1"\n')
+    stamprec.write_text('#!/bin/sh\necho "$@" >> "$0.log"\n')
+    for tool in (hdrkey, stamprec):
+        tool.chmod(0o755)
+    return hdrkey, stamprec
+
+
+def unit_argv(cache: Path, cpp: Path, tmp_path: Path, *flags: str) -> list[str]:
+    hdrkey, stamprec = tools(tmp_path)
+    return [
+        "python3", "-I", "-S", str(Path(cc_cache.__file__)), "--unit", str(cache),
+        "build/x.i.ok", "FLAGS " + " ".join(flags), str(hdrkey), str(stamprec), str(cpp),
+        "-MMD", "-MP", "-MF", "x.d", *flags, "x.c",
+    ]  # fmt: skip
+
+
+def pp(cache: Path, cpp: Path, root: Path, *flags: str) -> SimpleNamespace:
+    """The `--unit` process of a stamp; `stdout` is the text it left in `build/x.i`."""
+    done = subprocess.run(unit_argv(cache, cpp, root.parent, *flags), cwd=root, capture_output=True, check=False)
+    text = root / "build" / "x.i"
+    return SimpleNamespace(
+        returncode=done.returncode, stdout=text.read_bytes() if text.exists() else b"", stderr=done.stderr
+    )
 
 
 def source_tree(tmp_path: Path, name: str, header: str) -> Path:
@@ -372,23 +380,160 @@ def test_a_failed_preprocess_is_not_stored_and_a_command_without_a_dependency_fi
     (root / "x.c").unlink()
     assert pp(cache, cpp, root).returncode != 0 and not cache.exists()
     (root / "x.c").write_text("int x;\n")
-    script = Path(cc_cache.__file__)
-    bare = subprocess.run(
-        ["python3", "-I", "-S", str(script), "--preprocess", str(cache), str(cpp), "-MF", "x.d", "x.c"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-    )
-    assert bare.returncode == 0 and runs(cpp) == 2 and not cache.exists()
+    bare = unit_argv(cache, cpp, tmp_path)
+    del bare[bare.index("-MMD") : bare.index("-MF")]  # no -MP: the cache cannot name the headers
+    done = subprocess.run(bare, cwd=root, capture_output=True, check=False)
+    assert done.returncode == 0 and runs(cpp) == 2 and not cache.exists()
 
 
-def test_local_mk_puts_the_preprocessor_behind_the_front(tmp_path):
+def test_local_mk_puts_the_stamp_recipe_in_one_process(tmp_path):
     host = SimpleNamespace(
         workers=4, tools={}, toolchain_root=Path("/chains"), cache_dir=Path("/home/x/.cache/unbake/content")
     )
     text = build.local_mk(SimpleNamespace(host=host)).decode()
-    line = next(row for row in text.splitlines() if row.startswith("PPFRONT :="))
-    assert line.startswith("PPFRONT := python3 -I -S ") and line.endswith(
-        "/resources/cc_cache.py --preprocess /home/x/.cache/unbake/content.cc"
+    line = next(row for row in text.splitlines() if row.startswith("PPUNIT :="))
+    assert line.startswith("PPUNIT := python3 -I -S ") and line.endswith(
+        "/resources/cc_cache.py --unit /home/x/.cache/unbake/content.cc"
     )
-    assert "$(PPFRONT) $(CPP)" in build._recipe("gcc-2.8.1-sn64")
+    recipe = build._recipe("gcc-2.8.1-sn64")
+    assert (
+        "$(PPUNIT) $@ $(call shq,$(PP_FLAGS)) $(HDRKEY) $(STAMPREC) $(CPP)" in recipe
+        and ">" not in recipe.split("endef")[0]
+    )
+    rule = Path(build.__file__).parent / "resources" / "templates" / "Makefile.in"
+    lines = rule.read_text().split("\nbuild/%.i.ok:")[1].split("\n# The extracted files")[0].splitlines()
+    assert lines[1:] == ["\t$$(PREPROCESS_$$(TC))"]  # the stamp's recipe is the one process, no shell lines around it
+
+
+def test_a_unit_leaves_the_text_the_flags_a_dated_stamp_and_a_record(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    assert pp(cache, cpp, root).returncode == 0
+    assert (root / "build/x.i.ok").exists() and (root / "build/x.i.ok.flags").read_text() == "FLAGS \n"
+    assert (root / "build/x.i.key").read_text() == "int x;\n#define A 1\n" and not (root / "build/x.i.new").exists()
+    assert (tmp_path / "stamprec.log").read_text() == "record build/x.i.ok\n"
+
+
+def test_a_text_with_the_same_compile_key_keeps_the_old_text_and_its_date(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    pp(cache, cpp, root)
+    old = (root / "build/x.i").stat().st_mtime_ns
+    (root / "h.h").write_text("#define A 1\nCOMMENT\n")  # another text, the same key
+    assert pp(cache, cpp, root).returncode == 0
+    assert (root / "build/x.i").read_bytes() == b"int x;\n#define A 1\n" and (
+        root / "build/x.i"
+    ).stat().st_mtime_ns == old
+    assert not (root / "build/x.i.new").exists()
+    (root / "x.c").write_text("int y;\n")  # another key: the new text goes in
+    assert pp(cache, cpp, root).stdout == b"int y;\n#define A 1\nCOMMENT\n"
+
+
+def test_a_failed_preprocess_leaves_no_stamp_and_says_why(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    (root / "x.c").unlink()
+    done = pp(cache, cpp, root)
+    assert done.returncode != 0 and not (root / "build/x.i.ok").exists() and done.stderr
+
+
+def test_a_unit_without_a_cache_still_preprocesses(tmp_path):
+    cpp = fake_cpp(tmp_path)
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    assert pp(Path(""), cpp, root).stdout == b"int x;\n#define A 1\n"
+
+
+def test_a_unit_starts_two_programs_beyond_itself_when_the_cache_answers(tmp_path, monkeypatch):
+    """The regression: a stamp used to cost ~14 processes; a hit costs the compile key and the record."""
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    pp(cache, cpp, source_tree(tmp_path, "a", "#define A 1\n"))
+    root = source_tree(tmp_path, "b", "#define A 1\n")
+    started = []
+    real = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: started.append(Path(argv[0]).name) or real(argv, **kw))
+    cc_cache.preprocessor_identity.cache_clear()
+    hdrkey, stamprec = tools(tmp_path)
+    monkeypatch.chdir(root)
+    args = ["-MMD", "-MP", "-MF", "x.d", "x.c"]
+    assert cc_cache.unit(str(cache), "build/x.i.ok", "F", str(hdrkey), str(stamprec), str(cpp), args) == 0
+    assert started == ["cpp", "hdrkey", "stamprec"]  # cpp: only `-print-prog-name=cc1`, once per process
+
+
+def test_collect_mode_makes_the_first_units_and_records_the_rest(tmp_path, monkeypatch):
+    monkeypatch.setattr(cc_cache, "INLINE_UNITS", 2)
+    manifest = str(tmp_path / "pp")
+    rows = [[f"build/{n}.i.ok", "F", "hdrkey", "stamprec", "cpp", "-E", f"{n}.c"] for n in range(4)]
+    assert [cc_cache.defer(manifest, row) for row in rows] == [False, False, True, True]
+    assert [row for _, row in cc_cache.commands(manifest)] == [row[1:] for row in rows[2:]]
+    assert [stamp for stamp, _ in cc_cache.commands(manifest)] == ["build/2.i.ok", "build/3.i.ok"]
+
+
+def test_a_batch_makes_every_recorded_stamp_and_leaves_a_failing_one_to_make(tmp_path):
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = source_tree(tmp_path, "a", "#define A 1\n")
+    hdrkey, stamprec = tools(tmp_path)
+    manifest = tmp_path / "pp"
+    good = ["build/x.i.ok", "F", str(hdrkey), str(stamprec), str(cpp), "-MMD", "-MP", "-MF", "x.d", "x.c"]
+    bad = ["build/y.i.ok", "F", str(hdrkey), str(stamprec), str(cpp), "-MMD", "-MP", "-MF", "y.d", "y.c"]
+    manifest.write_text("".join(cc_cache.SEPARATOR.join(row) + "\n" for row in (good, bad)))
+    done = subprocess.run(
+        ["python3", "-I", str(Path(cc_cache.__file__)), "--units", str(cache), str(manifest), "0", "1"],
+        cwd=root, capture_output=True, check=False,
+    )  # fmt: skip
+    assert done.returncode == 0 and done.stderr == b""  # the failure is make's to name, not the batch's
+    assert (root / "build/x.i.ok").exists() and (root / "build/x.i").exists() and not (root / "build/y.i.ok").exists()
+
+
+def test_the_front_batches_the_stamps_before_it_records_the_compiles(tmp_path, monkeypatch):
+    from unbake import front, process
+
+    calls, batches = [], []
+    monkeypatch.setattr(process, "scratch", lambda root: tmp_path)
+    monkeypatch.setattr(process, "batch", lambda store, root, manifest, workers, mode="--batch": batches.append(mode))
+
+    def start(record, preprocess):
+        calls.append((record is not None, preprocess))
+        if preprocess:
+            Path(record + ".pp").write_text("x\n")  # stale stamps beyond the first few
+        elif record:
+            Path(record).write_text("")  # the compile commands, found once the stamps stand
+        return 0
+
+    assert front.build(start, tmp_path, tmp_path / "store", 3) == 0
+    assert calls == [(True, True), (True, False), (False, False)] and batches == ["--units", "--batch"]
+    calls.clear()
+    batches.clear()
+    front.build(
+        lambda record, preprocess: calls.append((record is not None, preprocess)) or 0, tmp_path, tmp_path / "store", 3
+    )
+    assert calls == [(True, True)] and batches == []  # nothing stale: the first run was the build
+
+
+# The `.i.ok` command of one real unit, as make expanded it in a 5-version tree (paths shortened): before the unit
+# process this stamp took `mkdir`, the preprocessor behind a python front, then a shell of cmp/hdrkey/mv/rm, printf,
+# touch and stamprec (~10 forks a unit, ~35k units in a full check).
+REAL_STAMP = (
+    "build/us/src/game/DATA/OVLDAT3/800CC690/800CC690.CPP.i.ok|gcc_2_8_1_sn64 -P -undef -nostdinc |"
+    "-P -undef -nostdinc -MMD -MP -MF build/us/src/game/DATA/OVLDAT3/800CC690/800CC690.CPP.d "
+    "-MT build/us/src/game/DATA/OVLDAT3/800CC690/800CC690.CPP.i.ok src/game/DATA/OVLDAT3/800CC690/800CC690.CPP"
+)
+
+
+def test_a_real_units_stamp_command_makes_the_whole_stamp_with_one_preprocessor_run_and_one_record(tmp_path):
+    stamp, flags, cpp_args = REAL_STAMP.split("|")
+    cpp, cache = fake_cpp(tmp_path), tmp_path / "cache"
+    root = tmp_path / "tree"
+    source = root / "src/game/DATA/OVLDAT3/800CC690/800CC690.CPP"
+    source.parent.mkdir(parents=True)
+    source.write_text("int x;\n")
+    (root / "h.h").write_text("#define A 1\n")
+    hdrkey, stamprec = tools(tmp_path)
+    argv = ["python3", "-I", "-S", str(Path(cc_cache.__file__)), "--unit", str(cache), stamp, flags]
+    argv += [str(hdrkey), str(stamprec), str(cpp), *cpp_args.split()]
+    for _ in range(2):  # the second answers from the cache: still the whole stamp, no second preprocessor run
+        assert subprocess.run(argv, cwd=root, check=False).returncode == 0
+    text = root / stamp.removesuffix(".ok")
+    assert text.read_bytes() == b"int x;\n#define A 1\n" and (root / (stamp + ".flags")).read_text() == flags + "\n"
+    assert (root / stamp).exists() and not text.with_suffix(".new").exists()
+    assert runs(cpp) == 1
+    assert (tmp_path / "stamprec.log").read_text() == f"record {stamp}\n" * 2

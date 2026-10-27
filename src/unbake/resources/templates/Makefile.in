@@ -1132,19 +1132,7 @@ pp_flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(PP_F
 .PHONY: flags-changed
 flags-changed:
 build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY) $$(STAMPREC)
-	$$(Q)mkdir -p $$(@D)
 	$$(PREPROCESS_$$(TC))
-	$$(Q)n=$$(@:.ok=.new); i=$$(@:.ok=); k=$$(@:.ok=.key); \
-	if cmp -s $$$$n $$$$i; then rm -f $$$$n; else keep=; \
-	  if [ -x $$(HDRKEY) ] && $$(HDRKEY) $$$$n > $$$$k.new; then \
-	    if [ -f $$$$i ] && { [ $$$$k -nt $$$$i ] || $$(HDRKEY) $$$$i > $$$$k; } && cmp -s $$$$k.new $$$$k; then keep=1; fi; \
-	  else rm -f $$$$k.new; fi; \
-	  if [ -n "$$$$keep" ]; then rm -f $$$$n $$$$k.new; \
-	  else mv -f $$$$n $$$$i; if [ -s $$$$k.new ]; then mv -f $$$$k.new $$$$k; else rm -f $$$$k $$$$k.new; fi; fi; \
-	fi
-	$$(Q)printf '%s\n' $$(call shq,$$(PP_FLAGS)) > $$@.flags
-	$$(Q)touch $$@
-	$$(Q)$$(call RECORD,$$@)
 # The extracted files an object assembles are an input by their bytes (`.asm`, their sum before the object is made; a make that extracts as it builds reads dates it cached): a different sum removes the object.
 build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS) $$(STAMPREC)
 	$$(Q)$$(call FACTS_CHECK,$$(call ver,$$*))
