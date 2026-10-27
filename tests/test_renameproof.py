@@ -153,6 +153,18 @@ def test_two_names_renamed_to_one_are_refused(repo: Path) -> None:
     assert "both renamed to" in _refused(repo)
 
 
+def test_one_refusal_names_every_conflicting_row_not_the_first_few(repo: Path) -> None:
+    pairs = [(f"func_8020{n:04X}_de", f"func_8021{n:04X}_de") for n in range(renameproof.SHOWN + 4)]
+    (repo / "src/b.c").write_text("".join(f"int {a}(void);\nint {b}(void);\n" for a, b in pairs))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "more")
+    for n, (a, b) in enumerate(pairs):
+        _rename(repo, a, f"Batch_{n}")
+        _rename(repo, b, f"Batch_{n}")
+    reasons = _refused(repo)
+    assert all(f"Batch_{n}" in reasons for n in range(len(pairs)))
+
+
 def test_a_swap_is_a_rename(repo: Path) -> None:
     for path in ("include/api.h", "src/a.c", "versions/de/symbol_addrs.txt", "include/include_asm.h"):
         text = (

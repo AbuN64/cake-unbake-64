@@ -1131,10 +1131,8 @@ def _check(
 
 
 def _refusal(proof: _Proof) -> Refusal:
-    shown = proof.reasons[:SHOWN]
-    if len(proof.reasons) > SHOWN:
-        shown.append(Finding("renameproof.not_rename", f"{len(proof.reasons) - SHOWN} more reasons"))
-    return Refusal(*shown)
+    """Every reason: a batch caller reads each refused row from this one run instead of re-running halves."""
+    return Refusal(*proof.reasons)
 
 
 def prove(root: Path, against: str, patches: Sequence[Path], inert: Sequence[str], steps: bool = False) -> Json:
