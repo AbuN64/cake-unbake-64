@@ -12,7 +12,10 @@
     "apply",
     "literals",
     "carry",
-    "verify"
+    "verify",
+    "reorg",
+    "header",
+    "mergecheck"
    ]
   },
   "moved": {},
@@ -104,6 +107,38 @@
   },
   "separate": {
    "type": "integer"
+  },
+  "created": {
+   "type": "boolean"
+  },
+  "exported": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "included": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "removed": {
+   "type": "object"
+  },
+  "elsewhere": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "externs_before": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "externs_after": {
+   "type": "integer",
+   "minimum": 0
   },
   "mergeable": {
    "type": "integer"

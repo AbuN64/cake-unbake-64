@@ -307,6 +307,7 @@ params = [
   { name = "action", kind = "argument", type = "str", required = true, multiple = false, help = "plan | apply | literals | carry | verify | reorg | mergecheck | merge" },
   { name = "rules", kind = "option", type = "path", required = false, multiple = false, help = "plan: the rules file ([[rule]] rows: match, to, optional row)" },
   { name = "map", kind = "option", type = "path", required = false, multiple = false, help = "plan, reorg: a map file, one `old path<TAB>new path` per file (headers too), added to the rules" },
+  { name = "file", kind = "option", type = "path", required = false, multiple = false, help = "header: the tracked source file (F.CPP) whose exports go into its one header F.H" },
   { name = "modules", kind = "option", type = "path", required = false, multiple = false, help = "mergecheck, merge: a module map, a TSV with a header row holding `unit` and `module` columns" },
   { name = "module", kind = "option", type = "str", required = false, multiple = false, help = "merge: the module (its source path in the module map) whose units become one file" },
   { name = "ld", kind = "option", type = "str", required = false, multiple = false, help = "mergecheck, merge: the link script of a version, a path with {version}, default build/{version}/link.ld" },

@@ -13,6 +13,8 @@ carry   turns a worktree's uncommitted work into the new layout: untracked files
 reorg   the one-command form: plan from a `--map` file (old path, new path per line; headers included), apply, rewrite
         every `#include` of a moved header (and the relative includes of moved files), and with `--prove` run
         `make check` once so every ROM is compared after the single move.
+header  `--file F.CPP`: writes the exported prototypes and externs of one source file into its one header and rewrites
+        the includes of the files that declared them (hoist.py).
 mergecheck  reads a module map (unit, module) and the built objects and says which merges must stay separate files.
 merge   `--module M --modules MAP`: the units of M in link order become one source file named M (pad arrays the
         alignment reproduces and redundant prototypes dropped, includes hoisted and deduped); refused when mergecheck
@@ -38,7 +40,7 @@ import tomlkit
 from elftools.elf.elffile import ELFFile
 
 from unbake import config as configuration
-from unbake import effort, process, repo, store
+from unbake import effort, hoist, process, repo, store
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
@@ -748,6 +750,44 @@ def _verdicts(config: Config, params: Json) -> tuple[list[Row], list[tuple[str, 
     return merging.verdicts(rows, seqs, statics, identity), rows, seqs
 
 
+def header(config: Config, params: Json) -> Row:
+    """One header per source file: hoist the exports of `--file` into its header and let its users include it."""
+    with effort.stage("layout.header"):
+        target = params.get("file")
+        if not target:
+            raise _refuse("header needs --file F.CPP (a tracked source file)")
+        root = config.project.root
+        tracked = _tracked(config)
+        target = posixpath.normpath(str(target))
+        if target not in tracked or Path(target).suffix.lower() not in hoist.SOURCE_SUFFIXES:
+            raise _refuse(f"header: {target} is not a tracked source file")
+        texts = _texts(root, tracked)
+        done = hoist.hoist(texts, tracked, target)
+        if done.externs_after > done.externs_before:
+            raise _refuse(
+                f"header: unit externs would rise from {done.externs_before} to {done.externs_after}", file=target
+            )
+        for path, body in done.files.items():
+            store.write(root / path, body.encode(errors="surrogateescape"))
+        for path in done.deleted:
+            (root / path).unlink()
+        return {
+            "action": "header",
+            "path": done.header,
+            "created": done.created,
+            "exported": done.exported,
+            "included": done.included,
+            "removed": done.removed,
+            "held": done.held,
+            "elsewhere": done.elsewhere,
+            "externs_before": done.externs_before,
+            "externs_after": done.externs_after,
+            "written": sorted(done.files),
+            "deleted": done.deleted,
+            "next": "git add -A; unbake sync --check; make check",
+        }
+
+
 def mergecheck(config: Config, params: Json) -> Row:
     """Which modules of a module map may become one source file and which must stay separate files, from the link
     order and the built objects of every version (`ld` and `obj` are patterns over {version} and {unit})."""
@@ -829,7 +869,7 @@ def merge(config: Config, params: Json) -> Row:
 
 
 def run(config: Config, params: Json) -> Row:
-    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, mergecheck or merge."""
+    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, header, mergecheck or merge."""
     actions = {
         "plan": plan,
         "apply": apply,
@@ -837,6 +877,7 @@ def run(config: Config, params: Json) -> Row:
         "carry": carry,
         "verify": verify,
         "reorg": reorg,
+        "header": header,
         "mergecheck": mergecheck,
         "merge": merge,
     }
