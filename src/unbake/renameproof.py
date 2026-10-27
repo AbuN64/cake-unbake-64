@@ -76,6 +76,7 @@ _TEXT = re.compile(
 )
 _IDENT = re.compile(r"[A-Za-z_$][A-Za-z_0-9$]*\Z")
 _WORD = re.compile(r"[A-Za-z_$][A-Za-z_0-9$]*")
+_BODY = re.compile(r"\b(?:struct|union|enum)\b")  # a file with none of these defines no record
 
 
 def _is_c(path: str) -> bool:
@@ -386,6 +387,19 @@ def _definitions(texts: Mapping[str, str], tag: str) -> dict[str, list[tuple[int
     return found
 
 
+def _shared_records(texts: Mapping[str, str]) -> set[str]:
+    """The tags that more than one file defines with a body: one pass over every C file, whatever the tag count."""
+    defined: dict[str, set[str]] = {}
+    for path, text in texts.items():
+        if not _is_c(path) or not _BODY.search(text):
+            continue
+        tokens = _tokens(text, True)
+        for n in range(1, len(tokens) - 1):
+            if tokens[n + 1] == "{" and tokens[n - 1] in ("struct", "union", "enum"):
+                defined.setdefault(tokens[n], set()).add(path)
+    return {tag for tag, paths in defined.items() if len(paths) > 1}
+
+
 def _binds(texts: Mapping[str, str], tag: str) -> dict[str, set[str]]:
     """For each file that spells TAG, the files holding the definitions its uses may bind to: its own when it defines
     TAG, else those its include closure reaches. A record several files define is bound by include, not by spelling."""
@@ -488,7 +502,7 @@ class _Proof:
         self.map: dict[str, str] = {}  # names renamed everywhere they are visible
         self.tag: dict[str, str] = {}  # struct/union/enum tags renamed (their own namespace: `Message` may be both)
         self.site: dict[tuple[str, str], str] = {}  # (file, record name) -> new name, for a record several files define
-        self._records: dict[str, bool] = {}
+        self._records: set[str] | None = None
         self._world: dict[str, str] | None = None
         self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
         self.owner: dict[str, list[int]] = {}
@@ -760,12 +774,9 @@ class _Proof:
 
     def record(self, name: str) -> bool:
         """Whether NAME is a record that more than one file defines: its uses bind by include, not by spelling."""
-        if name not in self._records:
-            paths = [p for p in self._hits([name], self.base) if _is_c(p)]
-            blobs = self.repo.blobs([f"{self.base}:{p}" for p in paths])
-            held = {p: b.decode("latin-1") for p in paths if (b := blobs[f"{self.base}:{p}"]) is not None}
-            self._records[name] = len(_definitions(held, name)) > 1
-        return self._records[name]
+        if self._records is None:
+            self._records = _shared_records(self.world())
+        return name in self._records
 
     def world(self) -> dict[str, str]:
         """Every C file of the old tree."""

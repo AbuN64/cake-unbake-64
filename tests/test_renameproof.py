@@ -642,3 +642,65 @@ def test_the_binding_rule_names_the_files_one_definition_owns(repo: Path) -> Non
     del texts["src/both.c"]
     assert renameproof.scope(texts, "Box", "include/b.h") == (["include/b.h", "src/b.c"], "")
     assert "holds no definition" in renameproof.scope(texts, "Box", "include/a.h", 9)[1]
+
+
+# A slice of rig batch 75 (371 name rows on a 6161-file tree): its real renames and the three records that two
+# files each define. renameproof ran one tree-wide `git grep` per distinct token to ask "is this a shared record?"
+# (21080 greps, over 25 minutes, never finished); the count of greps must not follow the count of tokens.
+BATCH_75_ROWS = {
+    "func_80282E98_de": "Particle_HandlePlayerContact",
+    "func_8027FF58_de": "Particle_RecycleReleasedEffects",
+    "func_80281A9C_de": "Particle_MarkCrowdedActor",
+}
+BATCH_75_RECORDS = {
+    "src/game/AI/NAV/802106E0_10/802106E0_10.CPP": "struct Actor { int hp; };\n",
+    "src/game/ENGINE/PARTICLE_3/CODE_80281A70.CPP": "struct Actor { int hp; };\nstruct ActorWorld { int n; };\n",
+    "src/game/AI/DEVICES/ACTIONAI/8020402C.CPP": "struct SoundActor { int id; };\n",
+    "src/game/ENGINE/EVENTS/80268160_2.CPP": "struct SoundActor { int id; };\n",
+    "src/game/OVLGAME/HUD/CODE_8044EBB0.CPP": "struct ActorWorld { int n; };\n",
+}
+
+
+def _batch_75_slice(root: Path, files: int) -> None:
+    unit = "".join(f"int func_{0x80300000 + n:08X}_de(int a) {{ return a + {n}; }}\n" for n in range(60))
+    for n in range(files):
+        (root / f"src/game/FILLER/CODE_{n}.CPP").parent.mkdir(parents=True, exist_ok=True)
+        (root / f"src/game/FILLER/CODE_{n}.CPP").write_text(unit.replace("8030", f"83{n:02X}"))
+    for name, text in BATCH_75_RECORDS.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    body = "".join(f"int {old}(int a) {{ return a; }}\n" for old in BATCH_75_ROWS)
+    (root / "src/game/ENGINE/PARTICLE_3/CODE_80281A70.CPP").write_text(
+        BATCH_75_RECORDS["src/game/ENGINE/PARTICLE_3/CODE_80281A70.CPP"] + body
+    )
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "slice")
+
+
+def _git_runs(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    runs: list[str] = []
+    run = renameproof._Repo.run
+
+    def counted(self: renameproof._Repo, *args: str, **kwargs: object) -> bytes:
+        runs.append(args[0])
+        return run(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(renameproof._Repo, "run", counted)
+    return runs
+
+
+def test_batch_75_slice_proves_with_greps_that_do_not_follow_the_token_count(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _batch_75_slice(repo, files=20)  # 1200+ distinct function names, 3 shared records
+    for old, new in BATCH_75_ROWS.items():
+        _rename(repo, old, new)
+    runs = _git_runs(monkeypatch)
+    assert _prove(repo)["renames"] == len(BATCH_75_ROWS)
+    assert runs.count("grep") <= 4, f"{runs.count('grep')} tree-wide greps for 1200 distinct names"
+
+
+def test_shared_records_are_the_tags_two_files_define_with_a_body() -> None:
+    texts = {**BATCH_75_RECORDS, "src/use.CPP": "struct Lone *p; struct Actor a;\n", "src/note.md": "struct Md {\n"}
+    texts["src/other.CPP"] = "struct Lone { int x; };\nenum Mode { A };\n"
+    assert renameproof._shared_records(texts) == {"Actor", "SoundActor", "ActorWorld"}
