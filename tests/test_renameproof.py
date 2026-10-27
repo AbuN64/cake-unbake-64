@@ -325,6 +325,15 @@ def test_one_file_with_two_names_left_behind_reports_both(repo: Path) -> None:
     assert "Game_Init" in reasons and "Game_Step" in reasons
 
 
+def test_a_refusal_in_an_early_stage_does_not_hide_the_later_stages(repo: Path) -> None:
+    # batch 78 (10-27): a literal, a name left behind and a libc name each hid behind the one before; one run names all
+    _rename(repo, "func_80100000_de", "Game_Init", only=("include/api.h",))
+    _rename(repo, "func_80100100_de", "memcpy")
+    (repo / "src/a.c").write_text((repo / "src/a.c").read_text().replace("memcpy(2)", "memcpy(0xC)"))
+    reasons = _refused(repo)
+    assert "not an identifier" in reasons and "Game_Init" in reasons and "name the compiler expands" in reasons
+
+
 def test_a_local_rename_left_half_done_in_its_function_is_refused(repo: Path) -> None:
     _locals(repo)
     (repo / "src/loc.c").write_text(

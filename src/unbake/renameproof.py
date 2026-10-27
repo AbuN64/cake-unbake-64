@@ -746,6 +746,8 @@ class _Proof:
             return ASM_MARK + _WORD.sub(lambda m: names.get(m.group(), m.group()), token[1:])
 
         for path, before in self.old.items():
+            if path not in self.owner:
+                continue  # derive refused this file (its tokens do not line up): nothing to compare
             owner = self.owner[path]
             keep = self.proto[path]
             slots = self.slots[path]
@@ -1118,12 +1120,11 @@ def _check(
     changed, skipped = proof.load()
     proof.read(changed)
     if not proof.reasons:
+        # derive leaves the map it could build even when it refuses: every later check reads that map, so each runs
+        # and a batch caller sees all its refused rows in this one run, not one stage per run
         proof.derive(proof.line_sensitive())
-    if not proof.reasons:
         proof.apply()
-    if not proof.reasons:
         proof.bound()
-    if not proof.reasons:
         proof.builtins()
         proof.capture()
         proof.scoped()
