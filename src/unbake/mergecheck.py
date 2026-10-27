@@ -22,7 +22,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from elftools.elf.elffile import ELFFile
@@ -44,6 +44,33 @@ def read_modules(text: str) -> list[tuple[str, str]]:
         raise ValueError("a module map needs a header row with `unit` and `module` columns")
     unit, module = rows[0].index("unit"), rows[0].index("module")
     return [(r[unit], r[module]) for r in rows[1:] if r and not r[0].startswith("#") and len(r) > max(unit, module)]
+
+
+def merged_path(module: str) -> str:
+    """Where a module's merged file sits: in the folder named by the module, under the module file name, the way every
+    unit sits in the folder of its module."""
+    path = PurePosixPath(module)
+    return (path.with_suffix("") / path.name).as_posix()
+
+
+def merged_modules(text: str, units: list[str], merged: str) -> str:
+    """The module map after `units` became the one file `merged`: their rows replaced by the first of them, its `unit`
+    now `merged` (rows of other units and comments stay where they were)."""
+    lines = text.splitlines(keepends=True)
+    col = lines[0].rstrip("\r\n").split("\t").index("unit")
+    gone = set(units) | {merged}
+    out = [lines[0]]
+    done = False
+    for line in lines[1:]:
+        cells = line.rstrip("\r\n").split("\t")
+        if len(cells) > col and cells[col] in gone:
+            if not done:
+                cells[col] = merged
+                out.append("\t".join(cells) + "\n")
+                done = True
+            continue
+        out.append(line)
+    return "".join(out)
 
 
 def parse_link(text: str) -> list[Row]:

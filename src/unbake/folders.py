@@ -813,6 +813,7 @@ def merge(config: Config, params: Json) -> Row:
             raise _refuse(f"{module} has fewer than two units in the module map")
         root = config.project.root
         units = merging.code_order([u for u, m in rows if m == module], seqs)
+        merged_path = merging.merged_path(module)
         missing = [u for u in units if not (root / u).is_file()]
         if missing:
             raise _refuse(f"{len(missing)} units of {module} are not in the tree", missing=tuple(missing[:20]))
@@ -827,7 +828,7 @@ def merge(config: Config, params: Json) -> Row:
             return any(s is not None for s in seen) and all(s is not False for s in seen)
 
         def header(name: str) -> str | None:
-            for base in (root / "include", (root / module).parent):
+            for base in (root / "include", (root / merged_path).parent, (root / module).parent):
                 if (base / name).is_file():
                     return (base / name).read_text(errors="replace")
             return None
@@ -840,17 +841,20 @@ def merge(config: Config, params: Json) -> Row:
                 missing=tuple(found[0]["hard"][:5] + report[:40]),
             )
         for unit in units:
-            if unit != module:
+            if unit != merged_path:
                 (root / unit).unlink()
-        store.write(root / module, merged["text"].encode())
-        _git(config, "add", "-A", "--", module, *units)
-        tracked = sorted(set(_tracked(config)) | {module})
+        store.write(root / merged_path, merged["text"].encode())
+        _git(config, "add", "-A", "--", merged_path, *units)
+        map_file = Path(params["modules"])
+        store.write(map_file, merging.merged_modules(map_file.read_text(), units, merged_path).encode())
+        tracked = sorted(set(_tracked(config)) | {merged_path})
         project = configuration.load_project(root, lambda path: (root / path).read_bytes(), lambda: tracked)
         effort.forget("pin", "includes", "closure", "listing")
         loaded = Config(project, config.host, digest((project.digest, config.host.digest)))
         out: Row = {
             "action": "merge",
             "module": module,
+            "file": merged_path,
             "units": len(units),
             "includes": merged["includes"],
             "pads": merged["pads"],

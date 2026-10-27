@@ -155,3 +155,14 @@ def test_spans_count_align_directives_and_other_modules_between_the_first_and_la
 def test_units_are_ordered_by_where_their_code_is_linked_not_their_first_data() -> None:
     seq = [entry("a", "rodata", 8, ".rodata"), entry("b", "text", 8), entry("a", "text", 8), entry("c", "data", 8)]
     assert mergecheck.code_order(["a", "b", "c"], {"us": seq}) == ["b", "a", "c"]
+
+
+def test_merged_units_leave_the_module_map_as_one_row_of_the_merged_file() -> None:
+    text = "unit\tmodule\tkind\nA/a.CPP\tA/M.CPP\tcode\nB/b.CPP\tB/N.CPP\tcode\nA/a_2.CPP\tA/M.CPP\tdata\n#c\n"
+    got = mergecheck.merged_modules(text, ["A/a.CPP", "A/a_2.CPP"], "A/M/M.CPP")
+    assert got == "unit\tmodule\tkind\nA/M/M.CPP\tA/M.CPP\tcode\nB/b.CPP\tB/N.CPP\tcode\n#c\n"
+    assert mergecheck.merged_modules(got, ["A/M/M.CPP"], "A/M/M.CPP") == got
+
+
+def test_a_merged_file_sits_in_the_module_folder_under_the_module_name() -> None:
+    assert mergecheck.merged_path("src/game/AI/NAV/PICKUP.CPP") == "src/game/AI/NAV/PICKUP/PICKUP.CPP"
