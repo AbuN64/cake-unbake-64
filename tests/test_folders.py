@@ -266,3 +266,34 @@ def test_verify_compares_sections_through_the_map(cfg: Config, tmp_path: Path) -
     result = folders.verify(cfg, {"old": before})
     assert result["same"] == 2 and result["differ"] == 2 and result["link_script"] is True
     assert result["bad"][0].endswith("src/lib/ovl/fuzzy.c")
+
+
+def test_a_map_file_names_each_file_once_and_a_trailing_slash_keeps_the_name() -> None:
+    rules = folders.rules_from_map("# c\nsrc/a.CPP\tsrc/m/A.CPP\nsrc/a.H\tinclude/m/\nsrc/same.c\tsrc/same.c\n")
+    assert rules == [{"match": "src/a.CPP", "to": "src/m/A.CPP"}, {"match": "src/a.H", "to": "include/m/"}]
+    assert folders.place(rules, "src/a.H") == "include/m/a.H"
+    with pytest.raises(Refusal):
+        folders.rules_from_map("src/a.c\tx.c\nsrc/a.c\ty.c\n")
+    with pytest.raises(Refusal):
+        folders.rules_from_map("src/a.c\n")
+
+
+def test_includes_follow_a_moved_header_and_a_moved_includer() -> None:
+    tracked = ["src/a/x.c", "src/a/x.h", "inc/k/y.h", "inc/k/z.h", "inc/k/w.h", "src/b/u.c"]
+    texts = {
+        "src/a/x.c": '#include "x.h"\n#include "k/y.h"\n#include <stdio.h>\n',
+        "src/b/u.c": '#include "k/y.h"\n#include "k/z.h"\n',
+        "inc/k/w.h": '#include "y.h"\n',
+    }
+    mapping = {"src/a/x.h": "src/m/x.h", "inc/k/y.h": "inc/m/y.h", "src/a/x.c": "src/m/x.c"}
+    out = folders.includes(texts, tracked, mapping)
+    assert out["src/a/x.c"] == '#include "x.h"\n#include "m/y.h"\n#include <stdio.h>\n'
+    assert out["src/b/u.c"] == '#include "m/y.h"\n#include "k/z.h"\n'
+    assert out["inc/k/w.h"] == '#include "../m/y.h"\n'
+
+
+def test_plan_takes_a_map_without_a_rules_file(cfg: Config, tmp_path: Path) -> None:
+    mapped = tmp_path / "m.tsv"
+    mapped.write_text("src/main/c_func.c\tsrc/main/renamed.c\n")
+    result = folders.plan(cfg, {"map": mapped})
+    assert result["moved"] == 1 and (cfg.project.root / "src/main/c_func.c").is_file()

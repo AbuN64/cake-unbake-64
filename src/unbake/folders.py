@@ -9,6 +9,10 @@ apply   moves the files of the plan, rewrites `config.toml` (row keys, `librarie
 carry   turns a worktree's uncommitted work into the new layout: untracked files move in place and the uncommitted
         edits of tracked files are written as a patch with the new paths, to apply after the worktree is on the new
         layout.
+reorg   the one-command form: plan from a `--map` file (old path, new path per line; headers included), apply, rewrite
+        every `#include` of a moved header (and the relative includes of moved files), and with `--prove` run
+        `make check` once so every ROM is compared after the single move.
+mergecheck  reads a module map (unit, module) and the built objects and says which merges must stay separate files.
 verify  compares the objects of a build made before the move with the build after it, through the map, and the link
         script of both.
 Everything about one project's folders is in its rules file; this module names no folder."""
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import tomllib
 from collections import defaultdict
@@ -30,6 +35,7 @@ from elftools.elf.elffile import ELFFile
 
 from unbake import config as configuration
 from unbake import effort, process, repo, store
+from unbake import mergecheck as merging
 from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
 
 Row = dict[str, Any]
@@ -86,6 +92,31 @@ def rules_from(text: str, file: str = "rules") -> Row:
     if problems:
         raise Refusal(*problems)
     return {"rules": [dict(r) for r in rows], "rows": [dict(r) for r in standalone], "libraries": libraries}
+
+
+def rules_from_map(text: str, file: str = "map") -> list[Row]:
+    """The rules a map file stands for: one `old<TAB>new` line per file (a `#` line is a comment), the file named whole.
+    A new path that ends in / keeps the file name."""
+    rules: list[Row] = []
+    seen: set[str] = set()
+    problems = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        cells = line.rstrip("\n").split("\t")
+        where = f"{file}:{number}"
+        if len(cells) < 2 or not cells[0].strip() or not cells[1].strip():
+            problems.append(Finding("layout.input", "a map line is `old path<TAB>new path`", path=where))
+            continue
+        old, new = cells[0].strip(), cells[1].strip()
+        if old in seen:
+            problems.append(Finding("layout.input", f"{old} is mapped twice", path=where))
+        seen.add(old)
+        if old != new:
+            rules.append({"match": old, "to": new})
+    if problems:
+        raise Refusal(*problems)
+    return rules
 
 
 def place(rules: Sequence[Mapping[str, Any]], path: str) -> str:
@@ -161,12 +192,12 @@ def _tracked(config: Config) -> list[str]:
 def plan(config: Config, params: Json) -> Row:
     """Write the plan and the map for a rules file; moves nothing."""
     with effort.stage("layout.plan"):
-        path = params.get("rules")
-        if not path:
-            raise _refuse("plan needs --rules FILE")
+        path, mapped = params.get("rules"), params.get("map")
+        if not path and not mapped:
+            raise _refuse("plan needs --rules FILE or --map FILE")
         root = config.project.root
-        given = rules_from(Path(path).read_text(), str(path))
-        rules = given["rules"]
+        given = rules_from(Path(path).read_text(), str(path)) if path else {"rules": [], "rows": [], "libraries": None}
+        rules = [*given["rules"], *(rules_from_map(Path(mapped).read_text(), str(mapped)) if mapped else [])]
         tracked = _tracked(config)
         mapping, rows = moves(rules, tracked)
         taken = {r["path"] for r in rows}
@@ -185,6 +216,71 @@ def plan(config: Config, params: Json) -> Row:
             "path": PLAN.as_posix(),
             "map": MAP.as_posix(),
         }
+
+
+# ---- includes
+_TEXT = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inc"})
+_DIRECTIVE = re.compile(r'^([ \t]*#[ \t]*include[ \t]*)(["<])([^">\n]+)([">])', re.M)
+_MIN_VOTES = 2
+
+
+def _roots(texts: Mapping[str, str], tracked: set[str]) -> list[str]:
+    """The directories includes are written against besides the including file's own: every directory R where some
+    include `X` names exactly one tracked file `R/X` that is not next to its includer, at least twice, most used
+    first."""
+    by_base: dict[str, list[str]] = defaultdict(list)
+    for t in tracked:
+        by_base[posixpath.basename(t)].append(t)
+    votes: dict[str, int] = defaultdict(int)
+    for path, text in texts.items():
+        for name in {m.group(3) for m in _DIRECTIVE.finditer(text)}:
+            if posixpath.normpath(posixpath.join(posixpath.dirname(path), name)) in tracked:
+                continue
+            hits = [t for t in by_base.get(posixpath.basename(name), []) if t == name or t.endswith("/" + name)]
+            if len(hits) == 1:
+                votes[hits[0][: len(hits[0]) - len(name)]] += 1
+    return [r for r, n in sorted(votes.items(), key=lambda kv: (-kv[1], kv[0])) if n >= _MIN_VOTES]
+
+
+def includes(texts: Mapping[str, str], tracked: Sequence[str], mapping: Mapping[str, str]) -> dict[str, str]:
+    """The `#include` lines of the text files (old path -> text) written for the layout after the move: an include
+    that names a moved file, or that is relative to a file that moved, is spelled again the way it was written (next
+    to the includer, or under the same include directory) for the new places. Returns the files whose text changes."""
+    known = set(tracked)
+    roots = _roots(texts, known)
+    changed: dict[str, str] = {}
+    for path, text in texts.items():
+        here = mapping.get(path, path)
+
+        def respell(match: re.Match[str], path: str = path, here: str = here) -> str:
+            name = match.group(3)
+            near = posixpath.normpath(posixpath.join(posixpath.dirname(path), name))
+            if near in known:
+                target, root = near, None
+            else:
+                root = next((r for r in roots if r + name in known), None)
+                if root is None:
+                    return match.group(0)
+                target = root + name
+            new = mapping.get(target, target)
+            if root is not None and new.startswith(root):
+                spelled = new[len(root) :]
+            elif root is not None and (other := next((r for r in roots if new.startswith(r)), None)) is not None:
+                spelled = new[len(other) :]
+            else:
+                spelled = posixpath.relpath(new, posixpath.dirname(here) or ".")
+            if root is None and spelled == name and posixpath.dirname(here) == posixpath.dirname(path):
+                return match.group(0)
+            return match.group(1) + match.group(2) + spelled + match.group(4)
+
+        out = _DIRECTIVE.sub(respell, text)
+        if out != text:
+            changed[path] = out
+    return changed
+
+
+def _texts(root: Path, tracked: Sequence[str]) -> dict[str, str]:
+    return {t: (root / t).read_text(errors="surrogateescape") for t in tracked if Path(t).suffix.lower() in _TEXT}
 
 
 # ---- apply
@@ -361,6 +457,7 @@ def apply(config: Config, params: Json) -> Row:
                 missing=tuple(dirty[:20]),
             )
         new_tracked = sorted({mapping.get(t, t) for t in tracked})
+        respelled = includes(_texts(root, tracked), tracked, mapping)
         text, changed = rewrite(
             (root / "config.toml").read_text(),
             tracked,
@@ -382,6 +479,8 @@ def apply(config: Config, params: Json) -> Row:
             while folder != root and not any(folder.iterdir()):
                 folder.rmdir()
                 folder = folder.parent
+        for old, body in respelled.items():
+            store.write(root / mapping.get(old, old), body.encode(errors="surrogateescape"))
         store.write(root / "config.toml", text.encode())
         effort.forget("pin", "includes", "closure", "listing")
         loaded = Config(project, config.host, digest((project.digest, config.host.digest)))
@@ -398,6 +497,7 @@ def apply(config: Config, params: Json) -> Row:
             "action": "apply",
             "moved": len(mapping),
             "config": changed,
+            "includes": len(respelled),
             "written": written,
             "held": held,
             "next": "git add -A; "
@@ -546,9 +646,84 @@ def verify(config: Config, params: Json) -> Row:
         }
 
 
+def prove(config: Config, params: Json) -> Row:
+    """The ROMs of every version, built and compared once: `make check` on the moved tree, refused with its tail when
+    any ROM differs or the build fails."""
+    with effort.stage("layout.prove"):
+        root = config.project.root
+        jobs = int(params.get("jobs") or 4)
+        make = process.tool(config, "make")
+        done = process.run("make check", [make, f"-j{jobs}", "check"], root, tmp=process.scratch(root), timeout=3600)
+        tail = [line for line in (done.stdout + done.stderr).decode(errors="replace").splitlines() if line.strip()]
+        if done.exit != 0:
+            raise _refuse(f"make check exit {done.exit} after the move", missing=tuple(tail[-20:]))
+        return {"proved": True, "check": tail[-5:]}
+
+
+def reorg(config: Config, params: Json) -> Row:
+    """The one-command form: plan from the map (and rules), apply it with includes respelled, prove the ROMs once."""
+    with effort.stage("layout.reorg"):
+        planned = plan(config, params)
+        applied = apply(config, params)
+        out: Row = {
+            "action": "reorg",
+            "moved": planned["moved"],
+            "kept": planned["kept"],
+            "rows": planned["rows"],
+            "path": planned["path"],
+            "map": planned["map"],
+            "config": applied["config"],
+            "includes": applied["includes"],
+            "written": applied["written"],
+            "held": applied["held"],
+            "next": applied["next"],
+        }
+        if params.get("prove"):
+            out.update(prove(config, params))
+        return out
+
+
+def mergecheck(config: Config, params: Json) -> Row:
+    """Which modules of a module map may become one source file and which must stay separate files, from the link
+    order and the built objects of every version (`ld` and `obj` are patterns over {version} and {unit})."""
+    with effort.stage("layout.mergecheck"):
+        path = params.get("modules")
+        if not path:
+            raise _refuse("mergecheck needs --modules FILE (a TSV with `unit` and `module` columns)")
+        root = config.project.root
+        try:
+            rows = merging.read_modules(Path(path).read_text())
+            seqs, statics = merging.facts_of(
+                root,
+                config.project.versions,
+                params.get("ld") or "build/{version}/link.ld",
+                params.get("obj") or "build/{version}/{unit}.o",
+            )
+        except (OSError, ValueError) as error:
+            raise _refuse(f"mergecheck: {error}") from error
+
+        def identity(unit: str) -> Any:
+            if unit.lower().endswith(".s"):
+                return "assembler"
+            row = file_facts(config.project, unit)
+            return (row.toolchain or config.project.toolchain, tuple(sorted(row.cflags)), tuple(sorted(row.omit)))
+
+        modules = merging.verdicts(rows, seqs, statics, identity)
+        separate = sum(1 for m in modules if m["verdict"] == "separate")
+        return {"action": "mergecheck", "modules": modules, "separate": separate, "mergeable": len(modules) - separate}
+
+
 def run(config: Config, params: Json) -> Row:
-    """`unbake layout ACTION`: plan, apply, literals, carry or verify."""
-    actions = {"plan": plan, "apply": apply, "literals": literals, "carry": carry, "verify": verify}
+    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg or mergecheck."""
+    actions = {
+        "plan": plan,
+        "apply": apply,
+        "literals": literals,
+        "carry": carry,
+        "verify": verify,
+        "reorg": reorg,
+        "mergecheck": mergecheck,
+    }
     action = params["action"]
     if action not in actions:
         raise _refuse(f"unknown action {action}: use {', '.join(actions)}")

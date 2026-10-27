@@ -83,6 +83,30 @@
    "items": {
     "type": "object"
    }
+  },
+  "includes": {
+   "type": "integer"
+  },
+  "proved": {
+   "type": "boolean"
+  },
+  "check": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "modules": {
+   "type": "array",
+   "items": {
+    "type": "object"
+   }
+  },
+  "separate": {
+   "type": "integer"
+  },
+  "mergeable": {
+   "type": "integer"
   }
  },
  "additionalProperties": false
