@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -157,7 +158,7 @@ def _recipe(id: str) -> str:
         "as": [f"$(AS_{key})"],
         # -MP: a phony rule per header, so a header a later commit deletes never stops an incremental build
         "cppflags": ["$(CPPFLAGS) -MMD -MP -MF $(@:.i.ok=.d) -MT $@"],
-        "codegen": ["$(CFLAGS)"],
+        "codegen": ["$(CFLAGS)" + (" $(if $(FSPLIT)," + row["function_sections"] + ")" if "function_sections" in row else "")],
         "asflags": ["$(ASFLAGS) $(ASINC)"],
         "defines": ["$(DEFINES)"],
         "includes": ["$(INCLUDES)"],
@@ -180,6 +181,16 @@ def _recipe(id: str) -> str:
             lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
         template, _ = adapters.assemble_template(row)
         assemble = [_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]}))]
+        if "normalise" in row:
+            # An object the ROM places apart: the front's rewrite goes through FSPLIT_PASS (a section per function and
+            # per function's read-only data) and the plain assembler makes the object, never the front's own.
+            norm, split = "$(@:.o=.n.s)", "$(@:.o=.f.s)"
+            front = adapters.render(row["normalise"], {**values, "source": ["$(@:.o=.s)"]})
+            plain = adapters.render(
+                ("{as}", "{asflags}", "{source}", "-o", "{out}"), {**values, "source": [split], "out": ["$@"]}
+            )
+            apart = f'{_shell(front)} > {norm} && python3 -I -c "$$FSPLIT_PASS" {norm} {split} && {_shell(plain)}'
+            assemble = [f"if [ -n \"$(FSPLIT)\" ]; then {apart}; else {assemble[0]}; fi"]
         if row.get("rdata_alloc"):
             assemble.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
         # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
@@ -490,12 +501,16 @@ def _pass(blocks: Sequence[tuple[tuple[str, ...], list[str]]], names: Sequence[s
     return out
 
 
+_ALIGN8 = "__align8_"  # the symbol FSPLIT_PASS (Makefile.in) defines for a read-only block the compiler aligned to 8
+
+
 def _spelled(section: str) -> str:
     """The input sections that hold a section's bytes: read-only data also under the `.rdata` spelling the MIPS
     assemblers give it, a stand-in's own section (`.rodata.<name>`) exactly."""
-    if section == ".rodata" or section.startswith(".rodata."):
-        return f"{section} .rdata{section[len('.rodata') :]}"
-    return section
+    return " ".join(
+        f"{one} .rdata{one[len('.rodata') :]}" if one == ".rodata" or one.startswith(".rodata.") else one
+        for one in section.split()
+    )
 
 
 def _piece(config: Config, v: str, piece: str) -> tuple[int, int, int]:
@@ -503,10 +518,10 @@ def _piece(config: Config, v: str, piece: str) -> tuple[int, int, int]:
     return next((start, end, vram) for name, start, end, vram in versions.pieces(config, v) if name == piece)
 
 
-def _rows(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str, str]]:
-    """(rom, path, section) of every name a file owns in one version's piece (its ROM range: pieces may share a segment
-    name), in ROM order."""
-    rows: list[tuple[int, str, str]] = []
+def _named(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str, str, str]]:
+    """(rom, path, section, name) of every name a file owns in one version's piece (its ROM range: pieces may share a
+    segment name), in ROM order."""
+    rows: list[tuple[int, str, str, str]] = []
     table = held.symbols.get(v, {})
     start, end, _ = _piece(config, v, piece)
     for module in held.modules:
@@ -514,8 +529,52 @@ def _rows(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str
             fact = table.get(name)
             if fact is None or fact[1] is None or not start <= fact[1] < end:
                 continue
-            rows.append((fact[1], module.path, module.sections.get(v, {}).get(name, ".text")))
+            rows.append((fact[1], module.path, module.sections.get(v, {}).get(name, ".text"), name))
     return sorted(rows)
+
+
+def _rows(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str, str]]:
+    """(rom, path, section) of every name a file owns in one version's piece, in ROM order."""
+    return [row[:3] for row in _named(config, held, v, piece)]
+
+
+def _scattered(rows: Sequence[tuple[int, str, str]]) -> set[str]:
+    """The files whose code or compiled read-only data lies in more than one run of a piece: other files' bytes sit
+    between them in the ROM, so one `.text` and one `.rodata` of the object cannot be placed."""
+    runs: list[tuple[str, str]] = []
+    for _, path, section in rows:
+        if section in (".text", ".rodata") and (not runs or runs[-1] != (path, section)):
+            runs.append((path, section))
+    return {key[0] for i, key in enumerate(runs) if key in runs[:i]}
+
+
+def _merged(rows: Sequence[tuple[int, str, str, str]]) -> set[str]:
+    """The files whose object carries the compiled read-only data of more than one function: the compiler aligns each
+    function's block against the one before it, a pad the ROM (where each was its own object) does not have."""
+    owners: dict[str, set[str]] = {}
+    for _, path, section, name in rows:
+        if section == ".rodata" and name.startswith(tree.LITERALS):
+            owners.setdefault(path, set()).add(name)
+    return {path for path, names in owners.items() if len(names) > 1}
+
+
+def _apart_paths(config: Config, held: Tree, v: str) -> set[str]:
+    """The files whose object is built with a section per function (FSPLIT) in one version."""
+    found: set[str] = set()
+    for piece, *_ in versions.pieces(config, v):
+        rows = _named(config, held, v, piece)
+        found |= _scattered([row[:3] for row in rows]) | _merged(rows)
+    return found
+
+
+def _functions(config: Config, held: Tree, v: str, paths: set[str]) -> dict[str, list[str]]:
+    """The functions of each given file in the order their code lies in the ROM, over all pieces of the version."""
+    found: dict[str, list[str]] = {}
+    for piece, *_ in versions.pieces(config, v):
+        for _, path, section, name in _named(config, held, v, piece):
+            if path in paths and section == ".text":
+                found.setdefault(path, []).append(name)
+    return found
 
 
 def text_sizes(config: Config, held: Tree, v: str) -> bytes:
@@ -542,6 +601,8 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
                 sizes[path] = None if path in sizes or after is None else after - rom
         rows = [f"build/{v}/{path}.o: TEXTSIZE := 0x{size:X}" for path, size in sorted(sizes.items()) if size]
         rows += [f"build/{v}/{path}.o: NOALIGN := {m}" for path, m in _unaligned(config, held, v).items()]
+        if "function_sections" in configuration.toolchain(config.project.toolchain):
+            rows += [f"build/{v}/{path}.o: FSPLIT := fsplit" for path in sorted(_apart_paths(config, held, v))]
         return "\n".join([f"# {_GENERATED}", *rows, ""]).encode()
 
 
@@ -613,24 +674,55 @@ def _apart(held: Tree, v: str, rows: Sequence[tuple[int, str, str]], config: Con
         raise Refusal(*bad)
 
 
+def _covered(functions: Sequence[str], rows: set[str], name: str) -> str:
+    """The read-only input sections a ROM row holds: its own, and for a function's `literals_` the pools of the
+    functions after it that have no `literals_` row of their own (the ROM keeps one original file's pools in one run)."""
+    own = f".rodata.{name}"
+    if not name.startswith(tree.LITERALS) or name[len(tree.LITERALS) :] not in functions:
+        return own
+    after = functions[functions.index(name[len(tree.LITERALS) :]) + 1 :]
+    held = itertools.takewhile(lambda f: tree.LITERALS + f not in rows, after)
+    return " ".join([own, *(f".rodata.{tree.LITERALS}{f}" for f in held)])
+
+
 def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> list[str]:
     """The input sections of one version's segment in the order their bytes lie in the ROM: for each name a file owns
     in the segment, its section of that file's object (`.text` for code, the source's own section for data), the
     first of each in address order. A file's compiled read-only data sits where its `literals_` fact says; else a
     toolchain that keeps a function's literals with its object (`per-object`) has them follow the code unless the file
     names rodata of its own in the segment."""
-    rows = _rows(config, held, v, piece)
+    named_rows = _named(config, held, v, piece)
+    rows = [row[:3] for row in named_rows]
     named = {(path, section) for _, path, section in rows}
     doubled = _doubled(config, held, v, piece)
-    items: list[tuple[str, str]] = []
-    for _, path, section in rows:
-        if (path, section) not in items:
-            items.append((path, section))
+    apart = _apart_paths(config, held, v) if "function_sections" in configuration.toolchain(config.project.toolchain) else set()
+    items: list[tuple[str, str, int | None]] = []
+    start, _, _ = _piece(config, v, piece)
+    code = _functions(config, held, v, apart)
+    pools = {name for _, path, section, name in named_rows if path in apart and section == ".rodata"}
+    for rom, path, section, name in named_rows:
+        if path in apart and section == ".text":
+            # an object with a section per function: each at the offset its ROM address gives in the piece
+            items.append((path, f".text.{name}", rom - start))
+        elif path in apart and section == ".rodata":
+            items.append((path, _covered(code.get(path, ()), pools, name), rom - start))  # each block where its row lies
+        elif (path, section, None) not in items:
+            items.append((path, section, None))
             if per_object and section == ".text" and (path, ".rodata") not in named:
-                items.append((path, ".rodata"))
-    _apart(held, v, rows, config)
+                items.append((path, ".rodata", None))
+    _apart(held, v, [row for row in rows if row[1] not in apart], config)
     out: list[str] = []
-    for path, section in items:
+    for path, section, offset in items:
+        if offset is not None:
+            # an output section's `.` is relative to its start: never back, so a block that runs past the next row's
+            # address (one block holding several rows) is followed on, and the ROM compare stops any real shift
+            out.append(f". = MAX(., 0x{offset:X})")
+            for one in section.split():
+                if one.startswith(".rodata."):
+                    # the assembler tagged the blocks it aligned to 8 (FSPLIT_PASS): `SUBALIGN(1)` drops that
+                    out.append(f". = DEFINED({_ALIGN8}{one[len('.rodata.') :]}) ? ALIGN(8) : .")
+                out.append(f"{path}.o({_spelled(one)})")
+            continue
         if section == ".rodata" and path in doubled:
             out.append(f". = ALIGN(8) /* {path}.o */")
         out.append(f"{path}.o({_spelled(section)})")

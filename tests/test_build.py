@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from unbake import build
+from unbake import adapters, build
 from unbake.contracts import FileFacts, Refusal, Segment
 from unbake.tree import Module, Tree
 
@@ -69,6 +69,13 @@ def per_object(monkeypatch):
     """The toolchain of make_config keeps a function's literals with its object (as gcc-2.7.2-kmc does)."""
     real = build.configuration.toolchain
     monkeypatch.setattr(build.configuration, "toolchain", lambda id: {**real(id), "link_sections": "per-object"})
+
+
+@pytest.fixture
+def no_apart(monkeypatch):
+    """A toolchain row without function_sections: an object is one `.text` and one `.rodata`, whatever the ROM does."""
+    real = build.configuration.toolchain
+    monkeypatch.setattr(build.configuration, "toolchain", lambda id: {k: v for k, v in real(id).items() if k != "function_sections"})
 
 
 def both(path: str, *names: str, sections: dict[str, str] | None = None) -> Module:
@@ -228,6 +235,7 @@ def test_rodata_of_code_may_live_in_a_data_segment_like_rw(tmp_path, monkeypatch
     ]
 
 
+@pytest.mark.usefixtures("no_apart")
 def test_a_symbol_in_two_places_of_one_object_section_is_listed_once(tmp_path):
     tree = make_tree(both("src/a.c", "f_1", "f_2", "f_4"), both("src/b.c", "f_3"))
     body = _body(build.linker(make_config(tmp_path), tree).decode())
@@ -345,7 +353,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(without_hdrkey(text).splitlines()) < 440
+    assert len(without_hdrkey(text).splitlines()) < 520
     assert "src/f1.c" not in text
 
 
@@ -495,6 +503,7 @@ def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_pat
         "build/us/src/b.c.o: TEXTSIZE := 0x10",
         "build/us/src/d.c.o: TEXTSIZE := 0x10",
         "build/us/src/e.s.o: TEXTSIZE := 0xF80",  # the code segment ends where the next one starts
+        "build/us/src/c.c.o: FSPLIT := fsplit",  # d's code lies between c's two functions: c is placed function by function
     ]
     assert "src/e.s" not in build.text_sizes(make_config(tmp_path), tree, "eu-1").decode()  # the last segment
 
@@ -998,7 +1007,7 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     """jump_table_base and rdata_alloc of a toolchain row become recipe lines around its assembler."""
     lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
     sed = next(i for i, line in enumerate(lines) if "[.$$]L[0-9]+" in line)
-    asm = next(i for i, line in enumerate(lines) if "asn64" in line)
+    asm = max(i for i, line in enumerate(lines) if "asn64" in line)  # the plain assembler, after the apart branch's
     assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
     assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@; fi"
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")
@@ -1245,7 +1254,8 @@ def test_a_literals_row_on_an_8_byte_boundary_asks_the_linker_for_that_alignment
     ]
 
 
-def test_literals_after_other_files_data_apart_from_their_file_are_refused(tmp_path):
+@pytest.mark.usefixtures("no_apart")
+def test_literals_after_other_files_data_apart_from_their_file_are_refused_where_the_toolchain_cannot_place_apart(tmp_path):
     tree = make_tree(
         both("src/a.c", "f_1", "d_2", "literals_f_5", sections={"d_2": ".rodata", "literals_f_5": ".rodata"}),
         both("src/b.c", "f_3", "d_4", sections={"d_4": ".rodata"}),
@@ -1814,3 +1824,81 @@ def test_a_rebase_that_changed_the_facts_extracts_again_on_the_next_build(tmp_pa
     # a tree recorded by an older Makefile (key but no source record) is checked once and keeps its extraction
     (tmp_path / "build/.extract-src-us").unlink()
     assert run() == 2 and (tmp_path / "build/.extract-src-us").is_file()
+
+
+def _merged_unit() -> Tree:
+    """src/a.c holds two functions with a pool each (so the ROM split them; the object is one), src/b.c one."""
+    tree = make_tree(
+        both("src/a.c", "f_1", "literals_f_1", "f_2", "literals_f_2", sections={"literals_f_1": ".rodata", "literals_f_2": ".rodata"}),
+        both("src/b.c", "f_5"),
+    )  # fmt: skip
+    for v, pool in (("us", 0x8), ("us", 0x18), ("eu-1", 0x8), ("eu-1", 0x18)):  # each pool just before its function
+        name = "literals_f_1" if pool == 0x8 else "literals_f_2"
+        tree.symbols[v][name] = (0x80200000 + pool, 0x1000 + pool, 8, "data")
+    return tree
+
+
+def test_a_file_with_the_pools_of_several_functions_is_built_apart_and_the_others_are_not(tmp_path):
+    rows = [(0x10, "src/a.c", ".rodata", "literals_f_1"), (0x20, "src/a.c", ".rodata", "literals_f_2"), (0x30, "src/b.c", ".rodata", "literals_f_5")]
+    assert build._merged(rows) == {"src/a.c"}
+    scattered = [(1, "x.c", ".text"), (2, "y.c", ".text"), (3, "x.c", ".text"), (4, "z.c", ".text"), (5, "z.c", ".rodata")]
+    assert build._scattered(scattered) == {"x.c"}
+    assert build._apart_paths(make_config(tmp_path), _merged_unit(), "us") == {"src/a.c"}
+
+
+def test_text_sizes_mark_the_apart_object_to_be_built_with_a_section_per_function(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    assert "build/us/src/a.c.o: FSPLIT := fsplit" in build.text_sizes(config, _merged_unit(), "us").decode()
+    real = build.configuration.toolchain
+    monkeypatch.setattr(build.configuration, "toolchain", lambda id: {k: v for k, v in real(id).items() if k != "function_sections"})
+    assert "FSPLIT" not in build.text_sizes(config, _merged_unit(), "us").decode()  # a toolchain that cannot, is not asked
+
+
+def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom_address(tmp_path):
+    text = build.linker(make_config(tmp_path), _merged_unit()).decode()
+    body = [l.strip() for l in text.splitlines() if l.strip().startswith(("src/", ". = ")) and ".bss" not in l]
+    assert body[:11] == [
+        ". = MAX(., 0x8);",
+        ". = DEFINED(__align8_literals_f_1) ? ALIGN(8) : .;",
+        "src/a.c.o(.rodata.literals_f_1 .rdata.literals_f_1);",
+        ". = MAX(., 0x10);",
+        "src/a.c.o(.text.f_1);",
+        ". = MAX(., 0x18);",
+        ". = DEFINED(__align8_literals_f_2) ? ALIGN(8) : .;",
+        "src/a.c.o(.rodata.literals_f_2 .rdata.literals_f_2);",
+        ". = MAX(., 0x20);",
+        "src/a.c.o(.text.f_2);",
+        "src/b.c.o(.text);",
+    ]
+    assert "src/b.c.o(.text);" in body  # an object whole in the ROM keeps its one `.text`
+
+
+def test_a_function_with_no_pool_row_of_its_own_has_its_pool_kept_with_the_function_before(tmp_path):
+    functions, rows = ["f_1", "f_2", "f_3"], {"literals_f_1", "literals_f_3"}
+    assert build._covered(functions, rows, "literals_f_1") == ".rodata.literals_f_1 .rodata.literals_f_2"
+    assert build._covered(functions, rows, "literals_f_3") == ".rodata.literals_f_3"
+    rows = {"literals_f_1"}
+    assert build._covered(functions, rows, "literals_f_1") == ".rodata.literals_f_1 .rodata.literals_f_2 .rodata.literals_f_3"
+    assert build._covered(functions, rows, "d_9") == ".rodata.d_9"  # not a pool: its own section
+
+
+def _fsplit(tmp_path, text: str) -> list[str]:
+    import subprocess
+    import sys
+
+    (tmp_path / "in.s").write_text(text)
+    script = adapters.fsplit_script()
+    subprocess.run([sys.executable, "-I", "-c", script, str(tmp_path / "in.s"), str(tmp_path / "out.s")], check=True)
+    return (tmp_path / "out.s").read_text().splitlines()
+
+
+def test_fsplit_pass_gives_each_function_and_each_read_only_block_a_section_of_its_own(tmp_path):
+    out = _fsplit(
+        tmp_path,
+        '.section .f_1,"ax"\nf_1:\n lui $4, %hi(.LC0)\n.section .rdata\n.align 3\nD_blob_1:\n.word 1\n'
+        '.section .rdata\n.align 2\n.LC0:\n.word 2\n.section .f_2,"ax"\nf_2:\n jr $31\n',
+    )  # fmt: skip
+    sections = [line.split("\t", 1)[1] for line in out if line.startswith(".section")]
+    assert sections == ['.text.f_1,"ax",@progbits', '.rdata.D_blob_1,"a",@progbits', '.rdata.literals_f_1,"a",@progbits', '.text.f_2,"ax",@progbits']
+    assert "\t.set __align8_D_blob_1, 0" in out  # a block aligned to 8 says so (SUBALIGN(1) drops the section's)
+    assert not any("__align8_literals_f_1" in line for line in out)

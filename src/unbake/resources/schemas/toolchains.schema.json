@@ -229,6 +229,17 @@
      "rdata_alloc": {
       "type": "boolean"
      },
+     "function_sections": {
+      "type": "string",
+      "minLength": 1
+     },
+     "normalise": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
      "fingerprint": {
       "type": "object",
       "properties": {

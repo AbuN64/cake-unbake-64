@@ -302,6 +302,13 @@ def hilo_hazard_script() -> str:
     return text.split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0] + "\n"
 
 
+def fsplit_script() -> str:
+    """The python of the generated Makefile's FSPLIT_PASS: the one text the build runs on an object whose functions the
+    ROM places apart."""
+    text = configuration.template("Makefile.in")
+    return text.split("define FSPLIT_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
+
+
 def strip_align_script() -> str:
     """The python of the generated Makefile's STRIP_ALIGN: the one text both builds run, so what a measure assembles is
     what the build assembles."""

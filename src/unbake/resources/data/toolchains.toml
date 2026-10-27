@@ -214,6 +214,8 @@ stand_in_as = "{as}"
 data_split = "subsegment"
 jump_table_base = 0x80000000  # a jump table entry holds its label's address less this (the ROM's tables do)
 rdata_alloc = true  # asn64 leaves .rdata unallocated: the link would drop the object's read-only data
+function_sections = "-ffunction-sections"  # the compiler flag that gives each function a section of its own
+normalise = ["{n64link}", "asn64", "{source}"]  # the assembler front's rewrite of the compiler's assembly, on stdout
 title = "GCC 2.8.1 (SN64)"
 dependency = { name = "GCC 2.8.1", repository = "https://github.com/pmret/gcc-papermario" }  # the README link: the source repository, never a download
 family = "gcc"
