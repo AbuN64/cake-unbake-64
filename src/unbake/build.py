@@ -139,6 +139,9 @@ def _shell(argv: Sequence[object]) -> str:
     return " ".join(str(w) if str(w).startswith("$") or "$(" in str(w) else shlex.quote(str(w)) for w in argv)
 
 
+_THEN = "'&&'"  # the word between the steps of an object's program (cc_cache.object_file runs them without a shell)
+
+
 def _flags(row: Json, config: Config, added: Sequence[str] = (), omit: Sequence[str] = ()) -> list[str]:
     """A toolchain row's flags and the project's, less what a [file] row omits, plus the flags the row adds."""
     return [f for f in (*row["cflags"], *config.project.cflags) if f not in omit] + list(added)
@@ -147,8 +150,8 @@ def _flags(row: Json, config: Config, added: Sequence[str] = (), omit: Sequence[
 def _recipe(id: str) -> str:
     """The commands that turn one source into an object with a toolchain, spelled in make variables: PREPROCESS_<id>
     makes the stamp `.i.ok` whole, the text beside it in `.i` (kept when its compile key is the same), and
-    COMPILE_<id> turns that .i into the object, as one shell command (the object rule runs it only when the .i or
-    another input changed)."""
+    COMPILE_<id> turns that .i into the object, as a program of steps (cc_cache.object_file: the object rule runs it only
+    when the .i or another input changed)."""
     row, key = configuration.toolchain(id), _key(id)
     out = "$(@:.o=.s)" if row["emits_asm"] else "$@"
     values = {
@@ -168,45 +171,40 @@ def _recipe(id: str) -> str:
         "includes": ["$(INCLUDES)"],
     }
     preprocess = _shell(adapters.render(row["preprocess"], {**values, "source": ["$<"]}))
-    lines = [_shell(adapters.render(row["compile"], {**values, "source": ["$(@:.o=.i)"], "out": [out]}))]
+    compile = f"@compile {_shell(adapters.render(row['compile'], {**values, 'source': ['$(@:.o=.i)'], 'out': [out]}))}"
+    body = compile
     if row["emits_asm"]:
-        keep = "$(@:.o=.s.prev)"
+        keep, asm = "$(@:.o=.s.prev)", "$(@:.o=.s)"
         # The last assembly an object was made from, to compare. It is removed only once the object is made, so one
         # still here says the last run failed: the assembly beside it is that failed run's (partial, or of a text no
         # object holds) and goes, never into `prev`.
-        asm = "$(@:.o=.s)"
-        lines.insert(0, f"if [ -f {keep} ]; then rm -f {asm}; elif [ -f {asm} ]; then mv -f {asm} {keep}; fi")
-        lines.append("test -s $(@:.o=.s)")  # a compiler that exited 0 without assembly has not compiled
+        parts = [
+            f"@rotate {asm} {keep} {_THEN} {compile} {_THEN} @nonempty {asm}"
+        ]  # nonempty: a compiler that exited 0 without assembly has not compiled
         # the alignment the ROM's start of the data does not meet is dropped (data packed at the byte, or off 8)
-        lines.append('$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)')
-        lines.append('$(if $(HILO),python3 -I -c "$$HILO_HAZARD" $(@:.o=.s),true)')
+        parts.append(f"$(if $(NOALIGN),{_THEN} @py STRIP_ALIGN {asm} $(NOALIGN))")
+        parts.append(f"$(if $(HILO),{_THEN} @py HILO_HAZARD {asm})")
         if row.get("jump_table_base"):
-            entry = r"^([ \t]*\.word[ \t]+[.$$]L[0-9]+)[ \t]*$$"
-            lines.append(f"sed -i -E 's/{entry}/\\1-0x{row['jump_table_base']:X}/' $(@:.o=.s)")
+            parts.append(f"{_THEN} @jumptable {asm} {row['jump_table_base']:X}")
+        # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
+        # with the same text size: the object stands, and `.same` tells the rule to skip the trim it already holds.
+        parts.append(f"{_THEN} @settle {asm} {keep}")
         template, _ = adapters.assemble_template(row)
-        assemble = [_shell(adapters.render(template, {**values, "source": ["$(@:.o=.s)"], "out": ["$@"]}))]
+        assemble = _shell(adapters.render(template, {**values, "source": [asm], "out": ["$@"]}))
         if "normalise" in row:
             # An object the ROM places apart: the front's rewrite goes through FSPLIT_PASS (a section per function and
             # per function's read-only data) and the plain assembler makes the object, never the front's own.
             norm, split = "$(@:.o=.n.s)", "$(@:.o=.f.s)"
-            front = adapters.render(row["normalise"], {**values, "source": ["$(@:.o=.s)"]})
+            front = adapters.render(row["normalise"], {**values, "source": [asm]})
             plain = adapters.render(
                 ("{as}", "{asflags}", "{source}", "-o", "{out}"), {**values, "source": [split], "out": ["$@"]}
             )
-            apart = f'{_shell(front)} > {norm} && python3 -I -c "$$FSPLIT_PASS" {norm} {split} && {_shell(plain)}'
-            assemble = [f'if [ -n "$(FSPLIT)" ]; then {apart}; else {assemble[0]}; fi']
+            apart = f"@out {norm} {_shell(front)} {_THEN} @py FSPLIT_PASS {norm} {split} {_THEN} {_shell(plain)}"
+            assemble = f"$(if $(FSPLIT),{apart},{assemble})"
+        parts.append(f"{_THEN} {assemble}")
         if row.get("rdata_alloc"):
-            assemble.append("$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
-        # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
-        # with the same text size: the object stands, and `.same` tells the rule to skip the trim it already holds.
-        same = (
-            '[ -z "$(filter-out %.i.ok,$?)$(flags_changed)" ] && [ -f $@ ] && [ -f ' + keep + " ] && "
-            '[ "x$(file <$@.textsize)" = "x$(TEXTSIZE)" ] && cmp -s $(@:.o=.s) ' + keep
-        )
-        lines.append(
-            f"if {same}; then rm -f {keep} && touch $@ && : > $@.same; else rm -f {keep} && {' && '.join(assemble)}; fi"
-        )
-    body = " && ".join(lines)
+            parts.append(f"{_THEN} $(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
+        body = " ".join(parts)
     return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
 
@@ -1045,8 +1043,13 @@ def _preprocess_unit(config: Config) -> str:
     same cache as the compiler, so a source whose included files did not move is not preprocessed again for another
     version or tree. The cache is empty on a host without one."""
     cache = front.cache(config.host)
+    return " ".join([_cc_cache(), *(shlex.quote(str(p)) for p in ("--unit", cache or ""))])
+
+
+def _cc_cache() -> str:
+    """The cache's helper as a command (CCPY): the recipes that would start several shell commands call it once."""
     script = _stable(Path(__file__).parent / "resources" / "cc_cache.py")
-    return " ".join(["python3", "-I", "-S", *(shlex.quote(str(p)) for p in (script, "--unit", cache or ""))])
+    return " ".join(["python3", "-I", "-S", shlex.quote(str(script))])
 
 
 def local_mk(config: Config) -> bytes:
@@ -1054,6 +1057,7 @@ def local_mk(config: Config) -> bytes:
         assignments = [
             f"JOBS := {config.host.workers}",
             f"PPUNIT := {_preprocess_unit(config)}",
+            f"CCPY := {_cc_cache()}",
             *(
                 f"{var} := {_stable(config.host.tools[row['host']]) if row['host'] in config.host.tools else ''}"
                 for var, row in sorted(_REPO["make"]["tools"].items())

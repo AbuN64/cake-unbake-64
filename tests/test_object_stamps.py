@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from test_build import _pp, make_config
+from test_build import CCPY, _pp, make_config
 
 from unbake import build
 
@@ -71,6 +71,7 @@ class Tree:
                 f"N64LINK={sys.executable} {self.asm}",
                 "OBJCOPY=true",
                 f"TRIM_TEXT={sys.executable} {self.trim}",
+                CCPY,
                 "TEXTSIZE=0x10",
                 *extra,
             ],

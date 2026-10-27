@@ -29,10 +29,11 @@ TYPE_CHECKING = False  # typing itself is 1 ms of this front's start
 if TYPE_CHECKING:
     import re
 
-try:  # the C module hashlib wraps: importing hashlib itself loads OpenSSL, 4 ms of every call
+try:  # the C modules hashlib wraps: importing hashlib itself loads OpenSSL, 4 ms of every call
+    from _sha1 import sha1
     from _sha2 import sha256
 except ImportError:  # pragma: no cover
-    from hashlib import sha256
+    from hashlib import sha1, sha256
 # Everything a call that finds its assembly does not need loads on first use: this front runs once per source of a
 # build (about ten thousand times after a header edit), so its start is most of its cost.
 
@@ -268,6 +269,23 @@ def maybe_prune(cache: str) -> None:
         prune(cache, time.time())
 
 
+def take_answer(compiler: str, args: list[str], out: str, text: bytes) -> bool:
+    """The batch's answer for this unit (`<out>.cc`, see `batch`) moved to `out` when its key is the hash of this very
+    command and text; a leftover answer or key of any other kind is dropped."""
+    try:
+        with open(out + ".cc.key", encoding="ascii") as handle:
+            wanted = handle.read().strip()
+        if wanted == answer_key(compiler, args, text):
+            os.replace(out + ".cc", out)
+            _remove(out + ".cc.key")
+            return True
+    except OSError:
+        pass
+    _remove(out + ".cc")
+    _remove(out + ".cc.key")
+    return False
+
+
 def run(cache: str, compiler: str, args: list[str]) -> int:
     cache = os.fspath(cache)
     parsed = parse(args)
@@ -276,6 +294,8 @@ def run(cache: str, compiler: str, args: list[str]) -> int:
     source, out = parsed
     try:
         text = read(source)
+        if take_answer(compiler, args, out, text):
+            return 0
         name = key(compiler, args, text)
     except OSError:
         return call(compiler, args)
@@ -463,13 +483,18 @@ def _remove(path: str) -> None:
         os.unlink(path)
 
 
-def record_stamp(stamprec: str, stamp: str) -> int:
+def record_stamp(stamprec: str, stamp: str, *extracted: str) -> int:
     """The stamp's input record (build/.inputs.log): the C tool when it was built, else the sweep script."""
     import subprocess
 
-    if os.access(stamprec, os.X_OK) and subprocess.run([stamprec, "record", stamp], check=False).returncode == 0:
+    if (
+        os.access(stamprec, os.X_OK)
+        and subprocess.run([stamprec, "record", stamp, *extracted], check=False).returncode == 0
+    ):
         return 0
-    return subprocess.run(["python3", "-I", "build/stamp-sweep.py", "record", stamp], check=False).returncode
+    return subprocess.run(
+        ["python3", "-I", "build/stamp-sweep.py", "record", stamp, *extracted], check=False
+    ).returncode
 
 
 def unit(
@@ -500,6 +525,207 @@ def unit(
         pass
     os.utime(stamp)
     return record_stamp(stamprec, stamp)
+
+
+def trim_text(path: str, size: str) -> None:
+    """The .text size of a big-endian ELF32 object cut to `size` bytes when the bytes past it are zero (the object
+    assembles to a text the ROM's slot holds in full)."""
+    import struct
+
+    n = int(size, 0)
+    d = bytearray(read(path))
+    o = struct.unpack_from(">I", d, 32)[0]
+    e, c, x = struct.unpack_from(">HHH", d, 46)
+    names = struct.unpack_from(">I", d, o + x * e + 16)[0]
+    text = [
+        o + k * e
+        for k in range(c)
+        if d[names + struct.unpack_from(">I", d, o + k * e)[0] :].split(b"\0")[0] == b".text"
+    ]
+    start, length = struct.unpack_from(">II", d, text[0] + 16) if text else (0, 0)
+    if text and length > n and not d[start + n : start + length].strip(b"\0"):
+        struct.pack_into(">I", d, text[0] + 20, n)
+        write(path, bytes(d))
+
+
+def is_file(path: str) -> bool:
+    return os.path.isfile(path)
+
+
+def jump_table(path: str, base: str) -> int:
+    """A jump table entry `.word .L12` of the assembly holds its label's address less BASE (a hex number)."""
+    import re
+
+    text = read(path)
+    made = re.sub(
+        rb"^([ \t]*\.word[ \t]+[.$]L[0-9]+)[ \t]*$", lambda m: m[1] + b"-0x" + base.encode(), text, flags=re.M
+    )
+    if made != text:
+        write(path, made)
+    return 0
+
+
+def front_command(words: list[str]) -> bool:
+    """Whether `words` are the compiler front, `sh .../cc_front.sh CACHE COMPILER ARGS...`."""
+    return len(words) >= 5 and words[0] == "sh" and words[1].endswith("cc_front.sh")
+
+
+def compile_step(words: list[str]) -> int:
+    """The compile command: the front's, while the build only collects, is recorded and failed (125); else the batch's
+    answer is moved into place; a unit the batch could not answer is the front's own run (the cache, then the compiler).
+    Any other command is just started."""
+    import subprocess
+
+    if front_command(words):
+        compiler, args = words[3], words[4:]
+        if collect := os.environ.get("ABU_CC_COLLECT"):
+            line = (SEPARATOR.join([compiler, *args]) + "\n").encode(errors="surrogateescape")
+            fd = os.open(
+                collect, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o666
+            )  # one write: lines this short never interleave
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
+            return 125
+        parsed = parse(args)
+        if parsed is not None:
+            with contextlib.suppress(OSError):
+                if take_answer(compiler, args, parsed[1], read(parsed[0])):
+                    return 0
+    return subprocess.call(words)
+
+
+def object_step(words: list[str], state: dict[str, object]) -> int:
+    """One step of an object's program: a command to start, or a file operation the chain used to start a process for.
+
+    `@rotate S KEPT`: the last assembly is kept (a KEPT still there says the last run failed: S goes, never into it).
+    `@compile COMMAND...`: the compiler front (compile_step).  `@nonempty S`: a compiler that exited 0 without assembly
+    has not compiled.  `@jumptable S HEX`: jump_table.  `@py NAME ARGS...`: python3 -I -c "$NAME" ARGS (a pass the
+    Makefile exports).  `@out FILE COMMAND...`: the command's output goes to FILE.  `@settle S KEPT`: the object stands
+    as it was when only its .i moved, its size is the wanted one and S is KEPT byte for byte (the rest of the program
+    is skipped, `.same` tells the rule its trim is held); KEPT goes either way."""
+    import subprocess
+
+    head, rest = words[0], words[1:]
+    if head == "@rotate" and len(rest) == 2:
+        if is_file(rest[1]):
+            _remove(rest[0])
+        elif is_file(rest[0]):
+            os.replace(rest[0], rest[1])
+        return 0
+    if head == "@nonempty" and len(rest) == 1:
+        return 0 if os.path.exists(rest[0]) and os.path.getsize(rest[0]) > 0 else 1
+    if head == "@jumptable" and len(rest) == 2:
+        return jump_table(*rest)
+    if head == "@compile" and rest:
+        return compile_step(rest)
+    if head == "@py" and rest:
+        code = os.environ.get(rest[0])
+        if code is None:
+            sys.stderr.write(f"cc_cache: {rest[0]} is not set\n")
+            return 1
+        return subprocess.call(["python3", "-I", "-c", code, *rest[1:]])
+    if head == "@out" and len(rest) >= 2:
+        with open(rest[0], "wb") as handle:
+            return subprocess.call(rest[1:], stdout=handle)
+    if head == "@settle" and len(rest) == 2:
+        assembly, kept = rest
+        out = str(state["out"])
+        same = False
+        if not state["changed"] and state["recorded"] == state["textsize"] and is_file(out) and is_file(kept):
+            same = read(assembly) == read(kept)
+        _remove(kept)
+        if same:
+            os.utime(out)
+            write(out + ".same", b"")
+            state["stop"] = True
+        return 0
+    if head.startswith("@"):
+        sys.stderr.write(f"cc_cache: no step {head}\n")
+        return 64
+    try:
+        return subprocess.call(words)
+    except OSError as error:
+        sys.stderr.write(f"cc_cache: cannot run {words[0]}: {error.strerror}\n")
+        return 127
+
+
+def object_file(
+    out: str, version: str, facts: str, changed: str, textsize: str, flags: str, stamprec: str, rest: list[str]
+) -> int:
+    """The whole recipe of one `X.o` in this one process (the shell ran about ten commands, then the chain's twelve):
+    the extracted files it assembles are what they were (`<out>.asm`, their sum; a different sum removes the object),
+    the object stands when nothing but its stamp moved and its text size and flags are the ones it was made with, else
+    the program (`rest` after the extracted files and a `--`: steps separated by `&&`, see object_step) makes it and
+    the trim and `.textsize` follow; then the flags, the sum and the input record."""
+    try:
+        made = read(f"asm/{version}/.extracted").decode().rstrip("\n")
+    except OSError:
+        made = ""
+    if made and made != facts:
+        sys.stderr.write(
+            f"asm/{version} was extracted from other symbol_addrs.txt/splat.yaml than this tree holds "
+            f"({made}, now {facts}): "
+            f"run make extract-{version}\n"
+        )
+        return 1
+    split = rest.index("--") if "--" in rest else len(rest)
+    extracted, program = rest[:split], rest[split + 1 :]
+    if not program:
+        return 64
+    digest = sha1()
+    for name in extracted:
+        with contextlib.suppress(OSError):
+            digest.update(read(name))
+    total = f"{digest.hexdigest()}  -\n".encode()
+    try:
+        if read(out + ".asm") != total:
+            _remove(out)
+    except OSError:
+        pass
+    flags_line = (flags + "\n").encode(errors="surrogateescape")
+    try:
+        recorded = read(out + ".textsize").decode(errors="surrogateescape").removesuffix("\n")
+    except OSError:
+        recorded = ""
+    source = out[: -len(".o")] + ".i"
+    try:
+        stands = not changed and recorded == textsize and os.stat(source).st_mtime_ns < os.stat(out).st_mtime_ns
+    except OSError:
+        stands = False
+    if stands:
+        write(out + ".flags", flags_line)
+        os.utime(out)
+    else:
+        state: dict[str, object] = {
+            "out": out,
+            "changed": changed,
+            "textsize": textsize,
+            "recorded": recorded,
+            "stop": False,
+        }
+        steps: list[list[str]] = [[]]
+        for word in program:
+            if word == "&&":
+                steps.append([])
+            else:
+                steps[-1].append(word)
+        for words in steps:
+            code = object_step(words, state) if words else 0
+            if code:
+                return code
+            if state["stop"]:
+                break
+        if os.path.exists(out + ".same"):  # the object stands as it was (the compile's own check): its trim is held
+            _remove(out + ".same")
+        else:
+            if textsize:
+                trim_text(out, textsize)
+            write(out + ".textsize", (textsize + "\n").encode(errors="surrogateescape"))
+        write(out + ".flags", flags_line)
+    write(out + ".asm", total)
+    return record_stamp(stamprec, out, *extracted)
 
 
 INLINE_UNITS = (
@@ -578,6 +804,12 @@ def main(argv: list[str]) -> int:
         return 0
     if len(argv) == 6 and argv[1] == "--units":
         units(argv[2], argv[3], int(argv[4]), int(argv[5]))
+        return 0
+    if len(argv) >= 10 and argv[1] == "--object":
+        # --object OUT VERSION FACTS CHANGED TEXTSIZE FLAGS STAMPREC [EXTRACTED...] -- PROGRAM...
+        return object_file(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9:])
+    if len(argv) == 4 and argv[1] == "--trim":
+        trim_text(argv[2], argv[3])
         return 0
     if len(argv) >= 9 and argv[1] == "--unit":
         # --unit CACHE_DIR STAMP FLAGS HDRKEY STAMPREC PREPROCESSOR ARGS...

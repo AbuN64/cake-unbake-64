@@ -25,6 +25,9 @@ def _pp(variable: str, command: str) -> str:
     return f"{variable}=@{unit} $@ $(call shq,$(PP_FLAGS)) $(HDRKEY) $(STAMPREC) {command}"
 
 
+CCPY = f"CCPY={sys.executable} {Path(__file__).parent / 'ccpy_stub.py'}"  # the helper, its trim only logging
+
+
 def segments(version: str) -> tuple[Segment, ...]:
     if version == "us":
         return (Segment("main", 0x1000, 0x80200400, "code"), Segment("assets", 0x2000, None, "bin"))
@@ -347,7 +350,7 @@ def test_makefile_variable_blocks(tmp_path):
     assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
     make_text = without_hdrkey(text)
     assert "sed -nE" in text
-    assert sum(line.count("sed ") for line in make_text.splitlines() if not line.startswith("#")) == 5
+    assert sum(line.count("sed ") for line in make_text.splitlines() if not line.startswith("#")) == 4
     # PROVIDE lines (facts, .L labels); data files; code files; jump tables
     assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
@@ -531,17 +534,13 @@ def test_the_makefile_cuts_a_zero_tail_of_text_and_spells_what_the_assembler_wou
     text = build.makefile(make_config(tmp_path)).decode()
     assert "-include $(VERSIONS:%=versions/%/text_sizes.mk)" in text
     assert text.count("$(Q)$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE))") == 1  # assembled objects
-    assert text.count("$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE),true)") == 1  # compiled ones, when they compile
+    assert "$(call shq,$(TEXTSIZE))" in text  # compiled ones: the object helper trims them when they compile
     assert "(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)" in text and "1000[0-9A-F]{4}" in text
 
 
 def test_trim_text_cuts_only_a_zero_tail(tmp_path):
-    """TRIM_TEXT rewrites the .text size of a big-endian ELF32 when the bytes past the size are zero."""
-    import re
+    """cc_cache's trim rewrites the .text size of a big-endian ELF32 when the bytes past the size are zero."""
     import struct
-    import subprocess
-
-    script = re.search(r"^TRIM_TEXT = python3 -I -c '(.*)'$", build.makefile(make_config(tmp_path)).decode(), re.M)[1]
 
     def elf(text: bytes) -> bytes:
         names = b"\0.text\0.shstrtab\0"
@@ -560,7 +559,7 @@ def test_trim_text_cuts_only_a_zero_tail(tmp_path):
     def size_after(text: bytes, want: int) -> int:
         path = tmp_path / "x.o"
         path.write_bytes(elf(text))
-        subprocess.run(["python3", "-I", "-c", script, str(path), hex(want)], check=True)
+        cc_cache.trim_text(str(path), hex(want))
         data = path.read_bytes()
         shoff = struct.unpack_from(">I", data, 32)[0]
         return struct.unpack_from(">I", data, shoff + 40 + 20)[0]
@@ -621,6 +620,7 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
                 _pp("PREPROCESS_stub", "cat $<"),
                 "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
+                CCPY,
             ],
             cwd=tmp_path,
             capture_output=True,
@@ -681,6 +681,7 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
                 _pp("PREPROCESS_stub", f"{sys.executable} {pre} $<"),
                 "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
+                CCPY,
             ],
             cwd=tmp_path,
             capture_output=True,
@@ -844,6 +845,7 @@ def test_an_object_follows_the_extracted_files_its_include_lines_name(tmp_path):
                 _pp("PREPROCESS_stub", "cat $<"),
                 "COMPILE_stub=$(AS) $(@:.o=.i) -o $@",
                 "TRIM_TEXT=true",
+                CCPY,
             ],
             cwd=tmp_path,
             capture_output=True,
@@ -993,7 +995,7 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
     rows = build.text_sizes(config, held, "us").decode().splitlines()
     assert "build/us/src/b.c.o: NOALIGN := 1" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
     text = build.makefile(config).decode()
-    assert '$(if $(NOALIGN),python3 -I -c "$$STRIP_ALIGN" $(@:.o=.s) $(NOALIGN),true)' in text
+    assert "$(if $(NOALIGN),'&&' @py STRIP_ALIGN $(@:.o=.s) $(NOALIGN))" in text
     code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
     source.write_text(".text\n.align 2\nf:\n.section .rodata\n.align 3\n.word 1\n.half 2\n.text\n.align 2\n")
@@ -1024,12 +1026,12 @@ def test_data_starting_word_aligned_but_off_eight_loses_only_the_eight_alignment
 
 def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     """jump_table_base and rdata_alloc of a toolchain row become recipe lines around its assembler."""
-    lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
-    sed = next(i for i, line in enumerate(lines) if "[.$$]L[0-9]+" in line)
+    lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" '&&' ")
+    table = next(i for i, line in enumerate(lines) if line.startswith("@jumptable"))
     asm = max(i for i, line in enumerate(lines) if "asn64" in line)  # the plain assembler, after the apart branch's
-    assert sed < asm and lines[sed].endswith("/\\1-0x80000000/' $(@:.o=.s)")
-    assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@; fi"
-    assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and ".L[0-9]" not in build._recipe("gcc-2.7.2-kmc")
+    assert table < asm and lines[table] == "@jumptable $(@:.o=.s) 80000000"
+    assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
+    assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and "@jumptable" not in build._recipe("gcc-2.7.2-kmc")
 
 
 def test_a_file_row_pads_hilo_hazards_the_way_the_rom_assembler_did(tmp_path):
@@ -1037,11 +1039,9 @@ def test_a_file_row_pads_hilo_hazards_the_way_the_rom_assembler_did(tmp_path):
     import subprocess
     import sys
 
-    lines = build._recipe("gcc-2.8.1-sn64").splitlines()[-1].split(" && ")
-    hazard = next(i for i, line in enumerate(lines) if "$$HILO_HAZARD" in line)
-    assert lines[hazard].startswith("$(if $(HILO),") and hazard < next(
-        i for i, line in enumerate(lines) if "asn64" in line
-    )
+    recipe = build._recipe("gcc-2.8.1-sn64").splitlines()[-1]
+    assert "$(if $(HILO),'&&' @py HILO_HAZARD $(@:.o=.s))" in recipe
+    assert recipe.index("HILO_HAZARD") < recipe.index("asn64")
     code = build.makefile(make_config(tmp_path)).decode().split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
     source.write_text(
@@ -1436,7 +1436,7 @@ def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_fa
     splat = _extract_world(tmp_path)
     (tmp_path / "src").mkdir(exist_ok=True)
     (tmp_path / "src/a.c").write_text("int a;\n")
-    make = ["make", "--no-print-directory", f"SPLAT={sys.executable} {splat}"]
+    make = ["make", "--no-print-directory", f"SPLAT={sys.executable} {splat}", CCPY]
     done = subprocess.run([*make, "asm/us/.extracted"], cwd=tmp_path, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     facts = b"".join((tmp_path / f"versions/us/{n}").read_bytes() for n in ("symbol_addrs.txt", "splat.yaml"))
@@ -1493,7 +1493,8 @@ def test_the_extraction_mark_holds_the_facts_hash_and_a_compile_against_other_fa
     assert "was extracted from other" not in run.stderr
 
 
-def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_last_ones(tmp_path):
+@pytest.mark.parametrize("tool", ["c", "python"])
+def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_last_ones(tmp_path, tool):
     """The generated recipe of the real toolchain with stub tools: a preprocessed text that changed but compiles to the
     assembly already beside the object keeps the object (no assembler, no trim); other assembly assembles again."""
     import subprocess
@@ -1538,6 +1539,8 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
                 f"N64LINK={sys.executable} {asm}",
                 "OBJCOPY=true",
                 f"TRIM_TEXT={sys.executable} {trim}",
+                CCPY,
+                *(["HOSTCC=false"] if tool == "python" else []),  # no stamprec: the python object recipe
                 "TEXTSIZE=0x10",
             ],
             cwd=tmp_path,
@@ -1545,7 +1548,10 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
             text=True,
         )
         assert result.returncode == 0, result.stderr
-        return [len((tmp_path / log).read_text().splitlines()) for log in ("compiled", "assembled", "trimmed")]
+        compiled, assembled, trimmed = (
+            len((tmp_path / log).read_text().splitlines()) for log in ("compiled", "assembled", "trimmed")
+        )
+        return [compiled, assembled, trimmed if tool == "python" else 0]  # stamprec trims in C: only the stub counts
 
     def edit(text):  # everything built ages first, so the edit is newer than every output
         now = time.time_ns()
@@ -1556,14 +1562,15 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
         (tmp_path / "src/a.c").write_text(text)
         os.utime(tmp_path / "src/a.c", ns=(now - 5 * 10**9, now - 5 * 10**9))
 
+    trims = 1 if tool == "python" else 0
     (tmp_path / "src/a.c").write_text("// note\nint a;\n")
-    assert make() == [1, 1, 1]
+    assert make() == [1, 1, trims]
     assert make() == [0, 0, 0]
     edit("// another note\nint a;\n")  # a new .i, the same assembly
     assert make() == [1, 0, 0]
     assert not (tmp_path / "build/us/src/a.c.o.same").exists() and not (tmp_path / "build/us/src/a.c.s.prev").exists()
     edit("// another note\nint a2;\n")
-    assert make() == [1, 1, 1]
+    assert make() == [1, 1, trims]
     assert make() == [0, 0, 0]
 
 
