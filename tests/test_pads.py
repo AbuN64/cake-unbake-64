@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from unbake import folders, pads, symbols
+from unbake import tree as parsing
 from unbake.contracts import Config, Refusal
 
 VERSIONS = ["a", "b"]
@@ -73,6 +75,28 @@ def test_a_name_lies_in_data_when_the_facts_around_it_in_its_mapping_are_not_cod
     assert pads.inside(table) == {"pad", "next"}  # tail_pad is followed by code: the text would move up
 
 
+def test_a_pad_inside_the_run_of_another_object_would_close_up_and_is_lost() -> None:
+    rows = [
+        ("a.c", ".rodata", 0x100, "a1"),
+        ("b.c", ".rodata", 0x108, "pad_b"),  # lies among a's rows: a is placed once, at its first row
+        ("a.c", ".rodata", 0x110, "a2"),
+        ("c.c", ".data", 0x200, "pad_c"),  # before the only row of its own file, outside every run
+        ("d.c", ".data", 0x204, "d1"),
+        ("e.c", ".data", 0x300, "pad_e"),  # two pads among the rows of f: both close up
+        ("e.c", ".data", 0x304, "pad_e2"),
+        ("f.c", ".data", 0x2F0, "f1"),
+        ("f.c", ".data", 0x310, "f2"),
+    ]
+    assert pads.lying(rows, {"pad_b", "pad_c", "pad_e", "pad_e2"}) == {"pad_b", "pad_e", "pad_e2"}
+    assert pads.lying(rows, set()) == set()
+
+
+def test_a_pad_that_leaves_does_not_make_the_run_of_its_own_file() -> None:
+    rows = [("a.c", ".data", 0x100, "p1"), ("a.c", ".data", 0x110, "p2"), ("b.c", ".data", 0x108, "b1")]
+    assert pads.lying(rows, {"p1", "p2"}) == set()  # a keeps no row: nothing to close up
+    assert pads.lying(rows, {"p2"}) == set()  # a's one row p1 and b1 do not enclose p2
+
+
 def test_text_without_zero_blocks_is_returned_as_is() -> None:
     assert run("s32 x = 1;\n").text == "s32 x = 1;\n"
 
@@ -96,6 +120,8 @@ def _project(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> Path:
         "b": {},
     }
     monkeypatch.setattr(symbols, "load", lambda config, version: rows[version])
+    owned = SimpleNamespace(path="src/tbl.c", owns={"a": ("head", "pad_a")}, sections={})
+    monkeypatch.setattr(parsing, "capture", lambda config: SimpleNamespace(modules=[owned]))
     return root
 
 

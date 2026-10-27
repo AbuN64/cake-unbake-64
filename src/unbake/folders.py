@@ -51,6 +51,7 @@ from unbake import effort, hoist, process, repo, store, symbols
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake import pads as padding
+from unbake import tree as parsing
 from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
 
 Row = dict[str, Any]
@@ -868,21 +869,38 @@ def pads(config: Config, params: Json) -> Row:
         ]
         if only and not tracked:
             raise _refuse(f"pads: {only} is not a tracked source file")
-        known = {v: padding.inside(symbols.load(config, v)) for v in versions}
+        facts = {v: symbols.load(config, v) for v in versions}
+        known = {v: padding.inside(facts[v]) for v in versions}
+        held_tree = parsing.capture(config)
+        rows = {
+            v: [
+                (m.path, m.sections.get(v, {}).get(n, ".text"), rom, n)
+                for m in held_tree.modules
+                for n in m.owns.get(v, ())
+                if n in facts[v] and (rom := facts[v][n][1]) is not None
+            ]
+            for v in versions
+        }
+        texts = {
+            path: text for path in tracked if "VERSION_" in (text := (root / path).read_text(errors="surrogateescape"))
+        }
+        while True:  # a pad inside the run of another object closes up: it stays, and so counts as a row of that run
+            done = {path: padding.pads(text, versions, known) for path, text in texts.items()}
+            gone = {v: set().union(*(d.gone(v) for d in done.values())) for v in versions}
+            lost = {v: padding.lying(rows[v], gone[v]) for v in versions}
+            if not any(lost.values()):
+                break
+            known = {v: set(known[v]) - lost[v] for v in versions}
         written: list[str] = []
         blocks = 0
         held: list[Row] = []
-        for path in tracked:
-            text = (root / path).read_text(errors="surrogateescape")
-            if "VERSION_" not in text:
+        for path, result in done.items():
+            held += [{"file": path, **h} for h in result.held]
+            if not result.removed:
                 continue
-            done = padding.pads(text, versions, known)
-            held += [{"file": path, **h} for h in done.held]
-            if not done.removed:
-                continue
-            blocks += len(done.removed)
+            blocks += len(result.removed)
             written.append(path)
-            store.write(root / path, done.text.encode(errors="surrogateescape"))
+            store.write(root / path, result.text.encode(errors="surrogateescape"))
         out = {
             "action": "pads",
             "blocks_removed": blocks,

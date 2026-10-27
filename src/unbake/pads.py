@@ -16,8 +16,10 @@ The rule reads no compiler and knows no project."""
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 from unbake import collapse
 
@@ -40,10 +42,47 @@ def inside(table: Mapping[str, tuple[int, int | None, int | None, str]]) -> set[
     return out
 
 
+def lying(rows: Sequence[tuple[str, str, int, str]], names: Collection[str]) -> set[str]:
+    """The `names` (zero pads about to leave the source) whose ROM offset lies strictly inside the run of one object:
+    `rows` is (file, section, ROM offset, name) of every name a file owns in one version, and a file's section is placed
+    once, at its first row, with its rows packed behind it, so a pad among them would close up. The run of an object
+    is read from the rows that stay (the pads that leave count for nothing; a pad held here counts again)."""
+    lost: set[str] = set()
+    while True:
+        runs: dict[tuple[str, str], list[int]] = {}
+        for path, section, rom, name in rows:
+            if name not in names or name in lost:
+                span = runs.setdefault((path, section), [rom, rom])
+                span[0], span[1] = min(span[0], rom), max(span[1], rom)
+        merged: list[list[int]] = []
+        for lo, hi in sorted(map(tuple, runs.values())):
+            if merged and lo < merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        starts = [m[0] for m in merged]
+        found = set()
+        for _, _, rom, name in rows:
+            if name in names and name not in lost:
+                i = bisect_left(starts, rom) - 1
+                if i >= 0 and rom < merged[i][1]:
+                    found.add(name)
+        if not found:
+            return lost
+        lost |= found
+
+
 @dataclass
 class Pads:
     text: str
     removed: list[dict[str, object]] = field(default_factory=list)
+
+    def gone(self, version: str) -> set[str]:
+        """The names the removed blocks of one version defined."""
+        return {
+            n for r in self.removed if version in cast(list[str], r["versions"]) for n in cast(list[str], r["names"])
+        }
+
     held: list[dict[str, object]] = field(default_factory=list)
 
 
