@@ -19,6 +19,9 @@ mergecheck  reads a module map (unit, module) and the built objects and says whi
 merge   `--module M --modules MAP`: the units of M in link order become one source file named M (pad arrays the
         alignment reproduces and redundant prototypes dropped, includes hoisted and deduped); refused when mergecheck
         says M must stay separate; the type conflicts left are listed; `--prove` builds and compares every ROM once.
+collapse  the version branches of each source file that differ only by the names they define become one definition
+        (collapse.py); the other names of a version go to its aliases.txt; `--file F` limits it to one file; `--prove`
+        builds and compares every ROM once.
 verify  compares the objects of a build made before the move with the build after it, through the map, and the link
         script of both.
 Everything about one project's folders is in its rules file; this module names no folder."""
@@ -39,8 +42,9 @@ from typing import Any
 import tomlkit
 from elftools.elf.elffile import ELFFile
 
+from unbake import collapse as collapsing
 from unbake import config as configuration
-from unbake import effort, hoist, process, repo, store
+from unbake import effort, hoist, process, repo, store, symbols
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
@@ -788,6 +792,63 @@ def header(config: Config, params: Json) -> Row:
         }
 
 
+def collapse(config: Config, params: Json) -> Row:
+    """Each source file's address-only duplicate version branches become one definition (see `unbake.collapse`); the
+    names a version spelled differently go to its aliases.txt as second names of the same address. Held groups are
+    returned with the reason; nothing is touched for them."""
+    with effort.stage("layout.collapse"):
+        root = config.project.root
+        versions = list(config.project.versions)
+        only = params.get("file")
+        tracked = [
+            t
+            for t in _tracked(config)
+            if Path(t).suffix.lower() in hoist.SOURCE_SUFFIXES and (not only or t == posixpath.normpath(str(only)))
+        ]
+        if only and not tracked:
+            raise _refuse(f"collapse: {only} is not a tracked source file")
+        tables = {v: symbols.load(config, v) for v in versions}
+        facts = {v: {n: row[0] for n, row in table.items()} for v, table in tables.items()}
+        aliases: dict[str, dict[str, int]] = {v: {} for v in versions}
+        written: list[str] = []
+        groups = blocks = 0
+        held: list[Row] = []
+        for path in tracked:
+            text = (root / path).read_text(errors="surrogateescape")
+            if "VERSION_" not in text:
+                continue
+            done = collapsing.collapse(text, versions, facts, config.project.names_from)
+            held += [{"file": path, **h} for h in done.held]
+            if not done.groups:
+                continue
+            groups += len(done.groups)
+            blocks += done.removed
+            written.append(path)
+            store.write(root / path, done.text.encode(errors="surrogateescape"))
+            for v, pairs in done.aliases.items():
+                for new, old in pairs:
+                    if new not in facts[v]:
+                        aliases[v][new] = facts[v][old]
+        for v, names in aliases.items():
+            where = root / symbols.aliases_path(v)
+            have = where.read_text() if where.exists() else ""
+            add = "".join(f"{n} = 0x{a:08X};\n" for n, a in sorted(names.items()) if n not in symbols.parse(have))
+            if add:
+                store.write(where, (have + ("" if not have or have.endswith("\n") else "\n") + add).encode())
+        out = {
+            "action": "collapse",
+            "groups": groups,
+            "blocks_removed": blocks,
+            "held": held,
+            "written": written,
+            "aliases": {v: len(r) for v, r in aliases.items()},
+            "next": "git add -A; unbake sync --check; make check",
+        }
+        if params.get("prove"):
+            out.update(prove(config, params))
+        return out
+
+
 def mergecheck(config: Config, params: Json) -> Row:
     """Which modules of a module map may become one source file and which must stay separate files, from the link
     order and the built objects of every version (`ld` and `obj` are patterns over {version} and {unit})."""
@@ -873,7 +934,7 @@ def merge(config: Config, params: Json) -> Row:
 
 
 def run(config: Config, params: Json) -> Row:
-    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, header, mergecheck or merge."""
+    """`unbake layout ACTION`: plan, apply, literals, carry, verify, reorg, header, mergecheck, merge or collapse."""
     actions = {
         "plan": plan,
         "apply": apply,
@@ -884,6 +945,7 @@ def run(config: Config, params: Json) -> Row:
         "header": header,
         "mergecheck": mergecheck,
         "merge": merge,
+        "collapse": collapse,
     }
     action = params["action"]
     if action not in actions:

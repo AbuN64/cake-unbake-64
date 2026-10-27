@@ -15,6 +15,7 @@
     "verify",
     "reorg",
     "header",
+    "collapse",
     "mergecheck"
    ]
   },
@@ -139,6 +140,17 @@
   "externs_after": {
    "type": "integer",
    "minimum": 0
+  },
+  "groups": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "blocks_removed": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "aliases": {
+   "type": "object"
   },
   "mergeable": {
    "type": "integer"
