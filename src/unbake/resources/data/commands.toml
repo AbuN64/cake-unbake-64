@@ -204,6 +204,15 @@ params = [
   { name = "inert", kind = "option", type = "str", required = false, multiple = true, help = "glob of paths no build reads (a catalog of names) that may be added or changed" },
   { name = "steps", kind = "flag", type = "str", required = false, multiple = false, help = "judge each patch over the state the earlier ones leave and list every verdict" },
 ]
+[command.lanecheck]
+configured = false
+help = "Refuse a hand lane's diff that touches a file another lane or GLOBALS owns (the file sets `decomp cleanup slices` wrote under NAMES/files); the refusal names the owner. A lane without a file set is a tool batch and passes."
+handler = "lanecheck.lane_command"
+params = [
+  { name = "lane", kind = "option", type = "str", required = true, multiple = false, help = "the lane the diff comes from" },
+  { name = "diff", kind = "option", type = "path", required = true, multiple = true, help = "a diff the lane queued (repeatable)" },
+  { name = "names", kind = "option", type = "path", required = true, multiple = false, help = "the names directory holding files/<LANE>.json and files/GLOBALS.json" },
+]
 [command.narrow]
 configured = false
 help = "The includers of the headers a tree changes over REV that no edit can reach, per version (stamp records prove a unit built at REV); --apply signs their stamps and dates the rest for a rebuild, so `make -o HEADER` rebuilds only what the edit reaches."

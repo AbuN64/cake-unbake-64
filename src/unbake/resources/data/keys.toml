@@ -564,6 +564,10 @@ sentence = "types has no extracted assembly or no readable requests file to read
 owner = "renameproof"
 sentence = "the change is not a pure identifier rename, so only a build proves it"
 
+[key."lane.outside"]
+owner = "lanecheck"
+sentence = "a hand lane's diff touches a file that another lane or GLOBALS owns"
+
 [key."buildproof.tree"]
 owner = "buildproof"
 sentence = "the tree is not the clean checkout of REV that a build proof starts from"
