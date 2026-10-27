@@ -596,3 +596,49 @@ def test_a_new_name_in_a_file_no_version_owns_is_refused(repo: Path) -> None:
 def test_a_renamed_symbol_with_no_version_evidence_is_refused(repo: Path) -> None:
     _twins(repo, DE_PULL, {"tools/names.txt": "func_80100400_us\n"})
     assert "already a code token" in _refused(repo)
+
+
+SHARED = {
+    "include/a.h": "struct Box { int w; };\n",
+    "include/b.h": "struct Box { float w; float h; };\n",
+    "src/a.c": '#include "a.h"\nstruct Box one;\n',
+    "src/b.c": '#include "b.h"\nstruct Box two;\n',
+    "src/both.c": '#include "a.h"\n#include "b.h"\nint Both;\n',
+}
+
+
+def _shared(root: Path, extra: dict[str, str] | None = None) -> None:
+    for name, text in {**SHARED, **(extra or {})}.items():
+        (root / name).write_text(text)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "records")
+
+
+def test_a_scoped_rename_reaches_one_definition_and_the_uses_that_bind_to_it(repo: Path) -> None:
+    _shared(repo)
+    _rename(repo, "Box", "WideBox", only=("include/a.h", "src/a.c"))
+    assert _prove(repo)["renames"] == 1
+
+
+def test_a_use_left_on_a_renamed_definition_is_refused(repo: Path) -> None:
+    _shared(repo)
+    _rename(repo, "Box", "WideBox", only=("include/a.h",))
+    assert "binds to" in _refused(repo)
+
+
+def test_a_use_that_binds_to_two_definitions_cannot_follow_one_of_them(repo: Path) -> None:
+    _shared(repo, {"src/both.c": '#include "a.h"\n#include "b.h"\nstruct Box both;\n'})
+    _rename(repo, "Box", "WideBox", only=("include/a.h", "src/a.c"))
+    assert "binds to" in _refused(repo)
+
+
+def test_the_binding_rule_names_the_files_one_definition_owns(repo: Path) -> None:
+    _shared(repo, {"src/both.c": '#include "a.h"\n#include "b.h"\nstruct Box both;\n'})
+    texts = {p: (repo / p).read_text() for p in _git(repo, "ls-files").split() if p.endswith((".c", ".h"))}
+    assert (
+        renameproof.scope(texts, "Box", "include/a.h", 1)[0] == []
+        and "binds to 2" in renameproof.scope(texts, "Box", "include/a.h", 1)[1]
+    )
+    del texts["src/both.c"]
+    assert renameproof.scope(texts, "Box", "include/b.h") == (["include/b.h", "src/b.c"], "")
+    assert "holds no definition" in renameproof.scope(texts, "Box", "include/a.h", 9)[1]

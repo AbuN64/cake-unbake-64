@@ -35,7 +35,7 @@ import fnmatch
 import re
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -361,6 +361,80 @@ def _without_aliases(before: str, after: str) -> str:
     return "\n".join(kept)
 
 
+_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]', re.M)
+
+
+def _definitions(texts: Mapping[str, str], tag: str) -> dict[str, list[tuple[int, int]]]:
+    """The struct, union or enum bodies that define TAG, per file: the first and last line of each."""
+    found: dict[str, list[tuple[int, int]]] = {}
+    for path, text in texts.items():
+        if tag not in text or not _is_c(path):
+            continue
+        starts: list[int] = []
+        tokens = _tokens(text, True, starts)
+        for n, token in enumerate(tokens):
+            if token != tag or not _tagged(tokens, n) or tokens[n + 1 : n + 2] != ["{"]:
+                continue
+            depth = 0
+            for k in range(n + 1, len(tokens)):
+                depth += (tokens[k] == "{") - (tokens[k] == "}")
+                if depth == 0:
+                    break
+            found.setdefault(path, []).append(
+                (text.count("\n", 0, starts[n - 1]) + 1, text.count("\n", 0, starts[k]) + 1)
+            )
+    return found
+
+
+def _binds(texts: Mapping[str, str], tag: str) -> dict[str, set[str]]:
+    """For each file that spells TAG, the files holding the definitions its uses may bind to: its own when it defines
+    TAG, else those its include closure reaches. A record several files define is bound by include, not by spelling."""
+    defs = _definitions(texts, tag)
+    by_tail: dict[str, list[str]] = {}
+    for path in texts:
+        by_tail.setdefault(path.rsplit("/", 1)[-1].lower(), []).append(path)
+
+    def included(path: str) -> list[str]:
+        out: list[str] = []
+        for spelled in _INCLUDE.findall(texts[path]):
+            held = by_tail.get(spelled.rsplit("/", 1)[-1].lower(), [])
+            exact = [h for h in held if h.lower().endswith(spelled.lower())]
+            out += exact or held
+        return out
+
+    bound: dict[str, set[str]] = {}
+    for path, text in texts.items():
+        if tag not in text or not _is_c(path) or tag not in _tokens(text, True):
+            continue
+        if path in defs:
+            bound[path] = {path}
+            continue
+        seen, todo = {path}, [path]
+        while todo:
+            for held in included(todo.pop()):
+                if held not in seen:
+                    seen.add(held)
+                    todo.append(held)
+        bound[path] = seen & defs.keys()
+    return bound
+
+
+def scope(texts: Mapping[str, str], tag: str, path: str, line: int = 0) -> tuple[list[str], str]:
+    """The files one definition of TAG, in PATH (at LINE when given), owns: itself and the files whose uses bind to it
+    alone. Empty with a reason when PATH holds no such definition or some use of TAG could bind to it and another."""
+    defs = _definitions(texts, tag)
+    if not defs.get(path) or (line and not any(a <= line <= b for a, b in defs[path])):
+        return [], f"{path}{f':{line}' if line else ''} holds no definition of {tag}"
+    if len(defs[path]) > 1:
+        return [], f"{path} defines {tag} {len(defs[path])} times: its uses cannot be told apart"
+    bound = _binds(texts, tag)
+    mixed = sorted(p for p, held in bound.items() if path in held and len(held) > 1)
+    if mixed:
+        held = sorted(bound[mixed[0]])
+        return [], f"{tag} in {', '.join(mixed[:SHOWN])} binds to {len(held)} definitions: {', '.join(held)}"
+    return sorted(p for p, held in bound.items() if held == {path}), ""
+
+
 class _Repo:
     """Git on the project with a private index (the working tree's own index is never touched)."""
 
@@ -413,6 +487,9 @@ class _Proof:
         self.moved: dict[str, str] = {}  # an assembly file renamed with the symbol it holds: new path -> old path
         self.map: dict[str, str] = {}  # names renamed everywhere they are visible
         self.tag: dict[str, str] = {}  # struct/union/enum tags renamed (their own namespace: `Message` may be both)
+        self.site: dict[tuple[str, str], str] = {}  # (file, record name) -> new name, for a record several files define
+        self._records: dict[str, bool] = {}
+        self._world: dict[str, str] | None = None
         self.local: dict[tuple[str, int, str], str] = {}  # (file, function, name) -> new name, for a local or parameter
         self.owner: dict[str, list[int]] = {}
         self.typed: dict[str, set[str]] = {}  # member old name -> its new names, one per struct that declares it
@@ -495,6 +572,8 @@ class _Proof:
         tag_sources: dict[str, str] = {}
         local: dict[tuple[str, int, str], str] = {}
         local_sources: dict[tuple[str, int, str], str] = {}
+        site: dict[tuple[str, str], str] = {}
+        site_sources: dict[str, str] = {}
         declared: dict[tuple[str, int, str], bool] = {}
         members: dict[str, dict[str, set[str]]] = {}  # old member name -> new name -> where (declaration or access)
         decls: dict[str, set[str]] = {}  # old member name -> new names given by a struct declaration
@@ -531,6 +610,12 @@ class _Proof:
                 if n in protos:  # a prototype's parameter name is the declaration's own: no symbol use
                     continue
                 fn = owner[n]
+                if n not in slots and not _member(a, n) and self.record(x):
+                    if site.setdefault((path, x), y) != y:  # a record several files define is renamed per file
+                        self.refuse(f"{x} is renamed to both {site[(path, x)]} and {y}", path)
+                    elif site_sources.setdefault(y, x) != x:
+                        self.refuse(f"{site_sources[y]} and {x} are both renamed to {y}", path)
+                    continue
                 if _tagged(
                     a, n
                 ):  # a tag: one-to-one among tags only, whatever a typedef or variable of that name becomes
@@ -605,6 +690,7 @@ class _Proof:
             self.typed[x] = set(targets)
         self.map = pairs
         self.tag = tags
+        self.site = site
         self.local = local
 
     def _aliases(self, olds: list[str], versions: list[set[str]]) -> bool:
@@ -629,7 +715,13 @@ class _Proof:
     def pairs(self) -> list[tuple[str, str]]:
         typed = ((x, y) for x, ys in self.typed.items() for y in ys)
         return sorted(
-            {*self.map.items(), *self.tag.items(), *typed, *((key[2], new) for key, new in self.local.items())}
+            {
+                *self.map.items(),
+                *self.tag.items(),
+                *typed,
+                *((x, y) for (_, x), y in self.site.items()),
+                *((key[2], new) for key, new in self.local.items()),
+            }
         )
 
     def apply(self) -> None:
@@ -647,6 +739,8 @@ class _Proof:
                 self.new[path][n]
                 if n in keep
                 or (t in self.typed and (n in slots or _member(before, n)) and self.new[path][n] in self.typed[t])
+                else self.site.get((path, t), t)
+                if self.record(t) and not _member(before, n)
                 else text(t)
                 if t[:1] == ASM_MARK
                 else tags.get(t, t)
@@ -664,6 +758,48 @@ class _Proof:
                     path,
                 )
 
+    def record(self, name: str) -> bool:
+        """Whether NAME is a record that more than one file defines: its uses bind by include, not by spelling."""
+        if name not in self._records:
+            paths = [p for p in self._hits([name], self.base) if _is_c(p)]
+            blobs = self.repo.blobs([f"{self.base}:{p}" for p in paths])
+            held = {p: b.decode("latin-1") for p in paths if (b := blobs[f"{self.base}:{p}"]) is not None}
+            self._records[name] = len(_definitions(held, name)) > 1
+        return self._records[name]
+
+    def world(self) -> dict[str, str]:
+        """Every C file of the old tree."""
+        if self._world is None:
+            listing = self.repo.run("ls-tree", "-r", "--name-only", self.base, own=False).decode().splitlines()
+            paths = [p for p in listing if _is_c(p)]
+            blobs = self.repo.blobs([f"{self.base}:{p}" for p in paths])
+            self._world = {p: b.decode("latin-1") for p in paths if (b := blobs[f"{self.base}:{p}"]) is not None}
+        return self._world
+
+    def bound(self) -> None:
+        """A record several files define keeps each use bound to one definition: a file renamed binds only to
+        definitions renamed with it, and a file left as it was binds to none of them."""
+        named: dict[str, dict[str, set[str]]] = {}
+        for (path, x), y in self.site.items():
+            named.setdefault(x, {}).setdefault(y, set()).add(path)
+        for x, groups in sorted(named.items()):
+            world = self.world()
+            held, defs = _binds(world, x), _definitions(world, x)
+            renamed = set().union(*groups.values())
+            if set(held) <= renamed and len(groups) == 1:
+                continue  # every use moves together
+            taken: set[str] = set()
+            for y, paths in sorted(groups.items()):
+                mine = defs.keys() & paths
+                taken |= mine
+                for path in sorted(paths):
+                    if not held.get(path) or not held[path] <= mine:
+                        near = ", ".join(sorted(held.get(path, ()))) or "no definition"
+                        self.refuse(f"{x} in {path} binds to {near}, not only to the definition renamed to {y}", path)
+            for path in sorted(set(held) - renamed):
+                if held[path] & taken:
+                    self.refuse(f"{x} is left in {path}, which binds to a definition renamed with it", path)
+
     # ------------------------------------------------------------------ the rest of the tree
     def _hits(self, names: Sequence[str], rev: str | None) -> list[str]:
         pattern = self.repo.holder / "names"
@@ -678,10 +814,11 @@ class _Proof:
 
     def capture(self) -> None:
         """No new name was a code token in the old tree and no old name remains one in an unchanged file."""
-        keys, values = {*self.map, *self.tag}, {*self.map.values(), *self.tag.values()}
+        keys, values = {*self.map, *self.tag}, {*self.map.values(), *self.tag.values(), *self.site.values()}
+        kept = keys | {x for _, x in self.site}  # a record several files define is proved per file by bound()
         self.typed_capture()
         for names, rev, spec, what in (
-            (values - keys, self.base, f"{self.base}:", "already a code token in the old tree (it would capture)"),
+            (values - kept, self.base, f"{self.base}:", "already a code token in the old tree (it would capture)"),
             (keys - values, None, ":0:", "still a code token after the change"),
         ):
             if not names:
@@ -831,7 +968,7 @@ class _Proof:
         name may be a macro or a macro's free name anywhere (a macro expands inside the function)."""
         if not self.local:
             return
-        values = {*self.map.values(), *self.tag.values()}
+        values = {*self.map.values(), *self.tag.values(), *self.site.values()}
         for (path, fn, old), new in sorted(self.local.items()):
             tokens = self.old[path]
             lo, hi = self.spans[path][fn]
@@ -890,7 +1027,7 @@ class _Proof:
                             found.setdefault((name, index), path)
         return found
 
-    def definitions(self, names: Sequence[str], known: Macros) -> None:
+    def _definitions(self, names: Sequence[str], known: Macros) -> None:
         """The `#define NAME(` rows of the old tree for the names not looked up yet; a name with none is a function."""
         todo = sorted(set(names) - set(known))
         for name in todo:
@@ -916,7 +1053,7 @@ class _Proof:
 
     def safe(self, name: str, index: int, known: Macros, depth: int) -> bool:
         """True when argument `index` of the macro is expanded as itself or stringified only into assembly text."""
-        self.definitions([name], known)
+        self._definitions([name], known)
         rows = known[name]
         if not rows:
             return True  # a function: its argument is code
@@ -950,7 +1087,7 @@ class _Proof:
     def stringified(self) -> None:
         sites = self.calls()
         known: Macros = {}
-        self.definitions(sorted({name for name, _ in sites}), known)
+        self._definitions(sorted({name for name, _ in sites}), known)
         for (name, index), path in sorted(sites.items()):
             if not self.safe(name, index, known, 0):
                 self.refuse(
@@ -970,6 +1107,8 @@ def _check(
         proof.derive(proof.line_sensitive())
     if not proof.reasons:
         proof.apply()
+    if not proof.reasons:
+        proof.bound()
     if not proof.reasons:
         proof.builtins()
         proof.capture()

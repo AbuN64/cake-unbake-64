@@ -34,6 +34,7 @@ EXPECTED = [
     "naming_findings",
     "pool_map",
     "preprocess",
+    "record_scope",
     "score",
     "snapshot",
     "stage",

@@ -8,7 +8,19 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from unbake import adapters, effort, human, naming_baseline, pool, process, recipes, store, symbol_names, tree
+from unbake import (
+    adapters,
+    effort,
+    human,
+    naming_baseline,
+    pool,
+    process,
+    recipes,
+    renameproof,
+    store,
+    symbol_names,
+    tree,
+)
 from unbake import config as _config
 from unbake import symbols as _symbols
 from unbake import versions as _versions
@@ -37,6 +49,7 @@ __all__ = [
     "naming_findings",
     "pool_map",
     "preprocess",
+    "record_scope",
     "score",
     "snapshot",
     "stage",
@@ -222,3 +235,10 @@ def naming_findings(
 def naming_debt(root: Path) -> Json:
     """Per-file reviewed naming debt, refreshed by successful unbake audits."""
     return (naming_baseline.read(root) or {}).get("files", {})
+
+
+def record_scope(texts: Mapping[str, str], tag: str, path: str, line: int = 0) -> tuple[list[str], str]:
+    """The C files that one definition of the record TAG, in PATH (at LINE when given), owns: itself and the files whose
+    uses bind to it alone, by include. Empty with the reason when PATH holds no such definition or some use of TAG could
+    bind to it and to another definition (the rename proof applies the same rule)."""
+    return renameproof.scope(texts, tag, path, line)
