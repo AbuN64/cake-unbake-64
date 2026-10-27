@@ -715,7 +715,7 @@ class _Proof:
         if not crowded or not all(versions):
             return False
         for v in crowded:
-            bound: list[set[str]] = [set() for _ in olds]
+            bound: list[set[int]] = [set() for _ in olds]
             for path, (before, _after) in self.texts.items():
                 if not path.startswith(f"versions/{v}/"):
                     continue
@@ -764,13 +764,16 @@ class _Proof:
                 else names.get(t, t)
                 for n, t in enumerate(before)
             ]
-            if mapped != self.new[path]:
-                at = next(n for n, (x, y) in enumerate(zip(mapped, self.new[path], strict=True)) if x != y)
-                self.refuse(
-                    f"token {at} is {self.new[path][at][:40]!r} where the map gives {mapped[at][:40]!r}"
-                    " (a name renamed in one place and left in another, or a string that is not assembly)",
-                    path,
-                )
+            # every distinct mismatch, so a batch caller isolates all its refused rows in one run
+            seen: set[tuple[str, str]] = set()
+            for at, (x, y) in enumerate(zip(mapped, self.new[path], strict=True)):
+                if x != y and (y, x) not in seen:
+                    seen.add((y, x))
+                    self.refuse(
+                        f"token {at} is {y[:40]!r} where the map gives {x[:40]!r}"
+                        " (a name renamed in one place and left in another, or a string that is not assembly)",
+                        path,
+                    )
 
     def record(self, name: str) -> bool:
         """Whether NAME is a record that more than one file defines: its uses bind by include, not by spelling."""

@@ -312,6 +312,19 @@ def test_a_local_rename_meeting_a_macro_free_name_is_refused(repo: Path) -> None
     assert "preprocessor directive" in _refused(repo)
 
 
+def test_one_file_with_two_names_left_behind_reports_both(repo: Path) -> None:
+    _rename(repo, "func_80100000_de", "Game_Init", only=("include/api.h", "src/a.c"))
+    _rename(repo, "func_80100100_de", "Game_Step", only=("src/a.c",))
+    (repo / "src/a.c").write_text(
+        (repo / "src/a.c")
+        .read_text()
+        .replace("Game_Init(1)", "func_80100000_de(1)", 1)
+        .replace("Game_Step(2)", "func_80100100_de(2)", 1)
+    )
+    reasons = _refused(repo)
+    assert "Game_Init" in reasons and "Game_Step" in reasons
+
+
 def test_a_local_rename_left_half_done_in_its_function_is_refused(repo: Path) -> None:
     _locals(repo)
     (repo / "src/loc.c").write_text(
