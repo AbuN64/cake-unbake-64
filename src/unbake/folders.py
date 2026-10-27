@@ -4,7 +4,8 @@ plan    reads a rules file (`[[rule]]` rows: `match` a file or a directory endin
         optional `row` for the destination directory) and the tracked files, and writes `.unbake/layout/plan.json`
         and `map.tsv` (old path, new path). The longest `match` wins; a path no rule names stays. Nothing else moves.
 apply   moves the files of the plan, rewrites `config.toml` (row keys, `libraries`, `-I` flags, the rules' directory and
-        library rows; a per-file row that equals the row above it goes) and runs sync. It writes files only, never git
+        library rows; a per-file row that equals the row above it goes), respells the per-file and per-folder flag
+        rules of an existing Makefile (sync leaves it alone) and runs sync. It writes files only, never git
         state: `git add -A` is the caller's step.
 carry   turns a worktree's uncommitted work into the new layout: untracked files move in place and the uncommitted
         edits of tracked files are written as a patch with the new paths, to apply after the worktree is on the new
@@ -279,6 +280,28 @@ def includes(texts: Mapping[str, str], tracked: Sequence[str], mapping: Mapping[
     return changed
 
 
+_MAKE_RULE = re.compile(r"(build/(?:nmraw/)?\$\(v\)/)(\S+?)(%?)(\.o\):)")
+
+
+def makefile_rules(text: str, tracked: Sequence[str], mapping: Mapping[str, str]) -> tuple[str, int]:
+    """A Makefile's per-file and per-folder flag rules (`build/$(v)/<file>.o` and `<dir>/%.o`, also in the second
+    object tree) named for the layout after the move. Sync leaves an existing Makefile alone, so a rule keyed to an old
+    path would stop applying to its moved source. Returns the new text and the count of rules respelled."""
+    dirs = folded(tracked, mapping)
+    count = 0
+
+    def respell(match: re.Match[str]) -> str:
+        nonlocal count
+        old = match.group(2)
+        new = dirs.get(old) if match.group(3) else mapping.get(old)
+        if not new or new == old:
+            return match.group(0)
+        count += 1
+        return match.group(1) + new + match.group(3) + match.group(4)
+
+    return _MAKE_RULE.sub(respell, text), count
+
+
 def _texts(root: Path, tracked: Sequence[str]) -> dict[str, str]:
     return {t: (root / t).read_text(errors="surrogateescape") for t in tracked if Path(t).suffix.lower() in _TEXT}
 
@@ -457,6 +480,8 @@ def apply(config: Config, params: Json) -> Row:
                 missing=tuple(dirty[:20]),
             )
         new_tracked = sorted({mapping.get(t, t) for t in tracked})
+        makefile = root / "Makefile"
+        rules, ruled = makefile_rules(makefile.read_text(), tracked, mapping) if makefile.is_file() else ("", 0)
         respelled = includes(_texts(root, tracked), tracked, mapping)
         text, changed = rewrite(
             (root / "config.toml").read_text(),
@@ -482,6 +507,8 @@ def apply(config: Config, params: Json) -> Row:
         for old, body in respelled.items():
             store.write(root / mapping.get(old, old), body.encode(errors="surrogateescape"))
         store.write(root / "config.toml", text.encode())
+        if ruled:
+            store.write(makefile, rules.encode())
         effort.forget("pin", "includes", "closure", "listing")
         loaded = Config(project, config.host, digest((project.digest, config.host.digest)))
         try:
@@ -498,6 +525,7 @@ def apply(config: Config, params: Json) -> Row:
             "moved": len(mapping),
             "config": changed,
             "includes": len(respelled),
+            "makefile": ruled,
             "written": written,
             "held": held,
             "next": "git add -A; "
@@ -674,6 +702,7 @@ def reorg(config: Config, params: Json) -> Row:
             "map": planned["map"],
             "config": applied["config"],
             "includes": applied["includes"],
+            "makefile": applied["makefile"],
             "written": applied["written"],
             "held": applied["held"],
             "next": applied["next"],

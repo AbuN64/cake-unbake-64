@@ -297,3 +297,17 @@ def test_plan_takes_a_map_without_a_rules_file(cfg: Config, tmp_path: Path) -> N
     mapped.write_text("src/main/c_func.c\tsrc/main/renamed.c\n")
     result = folders.plan(cfg, {"map": mapped})
     assert result["moved"] == 1 and (cfg.project.root / "src/main/c_func.c").is_file()
+
+
+def test_makefile_flag_rules_follow_a_moved_file_and_a_folded_directory() -> None:
+    tracked = ["src/IO/a.CPP", "src/IO/b.CPP", "src/game/main.c", "src/stay/s.c"]
+    mapping = {"src/IO/a.CPP": "src/sdk/io/a.CPP", "src/IO/b.CPP": "src/sdk/io/b.CPP", "src/game/main.c": "src/g/m.c"}
+    rule = "$(foreach v,$(VERSIONS),build/{tree}$(v)/{path}): TC := gcc-sn\n"
+    text = "".join(rule.format(tree=t, path=p) for t in ("", "nmraw/") for p in ("src/game/main.c.o", "src/IO/%.o"))
+    text += rule.format(tree="", path="src/stay/s.c.o") + "OBJS := build/$(v)/src/game/main.c.o\n"
+    out, count = folders.makefile_rules(text, tracked, mapping)
+    assert count == 4
+    assert out.count("build/$(v)/src/g/m.c.o): TC") == 1 and out.count("build/nmraw/$(v)/src/g/m.c.o): TC") == 1
+    assert out.count("build/$(v)/src/sdk/io/%.o): TC") == 1 and out.count("build/nmraw/$(v)/src/sdk/io/%.o): TC") == 1
+    assert "src/stay/s.c.o): TC" in out and "OBJS := build/$(v)/src/game/main.c.o\n" in out
+    assert folders.makefile_rules(text, tracked, {})[1] == 0
