@@ -58,16 +58,19 @@ def test_a_pad_between_two_data_definitions_of_its_version_is_held() -> None:
     assert [r["names"] for r in run(other).removed] == [["pad_a"]]  # version b's data does not touch a's pad
 
 
-def test_a_name_lies_in_data_when_the_fact_before_it_in_its_mapping_is_not_code() -> None:
+def test_a_name_lies_in_data_when_the_facts_around_it_in_its_mapping_are_not_code() -> None:
     table = {
         "f": (0x80, 0x10, 8, "func"),
         "after_code": (0x88, 0x18, 4, "data"),
         "pad": (0x8C, 0x1C, 4, "data"),
-        "other_map": (0x200, 0x20, 4, "data"),
+        "next": (0x90, 0x20, 4, "data"),
+        "tail_pad": (0x94, 0x24, 4, "data"),
+        "code": (0x98, 0x28, 8, "func"),
+        "other_map": (0x200, 0x100, 4, "data"),
         "first": (0x300, 0x4, 4, "data"),
         "no_rom": (0x400, None, None, "data"),
     }
-    assert pads.inside(table) == {"pad"}
+    assert pads.inside(table) == {"pad", "next"}  # tail_pad is followed by code: the text would move up
 
 
 def test_text_without_zero_blocks_is_returned_as_is() -> None:
@@ -88,7 +91,10 @@ def _project(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "src/tbl.c").write_text("u32 head = 1;\n" + guarded("a", "u32 pad_a[1] = { 0 };"))
     (root / "src/plain.c").write_text("s32 x = 1;\n")
     monkeypatch.setattr(folders, "_tracked", lambda config: ["src/plain.c", "src/tbl.c"])
-    rows = {"a": {"head": (0x100, 0x100, 4, "data"), "pad_a": (0x104, 0x104, 4, "data")}, "b": {}}
+    rows = {
+        "a": {"head": (0x100, 0x100, 4, "data"), "pad_a": (0x104, 0x104, 4, "data"), "tail": (0x108, 0x108, 4, "data")},
+        "b": {},
+    }
     monkeypatch.setattr(symbols, "load", lambda config, version: rows[version])
     return root
 

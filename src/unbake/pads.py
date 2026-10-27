@@ -27,15 +27,16 @@ _DIRECTIVE = re.compile(r"[ \t]*#")
 
 
 def inside(table: Mapping[str, tuple[int, int | None, int | None, str]]) -> set[str]:
-    """The names of one version whose bytes need no owner: the nearest fact before them in ROM order, in the same
-    mapping, is data (code before them would leave the bytes to a stand-in of their own, `repo.sync`)."""
+    """The names of one version whose bytes need no owner: the nearest fact before them and the nearest one after them
+    in ROM order, in the same mapping, are data. Code before them would leave the bytes to a stand-in of their own
+    (`repo.sync`); code (or nothing) after them has no later data offset to fill the gap, so the text would move up."""
+    rows = sorted((fact[1], fact[0], fact[3], n) for n, fact in table.items() if fact[1] is not None)
     out: set[str] = set()
-    before: tuple[int, str] | None = None  # (rom - vram, type) of the fact before
-    for rom, name in sorted((fact[1], n) for n, fact in table.items() if fact[1] is not None):
-        vram, kind = table[name][0], table[name][3]
-        if before is not None and before[0] == rom - vram and before[1] != "func":
+    for (rom0, vram0, kind0, _), (rom1, vram1, _, name), (rom2, vram2, kind2, _) in zip(
+        rows, rows[1:], rows[2:], strict=False
+    ):
+        if rom0 - vram0 == rom1 - vram1 == rom2 - vram2 and "func" not in (kind0, kind2):
             out.add(name)
-        before = (rom - vram, kind)
     return out
 
 
@@ -116,7 +117,7 @@ def _content(lines: Sequence[str], skip: Collection[int]) -> list[int]:
 
 
 def pads(text: str, versions: Sequence[str], known: Mapping[str, Collection[str]]) -> Pads:
-    """The text of one file without its removable zero pads; `known` is, per version, the names the layout keeps (`inside`)."""
+    """The text of one file without its removable zero pads; `known` is, per version, the names `inside` keeps."""
     source = clean(text)
     lines = text.split("\n")
     cleaned = source.split("\n")
