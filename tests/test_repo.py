@@ -388,8 +388,14 @@ def test_sync_leaves_an_existing_makefile_alone_until_asked(world):
     assert repo.sync(world.cfg, {"check": True}) == {"written": [], "stand_ins": {}}
     assert "Makefile" not in repo.sync(world.cfg, {})["written"]
     assert (world.root / "Makefile").read_bytes().startswith(b"# main's older")
+    assert not (world.root / "local.mk").exists()  # plain sync and sync --check never write the machine half
+    with pytest.raises(Refusal):  # --check names the older Makefile and still writes nothing
+        repo.sync(world.cfg, {"check": True, "makefile": True})
+    assert not (world.root / "local.mk").exists()
+    (world.root / "local.mk").write_bytes(b"PPFRONT := the retired recipe's variable\n")
     assert "Makefile" in repo.sync(world.cfg, {"makefile": True})["written"]
     assert (world.root / "Makefile").read_bytes() == generated
+    assert (world.root / "local.mk").read_bytes() == b"local\n"  # local.mk follows the Makefile it belongs to
 
 
 def test_sync_settle_writes_then_checks_again_only_after_a_write_and_refuses_a_moving_output(world, monkeypatch):

@@ -683,6 +683,10 @@ def sync(config: Config, params: Json) -> Json:
     the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
     if params.get("place"):
         return _sync_placing(config, params)
+    if params.get("makefile") and not params.get("check"):
+        # the Makefile and local.mk are one contract (the recipe names the variables local.mk sets): regenerate both,
+        # local.mk first so a tree whose content refuses the sync still has the machine half of the current tool
+        store.write(config.project.root / "local.mk", build.local_mk(config))
     result, current = _sync(config, params)
     root = config.project.root
     for _ in range(0 if params.get("check") else _PASSES):

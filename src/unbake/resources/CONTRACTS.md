@@ -145,7 +145,7 @@ Removed public functions: `store.claim`, `store.ledger_append`, `store.ledger`, 
 | `asm/<v>/.unbake-extract`, `asm/<v>/.unbake-asm.json` | repo.extract_job | the extraction key (splat version, Makefile, yaml, symbol facts, ROM); `{path: [size, mtime_ns, sha1]}` of every file it wrote. An extraction again writes a fresh asm/<v>/ and gives each file equal to the last one its old mtime; with no top-level or nested-included file changed, `.extracted` keeps its time and only the objects including a changed file are removed (`build.drop_including`) |
 | `asm/<v>/.unbake-facts` | repo.extract_job | the symbol_addrs.txt bytes the extraction was made from: when only names of symbols that keep address and attributes moved since, the next setup renames the extraction instead of running splat |
 | `.unbake/make.Makefile` | build.drop_reflagged (sync writing the Makefile, make_check) | the Makefile the objects in build/ were made by: a changed line that decides only the preprocessed text (CPPFLAGS, DEFINES, INCLUDES, a PREPROCESS_ recipe) removes the `.i.ok` stamps it reaches, so the text is made again and an object compiles only if its `.i` bytes changed; any other changed per-file row removes that object in every version, any other changed rule every compiled object |
-| `local.mk` | repo.setup | rendered `local.mk.in` |
+| `local.mk` | repo.setup, repo.sync (`--makefile`) | rendered `local.mk.in` |
 
 Symbols: `versions/<v>/symbol_addrs.txt` (splat format, one line per symbol with `type:func|data rom:0x… size:0x…`) is the hand-kept fact file of a version; `unbake sync` appends a stand-in line for every symbol no file owns.
 
