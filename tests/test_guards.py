@@ -11,6 +11,26 @@ HEADER = "#ifndef CAMERA_80233920_31_H\n#define CAMERA_80233920_31_H\nvoid Gsky_
 PATH = "include/CAMERA/GSKY_GETFLOORSURFACESHAKE.H"
 
 
+def test_content_identity_keeps_every_byte_except_two_wrapper_tokens():
+    old = '#ifndef OLD_H\n#define OLD_H\n#include "owner.h"\nextern float D_800C9FEC;\n#endif\n'
+    new = old.replace("OLD_H", "OWNER_HEALTH_H")
+    assert api.guard_content(old) == api.guard_content(new)
+    assert api.guard_content(old) is not None
+    for changed in (
+        new.replace("float", "int"),
+        new.replace("owner.h", "different.h"),
+        new.replace("extern", "/* retained */ extern"),
+        new.replace("extern", "#if ACTIVE\nextern").replace("#endif", "#endif\n#endif"),
+    ):
+        assert api.guard_content(old) != api.guard_content(changed)
+    for invalid in (
+        old.replace("extern", "int OLD_H;\nextern"),
+        old.replace("#endif", "#else\n#endif"),
+        old + "int outside;\n",
+    ):
+        assert api.guard_content(invalid) is None
+
+
 def test_real_renamed_header_and_all_defined_consumers_preserve_activation_and_literals():
     old = "CAMERA_80233920_31_H"
     consumer = f'#if defined({old}) && defined(OTHER)\n#include "x.h"\n#endif\n'

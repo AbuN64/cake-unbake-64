@@ -26,6 +26,7 @@ EXPECTED = [
     "capture",
     "closed",
     "command",
+    "guard_content",
     "guard_name",
     "load",
     "make",

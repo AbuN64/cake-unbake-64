@@ -41,6 +41,7 @@ __all__ = [
     "capture",
     "closed",
     "command",
+    "guard_content",
     "guard_name",
     "load",
     "make",
@@ -245,6 +246,13 @@ def guard_name(path: str) -> str:
     from unbake import guards
 
     return guards.name(path)
+
+
+def guard_content(text: str) -> str | None:
+    """Exact guarded header content identity, excluding only the two wrapper tokens."""
+    from unbake import guards
+
+    return guards.content(text)
 
 
 def name_bindings(text: str) -> tuple[symbol_names.Binding, ...]:

@@ -22,6 +22,24 @@ def binding(text: str) -> str | None:
     return _binding(merge.mask(text))
 
 
+def content(text: str) -> str | None:
+    """Exact header contents with only its two whole-file guard tokens normalized.
+
+    No declaration, literal, comment, whitespace or nested activation is discarded.
+    A guard used elsewhere is not a simple wrapper and has no content identity.
+    """
+    masked = merge.mask(text)
+    old = _binding(masked)
+    if old is None:
+        return None
+    sites = list(re.finditer(r"\b" + re.escape(old) + r"\b", masked))
+    if len(sites) != 2:
+        return None
+    for site in reversed(sites):
+        text = text[: site.start()] + "\0guard\0" + text[site.end() :]
+    return text
+
+
 def _binding(masked: str) -> str | None:
     found = _OPEN.match(masked)
     if not found:
