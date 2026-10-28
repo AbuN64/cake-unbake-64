@@ -13,8 +13,9 @@ _WORD = re.compile(r"[A-Za-z_]\w*")
 
 
 def name(path: str) -> str:
-    """The established include-relative generated spelling, independent of host separators."""
-    return re.sub(r"\W", "_", path.removeprefix("include/")).upper()
+    """An include-relative C identifier with no implementation-reserved underscores."""
+    value = re.sub(r"[^A-Za-z0-9]+", "_", path.removeprefix("include/")).strip("_").upper()
+    return value if value and value[0].isalpha() else "HEADER_" + value
 
 
 def binding(text: str) -> str | None:

@@ -11,6 +11,34 @@ HEADER = "#ifndef CAMERA_80233920_31_H\n#define CAMERA_80233920_31_H\nvoid Gsky_
 PATH = "include/CAMERA/GSKY_GETFLOORSURFACESHAKE.H"
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("include/sdk/libgultra/_DIVS32BYF32.H", "SDK_LIBGULTRA_DIVS32BYF32_H"),
+        ("include/sdk/libgultra/__INITCHANSTATE.H", "SDK_LIBGULTRA_INITCHANSTATE_H"),
+        ("include/sdk/libgultra/__POSTNEXTSEQEVENT.H", "SDK_LIBGULTRA_POSTNEXTSEQEVENT_H"),
+        ("include/__OWNER.H", "OWNER_H"),
+        ("include/123.H", "HEADER_123_H"),
+        ("include/a--b/__c.h", "A_B_C_H"),
+    ],
+)
+def test_generated_guards_are_nonreserved_and_checked_idempotently(path, expected):
+    assert api.guard_name(path) == expected
+    assert not any("reserved" in issue for issue in api.name_issues(expected))
+    text = "#ifndef OLD_H\n#define OLD_H\nextern int value;\n#endif\n"
+    result = guards.rewrite({path: text}, {path: path})
+    assert guards.binding(result[path]) == expected
+    assert guards.rewrite(result, {path: path}) == {}
+
+
+def test_separator_normalization_keeps_collision_refusals():
+    paths = ["include/a__b.h", "include/a_b.h"]
+    texts = {p: f"#ifndef OLD{i}_H\n#define OLD{i}_H\n#endif\n" for i, p in enumerate(paths)}
+    with pytest.raises(guards.Conflict, match="destination collides"):
+        guards.rewrite(texts, dict(zip(paths, paths, strict=True)))
+    assert all("OLD" in text for text in texts.values())
+
+
 def test_content_identity_keeps_every_byte_except_two_wrapper_tokens():
     old = '#ifndef OLD_H\n#define OLD_H\n#include "owner.h"\nextern float D_800C9FEC;\n#endif\n'
     new = old.replace("OLD_H", "OWNER_HEALTH_H")
