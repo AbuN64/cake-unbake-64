@@ -311,3 +311,24 @@ def test_makefile_flag_rules_follow_a_moved_file_and_a_folded_directory() -> Non
     assert out.count("build/$(v)/src/sdk/io/%.o): TC") == 1 and out.count("build/nmraw/$(v)/src/sdk/io/%.o): TC") == 1
     assert "src/stay/s.c.o): TC" in out and "OBJS := build/$(v)/src/game/main.c.o\n" in out
     assert folders.makefile_rules(text, tracked, {})[1] == 0
+
+
+@pytest.mark.parametrize("kind", ["dir", "library", "flat"])
+def test_in_place_child_renames_preserve_boundary_facts(kind: str) -> None:
+    tracked = ["src/sdk/a.CPP", "src/sdk/b.c", "src/sdk/header.h", "src/game/g.c"]
+    mapping = {"src/sdk/a.CPP": "src/sdk/named.CPP"}
+    facts = 'toolchain = "gcc-sdk"\ncflags = ["-g", "-Isrc/sdk"]\nomit = ["eu"]\n'
+    text = 'schema = 4\nname = "T"\ntoolchain = "gcc-default"\n'
+    if kind == "flat":
+        text += 'libraries = ["src/sdk/"]\n[dir."src/sdk/"]\n' + facts
+    else:
+        text += f'[{kind}."src/sdk/"]\n' + facts
+        if kind == "library":
+            text += 'origin = "sdk-source"\n'
+    result, changes = folders.rewrite(text, tracked, mapping, [], "gcc-default")
+    assert tomllib.loads(result) == tomllib.loads(text)
+    assert changes["exceptions"] == []
+    for move in ({"src/sdk/a.CPP": "src/game/a.CPP"}, {"src/game/g.c": "src/sdk/g.c"}):
+        with pytest.raises(Refusal, match="different places"):
+            folders.rewrite(text, tracked, move, [], "gcc-default")
+    assert folders.rewrite(result, [mapping.get(p, p) for p in tracked], {}, [], "gcc-default")[0] == result

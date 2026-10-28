@@ -201,6 +201,23 @@ def folded(tracked: Sequence[str], mapping: Mapping[str, str]) -> dict[str, str]
 
 
 # ---- plan
+def _memberships(tracked: Sequence[str], mapping: Mapping[str, str]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Directory membership before/after, using original file identities on both sides.
+
+    A filename rename preserves membership. A split or a merge across a row's
+    boundary does not, even when its moved children happen to share a suffix.
+    Build the index once rather than scanning every file for every config row.
+    """
+    before: dict[str, set[str]] = defaultdict(set)
+    after: dict[str, set[str]] = defaultdict(set)
+    for old in tracked:
+        for path, index in ((old, before), (mapping.get(old, old), after)):
+            parts = path.split("/")
+            for depth in range(1, len(parts)):
+                index["/".join(parts[:depth]) + "/"].add(old)
+    return before, after
+
+
 def _tracked(config: Config) -> list[str]:
     return sorted(process.tracked(config.project.root))
 
@@ -375,6 +392,7 @@ def rewrite(
     default) is dropped, library rows aside (they mark a boundary)."""
     dirs = folded(tracked, mapping)
     document: Any = tomlkit.parse(text)
+    members_before, members_after = _memberships(tracked, mapping)
     before = {
         path: FileFacts(f.toolchain, tuple(_flags(f.cflags, dirs)), f.omit) for path, (_, f) in _rows(document).items()
     }
@@ -385,7 +403,7 @@ def rewrite(
             continue
         for key in list(table):
             new = mapping.get(key) or dirs.get(key) or key
-            if key.endswith("/") and key not in dirs and any(t.startswith(key) and t in mapping for t in tracked):
+            if key.endswith("/") and members_before.get(key, set()) != members_after.get(new, set()):
                 problems.append(
                     Finding("layout.split", f"[{kind}] row {key} covers files that move to different places")
                 )
@@ -411,7 +429,7 @@ def rewrite(
         for index, folder in enumerate(list(flat)):
             if folder in dirs:
                 flat[index] = dirs[folder]
-            elif any(t.startswith(folder) and t in mapping for t in tracked):
+            if members_before.get(folder, set()) != members_after.get(dirs.get(folder, folder), set()):
                 problems.append(Finding("layout.split", f"library {folder} covers files that move to different places"))
     if problems:
         raise Refusal(*problems)
