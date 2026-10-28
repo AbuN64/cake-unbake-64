@@ -1,5 +1,7 @@
 """Canonical declaration facts retain every scope, domain and tracked directory view."""
 
+import pytest
+
 from unbake import api, symbol_names
 
 
@@ -60,3 +62,54 @@ def test_inactive_definitions_and_pointer_parameters_do_not_merge():
     rows = api.name_bindings(text)
     assert len([b for b in rows if b.kind == "function" and b.name == "F"]) == 2
     assert len([b for b in rows if b.kind == "parameter" and b.name == "arg0"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("extern int value;", {"value": False}),
+        ("const extern int value[];", {"value": False}),
+        ("extern int *value;", {"value": False}),
+        ("extern int (*value)(int);", {"value": False}),
+        ("extern int (*value)(int) = 0;", {"value": True}),
+        ("extern int value = 1;", {"value": True}),
+        ("extern int value[] = {1, 2};", {"value": True}),
+        ('extern char *value = "extern,=";', {"value": True}),
+        ("extern int value /* = 1 */;", {"value": False}),
+        ("extern int a, b = 2, c;", {"a": False, "b": True, "c": False}),
+        ("extern int a = Call(1, 2), b;", {"a": True, "b": False}),
+        ("extern int a[sizeof(int[2])], b = 1;", {"a": False, "b": True}),
+        ("int value;", {"value": True}),
+        ("static int value;", {"value": True}),
+        ('extern "C" { int a; extern int b; }', {"a": True, "b": False}),
+        ('extern "C" int value;', {"value": False}),
+        ("extern struct Record { int member; } value;", {"value": False}),
+        ("struct Record { int member; } value;", {"value": True}),
+        ("void F(void) { extern int a; int b; }", {"a": False, "b": True}),
+        ("extern int F(void); extern int G(void) { return 1; }", {"F": False, "G": True}),
+    ],
+)
+def test_definition_belongs_to_each_declarator(text, expected):
+    rows = api.name_bindings(text)
+    assert {b.name: b.definition for b in rows if b.name in expected} == expected
+    assert all(text[b.start : b.start + len(b.name)] == b.name for b in rows)
+
+
+def test_real_extern_census_keeps_header_source_and_conditional_identities():
+    # Source 482b437b: COMMON/LONE/D_80152789.H and PAK_OPENMUSICPREVIEWMENU.CPP.
+    texts = {
+        "include/language.h": '#include "TYPES.H"\nextern u8 g_languageIndex;\n',
+        "src/preview.cpp": (
+            "#if defined(VERSION_EU) || defined(VERSION_EU_X)\n"
+            "extern u8 g_languageIndex[];\nextern char D_800EEE20[];\n#endif\n"
+        ),
+        "src/language.cpp": "#if VERSION_EU\nu8 g_languageIndex = 0;\n#else\nu8 g_languageIndex = 1;\n#endif\n",
+    }
+    result = symbol_names.census(texts, "482b437b9a553d554de3ddaa68add8bfb867fbdf")
+    rows = result["declarations"]
+    assert len(rows) == 5
+    assert sum(row["definition"] for row in rows) == 2
+    assert all(row["definition"] == (row["path"] == "src/language.cpp") for row in rows)
+    assert len({(*row["identity"][:2], row["offset"]) for row in rows}) == 5
+    assert result["semantic_acceptance"] is False
+    assert symbol_names.census(texts, result["revision"]) == result

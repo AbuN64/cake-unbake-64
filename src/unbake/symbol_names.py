@@ -181,6 +181,20 @@ class Binding:
     definition: bool
 
 
+def _initialized(declarator: str) -> bool:
+    """Whether this declarator has an initializer, excluding bounds and following declarators."""
+    depth = 0
+    for token in re.finditer(r"[()[\],;=]", declarator):
+        char = token[0]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        elif not depth:
+            return char == "="
+    return False
+
+
 @lru_cache(maxsize=1)
 def bindings(text: str) -> tuple[Binding, ...]:
     """Qualified C declaration facts, including generated/preprocessor names and inactive branches.
@@ -246,7 +260,10 @@ def bindings(text: str) -> tuple[Binding, ...]:
                 kind = "local"
             elif re.match(r"\s*static\b", head):
                 kind = "static"
-            put(name_, at, kind, owner, type_, token[0] == "{" if kind == "function" else True, scope)
+            definition = token[0] == "{" if kind == "function" else True
+            if kind in {"global", "local"} and re.search(r"\bextern\b", head):
+                definition = _initialized(head[at - start :])
+            put(name_, at, kind, owner, type_, definition, scope)
         if token[0] == "{":
             kind = (
                 "linkage"
@@ -279,7 +296,8 @@ def bindings(text: str) -> tuple[Binding, ...]:
                         if stack
                         else "global"
                     )
-                    put(tail[1], token.end() + tail.start(1), kind, owner)
+                    definition = not re.search(r"\bextern\b", prefix)
+                    put(tail[1], token.end() + tail.start(1), kind, owner, definition=definition)
         start = token.end()
     for loop in re.finditer(r"\bfor\s*\(\s*([^;]*);", code):
         held = min((s for s in scopes if s[0] < loop.start() < s[1]), key=lambda s: s[1] - s[0], default=None)

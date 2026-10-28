@@ -223,6 +223,11 @@ inactive branches, macro parameters and enum constants. `naming_census(config)` 
 hashed source/header inputs and both directory views from the same tracked path universe under a
 shared tree lock. These are lexical facts, not linker identities or semantic acceptance: macro
 expansion, activation, assembly declarations and C++ templates require additional evidence.
+The `definition` flag distinguishes a function body from a prototype and an object definition
+from an `extern` declaration without an initializer. Initializers belong to individual comma
+declarators; an `extern` with an initializer remains a definition. An `extern "C"` block only
+sets linkage. A non-extern object without an initializer remains a definition (including C's
+tentative definitions); none of these lexical facts proves version-specific storage ownership.
 
 `unbake layout header --file include/Review.h` normalizes the reviewed header's whole-file guard
 using the same rule as header generation. For a batch use `--map reviewed.tsv` with one
