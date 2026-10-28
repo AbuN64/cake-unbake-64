@@ -309,7 +309,7 @@ params = [
   { name = "map", kind = "option", type = "path", required = false, multiple = false, help = "plan, reorg: a map file, one `old path<TAB>new path` per file (headers too), added to the rules" },
   { name = "file", kind = "option", type = "path", required = false, multiple = false, help = "header: the tracked source file (F.CPP) whose exports go into its one header F.H; collapse: limit to this tracked source file" },
   { name = "modules", kind = "option", type = "path", required = false, multiple = false, help = "mergecheck, merge: a module map, a TSV with a header row holding `unit` and `module` columns" },
-  { name = "module", kind = "option", type = "str", required = false, multiple = false, help = "merge: the module (its source path in the module map) whose units become one file" },
+  { name = "module", kind = "option", type = "str", required = false, multiple = false, help = "merge: restrict to this module; omit to merge the complete explicit --modules map with one facts scan and sync" },
   { name = "ld", kind = "option", type = "str", required = false, multiple = false, help = "mergecheck, merge: the link script of a version, a path with {version}, default build/{version}/link.ld" },
   { name = "obj", kind = "option", type = "str", required = false, multiple = false, help = "mergecheck, merge: the object of a unit, a path with {version} and {unit}, default build/{version}/{unit}.o" },
   { name = "prove", kind = "flag", type = "str", required = false, multiple = false, help = "reorg, merge: after the move run make check once, so every ROM is compared against the single move" },

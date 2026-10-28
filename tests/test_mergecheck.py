@@ -70,6 +70,17 @@ def test_single_unit_modules_have_no_verdict() -> None:
     assert run([("a", "M"), ("b", "N")], [entry("a", "text", 8)]) == {}
 
 
+def test_unplaced_audio_microcode_cannot_be_activated_by_merging_into_linked_data():
+    base = "src/game/ENGINE/AUDIO/AUDIOMGR/AUDIOMGR_INIT/"
+    units = [base + f"AUDIOMGR_INIT_{n}.CPP" for n in (1, 2, 3)]
+    rows = [(u, "audio") for u in units]
+    seqs = {v: [entry(units[1 if v == "us-rev1" else 0], "data", 8)] for v in ("us", "us-rev1", "de", "eu", "eu-x")}
+    result = mergecheck.verdicts(rows, seqs, {}, lambda _: "cc")[0]
+    assert result["hard"] == [f"unplaced: {units[2]} has no linker input in any version"]
+    assert result["verdict"] == "separate"
+    assert mergecheck.verdicts(rows[:2], seqs, {}, lambda _: "cc")[0]["hard"] == []
+
+
 LINK = """\
 SECTIONS {
  .text 0x80000400 : AT(0x400) SUBALIGN(1)
@@ -159,10 +170,134 @@ def test_units_are_ordered_by_where_their_code_is_linked_not_their_first_data() 
 
 def test_merged_units_leave_the_module_map_as_one_row_of_the_merged_file() -> None:
     text = "unit\tmodule\tkind\nA/a.CPP\tA/M.CPP\tcode\nB/b.CPP\tB/N.CPP\tcode\nA/a_2.CPP\tA/M.CPP\tdata\n#c\n"
-    got = mergecheck.merged_modules(text, ["A/a.CPP", "A/a_2.CPP"], "A/M/M.CPP")
+    got = mergecheck.merged_modules(text, {"A/a.CPP": "A/M/M.CPP", "A/a_2.CPP": "A/M/M.CPP"})
     assert got == "unit\tmodule\tkind\nA/M/M.CPP\tA/M.CPP\tcode\nB/b.CPP\tB/N.CPP\tcode\n#c\n"
-    assert mergecheck.merged_modules(got, ["A/M/M.CPP"], "A/M/M.CPP") == got
+    assert mergecheck.merged_modules(got, {"A/M/M.CPP": "A/M/M.CPP"}) == got
 
 
 def test_a_merged_file_sits_in_the_module_folder_under_the_module_name() -> None:
     assert mergecheck.merged_path("src/game/AI/NAV/PICKUP.CPP") == "src/game/AI/NAV/PICKUP/PICKUP.CPP"
+
+
+def test_object_facts_read_the_elf_once_and_keep_sizes_alignments_and_static_names(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    class Section(dict):
+        def __init__(self, name, size, alignment):
+            super().__init__(sh_size=size, sh_addralign=alignment)
+            self.name = name
+
+    class Symbol(dict):
+        def __init__(self, name, bind, kind):
+            super().__init__(st_info={"bind": bind, "type": kind}, st_shndx=1)
+            self.name = name
+
+    class Table:
+        def iter_symbols(self):
+            return iter(
+                [
+                    Symbol("helper", "STB_LOCAL", "STT_FUNC"),
+                    Symbol("state", "STB_LOCAL", "STT_OBJECT"),
+                    Symbol("exported", "STB_GLOBAL", "STT_FUNC"),
+                    Symbol("label", "STB_LOCAL", "STT_NOTYPE"),
+                ]
+            )
+
+    sections = [Section(".text", 24, 4), Section(".data", 8, 0), Section(".rdata", 4, 8), Section(".bss", 0, 4)]
+    elf = SimpleNamespace(iter_sections=lambda: iter(sections), get_section_by_name=lambda _: Table())
+    read = Mock(return_value=elf)
+    monkeypatch.setattr(mergecheck, "ELFFile", read)
+    monkeypatch.setattr(mergecheck, "SymbolTableSection", Table)
+    path = tmp_path / "object.o"
+    path.write_bytes(b"fixture")
+    assert mergecheck.object_facts(path) == (
+        {".text": 24, ".data": 8, ".rdata": 4, ".bss": 0},
+        {"helper", "state"},
+        {".text": [(24, 4)], ".data": [(8, 1)], ".rdata": [(4, 8)]},
+        {"helper", "state", "exported", "label"},
+    )
+    read.assert_called_once()
+
+
+def test_fact_scan_reuses_one_read_for_multiple_sections_of_same_object(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    (tmp_path / "us.ld").write_text(LINK)
+    for name in ("a", "b"):
+        path = tmp_path / f"src/{name}.o"
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"fixture")
+    read = Mock(return_value=({".text": 8, ".data": 4, ".rodata": 4}, {"local"}, {".rodata": [(4, 4)]}, set()))
+    monkeypatch.setattr(mergecheck, "object_facts", read)
+    seqs, statics = mergecheck.facts_of(tmp_path, ["us"], "{version}.ld", "{unit}.o")
+    assert read.call_count == 2
+    assert statics == {"src/a": {"local"}, "src/b": {"local"}}
+    assert [e["n"] for e in seqs["us"] if e["k"] == "entry"] == [8, 12, 4]
+
+
+def test_original_linker_minimum_offsets_keep_internal_holes_in_real_data_slice():
+    # Six original US-rev1 table fragments: a 32-byte hole after the second piece is
+    # a linker constraint, not source padding that disappears safely in one object.
+    offsets = [0x923C, 0x9248, 0x9274, 0x9280, 0x929C, 0x92A8]
+    sizes = [12, 12, 12, 28, 12, 12]
+    text = ".data_800C 0x800C6AB0 : AT(0xC76B0) SUBALIGN(1)\n{\n"
+    text += "\n".join(f". = MAX(., 0x{o:X});\nu{i}.o(.data);" for i, o in enumerate(offsets))
+    seq = mergecheck.parse_link(text + "\n}")
+    for row in seq:
+        if row["k"] == "entry":
+            size = sizes[int(row["u"][1:])]
+            row.update(n=size, cls="data", parts={"data": [(size, 4)]})
+    rows = [(f"u{i}", "tables") for i in range(6)]
+    assert mergecheck.spans(seq, {u for u, _ in rows}) == [(".data_800C", 120, 88)]
+    assert run(rows, seq)["tables"]["hard"] == [
+        "lma: us .data_800C merged 88 B against linked 120 B: leaves a gap before the next section"
+    ]
+
+
+def test_minimum_does_not_move_back_or_count_prefix_space_as_module_bytes():
+    seq = [
+        {"o": ".data", "k": "minimum", "offset": 100},
+        with_parts(entry("a", "data", 8, ".data"), data=piece(8, 1)),
+        {"o": ".data", "k": "minimum", "offset": 104},
+        with_parts(entry("b", "data", 8, ".data"), data=piece(8, 1)),
+    ]
+    assert mergecheck.spans(seq, {"a", "b"}) == [(".data", 16, 16)]
+
+
+def test_named_sections_are_counted_once_and_conditional_align_uses_actual_definitions(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    (tmp_path / "us.ld").write_text(
+        ".rodata : SUBALIGN(1)\n{\na.o(.rodata.first);\n"
+        ". = DEFINED(yes) ? ALIGN(8) : .;\na.o(.rodata.second);\n"
+        ". = DEFINED(no) ? ALIGN(8) : .;\nb.o(.rodata);\n}\n"
+    )
+    for unit in ("a", "b"):
+        (tmp_path / f"{unit}.o").write_bytes(b"fixture")
+    read = Mock(
+        side_effect=[
+            (
+                {".rodata.first": 3, ".rodata.second": 4},
+                set(),
+                {".rodata.first": [(3, 4)], ".rodata.second": [(4, 4)]},
+                {"yes"},
+            ),
+            ({".rodata": 4}, set(), {".rodata": [(4, 4)]}, set()),
+        ]
+    )
+    monkeypatch.setattr(mergecheck, "object_facts", read)
+    seqs, _ = mergecheck.facts_of(tmp_path, ["us"], "{version}.ld", "{unit}.o")
+    seq = seqs["us"]
+    assert [r["n"] for r in seq if r["k"] == "entry"] == [3, 4, 4]
+    assert [r["symbol"] for r in seq if "symbol" in r] == ["yes"]
+    assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 16, 12)]
+    assert read.call_count == 2
+
+
+def test_missing_selected_object_is_not_an_empty_safe_member(tmp_path):
+    (tmp_path / "us.ld").write_text(".text :\n{\na.o(.text);\nb.o(.text);\n}\n")
+    seqs, statics = mergecheck.facts_of(tmp_path, ["us"], "{version}.ld", "{unit}.o")
+    result = mergecheck.verdicts([("a", "M"), ("b", "M")], seqs, statics, lambda _: "cc")[0]
+    assert result["verdict"] == "separate"
+    assert result["hard"] == ["object: us a has no built object", "object: us b has no built object"]

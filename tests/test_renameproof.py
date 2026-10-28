@@ -306,6 +306,8 @@ def test_a_local_rename_shadowing_a_global_the_function_uses_is_refused(repo: Pa
 
 def test_a_local_rename_meeting_a_macro_free_name_is_refused(repo: Path) -> None:
     _locals(repo)
+    path = repo / "src/loc.c"
+    path.write_text(path.read_text().replace("return range * 2;", "return SCALE(range);", 1))
     (repo / "include/g.h").write_text("extern int Util;\n#define SCALE(v) ((v) * growStep)\n")
     _git(repo, "commit", "-q", "-am", "macro")
     _grow(repo, "step", "growStep")
@@ -785,3 +787,100 @@ def test_unrelated_rename_does_not_capture_static_helper(repo: Path, captured: b
         assert "capture" in _refused(repo)
     else:
         assert ["func_80100000_de", "alCSeqNextEvent"] in _prove(repo)["map"]
+
+
+@pytest.mark.parametrize(
+    "name,macro",
+    [
+        ("x", "#define ACTOR_OVERLAPS(actor, box) ((box)->x > (actor)->bounds.min.x)\n"),
+        ("text", "#define ENTRY_TEXT(e) ((e)->text[g_languageIndex])\n"),
+        ("text", "#define RES_NAME(m) (D_800DFA6C[m].name->text)\n"),
+        ("text", "#define AS_RECORD(v) ((struct text *)(v))\n"),
+    ],
+)
+def test_real_macro_member_and_tag_names_do_not_capture_local(repo: Path, name: str, macro: str) -> None:
+    _locals(repo)
+    (repo / "include/g.h").write_text("extern int Util;\n" + macro)
+    _git(repo, "commit", "-q", "-am", "separate macro namespace")
+    _grow(repo, "step", name)
+    assert _prove(repo)["renames"] == 1
+
+
+@pytest.mark.parametrize(
+    "macro",
+    [
+        "#define SCALE(v) ((v) * growStep)\n",
+        "#define SCALE(v) \\\n ((v) * growStep)\n",
+        "#define SCALE (growStep)\n",
+        "#define SCALE/**/(growStep)\n",
+        "#define growStep(v) (v)\n",
+        "#if growStep\n#endif\n",
+    ],
+)
+def test_macro_free_names_and_conditions_still_capture(repo: Path, macro: str) -> None:
+    _locals(repo)
+    path = repo / "src/loc.c"
+    path.write_text(path.read_text().replace("return range * 2;", "return SCALE(range);", 1))
+    (repo / "include/g.h").write_text("extern int Util;\n" + macro)
+    _git(repo, "commit", "-q", "-am", "macro capture")
+    _grow(repo, "step", "growStep")
+    assert "preprocessor directive" in _refused(repo)
+
+
+@pytest.mark.parametrize("use", ["unused", "direct", "nested", "object", "cycle", "pasted"])
+def test_real_printf_free_name_only_captures_reachable_local(repo: Path, use: str) -> None:
+    _locals(repo)
+    macro = (
+        "#define PRINTF_PUT(s, n) \\\n"
+        "    if (0 < (n)) { \\\n"
+        "        arg = (*prout)(arg, (const char *)(s), (n)); \\\n"
+        "        if (arg != 0) { x.nchar += (n); } else { return x.nchar; } \\\n"
+        "    }\n"
+        "#define PRINTF_PAD(m, s, n) PRINTF_PUT(s, n)\n"
+        "#define OUTPUT PRINTF_PAD\n"
+        "#define CYCLE OTHER\n#define OTHER CYCLE\n"
+        "#define JOIN(a, b) a ## b\n"
+    )
+    (repo / "src/b.c").write_text(macro)
+    call = {
+        "unused": "range * 2",
+        "direct": "PRINTF_PUT(0, 1)",
+        "nested": "PRINTF_PAD(1, 0, 1)",
+        "object": "OUTPUT(1, 0, 1)",
+        "cycle": "CYCLE",
+        "pasted": "JOIN(PRINTF_, PUT)(0, 1)",
+    }[use]
+    path = repo / "src/loc.c"
+    path.write_text(path.read_text().replace("return range * 2;", f"return {call};", 1))
+    _git(repo, "add", "src/b.c")
+    _git(repo, "commit", "-q", "-am", "real macro reachability")
+    _grow(repo, "step", "x")
+    if use in ("unused", "cycle"):
+        assert _prove(repo)["renames"] == 1
+    else:
+        assert "preprocessor directive" in _refused(repo)
+
+
+def test_function_macro_formals_are_not_free_even_across_splice() -> None:
+    rows = renameproof._pp_rows("#define SCALE\\\n(growStep) ((growStep) * 2)\n")
+    assert rows[0][1] == ["growStep"]
+    assert rows[0][2] == ["(", "(", "growStep", ")", "*", "2", ")"]
+
+
+@pytest.mark.parametrize(
+    "macro",
+    [
+        "#define HIDDEN STR\n",
+        "#define HIDDEN (STR)\n",
+        "#define HIDDEN(v) ((object)->v)\n",
+        "#define HIDDEN(v) ((struct v *)0)\n",
+    ],
+)
+def test_macro_call_does_not_assume_object_or_other_namespace_is_function(repo: Path, macro: str) -> None:
+    _locals(repo)
+    p = repo / "src/loc.c"
+    p.write_text(p.read_text().replace("return range * 2;", "return HIDDEN(step);", 1))
+    (repo / "include/g.h").write_text("extern int Util;\n" + macro)
+    _git(repo, "commit", "-q", "-am", "macro argument binding")
+    _grow(repo, "step", "growStep")
+    assert "argument" in _refused(repo)

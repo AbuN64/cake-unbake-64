@@ -188,3 +188,28 @@ release ever changes it. `unbake sync --check` and `unbake audit --against BASE`
 Run `bin/dev-setup` once, then `bin/test`, `bin/lint` and `bin/hygiene`.
 Unit tests mock external tools; use `bin/test -p 'test_config.py'` to select an affected module.
 Real build proofs run against a project checkout (`unbake setup`, `make check`), outside the unit runner.
+
+## Merge reviewed modules
+
+`unbake layout mergecheck --modules reviewed.tsv` audits every module in the explicit TSV (`unit` and `module` columns).
+The TSV selects membership; merge and mergecheck both use code link order, then verify that every version and section
+can preserve that order. Contradictory orders, intervening bytes, section boundaries and compiler changes still refuse.
+The scan reads each ELF once, counts named function/data sections individually, and respects linker minimum offsets,
+input alignment overrides and defined alignment markers. Missing selected objects and units absent from every version's
+linker inputs refuse: merging an unplaced unit could activate its data. An internal linker hole
+cannot disappear merely because the source files are concatenated. These checks do not replace the final ROM proof.
+`unbake layout merge --modules reviewed.tsv --prove` prepares all of those modules, reports every refusal before writing,
+then stages the selected files, rewrites the map, syncs once and proves every ROM once. `--module NAME` restricts the
+same operation to one module. The response lists each changed module under `modules`; `kept` counts already merged
+modules. Repeating a completed map makes no writes. Duplicate unit ownership, missing units, occupied destinations,
+compiler/library changes and hard merge findings refuse the whole request. With `--prove`, text conflicts also refuse
+before writing; without it they remain explicit in each module result for review. Singleton moves use `layout reorg`.
+
+Layout apply, reorg and merge carry the configured `module_map` TSV's active `unit`, `module` and `header` paths
+through the exact mapping. Other columns, including historical `evidence`, retain their values. Moving the map itself
+also updates its path in config.toml. The configured map must be readable before any source move; changed map paths
+are included in `written`. The explicit merge membership map is still rewritten once through its existing lifecycle.
+
+Rename proof distinguishes macro parameters, member/tag names and ordinary free identifiers. A field such as
+`(entry)->text` in a macro body does not capture a local named `text`. Free identifiers on continued directives
+remain guarded, and an object macro used as a call refuses when its argument expansion cannot be proved.

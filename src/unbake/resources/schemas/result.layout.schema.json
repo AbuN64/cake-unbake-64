@@ -17,7 +17,8 @@
     "header",
     "collapse",
     "pads",
-    "mergecheck"
+    "mergecheck",
+    "merge"
    ]
   },
   "moved": {},

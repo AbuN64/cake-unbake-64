@@ -246,6 +246,59 @@ def test_apply_without_a_plan_or_with_a_dirty_file_is_refused(cfg: Config, tmp_p
     assert "uncommitted" in refusal.value.findings[0].reason
 
 
+@pytest.mark.parametrize("move_map", [False, True])
+def test_apply_carries_prefix_authority_paths_preserving_evidence(cfg, tmp_path, monkeypatch, move_map):
+    root = cfg.project.root
+    old, new = "include/MENU/GFX/80414480_8.H", "include/MENU/GFX/TileGrid.H"
+    header = root / old
+    header.parent.mkdir(parents=True)
+    header.write_text("void DrawTileGrid(void);\n")
+    spelled = "docs/ownership.tsv"
+    (root / spelled).parent.mkdir(parents=True)
+    columns = "unit\tmodule\tfolder\tprefix\theader\tkind\tconfidence\tobject\tstage\tevidence\n"
+    original = (
+        columns + f"src/main/c_func.c\tsrc/main/c_func.c\tmain\tGfx\t{old}\tcode\treviewed\tTU0396.0\tP3\tfrom {old}\n"
+    )
+    (root / spelled).write_text(original)
+    config = root / "config.toml"
+    config.write_text(f'module_map = "{spelled}"\n' + config.read_text())
+    cfg.project.module_map = spelled
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "Fixture with configured prefix authority")
+    moved = {old: new, "src/main/c_func.c": "src/main/DrawTileGrid.c"}
+    if move_map:
+        moved[spelled] = "docs/current.tsv"
+    rules = tmp_path / "paths.toml"
+    rules.write_text("".join(f'[[rule]]\nmatch = "{a}"\nto = "{b}"\n' for a, b in moved.items()))
+    folders.plan(cfg, {"rules": rules})
+    monkeypatch.setattr(folders.repo, "sync", lambda *_: {"written": []})
+    result = folders.apply(cfg, {})
+    final_map = moved.get(spelled, spelled)
+    cells = (root / final_map).read_text().splitlines()[1].split("\t")
+    assert cells[:2] == ["src/main/DrawTileGrid.c"] * 2
+    assert cells[4] == new and cells[-1] == f"from {old}"
+    assert cells[2:4] == ["main", "Gfx"]
+    assert cells[5:9] == ["code", "reviewed", "TU0396.0", "P3"]
+    assert result["written"] == [final_map]
+    assert tomllib.loads(config.read_text())["module_map"] == final_map
+    assert (root / new).exists() and not (root / old).exists()
+    assert folders._module_paths((root / final_map).read_text(), moved) == (root / final_map).read_text()
+
+
+def test_missing_configured_module_map_refuses_before_moving(cfg, tmp_path):
+    cfg.project.module_map = "missing.tsv"
+    folders.plan(cfg, {"rules": _rules_file(tmp_path)})
+    with pytest.raises(Refusal, match="cannot carry configured module_map"):
+        folders.apply(cfg, {})
+    assert (cfg.project.root / "src/main/c_func.c").exists()
+
+
+def test_module_paths_preserve_quoted_evidence_comments_and_unrelated_rows():
+    text = '# historical\r\nunit\theader\tevidence\r\na.c\ta.h\t"a.h\told"\r\nb.c\tb.h\told\r\n'
+    out = folders._module_paths(text, {"a.h": "new.h"})
+    assert out == text.replace("a.c\ta.h\t", "a.c\tnew.h\t")
+
+
 def test_verify_compares_sections_through_the_map(cfg: Config, tmp_path: Path) -> None:
     root = cfg.project.root
     folders.plan(cfg, {"rules": _rules_file(tmp_path)})

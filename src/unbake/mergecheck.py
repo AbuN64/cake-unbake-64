@@ -31,10 +31,15 @@ from elftools.elf.sections import SymbolTableSection
 Row = dict[str, Any]
 CLASS_OF = {".text": "text", ".data": "data", ".rodata": "rodata", ".rdata": "rodata", ".bss": "bss", ".sbss": "bss"}
 RODATA = "rodata"
-PADDED = ("data", "rodata")
 _ENTRY = re.compile(r"^\s*(\S+?)\.o\(([^)]*)\);")
-_ALIGN = re.compile(r"^\s*\.\s*=\s*ALIGN\((\d+)\)")
+_ALIGN = re.compile(r"^\s*\.\s*=\s*ALIGN\((0x[0-9A-Fa-f]+|\d+)\)")
+_MINIMUM = re.compile(r"^\s*\.\s*=\s*MAX\(\s*\.\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*\)")
+_CONDITIONAL_ALIGN = re.compile(r"^\s*\.\s*=\s*DEFINED\((\w+)\)\s*\?\s*ALIGN\((\d+)\)\s*:\s*\.")
 _OUTSEC = re.compile(r"^\s*(\.[A-Za-z0-9_.]+)\s+(?:0x[0-9A-Fa-f]+\s*)?(?:\(NOLOAD\)\s*)?:")
+
+
+def _section_class(name: str) -> str | None:
+    return CLASS_OF.get("." + name.split(".", 2)[1]) if name.startswith(".") else None
 
 
 def read_modules(text: str) -> list[tuple[str, str]]:
@@ -53,73 +58,89 @@ def merged_path(module: str) -> str:
     return (path.with_suffix("") / path.name).as_posix()
 
 
-def merged_modules(text: str, units: list[str], merged: str) -> str:
-    """The module map after `units` became the one file `merged`: their rows replaced by the first of them, its `unit`
-    now `merged` (rows of other units and comments stay where they were)."""
+def merged_modules(text: str, mapping: Mapping[str, str]) -> str:
+    """Rewrite all selected units in one pass, keeping one row per destination and all other rows/comments."""
     lines = text.splitlines(keepends=True)
     col = lines[0].rstrip("\r\n").split("\t").index("unit")
-    gone = set(units) | {merged}
     out = [lines[0]]
-    done = False
+    done: set[str] = set()
     for line in lines[1:]:
         cells = line.rstrip("\r\n").split("\t")
-        if len(cells) > col and cells[col] in gone:
-            if not done:
+        if not line.startswith("#") and len(cells) > col and cells[col] in mapping:
+            merged = mapping[cells[col]]
+            if merged not in done:
                 cells[col] = merged
                 out.append("\t".join(cells) + "\n")
-                done = True
+                done.add(merged)
             continue
         out.append(line)
     return "".join(out)
 
 
 def parse_link(text: str) -> list[Row]:
-    """The link script rows in order: {"o": output section, "k": "entry"|"align", "u": unit, "cls": classes, "a": n}."""
+    """The ordered entries, alignment and minimum output offsets emitted by the linker writer."""
     rows: list[Row] = []
     outsec = ""
+    subalign = 0
     for line in text.splitlines():
         found = _OUTSEC.match(line)
         if found and "{" not in line:
             outsec = found.group(1)
+            sub = re.search(r"SUBALIGN\((\d+)\)", line)
+            subalign = int(sub.group(1)) if sub else 0
             continue
         align = _ALIGN.match(line)
         if align:
-            rows.append({"o": outsec, "k": "align", "a": int(align.group(1))})
+            rows.append({"o": outsec, "k": "align", "a": int(align.group(1), 0)})
+            continue
+        minimum = _MINIMUM.match(line)
+        if minimum:
+            rows.append({"o": outsec, "k": "minimum", "offset": int(minimum.group(1), 0)})
+            continue
+        conditional = _CONDITIONAL_ALIGN.match(line)
+        if conditional:
+            rows.append({"o": outsec, "k": "align", "a": int(conditional.group(2)), "symbol": conditional.group(1)})
             continue
         entry = _ENTRY.match(line)
         if entry:
-            classes = tuple(sorted({CLASS_OF[s] for s in entry.group(2).split() if s in CLASS_OF}))
-            rows.append({"o": outsec, "k": "entry", "u": entry.group(1), "cls": classes})
+            sections = tuple(s.strip('"') for s in entry.group(2).split())
+            classes = tuple(sorted({c for s in sections if (c := _section_class(s)) is not None}))
+            rows.append(
+                {
+                    "o": outsec,
+                    "k": "entry",
+                    "u": entry.group(1),
+                    "cls": classes,
+                    "sections": sections,
+                    "subalign": subalign,
+                }
+            )
     return rows
 
 
-def sections_of(path: Path) -> tuple[dict[str, int], set[str]]:
-    """Byte size per class of one object, and the names of its local (static) symbols."""
+def object_facts(path: Path) -> tuple[dict[str, int], set[str], dict[str, list[tuple[int, int]]], set[str]]:
+    """Read exact section sizes, local names, pieces and defined alignment markers once."""
     sizes: dict[str, int] = defaultdict(int)
     local: set[str] = set()
+    pieces: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    defined: set[str] = set()
     with path.open("rb") as handle:
         elf = ELFFile(handle)
         for section in elf.iter_sections():
-            if section.name in CLASS_OF:
-                sizes[CLASS_OF[section.name]] += section["sh_size"]
+            cls = _section_class(section.name)
+            if cls is not None:
+                sizes[section.name] += section["sh_size"]
+            if cls is not None and section["sh_size"]:
+                pieces[section.name].append((section["sh_size"], max(section["sh_addralign"], 1)))
         table = elf.get_section_by_name(".symtab")
         if isinstance(table, SymbolTableSection):
             for symbol in table.iter_symbols():
+                if symbol["st_shndx"] != "SHN_UNDEF":
+                    defined.add(symbol.name)
                 kind = symbol["st_info"]["type"]
                 if symbol["st_info"]["bind"] == "STB_LOCAL" and kind in ("STT_FUNC", "STT_OBJECT") and symbol.name:
                     local.add(symbol.name)
-    return dict(sizes), local
-
-
-def pieces_of(path: Path) -> dict[str, list[tuple[int, int]]]:
-    """(size, alignment) of each non-empty data and read-only input section of one object, per class."""
-    out: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    with path.open("rb") as handle:
-        for section in ELFFile(handle).iter_sections():
-            cls = CLASS_OF.get(section.name)
-            if cls in PADDED and section["sh_size"]:
-                out[cls].append((section["sh_size"], max(section["sh_addralign"], 1)))
-    return dict(out)
+    return dict(sizes), local, dict(pieces), defined
 
 
 def fills(path: Path, symbol: str) -> bool | None:
@@ -152,24 +173,29 @@ def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int]]:
     for section in dict.fromkeys(e["o"] for e in seq if e["k"] == "entry" and e["u"] in units):
         rows = [(i, e) for i, e in enumerate(seq) if e["o"] == section]
         mine = [i for i, e in rows if e["k"] == "entry" and e["u"] in units]
-        position, classes = 0, defaultdict(list)
+        position, start, classes = 0, 0, defaultdict(list)
         for i, row in rows:
-            if i < mine[0] or i > mine[-1]:
-                continue
+            if i > mine[-1]:
+                break
+            if i == mine[0]:
+                start = position
             if row["k"] == "align":
                 position = _up(position, row["a"])
                 continue
+            if row["k"] == "minimum":
+                position = max(position, row["offset"])
+                continue
             for cls in row.get("parts", {}):
                 for size, align in row["parts"][cls]:
-                    position = _up(position, align) + size
-                    if row["u"] in units:
+                    position = _up(position, row.get("subalign") or align) + size
+                    if i >= mine[0] and row["u"] in units:
                         classes[cls].append((size, align))
         merged = 0
         for pieces in classes.values():
             merged = _up(merged, max(a for _, a in pieces))
             for size, align in pieces:
                 merged = _up(merged, align) + size
-        out.append((section, position, merged))
+        out.append((section, position - start, merged))
     return out
 
 
@@ -183,6 +209,7 @@ def facts_of(
     pieces: dict[tuple[str, str], dict[str, list[tuple[int, int]]]] = {}
     for version in versions:
         seq = parse_link((root / ld.format(version=version)).read_text())
+        defined: set[str] = set()
         for row in seq:
             if row["k"] != "entry":
                 continue
@@ -190,16 +217,21 @@ def facts_of(
             if key not in cache:
                 path = root / obj.format(version=version, unit=row["u"])
                 if path.is_file():
-                    cache[key], local = sections_of(path)
-                    pieces[key] = pieces_of(path)
+                    cache[key], local, pieces[key], names = object_facts(path)
+                    defined.update(names)
                     statics.setdefault(row["u"], set()).update(local)
                 else:
                     cache[key] = None
             sizes = cache[key] or {}
-            row["n"] = sum(sizes.get(c, 0) for c in row["cls"])
-            row["parts"] = {c: pieces.get(key, {}).get(c, []) for c in row["cls"] if c in PADDED}
+            row["n"] = sum(sizes.get(s, 0) for s in row["sections"])
+            parts: dict[str, list[tuple[int, int]]] = defaultdict(list)
+            for section in row["sections"]:
+                if (cls := _section_class(section)) is not None:
+                    parts[cls].extend(pieces.get(key, {}).get(section, ()))
+            row["parts"] = dict(parts)
+            row["missing"] = cache[key] is None
             row["cls"] = "+".join(row["cls"])
-        seqs[version] = seq
+        seqs[version] = [r for r in seq if "symbol" not in r or r["symbol"] in defined]
     return seqs, statics
 
 
@@ -230,7 +262,11 @@ def verdicts(
     owner = {u: m for m, us in multi.items() for u in us}
     hard: dict[str, list[str]] = defaultdict(list)
     soft: dict[str, list[str]] = defaultdict(list)
+    placed = {row["u"] for seq in seqs.values() for row in seq if row["k"] == "entry"}
     for module, units in multi.items():
+        for unit in units:
+            if unit not in placed:
+                hard[module].append(f"unplaced: {unit} has no linker input in any version")
         if len({identity(u) for u in units}) > 1:
             hard[module].append("flags: the units differ in toolchain or flags")
         names: dict[str, str] = {}
@@ -240,6 +276,9 @@ def verdicts(
                     soft[module].append(f"statics: {name} is local to {names[name]} and {unit}")
                 names.setdefault(name, unit)
     for version, seq in seqs.items():
+        for row in seq:
+            if row.get("missing") and (missing_owner := owner.get(row["u"])):
+                hard[missing_owner].append(f"object: {version} {row['u']} has no built object")
         live = [i for i, e in enumerate(seq) if e["k"] == "entry" and e.get("n", 0) > 0]
         rodata = {e["u"] for e in seq if e["k"] == "entry" and e["cls"] == RODATA and e["n"] > 0}
         following = dict(pairwise(live))

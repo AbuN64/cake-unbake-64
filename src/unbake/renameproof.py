@@ -134,6 +134,31 @@ def _tokens(text: str, c: bool, starts: list[int] | None = None) -> list[str]:
     return out
 
 
+def _pp_rows(text: str) -> list[tuple[list[str], list[str], list[str]]]:
+    """Directive tokens, formal macro parameters and body; whitespace distinguishes object macros."""
+    starts: list[int] = []
+    tokens = _tokens(text, True, starts)
+    rows = []
+    n = 0
+    while n < len(tokens):
+        if tokens[n] != "#":
+            n += 1
+            continue
+        end = tokens.index("\n", n) if "\n" in tokens[n:] else len(tokens)
+        row = tokens[n + 1 : end]
+        params: list[str] = []
+        body = row[2:]
+        if row[:1] == ["define"] and row[2:3] == ["("] and ")" in row:
+            gap = text[starts[n + 2] + len(row[1]) : starts[n + 3]]
+            if not re.sub(r"\\\r?\n", "", gap):
+                close = row.index(")")
+                params = [token for token in row[3:close] if token != ","]
+                body = row[close + 1 :]
+        rows.append((row, params, body))
+        n = end + 1
+    return rows
+
+
 def _is_id(token: str) -> bool:
     return bool(_IDENT.match(token))
 
@@ -953,54 +978,58 @@ class _Proof:
                 clash.add(token)
         return clash
 
-    def directive_names(self, names: set[str]) -> set[str]:
+    def directive_names(self, names: set[str], active: set[str] | None = None) -> set[str]:
         """The names among `names` that a preprocessor directive of the old tree uses as a macro, in a macro body or
         in a condition (not as a macro parameter): inside a function they could mean the local."""
         if not names:
             return set()
-        alt = "|".join(re.escape(n) for n in sorted(names))
-        word = rf"\<({alt})\>"
-        args = ["grep", "-I", "-l", "-z", "-E", "-e", rf"^[[:space:]]*#.*{word}", "-e", rf"{word}.*\\[[:space:]]*$"]
-        out = self.repo.run(*args, self.base, "--", ".", ok=(0, 1), own=False)
-        paths = [f.split(":", 1)[1] for f in out.decode("latin-1").split("\0") if f]
-        blobs = self.repo.blobs([f"{self.base}:{p}" for p in paths])
+        # Search complete files: a free name may occur on the final continuation line.
+        paths = [path for path in self._hits(sorted(names), self.base) if _is_c(path)]
+        blobs = self.repo.blobs([f"{self.base}:{path}" for path in paths])
         used: set[str] = set()
         for path in paths:
-            if not _is_c(path):
-                continue
-            tokens = _tokens((blobs[f"{self.base}:{path}"] or b"").decode("latin-1"), True)
-            n = 0
-            while n < len(tokens):
-                if tokens[n] != "#":
-                    n += 1
+            for row, params, body in _pp_rows((blobs[f"{self.base}:{path}"] or b"").decode("latin-1")):
+                if row[:1] != ["define"]:
+                    used |= set(row) & names
                     continue
-                end = tokens.index("\n", n) if "\n" in tokens[n:] else len(tokens)
-                row = tokens[n + 1 : end]
-                params: set[str] = set()
-                if row[:1] == ["define"] and row[2:3] == ["("] and ")" in row:
-                    params = set(row[3 : row.index(")")])
-                    row = row[:2] + row[row.index(")") + 1 :]
-                used |= (set(row) - params) & names
-                n = end + 1
+                used |= set(row[1:2]) & names  # the macro name always occupies the ordinary namespace
+                if active is not None and (len(row) < 2 or row[1] not in active):
+                    continue  # an unused macro's free identifiers cannot bind a local in this function
+                used |= {
+                    token
+                    for n, token in enumerate(body)
+                    if token in names and token not in params and not _member(body, n) and not _tagged(body, n)
+                }
         return used
 
     def scoped(self) -> None:
         """A local or parameter rename meets only its own function: the new name must not be used there, and neither
-        name may be a macro or a macro's free name anywhere (a macro expands inside the function)."""
+        name may be a macro or a free name of a macro that can expand inside a renamed function."""
         if not self.local:
             return
         values = {*self.map.values(), *self.tag.values(), *self.site.values()}
+        active: set[str] = set()
         for (path, fn, old), new in sorted(self.local.items()):
             tokens = self.old[path]
             lo, hi = self.spans[path][fn]
             used = {t for k, t in enumerate(tokens[lo : hi + 1], lo) if not _member(tokens, k)}
+            active.update(t for t in used if _is_id(t))
             swapped = any(key[:2] == (path, fn) and key[2] == new for key in self.local)
             if new in used and not swapped:
                 self.refuse(f"{new} is already used in the function that renames {old} to it", path)
             elif new in values:
                 self.refuse(f"{new} is also the new name of a renamed global", path)
         names = {key[2] for key in self.local} | set(self.local.values())
-        for name in sorted(self.directive_names(names)):
+        known: Macros = {}
+        pasted = False
+        while todo := active - known.keys():
+            self._definitions(sorted(todo), known)
+            for name in todo:
+                for params, body in known[name]:
+                    pasted |= any(body[n : n + 2] == ["#", "#"] for n in range(len(body) - 1))
+                    active.update(token for token in body if _is_id(token) and token not in params)
+        # Token pasting can synthesize a macro name absent from the lexical call graph.
+        for name in sorted(self.directive_names(names, None if pasted else active)):
             self.refuse(f"{name} is a macro name or appears in a preprocessor directive, where it could mean the local")
 
     def builtins(self) -> None:
@@ -1034,7 +1063,9 @@ class _Proof:
                     stack.clear()
                 elif token == "(":
                     before = tokens[n - 1] if n else ""
-                    stack.append((before if _is_id(before) and before not in NOT_MACROS else None, 0))
+                    declaration = n >= 2 and tokens[n - 2] == "define"
+                    called = before if _is_id(before) and before not in NOT_MACROS and not declaration else None
+                    stack.append((called, 0))
                 elif token == ")":
                     if stack:
                         stack.pop()
@@ -1055,22 +1086,14 @@ class _Proof:
             known[name] = []
         if not todo:
             return
-        pattern = r"^[[:space:]]*#[[:space:]]*define[[:space:]]+(" + "|".join(todo) + r")[[:space:]]*\("
-        out = self.repo.run("grep", "-I", "-l", "-z", "-E", pattern, self.base, "--", ".", ok=(0, 1), own=False)
-        paths = [f.split(":", 1)[1] for f in out.decode("latin-1").split("\0") if f]
-        blobs = self.repo.blobs([f"{self.base}:{p}" for p in paths])
+        paths = [path for path in self._hits(todo, self.base) if _is_c(path)]
+        blobs = self.repo.blobs([f"{self.base}:{path}" for path in paths])
         wanted = set(todo)
         for path in paths:
-            tokens = _tokens((blobs[f"{self.base}:{path}"] or b"").decode("latin-1"), True)
-            n = 0
-            while n + 4 < len(tokens):
-                if tokens[n : n + 2] == ["#", "define"] and tokens[n + 2] in wanted and tokens[n + 3] == "(":
-                    end = tokens.index("\n", n) if "\n" in tokens[n:] else len(tokens)
-                    close = tokens.index(")", n + 3)
-                    params = [t for t in tokens[n + 4 : close] if t != ","]
-                    known[tokens[n + 2]].append((params, tokens[close + 1 : end]))
-                    n = end
-                n += 1
+            for row, params, body in _pp_rows((blobs[f"{self.base}:{path}"] or b"").decode("latin-1")):
+                if row[:1] == ["define"] and len(row) > 1 and row[1] in wanted:
+                    # An object macro used as a call is not an unbound function. Its expansion needs proof.
+                    known[row[1]].append((params, body))
 
     def safe(self, name: str, index: int, known: Macros, depth: int) -> bool:
         """True when argument `index` of the macro is expanded as itself or stringified only into assembly text."""
@@ -1097,6 +1120,8 @@ class _Proof:
                 elif token == "," and stack:
                     stack[-1] = (stack[-1][0], stack[-1][1] + 1)
                 elif token == param:
+                    if _member(body, n) or _tagged(body, n):
+                        return False
                     if body[max(n - 2, 0) : n] == ["#", "#"] or body[n + 1 : n + 3] == ["#", "#"]:
                         return False
                     if n and body[n - 1] == "#" and not flags[n]:
@@ -1113,7 +1138,7 @@ class _Proof:
             if not self.safe(name, index, known, 0):
                 self.refuse(
                     f"{name} takes a renamed name as argument {index} and pastes or stringifies it outside"
-                    " inline assembly, so the rename reaches a string or a new identifier",
+                    " inline assembly, or changes its binding namespace, so argument equivalence is unproved",
                     path,
                 )
 

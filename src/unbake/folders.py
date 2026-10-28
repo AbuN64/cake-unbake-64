@@ -16,9 +16,10 @@ reorg   the one-command form: plan from a `--map` file (old path, new path per l
 header  `--file F.CPP`: writes the exported prototypes and externs of one source file into its one header and rewrites
         the includes of the files that declared them (hoist.py).
 mergecheck  reads a module map (unit, module) and the built objects and says which merges must stay separate files.
-merge   `--module M --modules MAP`: the units of M in link order become one source file named M (pad arrays the
-        alignment reproduces and redundant prototypes dropped, includes hoisted and deduped); refused when mergecheck
-        says M must stay separate; the type conflicts left are listed; `--prove` builds and compares every ROM once.
+merge   `--modules MAP [--module M]`: each selected module's units become one source file named M in link order
+        (pad arrays the alignment reproduces and redundant prototypes dropped, includes hoisted and deduped).
+        Refused when mergecheck says M must stay separate; remaining type conflicts are listed.
+        `--prove` builds and compares every ROM once.
 collapse  the version branches of each source file that differ only by the names they define become one definition
         (collapse.py); the other names of a version go to its aliases.txt; `--file F` limits it to one file; `--prove`
         builds and compares every ROM once.
@@ -31,6 +32,8 @@ Everything about one project's folders is in its rules file; this module names n
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import posixpath
@@ -392,6 +395,8 @@ def rewrite(
     default) is dropped, library rows aside (they mark a boundary)."""
     dirs = folded(tracked, mapping)
     document: Any = tomlkit.parse(text)
+    if document.get("module_map") in mapping:
+        document["module_map"] = mapping[document["module_map"]]
     members_before, members_after = _memberships(tracked, mapping)
     before = {
         path: FileFacts(f.toolchain, tuple(_flags(f.cflags, dirs)), f.omit) for path, (_, f) in _rows(document).items()
@@ -493,6 +498,37 @@ def _git(config: Config, *args: str) -> bytes:
     return done.stdout
 
 
+def _module_paths(text: str, mapping: Mapping[str, str]) -> str:
+    """Carry the prefix authority's active paths; retain every row and its historical evidence."""
+    rows = list(csv.reader(io.StringIO(text), delimiter="\t", strict=True))
+    header = next((row for row in rows if row and not row[0].startswith("#")), [])
+    columns = [i for i, key in enumerate(header) if key in ("unit", "module", "header")]
+    changed = False
+    for row in rows:
+        if not row or row is header or row[0].startswith("#"):
+            continue
+        for i in columns:
+            if i < len(row) and row[i] in mapping and row[i] != mapping[row[i]]:
+                row[i] = mapping[row[i]]
+                changed = True
+    if not changed:
+        return text
+    out = io.StringIO(newline="")
+    csv.writer(out, delimiter="\t", lineterminator="\r\n" if "\r\n" in text else "\n").writerows(rows)
+    return out.getvalue()
+
+
+def _module_writes(config: Config, mapping: Mapping[str, str]) -> dict[str, str]:
+    if not (spelled := config.project.module_map):
+        return {}
+    try:
+        original = (config.project.root / spelled).read_bytes().decode()
+        carried = _module_paths(original, mapping)
+    except (OSError, UnicodeError, csv.Error) as error:
+        raise _refuse(f"cannot carry configured module_map {spelled}: {error}") from error
+    return {mapping.get(spelled, spelled): carried} if carried != original else {}
+
+
 def apply(config: Config, params: Json) -> Row:
     """Carry out a plan on the working tree: config.toml rewritten and loaded again first (so a mistake refuses before
     any file moves), then the files, then sync."""
@@ -516,6 +552,7 @@ def apply(config: Config, params: Json) -> Row:
         makefile = root / "Makefile"
         rules, ruled = makefile_rules(makefile.read_text(), tracked, mapping) if makefile.is_file() else ("", 0)
         respelled = includes(_texts(root, tracked), tracked, mapping)
+        map_writes = _module_writes(config, mapping)
         text, changed = rewrite(
             (root / "config.toml").read_text(),
             tracked,
@@ -526,7 +563,11 @@ def apply(config: Config, params: Json) -> Row:
         )
 
         def read(path: str) -> bytes:
-            return text.encode() if path == "config.toml" else (root / path).read_bytes()
+            if path == "config.toml":
+                return text.encode()
+            if path in map_writes:
+                return map_writes[path].encode()
+            return (root / path).read_bytes()
 
         project = configuration.load_project(root, read, lambda: new_tracked)  # refuses a rewrite that does not load
         for old in sorted(mapping):
@@ -539,20 +580,22 @@ def apply(config: Config, params: Json) -> Row:
                 folder = folder.parent
         for old, body in respelled.items():
             store.write(root / mapping.get(old, old), body.encode(errors="surrogateescape"))
+        for path, body in map_writes.items():
+            store.write(root / path, body.encode())
         store.write(root / "config.toml", text.encode())
         if ruled:
             store.write(makefile, rules.encode())
         effort.forget("pin", "includes", "closure", "listing")
         loaded = Config(project, config.host, digest((project.digest, config.host.digest)))
         try:
-            written = repo.sync(loaded, {})["written"]
+            written = [*map_writes, *repo.sync(loaded, {})["written"]]
             held: list[Row] = []
         except (
             Refusal
         ) as refusal:  # a table the tree leaves unplaced is the project's, not the move's: `literals` places it
             if not all(f.key in _TABLES for f in refusal.findings):
                 raise
-            written, held = [], [{"key": f.key, "reason": f.reason} for f in refusal.findings]
+            written, held = list(map_writes), [{"key": f.key, "reason": f.reason} for f in refusal.findings]
         return {
             "action": "apply",
             "moved": len(mapping),
@@ -774,7 +817,13 @@ def _verdicts(config: Config, params: Json) -> tuple[list[Row], list[tuple[str, 
         row = file_facts(config.project, unit)
         return (row.toolchain or config.project.toolchain, tuple(sorted(row.cflags)), tuple(sorted(row.omit)))
 
-    return merging.verdicts(rows, seqs, statics, identity), rows, seqs
+    # The map selects membership; the merge emits units in code link order. Audit that same order,
+    # including every version's data/rodata order, rather than treating TSV row order as source order.
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for unit, module in rows:
+        grouped[module].append(unit)
+    ordered = [(unit, module) for module, units in grouped.items() for unit in merging.code_order(units, seqs)]
+    return merging.verdicts(ordered, seqs, statics, identity), rows, seqs
 
 
 def header(config: Config, params: Json) -> Row:
@@ -941,25 +990,41 @@ def mergecheck(config: Config, params: Json) -> Row:
 
 
 def merge(config: Config, params: Json) -> Row:
-    """One module's units into one source file named by the module: refused with the hard findings of mergecheck
-    before any file is touched; otherwise the units' text is merged in link order (see `unbake.merge`), the units are
-    deleted, the files staged, sync run and, with `prove`, every ROM compared once. Type conflicts the text cannot
-    settle are returned as `conflicts`, and `prove` is then refused; prototypes dropped for a differing earlier
-    definition are returned as `retyped`."""
+    """Prepare every selected module before writing, then stage and sync the whole map once.
+
+    --module restricts the map to one module; otherwise the map is the exact selection. Every hard refusal is
+    reported before mutation. Text conflicts remain explicit; --prove refuses those before writing too.
+    """
     with effort.stage("layout.merge"):
-        module = params.get("module")
-        if not module:
-            raise _refuse("merge needs --module NAME (a module of the --modules map)")
         verdicts, rows, seqs = _verdicts(config, params)
-        found = [v for v in verdicts if v["module"] == module]
-        if not found:
-            raise _refuse(f"{module} has fewer than two units in the module map")
+        grouped: dict[str, list[str]] = {}
+        seen: set[str] = set()
+        problems: list[str] = []
+        for unit, module in rows:
+            for path in (unit, module):
+                if (
+                    not path
+                    or path in (".", "..")
+                    or path.startswith("/")
+                    or posixpath.normpath(path) != path
+                    or path.startswith("../")
+                ):
+                    problems.append(f"{path!r} is not a canonical project-relative path")
+            if unit in seen:
+                problems.append(f"{unit} has duplicate module ownership")
+            seen.add(unit)
+            grouped.setdefault(module, []).append(unit)
+        if problems:
+            raise _refuse(f"{len(problems)} invalid module rows; no files changed", missing=tuple(problems))
+        requested = params.get("module")
+        selected = [requested] if requested else list(grouped)
+        by_module = {v["module"]: v for v in verdicts}
         root = config.project.root
-        units = merging.code_order([u for u, m in rows if m == module], seqs)
-        merged_path = merging.merged_path(module)
-        missing = [u for u in units if not (root / u).is_file()]
-        if missing:
-            raise _refuse(f"{len(missing)} units of {module} are not in the tree", missing=tuple(missing[:20]))
+        tracked = set(_tracked(config))
+        prepared: list[tuple[str, list[str], str, Row]] = []
+        mapping: dict[str, str] = {}
+        destinations: set[str] = set()
+        unchanged: list[str] = []
         obj = params.get("obj") or "build/{version}/{unit}.o"
 
         def droppable(unit: str, symbol: str, size: int, const: bool) -> bool:
@@ -970,47 +1035,90 @@ def merge(config: Config, params: Json) -> Row:
             ]
             return any(s is not None for s in seen) and all(s is not False for s in seen)
 
-        def header(name: str) -> str | None:
-            for base in (root / "include", (root / merged_path).parent, (root / module).parent):
-                if (base / name).is_file():
-                    return (base / name).read_text(errors="replace")
-            return None
+        def identity(unit: str) -> Any:
+            facts = file_facts(config.project, unit)
+            libraries = tuple(p for p in config.project.libraries if unit == p or unit.startswith(p.rstrip("/") + "/"))
+            return (facts.toolchain or config.project.toolchain, facts.cflags, facts.omit, facts.hilo_nops, libraries)
 
-        merged = unitmerge.merge([(u, (root / u).read_text()) for u in units], droppable, header)
-        report = [f"{c['kind']} {c['name']}: {c['detail']}" for c in merged["conflicts"]]
-        if found[0]["hard"]:
-            raise _refuse(
-                f"{module} must stay separate files: {found[0]['hard'][0]}",
-                missing=tuple(found[0]["hard"][:5] + report[:40]),
-            )
-        for unit in units:
-            if unit != merged_path:
-                (root / unit).unlink()
-        store.write(root / merged_path, merged["text"].encode())
-        _git(config, "add", "-A", "--", merged_path, *units)
+        for module in selected:
+            if module not in grouped:
+                problems.append(f"{module} is not in the module map")
+                continue
+            units = merging.code_order(grouped[module], seqs)
+            merged_path = merging.merged_path(module)
+            missing = [u for u in units if u not in tracked or not (root / u).is_file()]
+            if missing:
+                problems.extend(f"{module}: {u} is not a tracked source file" for u in missing)
+                continue
+            if units == [merged_path]:
+                unchanged.append(module)
+                continue
+            if len(units) < 2:
+                problems.append(f"{module} has fewer than two units; use layout reorg for a file move")
+                continue
+            if merged_path in destinations or (
+                (merged_path in tracked or (root / merged_path).exists()) and merged_path not in units
+            ):
+                problems.append(f"{module}: destination {merged_path} is already owned")
+            destinations.add(merged_path)
+            destination_identity = identity(merged_path)
+            if any(identity(u) != destination_identity for u in units):
+                problems.append(f"{module}: merge would change compiler, flags, omit or library ownership")
+            verdict = by_module.get(module)
+            if verdict is None:
+                problems.append(f"{module} has no merge verdict")
+                continue
+            problems.extend(f"{module}: {reason}" for reason in verdict["hard"])
+
+            def header(
+                name: str,
+                bases: tuple[Path, ...] = (root / "include", (root / merged_path).parent, (root / module).parent),
+            ) -> str | None:
+                for base in bases:
+                    if (base / name).is_file():
+                        return (base / name).read_text(errors="replace")
+                return None
+
+            merged = unitmerge.merge([(u, (root / u).read_text()) for u in units], droppable, header)
+            report = [f"{c['kind']} {c['name']}: {c['detail']}" for c in merged["conflicts"]]
+            if params.get("prove"):
+                problems.extend(f"{module}: {reason}" for reason in report)
+            prepared.append((module, units, merged_path, {**merged, "conflicts": report}))
+            mapping.update({unit: merged_path for unit in units})
+        if not selected:
+            problems.append("the module map selects no modules")
+        if problems:
+            raise _refuse(f"{len(problems)} merge refusals; no files changed", missing=tuple(problems))
+        out: Row = {"action": "merge", "modules": [], "kept": len(unchanged), "written": []}
+        if not prepared:
+            return out
         map_file = Path(params["modules"])
-        store.write(map_file, merging.merged_modules(map_file.read_text(), units, merged_path).encode())
-        tracked = sorted(set(_tracked(config)) | {merged_path})
-        project = configuration.load_project(root, lambda path: (root / path).read_bytes(), lambda: tracked)
+        map_text = _module_paths(merging.merged_modules(map_file.read_text(), mapping), mapping)
+        map_writes = _module_writes(config, mapping)
+        map_writes = {path: body for path, body in map_writes.items() if (root / path).resolve() != map_file.resolve()}
+        for module, units, merged_path, merged in prepared:
+            for unit in units:
+                if unit != merged_path:
+                    (root / unit).unlink()
+            store.write(root / merged_path, merged["text"].encode())
+            out["modules"].append(
+                {
+                    "module": module,
+                    "file": merged_path,
+                    "units": len(units),
+                    **{key: merged[key] for key in ("includes", "pads", "dropped", "conflicts", "retyped")},
+                }
+            )
+        _git(config, "add", "-A", "--", *sorted(set(mapping) | destinations))
+        store.write(map_file, map_text.encode())
+        for path, body in map_writes.items():
+            store.write(root / path, body.encode())
+        tracked = (tracked - set(mapping)) | destinations
+        project = configuration.load_project(root, lambda path: (root / path).read_bytes(), lambda: sorted(tracked))
         effort.forget("pin", "includes", "closure", "listing")
         loaded = Config(project, config.host, digest((project.digest, config.host.digest)))
-        out: Row = {
-            "action": "merge",
-            "module": module,
-            "file": merged_path,
-            "units": len(units),
-            "includes": merged["includes"],
-            "pads": merged["pads"],
-            "dropped": merged["dropped"],
-            "conflicts": report,
-            "retyped": merged["retyped"],
-            "written": repo.sync(loaded, {})["written"],
-        }
+        out["written"] = [*map_writes, *repo.sync(loaded, {})["written"]]
         if params.get("prove"):
-            if report:
-                raise _refuse(
-                    f"{len(report)} type conflicts to settle before the ROMs can be built", missing=tuple(report[:20])
-                )
             out.update(prove(loaded, params))
         return out
 
