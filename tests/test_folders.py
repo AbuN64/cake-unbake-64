@@ -323,7 +323,11 @@ def test_verify_compares_sections_through_the_map(cfg: Config, tmp_path: Path) -
 
 def test_a_map_file_names_each_file_once_and_a_trailing_slash_keeps_the_name() -> None:
     rules = folders.rules_from_map("# c\nsrc/a.CPP\tsrc/m/A.CPP\nsrc/a.H\tinclude/m/\nsrc/same.c\tsrc/same.c\n")
-    assert rules == [{"match": "src/a.CPP", "to": "src/m/A.CPP"}, {"match": "src/a.H", "to": "include/m/"}]
+    assert rules == [
+        {"match": "src/a.CPP", "to": "src/m/A.CPP"},
+        {"match": "src/a.H", "to": "include/m/"},
+        {"match": "src/same.c", "to": "src/same.c"},
+    ]
     assert folders.place(rules, "src/a.H") == "include/m/a.H"
     with pytest.raises(Refusal):
         folders.rules_from_map("src/a.c\tx.c\nsrc/a.c\ty.c\n")

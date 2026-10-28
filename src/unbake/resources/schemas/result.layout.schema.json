@@ -156,6 +156,25 @@
   },
   "mergeable": {
    "type": "integer"
+  },
+  "guards": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "path",
+     "name"
+    ],
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
   }
  },
  "additionalProperties": false

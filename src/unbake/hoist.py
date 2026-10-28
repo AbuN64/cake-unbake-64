@@ -599,7 +599,9 @@ def _includes(text: str, spelled: str) -> bool:
 
 def _compose(old: str, path: str, includes: Sequence[str], lines: Sequence[str]) -> str:
     if not old:
-        guard = re.sub(r"\W", "_", path.split("/", 1)[-1] if "/" in path else path).upper()
+        from unbake import guards
+
+        guard = guards.name(path)
         body = [f"#ifndef {guard}", f"#define {guard}", *(f'#include "{n}"' for n in includes), *lines, "#endif"]
         return "\n".join(body) + "\n"
     stmts = statements(blank(old))

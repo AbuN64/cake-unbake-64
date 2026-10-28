@@ -213,3 +213,25 @@ are included in `written`. The explicit merge membership map is still rewritten 
 Rename proof distinguishes macro parameters, member/tag names and ordinary free identifiers. A field such as
 `(entry)->text` in a macro body does not capture a local named `text`. Free identifiers on continued directives
 remain guarded, and an object macro used as a call refuses when its argument expansion cannot be proved.
+
+
+### Qualified declaration facts and generated guards
+
+The read-only `unbake.api.name_bindings(text)` contract returns every lexical C declaration with kind,
+source offset, enclosing scopes and owner. It retains meaningful names, shadowed declarations,
+inactive branches, macro parameters and enum constants. `naming_census(config)` derives declarations,
+hashed source/header inputs and both directory views from the same tracked path universe under a
+shared tree lock. These are lexical facts, not linker identities or semantic acceptance: macro
+expansion, activation, assembly declarations and C++ templates require additional evidence.
+
+`unbake layout header --file include/Review.h` normalizes the reviewed header's whole-file guard
+using the same rule as header generation. For a batch use `--map reviewed.tsv` with one
+`path<TAB>path` identity row per reviewed header. The whole batch is checked before writes; every independently detectable owner, destination and
+consumer conflict is returned together with its path.
+Shared guards, occupied destinations, partial guards, redefinitions, numeric guard uses and
+ordinary identifier uses refuse. Only the owning empty definition and bound `ifdef`/`ifndef`/
+`defined` tests change; comments and strings stay byte-identical. Compile flags and assembly
+consumers participate in the refusal sweep. Repeating the operation makes no edits.
+Ordinary layout moves carry a guard automatically only when it equals the generated spelling of
+the original path. Other guards require explicit reviewed selection; vendor provenance is never
+inferred from a spelling. Consumers outside the source tree must be regenerated and proved by their owner.

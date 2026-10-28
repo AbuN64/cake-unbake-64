@@ -41,10 +41,13 @@ __all__ = [
     "capture",
     "closed",
     "command",
+    "guard_name",
     "load",
     "make",
     "memo",
+    "name_bindings",
     "name_issues",
+    "naming_census",
     "naming_debt",
     "naming_findings",
     "pool_map",
@@ -234,7 +237,30 @@ def naming_findings(
 
 def naming_debt(root: Path) -> Json:
     """Per-file reviewed naming debt, refreshed by successful unbake audits."""
-    return (naming_baseline.read(root) or {}).get("files", {})
+    return dict((naming_baseline.read(root) or {}).get("files", {}))
+
+
+def guard_name(path: str) -> str:
+    """Canonical generated include guard for a project header path."""
+    from unbake import guards
+
+    return guards.name(path)
+
+
+def name_bindings(text: str) -> tuple[symbol_names.Binding, ...]:
+    """All lexical declarations, qualified by scope and source offset; no placeholder filtering."""
+    return memo(("name.bindings", text), lambda: symbol_names.bindings(text))
+
+
+def naming_census(config: Config) -> Json:
+    """The tracked source/header declaration census and its exact hashed input universe."""
+    from unbake import process
+
+    with tree_lock(config, exclusive=False, who="naming census"):
+        root = config.project.root
+        paths = sorted(p for p in process.tracked(root) if _config.is_source(p) or _config.is_header(p))
+        texts = {p: (root / p).read_text(errors="surrogateescape") for p in paths}
+        return symbol_names.census(texts, _head(config))
 
 
 def record_scope(texts: Mapping[str, str], tag: str, path: str, line: int = 0) -> tuple[list[str], str]:

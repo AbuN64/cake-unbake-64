@@ -6,8 +6,10 @@ import hashlib
 import os
 import pickle
 import re
+from collections import Counter
 from collections.abc import Collection, Iterator, Mapping
-from functools import cache
+from dataclasses import dataclass
+from functools import cache, lru_cache
 from pathlib import Path, PurePosixPath
 
 from unbake import config
@@ -166,25 +168,197 @@ def _heads(head: str, offset: int, global_scope: bool) -> Iterator[tuple[str, in
         yield tag[1], offset + tag.start(1), global_scope
 
 
-def _declared(code: str) -> Iterator[tuple[str, int, bool]]:
+@dataclass(frozen=True)
+class Binding:
+    """One lexical declaration, never collapsed by spelling across scopes or conditional copies."""
+
+    name: str
+    kind: str
+    start: int
+    scope: tuple[int, ...]
+    owner: str
+    type: str
+    definition: bool
+
+
+@lru_cache(maxsize=1)
+def bindings(text: str) -> tuple[Binding, ...]:
+    """Qualified C declaration facts, including generated/preprocessor names and inactive branches.
+
+    Locations qualify declarations, not linker identities. This lexical reader does not resolve
+    conditional activation, macro expansions or C++ templates; consumers must keep those limits.
+    """
+    code = _code(text)
     start = 0
-    stack: list[str] = []
+    stack: list[tuple[str, int, str]] = []
+    out: dict[int, Binding] = {}
+    scopes: list[tuple[int, int, tuple[int, ...], str]] = []
+
+    def put(
+        name: str,
+        at: int,
+        kind: str,
+        owner: str,
+        type_: str = "",
+        definition: bool = True,
+        scope: tuple[int, ...] | None = None,
+    ) -> None:
+        out[at] = Binding(
+            name, kind, at, scope if scope is not None else tuple(s[1] for s in stack), owner, type_, definition
+        )
+
     for token in re.finditer(r"[{};]", code):
         head = code[start : token.start()]
-        # extern "C" braces are transparent to the C source namespace.
         linkage = bool(re.fullmatch(r"\s*extern\s*", head))
-        if token[0] in "{;" and not (stack and stack[-1] == "initializer"):
-            yield from _heads(head, start, not any(s != "linkage" for s in stack))
+        global_ = not any(s[0] != "linkage" for s in stack)
+        record = re.search(rf"\b(struct|union|enum)(?:\s+({_WORD}))?\s*$", head)
+        declared = (
+            list(_heads(head, start, global_))
+            if token[0] in "{;" and not any(s[0] in {"initializer", "enum"} for s in stack)
+            else []
+        )
+        function = next(
+            (
+                (n, a)
+                for n, a, _ in declared
+                if re.match(r"\s*\(", code[a + len(n) :]) and not re.search(r"\(\s*\*\s*$", code[start:a])
+            ),
+            None,
+        )
+        owner = next((s[2] for s in reversed(stack) if s[0] in {"function", "record", "enum"}), "")
+        for name_, at, outer in declared:
+            kind = "global"
+            type_ = " ".join(code[start:at].strip().split())
+            scope = tuple(s[1] for s in stack)
+            if record and name_ == record[2]:
+                kind = "type"
+            elif function and at == function[1]:
+                kind = "type" if re.match(r"\s*typedef\b", head) else "function"
+            elif function and not outer:
+                kind, owner, scope = "parameter", function[0], (*scope, function[1])
+                before = code[start:at]
+                type_ = " ".join(re.split(r"[(,]", before)[-1].split())
+            elif re.match(r"\s*typedef\b", head):
+                kind = "type"
+            elif stack and stack[-1][0] == "record":
+                kind = "member"
+            elif any(s[0] == "function" for s in stack):
+                kind = "local"
+            elif re.match(r"\s*static\b", head):
+                kind = "static"
+            put(name_, at, kind, owner, type_, token[0] == "{" if kind == "function" else True, scope)
         if token[0] == "{":
-            record = re.search(rf"\b(?:struct|union|enum)(?:\s+{_WORD})?\s*$", head)
-            stack.append("linkage" if linkage else "initializer" if "=" in head else "record" if record else "body")
+            kind = (
+                "linkage"
+                if linkage
+                else "enum"
+                if record and record[1] == "enum"
+                else "record"
+                if record
+                else ("initializer" if "=" in head else "function" if function else "body")
+            )
+            stack.append((kind, token.start(), record[2] or "" if record else function[0] if function else owner))
         elif token[0] == "}" and stack:
             closed = stack.pop()
-            if closed == "record":
+            scopes.append((closed[1], token.end(), (*tuple(s[1] for s in stack), closed[1]), closed[2]))
+            if closed[0] == "enum":
+                body = code[closed[1] + 1 : token.start()]
+                for m in re.finditer(rf"(?:^|,)\s*({_WORD})\s*(?==|,|$)", body):
+                    put(m[1], closed[1] + 1 + m.start(1), "enumerator", closed[2])
+            if closed[0] in {"record", "enum"}:
                 tail = re.match(rf"\s*({_WORD})\s*(?=[;,])", code[token.end() :])
                 if tail:
-                    yield tail[1], token.end() + tail.start(1), not any(s != "linkage" for s in stack)
+                    # Distinguish an inline typedef from a variable of an inline record type.
+                    prefix = code[: closed[1]].rsplit(";", 1)[-1].rsplit("}", 1)[-1]
+                    kind = (
+                        "type"
+                        if re.search(r"\btypedef\b", prefix)
+                        else "member"
+                        if stack and stack[-1][0] == "record"
+                        else "local"
+                        if stack
+                        else "global"
+                    )
+                    put(tail[1], token.end() + tail.start(1), kind, owner)
         start = token.end()
+    for loop in re.finditer(r"\bfor\s*\(\s*([^;]*);", code):
+        held = min((s for s in scopes if s[0] < loop.start() < s[1]), key=lambda s: s[1] - s[0], default=None)
+        for name_, at, _ in _heads(loop[1], loop.start(1), False):
+            put(name_, at, "local", held[3] if held else "", scope=(*(held[2] if held else ()), loop.start()))
+    masked = _mask(text)
+    for macro in re.finditer(rf"^[ \t]*#\s*define\s+({_WORD})(\([^\n]*?\))?", masked, re.M):
+        put(macro[1], macro.start(1), "macro", "", scope=())
+        if macro[2]:
+            for param in re.finditer(_WORD, macro[2]):
+                put(param[0], macro.start(2) + param.start(), "parameter", macro[1], scope=(macro.start(1),))
+    return tuple(out[at] for at in sorted(out))
+
+
+def census(texts: Mapping[str, str], revision: str) -> Json:
+    """One inventory for declaration facts, source/header paths and their directory views."""
+    import bisect
+
+    from unbake import guards
+
+    rows: list[Json] = []
+    paths: list[Json] = []
+    for path, text in sorted(texts.items()):
+        header = config.is_header(path)
+        paths.append(
+            {
+                "path": path,
+                "kind": "header" if header else "source",
+                "sha256": hashlib.sha256(text.encode(errors="surrogateescape")).hexdigest(),
+            }
+        )
+        if config.is_assembly(path):
+            continue
+        guard = guards.binding(text) if header else None
+        lines = [0, *(m.end() for m in re.finditer("\n", text))]
+        for row in bindings(text):
+            rows.append(
+                {
+                    "identity": [path, row.kind, list(row.scope), row.start],
+                    "path": path,
+                    "name": row.name,
+                    "kind": row.kind,
+                    "scope": list(row.scope),
+                    "owner": row.owner,
+                    "line": bisect.bisect_right(lines, row.start),
+                    "offset": row.start,
+                    "type": row.type,
+                    "definition": row.definition,
+                    "guard": row.kind == "macro" and row.name == guard,
+                    "canonical_guard": guards.name(path) if row.kind == "macro" and row.name == guard else None,
+                }
+            )
+    folders = {
+        kind: sorted(
+            {
+                str(parent)
+                for p in paths
+                if p["kind"] == kind
+                for parent in PurePosixPath(p["path"]).parents
+                if str(parent) != "."
+            }
+        )
+        for kind in ("source", "header")
+    }
+    domains = ("function", "global", "static", "type", "member", "parameter", "local", "macro", "enumerator")
+    counts = Counter(r["kind"] for r in rows)
+    return {
+        "revision": revision,
+        "paths": paths,
+        "folders": folders,
+        "declarations": rows,
+        "counts": {kind: counts[kind] for kind in domains},
+        "semantic_acceptance": False,
+        "limits": [
+            "Lexical declarations are not linker identities or semantic naming approval.",
+            "Inactive branches are retained; activation and macro expansion require compiler evidence.",
+            "Assembly paths are inventoried; assembly definitions and C++ templates are not C declarations.",
+        ],
+    }
 
 
 def _finding(path: str, text: str, at: int, reason: str) -> Finding:
@@ -195,7 +369,7 @@ def source(path: str, text: str) -> tuple[Finding, ...]:
     """Text-only naming checks, including inactive branches; comments/literals are not declarations."""
     if not (config.is_source(path) or config.is_header(path)) or config.is_assembly(path):
         return ()
-    code, literal, masked = _code(text), _mask(text, False), _mask(text)
+    literal, masked = _mask(text, False), _mask(text)
     findings: list[Finding] = []
     # A symbol label follows a declarator and has one string operand. Inline asm statements stay with inline-asm.
     asm = r"\b(?:asm|__asm|__asm__)\s*\("
@@ -223,14 +397,7 @@ def source(path: str, text: str) -> tuple[Finding, ...]:
             continue
         for why in issues(m[1], "section"):
             findings.append(_finding(path, text, m.start(), why))
-    declarations = list(_declared(code))
-    # Enumerators and for-init declarations are names too.
-    for enum in re.finditer(r"\benum\b[^;{}]*\{([^{}]*)}", code):
-        for m in re.finditer(rf"(?:^|,)\s*({_WORD})\s*(?==|,|$)", enum[1]):
-            declarations.append((m[1], enum.start(1) + m.start(1), False))
-    for loop in re.finditer(r"\bfor\s*\(\s*([^;]*);", code):
-        declarations.extend(_heads(loop[1], loop.start(1), False))
-    declarations += [(m[1], m.start(1), True) for m in re.finditer(rf"^\s*#\s*define\s+({_WORD})", literal, re.M)]
+    declarations = [(b.name, b.start, b.kind in {"global", "static", "function", "macro"}) for b in bindings(text)]
     seen: set[tuple[int, str]] = set()
     for name, at, global_scope in declarations:
         for why in _issues(name, "symbol", global_scope, implementation=True):
@@ -267,7 +434,9 @@ def _census(path: str, text: str) -> _PerFile:
         own.append(_finding(path, text, 0, why))
     code = _code(text)
     declared = []
-    for name, at, global_scope in _declared(code):
+    for declaration in bindings(text):
+        name, at = declaration.name, declaration.start
+        global_scope = declaration.kind in {"function", "global", "static"} and not declaration.owner
         start = max(code.rfind(char, 0, at) for char in ";{}") + 1
         prefix = code[start:at]
         local = re.search(r"\btypedef\b|^\s*(?:struct|union|enum)\s*$", prefix)
@@ -280,8 +449,8 @@ def _load(cache: Path) -> None:
     try:
         with cache.open("rb") as handle:
             loaded = pickle.load(handle)  # our own file: written by `_save` under the project's .unbake
-        if isinstance(loaded, dict):
-            _DISK.update(loaded)
+        if isinstance(loaded, dict) and loaded.get("schema") == 2:
+            _DISK.update(loaded["files"])
     except (OSError, pickle.PickleError, EOFError, AttributeError, ValueError):
         pass  # no census file yet, or one from older code: every file is read again
 
@@ -295,7 +464,7 @@ def _save(cache: Path, files: Mapping[str, str]) -> None:
         cache.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
         with tmp.open("wb") as handle:
-            pickle.dump(keep, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump({"schema": 2, "files": keep}, handle, protocol=pickle.HIGHEST_PROTOCOL)
         tmp.replace(cache)
         _DISK.clear()
         _DISK.update(keep)

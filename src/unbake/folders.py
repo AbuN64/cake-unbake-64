@@ -50,7 +50,7 @@ from elftools.elf.elffile import ELFFile
 
 from unbake import collapse as collapsing
 from unbake import config as configuration
-from unbake import effort, hoist, process, repo, store, symbols
+from unbake import effort, guards, hoist, process, repo, store, symbols
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake import pads as padding
@@ -131,8 +131,7 @@ def rules_from_map(text: str, file: str = "map") -> list[Row]:
         if old in seen:
             problems.append(Finding("layout.input", f"{old} is mapped twice", path=where))
         seen.add(old)
-        if old != new:
-            rules.append({"match": old, "to": new})
+        rules.append({"match": old, "to": new})
     if problems:
         raise Refusal(*problems)
     return rules
@@ -339,6 +338,18 @@ def makefile_rules(text: str, tracked: Sequence[str], mapping: Mapping[str, str]
 
 def _texts(root: Path, tracked: Sequence[str]) -> dict[str, str]:
     return {t: (root / t).read_text(errors="surrogateescape") for t in tracked if Path(t).suffix.lower() in _TEXT}
+
+
+def _guard_texts(root: Path, tracked: Sequence[str]) -> dict[str, str]:
+    texts = _texts(root, tracked)
+    # Compiler flags and assembly can observe a preprocessor name too. Ambiguous uses refuse.
+    for path in tracked:
+        if path not in texts and (
+            Path(path).suffix.lower() in {".s", ".toml", ".mk", ".cmake"}
+            or Path(path).name in {"Makefile", "CMakeLists.txt"}
+        ):
+            texts[path] = (root / path).read_text(errors="surrogateescape")
+    return texts
 
 
 # ---- apply
@@ -551,7 +562,17 @@ def apply(config: Config, params: Json) -> Row:
         new_tracked = sorted({mapping.get(t, t) for t in tracked})
         makefile = root / "Makefile"
         rules, ruled = makefile_rules(makefile.read_text(), tracked, mapping) if makefile.is_file() else ("", 0)
-        respelled = includes(_texts(root, tracked), tracked, mapping)
+        texts = _guard_texts(root, tracked)
+        respelled = includes(texts, tracked, mapping)
+        generated = {
+            old: new
+            for old, new in mapping.items()
+            if configuration.is_header(old) and guards.binding(texts.get(old, "")) == guards.name(old)
+        }
+        try:
+            respelled.update(guards.rewrite({**texts, **respelled}, generated))
+        except guards.Conflict as error:
+            raise Refusal(*(Finding("layout.input", reason, path=path) for path, reason in error.findings)) from error
         map_writes = _module_writes(config, mapping)
         text, changed = rewrite(
             (root / "config.toml").read_text(),
@@ -830,6 +851,8 @@ def header(config: Config, params: Json) -> Row:
     """One header per source file: hoist the exports of `--file` into its header and let its users include it."""
     with effort.stage("layout.header"):
         target = params.get("file")
+        if params.get("map") or (target and configuration.is_header(str(target))):
+            return _header_guards(config, params)
         if not target:
             raise _refuse("header needs --file F.CPP (a tracked source file)")
         root = config.project.root
@@ -862,6 +885,47 @@ def header(config: Config, params: Json) -> Row:
             "deleted": done.deleted,
             "next": "git add -A; unbake sync --check; make check",
         }
+
+
+def _header_guards(config: Config, params: Json) -> Row:
+    """One reviewed header or an exact identity map, through the existing layout header action."""
+    if params.get("file") and params.get("map"):
+        raise _refuse("header takes --file or --map, not both")
+    tracked = _tracked(config)
+    if params.get("map"):
+        rows = rules_from_map(Path(params["map"]).read_text(), str(params["map"]))
+        selected = {r["match"]: r["to"] for r in rows}
+        if len(selected) != len(rows):
+            raise _refuse("header map repeats a header")
+    else:
+        target = posixpath.normpath(str(params["file"]))
+        selected = {target: target}
+    if not selected or any(p != n or p not in tracked or not configuration.is_header(p) for p, n in selected.items()):
+        raise _refuse("header guard map requires tracked header identity rows (same old and new path)")
+    root = config.project.root
+    texts = _guard_texts(root, tracked)
+    try:
+        changed = guards.rewrite(texts, selected)
+    except guards.Conflict as error:
+        raise Refusal(*(Finding("layout.input", reason, path=path) for path, reason in error.findings)) from error
+    for path, body in changed.items():
+        store.write(root / path, body.encode(errors="surrogateescape"))
+    return {
+        "action": "header",
+        "path": next(iter(selected)) if len(selected) == 1 else "",
+        "created": False,
+        "exported": 0,
+        "included": 0,
+        "removed": 0,
+        "held": [],
+        "elsewhere": [],
+        "externs_before": 0,
+        "externs_after": 0,
+        "written": sorted(changed),
+        "deleted": [],
+        "guards": [{"path": p, "name": guards.name(p)} for p in sorted(selected)],
+        "next": "unbake sync --check; make check",
+    }
 
 
 def collapse(config: Config, params: Json) -> Row:

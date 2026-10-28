@@ -306,8 +306,8 @@ handler = "folders.run"
 params = [
   { name = "action", kind = "argument", type = "str", required = true, multiple = false, help = "plan | apply | literals | carry | verify | reorg | header | collapse | mergecheck | merge" },
   { name = "rules", kind = "option", type = "path", required = false, multiple = false, help = "plan: the rules file ([[rule]] rows: match, to, optional row)" },
-  { name = "map", kind = "option", type = "path", required = false, multiple = false, help = "plan, reorg: a map file, one `old path<TAB>new path` per file (headers too), added to the rules" },
-  { name = "file", kind = "option", type = "path", required = false, multiple = false, help = "header: the tracked source file (F.CPP) whose exports go into its one header F.H; collapse: limit to this tracked source file" },
+  { name = "map", kind = "option", type = "path", required = false, multiple = false, help = "plan, reorg: old<TAB>new paths; header: reviewed header identity rows (old equals new) to normalize guards as one batch" },
+  { name = "file", kind = "option", type = "path", required = false, multiple = false, help = "header: tracked source whose exports go to its header, or tracked header whose guard is normalized; collapse: one source" },
   { name = "modules", kind = "option", type = "path", required = false, multiple = false, help = "mergecheck, merge: a module map, a TSV with a header row holding `unit` and `module` columns" },
   { name = "module", kind = "option", type = "str", required = false, multiple = false, help = "merge: restrict to this module; omit to merge the complete explicit --modules map with one facts scan and sync" },
   { name = "ld", kind = "option", type = "str", required = false, multiple = false, help = "mergecheck, merge: the link script of a version, a path with {version}, default build/{version}/link.ld" },
