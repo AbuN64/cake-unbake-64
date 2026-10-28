@@ -738,3 +738,50 @@ def test_shared_records_are_the_tags_two_files_define_with_a_body() -> None:
     texts = {**BATCH_75_RECORDS, "src/use.CPP": "struct Lone *p; struct Actor a;\n", "src/note.md": "struct Md {\n"}
     texts["src/other.CPP"] = "struct Lone { int x; };\nenum Mode { A };\n"
     assert renameproof._shared_records(texts) == {"Actor", "SoundActor", "ActorWorld"}
+
+
+def test_linker_function_sections_are_global_names_not_c_members(repo: Path) -> None:
+    # Real refusal: RageWars.ld .text.Fx_CountAcceptedTargets was called a member.
+    (repo / "link.ld").write_text("src/a.c.o(.text.func_80100000_de);\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "linker section")
+    _rename(repo, "func_80100000_de", "Target_CountAcceptedTargets")
+    assert ["func_80100000_de", "Target_CountAcceptedTargets"] in _prove(repo)["map"]
+
+
+@pytest.mark.parametrize("alias_address", ["0x800C6E30", "0x800C6E34", None])
+def test_aliases_are_checked_only_in_versions_that_spell_them(repo: Path, alias_address: str | None) -> None:
+    # Actual three-spelling datum: de has all three; us-rev1 only canonical+blob.
+    names = ["D_800C1D40", "D_8020AA40_C7A30", "D_blob_8c78eff558441dba602b"]
+    (repo / "versions/de/aliases.txt").write_text("".join(f"{n} = 0x800C1D40;\n" for n in names))
+    (repo / "versions/us-rev1").mkdir()
+    (repo / "versions/us-rev1/symbol_addrs.txt").write_text(f"{names[0]} = 0x800C6E30;\n")
+    (repo / "versions/us-rev1/aliases.txt").write_text(
+        f"{names[2]} = {alias_address};\n" if alias_address else f"/* {names[2]} without a binding */\n"
+    )
+    (repo / "src/data.c").write_text(f"extern int {names[0]};\nint Read(void) {{ return {names[0]}; }}\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "version alias subset")
+    for name in names:
+        _rename(repo, name, "g_navigationObjectLinkDistanceLimits")
+    if alias_address == "0x800C6E30":
+        assert len(_prove(repo)["map"]) == 3
+    else:
+        assert "not copies for disjoint versions" in _refused(repo)
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_unrelated_rename_does_not_capture_static_helper(repo: Path, captured: bool) -> None:
+    (repo / "src/helper.c").write_text(
+        "static inline int alCSeqNextEvent(void) { return 1; }\n"
+        "int Use(void) { return alCSeqNextEvent() + func_80100100_de(2); }\n"
+        + ("int Capture(void) { return func_80100000_de(1); }\n" if captured else "")
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "internal helper")
+    _rename(repo, "func_80100000_de", "alCSeqNextEvent")
+    _rename(repo, "func_80100100_de", "Other_Step")
+    if captured:
+        assert "capture" in _refused(repo)
+    else:
+        assert ["func_80100000_de", "alCSeqNextEvent"] in _prove(repo)["map"]

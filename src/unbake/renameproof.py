@@ -624,13 +624,14 @@ class _Proof:
                 if n in protos:  # a prototype's parameter name is the declaration's own: no symbol use
                     continue
                 fn = owner[n]
-                if n not in slots and not _member(a, n) and self.record(x):
+                member = c and _member(a, n)
+                if c and n not in slots and not member and self.record(x):
                     if site.setdefault((path, x), y) != y:  # a record several files define is renamed per file
                         self.refuse(f"{x} is renamed to both {site[(path, x)]} and {y}", path)
                     elif site_sources.setdefault(y, x) != x:
                         self.refuse(f"{site_sources[y]} and {x} are both renamed to {y}", path)
                     continue
-                if _tagged(
+                if c and _tagged(
                     a, n
                 ):  # a tag: one-to-one among tags only, whatever a typedef or variable of that name becomes
                     if tags.setdefault(x, y) != y:
@@ -638,7 +639,7 @@ class _Proof:
                     elif tag_sources.setdefault(y, x) != x:
                         self.refuse(f"tags {tag_sources[y]} and {x} are both renamed to {y}", path)
                     continue
-                if n in slots or _member(a, n):
+                if n in slots or member:
                     members.setdefault(x, {}).setdefault(y, set()).add(path)
                     if n in slots:
                         decls.setdefault(x, set()).add(y)
@@ -647,7 +648,7 @@ class _Proof:
                                 f"{taken[(path, slots[n], y)]} and {x} are both renamed to {y} in one struct", path
                             )
                     continue
-                if fn >= 0 and not _member(a, n):
+                if fn >= 0 and not member:
                     key = (path, fn, x)
                     if key not in declared:
                         lo, hi = spans[fn]
@@ -715,14 +716,15 @@ class _Proof:
         if not crowded or not all(versions):
             return False
         for v in crowded:
-            bound: list[set[int]] = [set() for _ in olds]
+            present = [name for name, seen in zip(olds, versions, strict=True) if v in seen]
+            bound: dict[str, set[int]] = {name: set() for name in present}
             for path, (before, _after) in self.texts.items():
                 if not path.startswith(f"versions/{v}/"):
                     continue
                 for name, address in _BINDING.findall(before):
-                    if name in olds:
-                        bound[olds.index(name)].add(int(address, 16))
-            if not all(bound) or len(set.union(*bound)) != 1:
+                    if name in bound:
+                        bound[name].add(int(address, 16))
+            if not all(bound.values()) or len(set.union(*bound.values())) != 1:
                 return False
         return True
 
@@ -751,16 +753,17 @@ class _Proof:
             owner = self.owner[path]
             keep = self.proto[path]
             slots = self.slots[path]
+            c = _is_c(path)
             mapped = [
                 self.new[path][n]
                 if n in keep
-                or (t in self.typed and (n in slots or _member(before, n)) and self.new[path][n] in self.typed[t])
+                or (c and t in self.typed and (n in slots or _member(before, n)) and self.new[path][n] in self.typed[t])
                 else self.site.get((path, t), t)
-                if self.record(t) and not _member(before, n)
+                if c and self.record(t) and not _member(before, n)
                 else text(t)
                 if t[:1] == ASM_MARK
                 else tags.get(t, t)
-                if _tagged(before, n)
+                if c and _tagged(before, n)
                 else self.local.get((path, owner[n], t), names.get(t, t))
                 if owner[n] >= 0 and not _member(before, n)
                 else names.get(t, t)
@@ -907,9 +910,11 @@ class _Proof:
             and spans[owner[n + 1]][0] == n + 1
             and "static" in _statement(tokens, n)
         }
-        if any(token in keys and n not in heads for n, token in enumerate(tokens)):
-            return names
-        return names - {tokens[n] for n in heads}
+        present = {token for n, token in enumerate(tokens) if n not in heads}
+        internal = {tokens[n] for n in heads}
+        return names - {
+            name for name in internal if not any(old in present and self.map.get(old) == name for old in keys)
+        }
 
     def typed_capture(self) -> None:
         """A member renamed per struct names no struct by its tokens, so its new names must be unused in the old
