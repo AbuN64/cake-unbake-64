@@ -216,9 +216,7 @@ def scan(text: str) -> dict[str, str]:
         if match := re.match(r"([\w.$]+):", line):
             if match[1] in globals_:
                 found[match[1]] = section
-        elif match := re.match(r"[gd]label\s+([\w.$]+)", line):
-            found[match[1]] = section
-        elif match := _ENTRY.match(line):
+        elif (match := re.match(r"[gd]label\s+([\w.$]+)", line)) or (match := _ENTRY.match(line)):
             found[match[1]] = section
     return found
 

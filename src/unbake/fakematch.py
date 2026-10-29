@@ -42,7 +42,9 @@ def _mnemonics(strings: str) -> list[str]:
     return [p.split()[0].lower() for p in re.split(r"[;\n]", text) if p.strip() and not p.strip().endswith(":")]
 
 
-def _asm_in(texts: Mapping[str, str], version: str, sdk: Callable[[str], bool] | None):
+def _asm_in(
+    texts: Mapping[str, str], version: str, sdk: Callable[[str], bool] | None
+) -> tuple[set[str], list[dict[str, str]]]:
     """(functions whose active body holds inline asm that is not allowed, [allowed rows]) for VERSION."""
     bad: set[str] = set()
     allowed: list[dict[str, str]] = []

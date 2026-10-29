@@ -91,7 +91,7 @@ class Graph:
             self.padding.append([start, end])
 
     def tokens(self, name: str) -> list[tuple[int, tuple[int, str] | None]]:
-        result = []
+        result: list[tuple[int, tuple[int, str] | None]] = []
         for token in self.types[name]["fields"].split():
             match = _REF.fullmatch(token)
             if match:
@@ -233,8 +233,8 @@ class Graph:
             raise ValueError(f"untyped graph bytes: {len(missing)}, first {missing[:8]}")
         return {
             "bytes": len(self.data),
-            "sha256": sha256(self.data),
-            "reemit_sha256": sha256(self.emitted),
+            "sha256": sha256(bytes(self.data)),
+            "reemit_sha256": sha256(bytes(self.emitted)),
             "typed_bytes": len(self.data) - sum(b - a for a, b in self.padding),
             "zero_alignment": self.padding,
             "records": self.records,

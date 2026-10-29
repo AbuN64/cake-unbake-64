@@ -1593,7 +1593,8 @@ def _audit(params: Json) -> Json:
         .decode()
         .split("\0")
     )
-    paths = sorted(p for p in names if p and not any(Path(p).is_relative_to(d) for d in library))
+    changed = [p for p in names if p]
+    paths = sorted(p for p in changed if not any(Path(p).is_relative_to(d) for d in library))
 
     def old_file(path: str) -> bytes | None:
         result = process.run("git show", [git, "show", f"{against}:{path}"], root, tmp=tmp)
@@ -1640,7 +1641,7 @@ def _audit(params: Json) -> Json:
                 for at in [(f.key, f.path)]
             )
         )
-    removed = _removed_functions(paths, root, against, git, tmp)
+    removed = _removed_functions(changed, root, against, git, tmp)
     dropped = _credit_drops(root, against, git, tmp)
     unexplained = {v: n for v, n in dropped.items() if n > removed}
     if unexplained:

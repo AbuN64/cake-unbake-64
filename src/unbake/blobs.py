@@ -548,7 +548,8 @@ def _overlaps(document: Json) -> dict[tuple[str, str, str], tuple[int, int, int,
             for c, d, other in spans[i + 1 :]:
                 if c >= b:
                     break
-                out[(v, *sorted((one, other)))] = (a, b, c, d)  # type: ignore[misc]
+                low, high = sorted((one, other))
+                out[(v, low, high)] = (a, b, c, d)
     return out
 
 

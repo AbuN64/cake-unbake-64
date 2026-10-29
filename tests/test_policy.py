@@ -821,6 +821,23 @@ def test_audit_allows_a_drop_the_removed_c_explains(tmp_path, monkeypatch):
     assert result["paths"] == ["src/a.c"]
 
 
+def test_audit_counts_a_function_removed_from_a_library_root(tmp_path, monkeypatch):
+    import subprocess
+
+    json = _audit_repo(tmp_path, monkeypatch)
+    (tmp_path / "sdk/libultra").mkdir(parents=True)
+    (tmp_path / "sdk/libultra/b.c").write_text("int h(void) { return 3; }\n")
+    (tmp_path / "config.toml").write_text('libraries = ["sdk/libultra"]\n')
+    (tmp_path / "progress.json").write_text(json.dumps({"carts": [_cart("us", 3)]}))
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path)]
+    for args in (["add", "-A"], ["commit", "-q", "-m", "library"]):
+        subprocess.run([*git, *args], check=True)
+    (tmp_path / "sdk/libultra/b.c").write_text("const int h[1] = {3};\n")
+    (tmp_path / "progress.json").write_text(json.dumps({"carts": [_cart("us", 2)]}))
+    result = policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
+    assert result["paths"] == []
+
+
 _RENAMED = "void *{name}(void *arg0, void *arg1) {{\n    return ((Actor *)arg0)->parent;\n}}\n"
 
 

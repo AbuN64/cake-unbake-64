@@ -406,7 +406,9 @@ def _asm_text(config: Any, row: Credit) -> str:
         return ""
 
 
-def _states(config: Any, tree: Any, exact: Collection[str] | None = None, rows: Iterable[Credit] | None = None) -> Json:
+def _states(
+    config: Any, tree: Any, exact: Collection[str] | None = None, rows: Iterable[Credit] | None = None
+) -> dict[str, Any]:
     """Per version exactly three states, read from the source alone (no build, no compile, no score): `exact` (C the
     ROM build uses, plus a stand-in whose extracted assembly is marked handwritten: it is the original), `fuzzy` (not
     exact, with a body behind NON_MATCHING that the tree capture found by preprocessing for the version) and `none`.
@@ -416,7 +418,7 @@ def _states(config: Any, tree: Any, exact: Collection[str] | None = None, rows: 
 
     versions = list(config.project.version)
     linked = frozenset(versions if exact is None else exact)
-    out: Json = {}
+    out: dict[str, Any] = {}
     last: dict[str, str] = {}  # version -> state of the function row before: a fragment's bytes follow it
     for row in _rows(config, tree, linked, {}) if rows is None else rows:
         held = out.setdefault(
@@ -538,7 +540,7 @@ def partition(config: Any, v: str, table: Mapping[str, Any], rom_size: int) -> J
     path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
     rom = path.read_bytes() if path.is_file() else None
     rom = rom if rom is not None and len(rom) == rom_size else None
-    result = blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom)
+    result = dict(blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom))
     result["blobs_no_row"] = blobs.no_row(result, document, v)
     return result
 
@@ -860,7 +862,7 @@ def unknown_spans(config: Any, tree: Any) -> Json:
     """Per version the ROM spans that no class (code, data, platform, blobs) holds: `[low, high, size, segment]`, in ROM
     order, and their total. The segment is the one the span starts in ("" when the version has none there)."""
     symbols = import_module("unbake.symbols")
-    out: Json = {}
+    out: dict[str, Any] = {}
     for v, parts in partitions(config, tree).items():
         spans = import_module("unbake.blob_stale").unknown(parts)
         out[v] = {

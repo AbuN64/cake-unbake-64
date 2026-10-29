@@ -41,9 +41,9 @@ def test_a_file_of_another_lane_is_refused_naming_the_owner(names: Path, tmp_pat
 
 
 def test_a_globals_file_and_a_rename_across_lanes_are_refused(names: Path, tmp_path: Path) -> None:
-    with pytest.raises(Refusal, match="include/g.h is owned by GLOBALS.*tool batches only"):
+    with pytest.raises(Refusal, match=r"include/g.h is owned by GLOBALS.*tool batches only"):
         lanecheck.check(names, "P1", [diff(tmp_path, SHARED)])
-    with pytest.raises(Refusal, match="src/B/b.c is owned by P2"):
+    with pytest.raises(Refusal, match=r"src/B/b.c is owned by P2"):
         lanecheck.check(names, "P1", [diff(tmp_path, RENAMED)])
 
 

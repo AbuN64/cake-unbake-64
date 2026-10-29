@@ -25,7 +25,7 @@ def read(root: Path) -> Json | None:
     except (ValueError, UnicodeError) as error:
         raise Refusal(Finding("config.schema", str(error), path=PATH)) from error
     config.validate("symbol-name-baseline", document, PATH)
-    return document
+    return document if isinstance(document, dict) else None
 
 
 def by_file(findings: Sequence[Finding]) -> Json:

@@ -158,8 +158,8 @@ def test_file_absent_in_one_version_is_grouped_under_if(tmp_path):
     text_pass = text.split("    {\n", 1)[1].split("    }\n", 1)[0]
     assert text_pass.count("#if defined(VERSION_US)") == 1  # b and c share one block
     assert (
-        "#if defined(VERSION_EU_1)\n        . = MAX(., 0x40);\n        src/d.c.o(.text);\n        src/d.c.o(.rodata .rdata);\n#endif"
-        in text
+        "#if defined(VERSION_EU_1)\n        . = MAX(., 0x40);\n        src/d.c.o(.text);\n"
+        "        src/d.c.o(.rodata .rdata);\n#endif" in text
     )
 
 
@@ -172,11 +172,13 @@ def test_conflicting_orders_fall_back_to_one_run_per_version(tmp_path):
     )
     text = build.linker(make_config(tmp_path), tree).decode()
     assert (
-        "#if defined(VERSION_EU_1)\n        . = MAX(., 0x10);\n        src/c.c.o(.text);\n        src/c.c.o(.rodata .rdata);\n"
+        "#if defined(VERSION_EU_1)\n        . = MAX(., 0x10);\n        src/c.c.o(.text);\n"
+        "        src/c.c.o(.rodata .rdata);\n"
         "        . = MAX(., 0x20);\n        src/b.c.o(.text);" in text
     )
     assert (
-        "#if defined(VERSION_US)\n        . = MAX(., 0x10);\n        src/a.c.o(.text);\n        src/a.c.o(.rodata .rdata);\n"
+        "#if defined(VERSION_US)\n        . = MAX(., 0x10);\n        src/a.c.o(.text);\n"
+        "        src/a.c.o(.rodata .rdata);\n"
         "        . = MAX(., 0x20);\n        src/b.c.o(.text);" in text
     )
 
@@ -517,16 +519,14 @@ def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_pat
         both("src/d.c", "f_6"),
         both("src/e.s", "f_8"),
     )
-    assert (
-        build.text_sizes(make_config(tmp_path), tree, "us").decode().splitlines()[1:]
-        == [
-            "build/us/src/a.c.o: TEXTSIZE := 0x20",
-            "build/us/src/b.c.o: TEXTSIZE := 0x10",
-            "build/us/src/d.c.o: TEXTSIZE := 0x10",
-            "build/us/src/e.s.o: TEXTSIZE := 0xF80",  # the code segment ends where the next one starts
-            "build/us/src/c.c.o: FSPLIT := fsplit",  # d's code lies between c's two functions: c is placed function by function
-        ]
-    )
+    assert build.text_sizes(make_config(tmp_path), tree, "us").decode().splitlines()[1:] == [
+        "build/us/src/a.c.o: TEXTSIZE := 0x20",
+        "build/us/src/b.c.o: TEXTSIZE := 0x10",
+        "build/us/src/d.c.o: TEXTSIZE := 0x10",
+        "build/us/src/e.s.o: TEXTSIZE := 0xF80",  # the code segment ends where the next one starts
+        # d's code lies between c's two functions: c is placed function by function
+        "build/us/src/c.c.o: FSPLIT := fsplit",
+    ]
     assert "src/e.s" not in build.text_sizes(make_config(tmp_path), tree, "eu-1").decode()  # the last segment
 
 
@@ -1857,7 +1857,14 @@ def test_a_rebase_that_changed_the_facts_extracts_again_on_the_next_build(tmp_pa
 def _merged_unit() -> Tree:
     """src/a.c holds two functions with a pool each (so the ROM split them; the object is one), src/b.c one."""
     tree = make_tree(
-        both("src/a.c", "f_1", "literals_f_1", "f_2", "literals_f_2", sections={"literals_f_1": ".rodata", "literals_f_2": ".rodata"}),
+        both(
+            "src/a.c",
+            "f_1",
+            "literals_f_1",
+            "f_2",
+            "literals_f_2",
+            sections={"literals_f_1": ".rodata", "literals_f_2": ".rodata"},
+        ),
         both("src/b.c", "f_5"),
     )  # fmt: skip
     for v, pool in (("us", 0x8), ("us", 0x18), ("eu-1", 0x8), ("eu-1", 0x18)):  # each pool just before its function
@@ -1898,7 +1905,7 @@ def test_text_sizes_mark_the_apart_object_to_be_built_with_a_section_per_functio
 
 def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom_address(tmp_path):
     text = build.linker(make_config(tmp_path), _merged_unit()).decode()
-    body = [l.strip() for l in text.splitlines() if l.strip().startswith(("src/", ". = ")) and ".bss" not in l]
+    body = [ln.strip() for ln in text.splitlines() if ln.strip().startswith(("src/", ". = ")) and ".bss" not in ln]
     assert body[:12] == [
         ". = MAX(., 0x8);",
         ". = DEFINED(__align8_literals_f_1) ? ALIGN(8) : .;",
@@ -1921,7 +1928,7 @@ def test_every_object_is_placed_at_the_offset_of_its_first_row_so_a_dropped_gap_
         both("src/a.c", "f_1", "f_2"), both("src/b.c", "f_4")
     )  # rows are 0x10 long: 0x30 is owned by no file
     text = build.linker(make_config(tmp_path), tree).decode()
-    body = [l.strip() for l in text.splitlines() if l.strip().startswith(("src/", ". = ")) and ".bss" not in l]
+    body = [ln.strip() for ln in text.splitlines() if ln.strip().startswith(("src/", ". = ")) and ".bss" not in ln]
     assert body[:4] == [". = MAX(., 0x10);", "src/a.c.o(.text);", ". = MAX(., 0x40);", "src/b.c.o(.text);"]
 
 

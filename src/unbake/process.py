@@ -268,7 +268,7 @@ def make(config: Config, targets: Sequence[str], jobs: int = 0) -> NativeResult:
 
     root = config.project.root
     with effort.stage("make"), pool.jobserver(config.host, jobs) as (granted, env, fds):
-        argv = [tool(config, "make"), "-k", *targets]
+        argv: list[str | Path] = [tool(config, "make"), "-k", *targets]
 
         def start(record: str | None, preprocess: bool) -> NativeResult:
             extra: dict[str, str] = {"ABU_CC_COLLECT": record} if record else {}

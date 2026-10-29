@@ -365,7 +365,7 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
             if f[3] == "func" and f[1] is not None and (size := f[2] or (_after(roms, f[1]) - f[1]))
         )
 
-        def zero(name: str, table=table, roms=roms, image=image) -> bool:
+        def zero(name: str, table: Any = table, roms: Any = roms, image: Any = image) -> bool:
             at = table[name][1]
             return bool(image) and at is not None and _after(roms, at) > at and not any(image[at : _after(roms, at)])
 
@@ -463,12 +463,12 @@ def plan(config: Config, current: Any, functions: Sequence[str]) -> list[Placeme
                     if after not in siblings:
                         siblings[after] = _sibling(root, after, set(siblings.values()))
                     split_from, after = after, siblings[after]
-            elif (follow := _owner_from(current, v, table, end, module.path)) and (
-                split := _trailing(current, v, table, follow, rom, end)
+            elif (inherited := _owner_from(current, v, table, end, module.path)) and (
+                split := _trailing(current, v, table, inherited, rom, end)
             ):  # no bytes left over, but the file that owns the data after the pool also owns data before it
-                if follow not in siblings:
-                    siblings[follow] = _sibling(root, follow, set(siblings.values()))
-                split_from, after = follow, siblings[follow]
+                if inherited not in siblings:
+                    siblings[inherited] = _sibling(root, inherited, set(siblings.values()))
+                split_from, after = inherited, siblings[inherited]
             found.append(
                 Placement(
                     v,

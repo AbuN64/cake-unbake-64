@@ -364,7 +364,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
         # Keep what the change built before the tree goes back: restoring REV's extraction runs make, whose stamp
         # sweep deletes every object assembled from the patched extraction (10-25: a rename of an INCLUDE_ASM function
         # reported its unit's object "gone" in all five versions).
-        after: dict[str, Path] = {}
+        after = {}
         for target in new_targets:
             if (root / target).is_file():
                 dest = holder / "after" / target

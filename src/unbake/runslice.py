@@ -54,7 +54,7 @@ def enter(
     which: Callable[[str], str | None] = shutil.which,
     probe: Callable[[str], subprocess.CompletedProcess[str]] = _probe,
     execvpe: Callable[..., None] = os.execvpe,
-    warn: Callable[[str], None] = lambda text: sys.stderr.write(text + "\n"),
+    warn: Callable[[str], object] = lambda text: sys.stderr.write(text + "\n"),
 ) -> bool:
     """Re-execs `argv` inside `slice_name` and does not return when it does. Returns False when the command should
     run in place: no slice named, already in it, already tried by a parent, or the host cannot do it (one warning)."""

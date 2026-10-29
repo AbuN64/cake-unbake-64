@@ -77,12 +77,7 @@ class Headers:
 
     # ---- reading
 
-    def read(
-        self,
-        root: Path,
-        patterns: Iterable[str] | None = None,
-        sources: Iterable[str] | None = None,
-    ) -> None:
+    def read(self, root: Path, patterns: Iterable[str] | None = None, sources: Iterable[str] | None = None) -> None:
         """Declarations of the header files; of the source files only the function signatures (their structs and
         objects are file-local, so two files may name different things alike). By default the header and source roots of
         the project's layout (include and src unless its config.toml says otherwise)."""

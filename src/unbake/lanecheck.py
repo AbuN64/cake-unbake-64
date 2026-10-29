@@ -57,7 +57,9 @@ def check(names: Path, lane: str, diffs: Sequence[Path]) -> Json:
                     + (" (tool batches only)" if owner[name] == GLOBALS else ""),
                     path=name,
                     missing=(owner[name],),
-                    action="drop the file from the diff, or hand it to its owning lane; renames cross files by tool batch",
+                    action=(
+                        "drop the file from the diff, or hand it to its owning lane; renames cross files by tool batch"
+                    ),
                 )
                 for name in outside
             )

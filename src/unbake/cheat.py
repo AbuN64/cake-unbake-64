@@ -193,7 +193,7 @@ def _added(git: _Git, base: str, head: str, roots: Sequence[str], skip: Collecti
     without those inside a NON_MATCHING-only branch (dead without NON_MATCHING, live with it). A file whose branches
     cannot be read keeps every added line in scope. Files in `skip` (proven handwritten assembly) are not scanned."""
     diff = git("diff", "-M", "-l0", "-U0", base, head, "--", *roots)
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     path: str | None = None
     exempt: dict[str, set[int]] = {}
     cur = 0
@@ -336,7 +336,7 @@ def _skeleton(text: str) -> list[str]:
     return kept
 
 
-def _declarations_only(git: _Git, base: str, head: str, path: str, rules: dict[str, Any]) -> bool:
+def _declarations_only(git: _Git, base: str, head: str, path: str, rules: Json) -> bool:
     """Whether PATH, a header under a source root, changed only by declaration lines (a prototype or extern added,
     removed or edited) and no macro, conditional, include or definition. A mixed header such as include_asm.h holds
     both the INCLUDE_ASM macros that decide what is compiled and the declarations any lane may retire; only the macros

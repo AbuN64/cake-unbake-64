@@ -206,7 +206,7 @@ def unpack(data: bytes | memoryview, at: int = 0, check: bool = True) -> bytes:
                     out.append(out[start + i])
     if len(out) != head.unpacked:
         raise RncError(f"RNC1 stream at {at:#x} decodes to {len(out)} of {head.unpacked} bytes")
-    if check and crc16(out) != head.unpacked_crc:
+    if check and crc16(bytes(out)) != head.unpacked_crc:
         raise RncError(f"RNC1 stream at {at:#x}: unpacked CRC mismatch")
     return bytes(out)
 

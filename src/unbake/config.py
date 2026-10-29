@@ -178,7 +178,8 @@ def source_roots() -> tuple[str, ...]:
 
 
 def header_roots() -> tuple[str, ...]:
-    """The folders includes are written against (layout `header_roots`, default include), as of the last project loaded."""
+    """The folders includes are written against (layout `header_roots`, default include), as of the last project
+    loaded."""
     return _ROOTS["header_roots"]
 
 

@@ -31,7 +31,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -152,11 +152,11 @@ def parse(text: str) -> Parsed:
     return out
 
 
-def _idents(tokens) -> set[str]:
+def _idents(tokens: Iterable[str]) -> set[str]:
     return {t for t in tokens if _IDENT.match(t) and t not in KEYWORDS}
 
 
-def _depth0(t: tuple[str, ...], stop: str):
+def _depth0(t: tuple[str, ...], stop: str) -> int:
     d = 0
     for i, x in enumerate(t):
         if x in "([{":
@@ -456,17 +456,17 @@ def narrow_tree(
             stats["skipped"] += 1
             continue
         key = unit_key(root, unit_i, hdrkey) if pristine else None
-        if key is None or pat.search(key):
+        if key is None or pat is None or pat.search(key):
             keep.append(u)
         else:
             stats["skipped"] += 1
     return keep, stats
 
 
-_RECORDS: dict[tuple[str, int, int], dict[str, list]] = {}
+_RECORDS: dict[tuple[str, int, int], dict[str, list[Any]]] = {}
 
 
-def records(root: Path) -> dict[str, list]:
+def records(root: Path) -> dict[str, list[Any]]:
     """The stamp sweep's recorded input keys, {output: [mtime_ns, key]}: build/.inputs.json with build/.inputs.log
     replayed over it (the last record of an output wins), as the sweep reads them. Cached while neither file moves."""
     root = Path(root)
@@ -654,7 +654,7 @@ def sign(root: Path, stamps: Sequence[str]) -> int:
     return len(lines)
 
 
-def resign(root: Path, headers: Sequence[str], before: dict[str, list]) -> int:
+def resign(root: Path, headers: Sequence[str], before: dict[str, list[Any]]) -> int:
     """After a tree's diff is reverted (a reused stamp slot reset): sign again each includer stamp of HEADERS whose
     record BEFORE the diff (`records`, read before it was applied) names the stamp's date now and the bytes its inputs
     hold again. No build touched such a stamp since (same date) and that record proves its text was made from these
@@ -673,11 +673,12 @@ def resign(root: Path, headers: Sequence[str], before: dict[str, list]) -> int:
             rec = before.get(stamp)
             deps = _dependencies(root / f"build/{v}/{u}.d")
             try:
-                same = bool(rec) and len(rec) == 2 and (root / stamp).stat().st_mtime_ns == rec[0]
+                same = rec is not None and len(rec) == 2 and (root / stamp).stat().st_mtime_ns == rec[0]
             except OSError:
                 continue
             if (
                 same
+                and rec is not None
                 and deps is not None
                 and hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest() == rec[1]
             ):

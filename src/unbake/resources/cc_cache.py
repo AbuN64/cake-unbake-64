@@ -30,8 +30,8 @@ if TYPE_CHECKING:
     import re
 
 try:  # the C modules hashlib wraps: importing hashlib itself loads OpenSSL, 4 ms of every call
-    from _sha1 import sha1
-    from _sha2 import sha256
+    from _sha1 import sha1  # type: ignore[import-not-found]
+    from _sha2 import sha256  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
     from hashlib import sha1, sha256
 # Everything a call that finds its assembly does not need loads on first use: this front runs once per source of a
@@ -71,7 +71,7 @@ def key(compiler: str, args: list[str], text: bytes) -> str:
     """The compiler's identity, every argument as given (paths name the .file line the assembly carries) and the exact
     bytes of the source text."""
     head = "\0".join(args).encode(errors="surrogateescape")
-    return sha256(identity(compiler) + b"\0" + head + b"\0" + text).hexdigest()
+    return str(sha256(identity(compiler) + b"\0" + head + b"\0" + text).hexdigest())
 
 
 def answer_key(compiler: str, args: list[str], text: bytes) -> str:
@@ -79,7 +79,7 @@ def answer_key(compiler: str, args: list[str], text: bytes) -> str:
     front records it, then the text. The front (cc_front.sh) takes the answer only when its own command and input give
     the same hash, so an answer is never used for another text or other flags."""
     line = SEPARATOR.join([compiler, *args]) + "\n"
-    return sha256(line.encode(errors="surrogateescape") + text).hexdigest()
+    return str(sha256(line.encode(errors="surrogateescape") + text).hexdigest())
 
 
 TOKEN_SOURCE = rb"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\.?[0-9](?:[eEpP][+-]|[\w.])*|[A-Za-z_]\w*|\s+|."
@@ -341,7 +341,7 @@ def preprocessor_identity(preprocessor: str) -> bytes:
             digest.update(f"{name}\0{info.st_size}\0{info.st_mtime_ns}\0".encode(errors="surrogateescape"))
         except OSError:
             digest.update(name.encode(errors="surrogateescape") + b"\0")
-    return digest.digest()
+    return bytes(digest.digest())
 
 
 def preprocess_parse(args: list[str]) -> tuple[str, str] | None:
