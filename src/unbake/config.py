@@ -6,7 +6,7 @@ import json
 import math
 import os
 import tomllib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from functools import cache, partial
 from importlib import resources
@@ -128,6 +128,32 @@ def kinds() -> Json:
     return _table("units.toml", "kind")
 
 
+def layout(project: Project) -> Json:
+    """The project's layout: repo.toml [layout] with each key its config.toml [layout] spells replaced."""
+    return {**load_resource("repo.toml")["layout"], **getattr(project, "layout", {})}
+
+
+def cheat(project: Project) -> Json:
+    """The no-cheat rules: repo.toml [cheat] with each key its config.toml [cheat] spells replaced."""
+    return {**load_resource("repo.toml")["cheat"], **getattr(project, "cheat", {})}
+
+
+def layout_at(root: Path) -> Json:
+    """`layout` for a caller holding only the project root (the sibling toolkits): its config.toml [layout] over
+    repo.toml's, validated like the project's own (the packaged layout where the root has no config.toml)."""
+    path = root / "config.toml"
+    try:
+        declared = tomllib.loads(path.read_text(encoding="utf-8")).get("layout", {}) if path.is_file() else {}
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        raise Refusal(Finding("config.schema", f"not valid TOML: {error}", path=str(path))) from error
+    errors = sorted(
+        e.message for e in Draft202012Validator(_schema("project")["properties"]["layout"]).iter_errors(declared)
+    )
+    if errors:
+        raise Refusal(*(Finding("config.schema", m, path=f"{path}:layout") for m in errors))
+    return {**load_resource("repo.toml")["layout"], **declared}
+
+
 def library(project: Project, path: str) -> bool:
     """Whether the project-relative path is inside one of the configured library directories."""
     return any(Path(path).is_relative_to(folder) for folder in project.libraries)
@@ -143,9 +169,32 @@ def is_assembly(path: str) -> bool:
     return path.lower().endswith(kind("asm")["suffix"])
 
 
+_ROOTS: dict[str, tuple[str, ...]] = {"source_roots": ("src",), "header_roots": ("include",)}  # the loaded project's
+
+
+def source_roots() -> tuple[str, ...]:
+    """The folders holding compiled sources (layout `source_roots`, default src), as of the last project loaded."""
+    return _ROOTS["source_roots"]
+
+
+def header_roots() -> tuple[str, ...]:
+    """The folders includes are written against (layout `header_roots`, default include), as of the last project loaded."""
+    return _ROOTS["header_roots"]
+
+
+def under_source(path: str) -> bool:
+    """Whether a project-relative path lies under a source root."""
+    return path.startswith(tuple(r + "/" for r in source_roots()))
+
+
+def under_tree(path: str) -> bool:
+    """Whether a project-relative path lies under a source or a header root."""
+    return path.startswith(tuple(r + "/" for r in (*source_roots(), *header_roots())))
+
+
 def is_source(path: str) -> bool:
     """Whether a path is C source or source-tree assembly, with case-insensitive suffixes."""
-    return path.lower().endswith(_suffixes("source")) or (path.startswith("src/") and is_assembly(path))
+    return path.lower().endswith(_suffixes("source")) or (under_source(path) and is_assembly(path))
 
 
 def is_header(path: str) -> bool:
@@ -390,10 +439,12 @@ def _tracked(root: Path) -> set[str]:
     return process.tracked(root)
 
 
-def _folder(path: str, slash: bool = True) -> bool:
-    """Whether a row path is a source directory under src/, ending in / when `slash`."""
+def _folder(path: str, slash: bool = True, roots: Sequence[str] = ("src",)) -> bool:
+    """Whether a row path is a source directory under a source root (src/ by default), ending in / when `slash`."""
     parts = Path(path).parts
-    ok = not (Path(path).is_absolute() or ".." in parts or len(parts) < 2 or parts[0] != "src")
+    ok = not (Path(path).is_absolute() or ".." in parts) and any(
+        parts[: len(top)] == top and len(parts) > len(top) for top in (Path(r).parts for r in roots)
+    )
     return ok and (path.endswith("/") or not slash)
 
 
@@ -434,6 +485,9 @@ def load_project(
     names_from = document.get("names_from", versions[0])
     problems: list[Finding] = []
     bad = partial(_bad, "project", origins=origins)
+    layout_rows = {**load_resource("repo.toml")["layout"], **document.get("layout", {})}
+    roots = tuple(layout_rows["source_roots"])
+    _ROOTS["source_roots"], _ROOTS["header_roots"] = roots, tuple(layout_rows["header_roots"])
     if names_from not in versions:
         problems.append(bad("names_from", f"{names_from} is not a [version] table"))
     readme_map = document.get("readme_map")
@@ -445,7 +499,7 @@ def load_project(
     if spelled_map is not None and (Path(spelled_map).is_absolute() or ".." in Path(spelled_map).parts):
         problems.append(bad("module_map", f"{spelled_map} must be a path inside the repository"))
     for folder in document.get("libraries", ()):
-        if not _folder(folder, False):
+        if not _folder(folder, False, roots):
             problems.append(bad("libraries", f"{folder} must be a source subdirectory"))
     version: dict[str, VersionFacts] = {}
     for vid, row in table.items():
@@ -472,7 +526,7 @@ def load_project(
             )
             if path in files:
                 problems.append(bad(f"{kind}.{path}", f"{path} is also a [{spelled[path]}] row"))
-            elif kind != "file" and not _folder(path):
+            elif kind != "file" and not _folder(path, True, roots):
                 problems.append(bad(f"{kind}.{path}", f"[{kind}] key {path} must be a source directory ending in /"))
             else:
                 files[path], spelled[path] = facts, kind
@@ -528,6 +582,8 @@ def load_project(
         library_origin={p: o for p, o in ((p, r.get("origin")) for p, r in document.get("library", {}).items()) if o},
         non_matching=(document["non_matching"].get("define", "NON_MATCHING") if "non_matching" in document else None),
         module_map=spelled_map,
+        layout=document.get("layout", {}),
+        cheat=document.get("cheat", {}),
     )
 
 

@@ -205,7 +205,7 @@ def _reaches(config: Config, patches: Sequence[Path]) -> tuple[dict[str, str | N
     """(original -> final path, added paths, units before, units after) the PATCHes reach: every touched unit and every
     unit including a touched header."""
     root = config.project.root
-    rules = configuration.load_resource("repo.toml")["cheat"]
+    rules = configuration.cheat(config.project)
     final, added = _compose(patches)
     tracked = sorted(process.tracked(root))
     _, includes = _graph(root, tracked, rules["source"])
@@ -291,7 +291,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
     versions = list(params.get("version") or config.project.versions)
     jobs = int(params.get("jobs") or 0)
     against = params["against"]
-    rules = configuration.load_resource("repo.toml")["cheat"]
+    rules = configuration.cheat(config.project)
     if process.git(config, "status", "--porcelain").stdout.strip():
         raise Refusal(
             Finding("buildproof.tree", "the tree must be clean: the proof builds REV, then applies the patches")

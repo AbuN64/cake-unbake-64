@@ -390,3 +390,48 @@ def test_an_added_sdk_trap_is_recorded_not_refused_and_game_code_is_refused(repo
     got = repo.check(**{"src/sdk/libsn/s.c": "int S(int a) {\n    if (a) {\n" + line + "    }\n    return a;\n}\n"})
     assert got["sdk_asm"] == ['src/sdk/libsn/s.c: "break 1"']
     assert _refused(repo, src__a_c=A + "int G(int a) {\n" + line + "    return a;\n}\n") == {"cheat.added"}
+
+
+MOVED = {
+    "cheat": {
+        "source": ["src", "include", "sdk"],
+        "asm_home": ["sdk/"],
+        "makefile_row": r"^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/(src|sdk)/[^ ]+\.o\): (TC|CPPFLAGS|CFLAGS) :=",
+    }
+}
+
+
+def test_a_project_cheat_table_replaces_the_packaged_asm_home(repo: SimpleNamespace, monkeypatch) -> None:
+    _handwritten(monkeypatch, {"func_a_de"})
+    repo.config.project.cheat = MOVED["cheat"]
+    assert repo.check(**{"sdk/x.s": ASM})["against"] == repo.base
+
+
+def test_a_project_cheat_table_leaves_the_old_asm_home_to_fail(repo: SimpleNamespace, monkeypatch) -> None:
+    _handwritten(monkeypatch, {"func_a_de"})
+    repo.config.project.cheat = MOVED["cheat"]
+    assert "cheat.non-c" in _refused(repo, **{"src/sdk/x.s": ASM})
+
+
+def test_a_project_cheat_table_replaces_the_makefile_row(repo: SimpleNamespace) -> None:
+    repo.config.project.cheat = MOVED["cheat"]
+    row = "$(foreach v,$(VERSIONS),build/$(v)/sdk/a.o): TC := ido\n"
+    assert repo.check(Makefile="all:\n" + row)["makefile"] == "behind"
+
+
+def test_the_layout_is_the_packaged_one_with_the_projects_keys_over_it(tmp_path: Path) -> None:
+    packaged = configuration.load_resource("repo.toml")["layout"]
+    assert configuration.layout(SimpleNamespace()) == packaged
+    assert packaged["library_source"] == "src/sdk/{library}" and packaged["source_roots"] == ["src"]
+    moved = {"source_roots": ["src", "sdk"], "library_source": "sdk/{library}"}
+    assert configuration.layout(SimpleNamespace(layout=moved)) == {**packaged, **moved}
+    (tmp_path / "config.toml").write_text('[layout]\nheader_roots = ["include", "sdk/include"]\n')
+    assert api.layout(tmp_path)["header_roots"] == ["include", "sdk/include"]
+    assert api.layout(tmp_path)["library_header"] == packaged["library_header"]
+    assert api.layout(tmp_path / "none") == packaged  # no config.toml: the packaged layout
+
+
+def test_a_layout_key_the_schema_does_not_know_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text('[layout]\nsdk_root = "sdk"\n')
+    with pytest.raises(Refusal):
+        api.layout(tmp_path)

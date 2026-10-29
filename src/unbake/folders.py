@@ -199,7 +199,21 @@ def folded(tracked: Sequence[str], mapping: Mapping[str, str]) -> dict[str, str]
         (only,) = news if len(news) == 1 else (None,)
         if only is not None and only != folder:
             out[folder] = only
+    for folder in found:
+        if folder not in out and (whole := _regrouped(folder, tracked, mapping)):
+            out[folder] = whole
     return out
+
+
+def _regrouped(folder: str, tracked: Sequence[str], mapping: Mapping[str, str]) -> str | None:
+    """The new directory of a folder that keeps its own name while its contents are renamed or regrouped inside it
+    (sdk/libultra/audio/seq_DATA1/ -> sdk/libultra/audio/seq_data/): every file under it lands under one same-named
+    directory, so a row naming the folder can name that one. None when the files scatter or a path is not under it."""
+    news = [mapping.get(t, t) for t in tracked if t.startswith(folder)]
+    parents = {posixpath.dirname(n) for n in news}
+    common = posixpath.commonpath(sorted(parents)) if parents else ""
+    name = folder.rstrip("/").rsplit("/", 1)[-1]
+    return common + "/" if common and common.rsplit("/", 1)[-1] == name and common + "/" != folder else None
 
 
 # ---- plan

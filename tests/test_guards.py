@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unbake import api, folders, guards
+from unbake import api, config, folders, guards
 from unbake.contracts import Refusal
 
 HEADER = "#ifndef CAMERA_80233920_31_H\n#define CAMERA_80233920_31_H\nvoid Gsky_GetFloorSurfaceShake(void);\n#endif\n"
@@ -149,3 +149,13 @@ def test_batch_collects_shared_owners_consumers_and_destinations_without_writes(
     assert any("in #undef" in r for r in reasons)
     assert sum("outside C/preprocessor" in r for r in reasons) == 2
     assert all((tmp_path / path).read_text() == body for path, body in texts.items())
+
+
+def test_guard_name_strips_the_configured_header_root(monkeypatch):
+    monkeypatch.setitem(config._ROOTS, "header_roots", ("sdk/include",))
+    assert guards.name("sdk/include/OS/os.h") == "OS_OS_H"
+    assert guards.name("include/os.h") == "INCLUDE_OS_H"
+
+
+def test_guard_name_defaults_to_the_include_root():
+    assert guards.name("include/os/os.h") == "OS_OS_H"

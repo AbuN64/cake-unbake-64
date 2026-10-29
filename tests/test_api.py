@@ -28,6 +28,7 @@ EXPECTED = [
     "command",
     "guard_content",
     "guard_name",
+    "layout",
     "load",
     "make",
     "memo",

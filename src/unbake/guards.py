@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 
-from unbake import merge
+from unbake import config, merge
 
 _OPEN = re.compile(r"\A\s*#\s*ifndef\s+(\w+)\s*\n\s*#\s*define\s+\1\s*(?=\n|$)")
 _PP = re.compile(r"^[ \t]*#(?:[^\n]*\\\n)*[^\n]*", re.M)
@@ -14,7 +14,8 @@ _WORD = re.compile(r"[A-Za-z_]\w*")
 
 def name(path: str) -> str:
     """An include-relative C identifier with no implementation-reserved underscores."""
-    value = re.sub(r"[^A-Za-z0-9]+", "_", path.removeprefix("include/")).strip("_").upper()
+    root = next((r + "/" for r in config.header_roots() if path.startswith(r + "/")), "")
+    value = re.sub(r"[^A-Za-z0-9]+", "_", path.removeprefix(root)).strip("_").upper()
     return value if value and value[0].isalpha() else "HEADER_" + value
 
 

@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from unbake import config as configuration
 from unbake import process
 from unbake.contracts import Config, Finding, Refusal
 
@@ -325,7 +326,7 @@ def macro_hits(root: Path, names: set[str], flags: Sequence[str] = ()) -> set[st
     if not names:
         return hit
     for path in sorted(process.tracked(root)):
-        if not path.startswith(("include/", "src/")) or not path.lower().endswith(_SOURCE_SUFFIX):
+        if not configuration.under_tree(path) or not path.lower().endswith(_SOURCE_SUFFIX):
             continue
         try:
             body = (root / path).read_bytes()

@@ -972,9 +972,9 @@ def _listing(config: Config, folder: str) -> list[str]:
 def _files(config: Config, overlay: Mapping[str, bytes | None]) -> dict[str, bytes]:
     """The bytes of every file the parse reads (src, include, symbol files), overlay applied."""
     root = _project(config).root
-    paths = {p for folder in ("src", "include") for p in _listing(config, folder)}
+    paths = {p for folder in (*configuration.source_roots(), *configuration.header_roots()) for p in _listing(config, folder)}
     paths |= {f(v) for v in _project(config).versions for f in (symbols.path, symbols.aliases_path)}
-    paths |= {p for p in overlay if p.startswith(("src/", "include/"))}
+    paths |= {p for p in overlay if configuration.under_tree(p)}
     blobs: dict[str, bytes] = {}
     for path in sorted(paths):
         if path in overlay:
@@ -1039,7 +1039,7 @@ def _captured(config: Config, blobs: Mapping[str, bytes], digest: str, overlay: 
 
 def _jobs(config: Config, blobs: Mapping[str, bytes]) -> list[tuple[str, str]]:
     versions: tuple[str, ...] = tuple(_project(config).versions)
-    return [(p, v) for p in blobs if p.startswith("src/") and _is_source(p) for v in versions]
+    return [(p, v) for p in blobs if configuration.under_source(p) and _is_source(p) for v in versions]
 
 
 def _build(

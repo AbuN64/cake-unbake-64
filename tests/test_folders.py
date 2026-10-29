@@ -389,3 +389,14 @@ def test_in_place_child_renames_preserve_boundary_facts(kind: str) -> None:
         with pytest.raises(Refusal, match="different places"):
             folders.rewrite(text, tracked, move, [], "gcc-default")
     assert folders.rewrite(result, [mapping.get(p, p) for p in tracked], {}, [], "gcc-default")[0] == result
+
+
+def test_a_folder_keeping_its_name_while_its_contents_are_renamed_inside_is_folded() -> None:
+    tracked = ["src/sdk/lib/a/x.c", "src/sdk/lib/b/y.c", "src/sdk/lib/z.c"]
+    mapping = {"src/sdk/lib/a/x.c": "sdk/lib/a2/x.c", "src/sdk/lib/b/y.c": "sdk/lib/b/y.c", "src/sdk/lib/z.c": "sdk/lib/z.c"}
+    assert folders.folded(tracked, mapping)["src/sdk/lib/"] == "sdk/lib/"
+
+
+def test_a_folder_whose_files_scatter_is_not_folded() -> None:
+    tracked = ["src/lib/a.c", "src/lib/b.c"]
+    assert "src/lib/" not in folders.folded(tracked, {"src/lib/a.c": "src/x/a.c", "src/lib/b.c": "src/y/b.c"})

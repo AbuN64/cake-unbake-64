@@ -360,7 +360,7 @@ def cheat_command(config: Config, params: Json) -> Json:
     tree's, so it must be checked out at `head`; `head` WORKTREE checks the working tree as it is, uncommitted (a lane
     that may not commit), through a tree object built in a private index."""
     base, head = params["against"], params.get("head") or "HEAD"
-    rules = configuration.load_resource("repo.toml")["cheat"]
+    rules = configuration.cheat(config.project)
     git = _Git(config.project.root)
     shown, live = head, head in ("HEAD", WORKTREE)
     if head == WORKTREE:  # the uncommitted tree: its facts are the working tree's, so they are the head's

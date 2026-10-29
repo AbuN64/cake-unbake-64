@@ -348,7 +348,6 @@ def test_rw_and_bt_examples_validate(tmp_path: Path) -> None:
         "resident = {}",
         "version_differences = []",
         "evidence = {}",
-        "layout = {}",
         "naming = {}",
         "text_mask = 1",
         "gnu_asflags = []",
@@ -571,3 +570,25 @@ def test_segment_address_space_is_a_project_fact(tmp_path):
 def test_segment_address_space_rejects_ambiguous_or_unsafe_facts(tmp_path, replacement):
     with pytest.raises(Refusal):
         _load(tmp_path, RW.replace("vram = 0x80200400", replacement))
+
+
+def test_config_toml_layout_and_cheat_rows_are_read_over_the_packaged_ones(tmp_path: Path) -> None:
+    rows = (
+        '\n[layout]\nsource_roots = ["src", "sdk"]\nlibrary_source = "sdk/{library}"\n\n[cheat]\nasm_home = ["sdk/"]\n'
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    plain, moved = _load(tmp_path / "a", RW), _load(tmp_path / "b", RW + rows)
+    packaged = configuration.load_resource("repo.toml")
+    assert configuration.layout(plain) == packaged["layout"] and configuration.cheat(plain) == packaged["cheat"]
+    assert configuration.layout(moved)["source_roots"] == ["src", "sdk"]
+    assert configuration.layout(moved)["library_header"] == packaged["layout"]["library_header"]
+    assert configuration.cheat(moved)["asm_home"] == ["sdk/"]
+    assert configuration.cheat(moved)["source"] == packaged["cheat"]["source"]
+
+
+def test_a_row_directory_must_sit_under_a_configured_source_root() -> None:
+    assert configuration._folder("sdk/libx/") is False
+    assert configuration._folder("sdk/libx/", True, ("src", "sdk")) is True
+    assert configuration._folder("sdk/", True, ("src", "sdk")) is False
+    assert configuration._folder("../sdk/libx/", True, ("sdk",)) is False

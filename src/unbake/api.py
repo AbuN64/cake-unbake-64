@@ -43,6 +43,7 @@ __all__ = [
     "command",
     "guard_content",
     "guard_name",
+    "layout",
     "load",
     "make",
     "memo",
@@ -66,6 +67,12 @@ __all__ = [
 
 def load(root: Path, host: Path) -> Config:
     return _config.load(root, host)
+
+
+def layout(root: Path) -> Json:
+    """The project's layout at `root` (repo.toml [layout] with its config.toml [layout] keys over it): source_roots,
+    header_roots, library_source, library_header, subsystem_source, subsystem_header, shared_headers, module_cap."""
+    return _config.layout_at(root)
 
 
 def symbols(config: Config, v: str) -> dict[str, tuple[int, int | None, int | None, str]]:

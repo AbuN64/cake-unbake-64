@@ -79,12 +79,17 @@ host = "splat"
 default = "splat"
 
 # Where a module's public header may live (move.header check) and where its sources sit (Group.subsystem, Group.library).
+# `source_roots` are the top folders holding compiled sources and `header_roots` the folders includes are written against;
+# the sibling toolkits (recipemaker, abu_decomp) read them through `unbake.api.layout`. These values are the defaults: a
+# project's config.toml [layout] replaces any key here, and its [cheat] any key of [cheat] below.
 [layout]
 subsystem_header = "include/game/{subsystem}.h"
 library_header = "include/sdk/{library}.h"
 shared_headers = ["include/types.h", "include/game/common.h"]
 subsystem_source = "src/game/{subsystem}"
 library_source = "src/sdk/{library}"
+source_roots = ["src"]
+header_roots = ["include"]
 module_cap = 32  # most functions an inferred module holds
 
 [readme]

@@ -241,6 +241,126 @@
     },
     "additionalProperties": false
    }
+  },
+  "layout": {
+   "type": "object",
+   "properties": {
+    "subsystem_header": {
+     "type": "string",
+     "minLength": 1
+    },
+    "library_header": {
+     "type": "string",
+     "minLength": 1
+    },
+    "subsystem_source": {
+     "type": "string",
+     "minLength": 1
+    },
+    "library_source": {
+     "type": "string",
+     "minLength": 1
+    },
+    "shared_headers": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "module_cap": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "source_roots": {
+     "type": "array",
+     "minItems": 1,
+     "uniqueItems": true,
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+     }
+    },
+    "header_roots": {
+     "type": "array",
+     "minItems": 1,
+     "uniqueItems": true,
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+     }
+    }
+   },
+   "additionalProperties": false,
+   "description": "Optional: keys of repo.toml [layout] this project replaces (source_roots, header_roots, library_source, library_header, subsystem_source, subsystem_header, shared_headers, module_cap)."
+  },
+  "cheat": {
+   "type": "object",
+   "properties": {
+    "infra": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "blobs": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "facts": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "source": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "added": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "asm_home": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "declaration_files": {
+     "type": "string",
+     "minLength": 1
+    },
+    "source_suffix": {
+     "type": "string",
+     "minLength": 1
+    },
+    "makefile_row": {
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "additionalProperties": false,
+   "description": "Optional: keys of repo.toml [cheat] this project replaces (source, asm_home, makefile_row, ...)."
   }
  },
  "required": [

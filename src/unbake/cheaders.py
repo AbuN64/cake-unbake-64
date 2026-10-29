@@ -80,11 +80,19 @@ class Headers:
     def read(
         self,
         root: Path,
-        patterns: Iterable[str] = ("include/**/*.H", "include/**/*.h"),
-        sources: Iterable[str] = ("src/**/*.CPP", "src/**/*.c"),
+        patterns: Iterable[str] | None = None,
+        sources: Iterable[str] | None = None,
     ) -> None:
         """Declarations of the header files; of the source files only the function signatures (their structs and
-        objects are file-local, so two files may name different things alike)."""
+        objects are file-local, so two files may name different things alike). By default the header and source roots of
+        the project's layout (include and src unless its config.toml says otherwise)."""
+        from unbake.config import layout_at  # config does not import this module; the import is local to stay so
+
+        layout = layout_at(root)
+        if patterns is None:
+            patterns = [f"{r}/**/*{e}" for r in layout["header_roots"] for e in (".H", ".h")]
+        if sources is None:
+            sources = [f"{r}/**/*{e}" for r in layout["source_roots"] for e in (".CPP", ".c")]
         for pattern in patterns:
             for path in sorted(root.glob(pattern)):
                 self.add(path.read_text(errors="replace"), path.relative_to(root).as_posix())
