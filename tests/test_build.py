@@ -389,7 +389,7 @@ def test_local_mk_names_pinned_tools_only_by_host_path(tmp_path, monkeypatch):
     text = build.local_mk(SimpleNamespace(host=host)).decode()
     assert "JOBS := 4" in text
     assert "CPP := /usr/bin/cpp" in text
-    assert "N64LINK :=" not in text  # a pinned tool is the Makefile's own fetch
+    assert "ABUMAS :=" not in text  # a pinned tool is the Makefile's own fetch
 
 
 def test_toolchains_install_in_one_pool_dispatch(cfg, monkeypatch):
@@ -1536,7 +1536,7 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
                 "TC=gcc_2_8_1_sn64",
                 _pp("PREPROCESS_gcc_2_8_1_sn64", "cat $<"),
                 f"CC_gcc_2_8_1_sn64={sys.executable} {cc}",
-                f"N64LINK={sys.executable} {asm}",
+                f"ABUMAS={sys.executable} {asm}",
                 "OBJCOPY=true",
                 f"TRIM_TEXT={sys.executable} {trim}",
                 CCPY,

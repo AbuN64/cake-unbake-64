@@ -60,20 +60,20 @@ default = "mips-linux-gnu-ld"
 [make.tools.OBJCOPY]
 host = "mips_objcopy"
 default = "mips-linux-gnu-objcopy"
-[make.tools.N64LINK]
-host = "n64link"
-default = "n64link"
+[make.tools.ABUMAS]
+host = "abumas"
+default = "abumas"
 # a pinned release the committed Makefile fetches into tools/<host>/ like a compiler (no local path, no PATH)
-title = "n64link (SN ASN64-compatible assembler and linker)"
-binary = "n64link"
-dependency = { name = "n64link", repository = "https://github.com/AbuN64/mas-n64" }  # the README link: the source repository, never a download
-[make.tools.N64LINK.download]
-url = "https://github.com/AbuN64/mas-n64/releases/download/v0.2.0/n64link-v0.2.0-linux-x86_64.tar.gz"
-sha256 = "061d7bc69f21228c7029f4f530cd980bab3a35749751a43f2823d03d95be4ef7"
-files = ["n64link-v0.2.0-linux-x86_64/n64link"]
+title = "abumas (SN ASN64-compatible assembler and linker)"
+binary = "abumas"
+dependency = { name = "abumas", repository = "https://github.com/AbuN64/mas-n64" }  # the README link: the source repository, never a download
+[make.tools.ABUMAS.download]
+url = "https://github.com/AbuN64/mas-n64/releases/download/v0.5.0/abumas-v0.5.0-linux-x86_64.tar.gz"
+sha256 = "a9abac57731274b10f39b966e9443e0a25b1bfd0fcb34847c5ef2870b7377851"
+files = ["abumas-v0.5.0-linux-x86_64/abumas"]
 strip = 1
-[make.tools.N64LINK.pins]
-"n64link" = "583e544840d04123fa7e26c7416316ffe410139351e07cd3395d4bd5ec609c3c"
+[make.tools.ABUMAS.pins]
+"abumas" = "6db3b12f185461e27824f1ff160cbc8b93632d1892642fe2761ccb9d123d0d2d"
 [make.tools.SPLAT]
 host = "splat"
 default = "splat"

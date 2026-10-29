@@ -619,14 +619,14 @@ def test_dependencies_are_short_names_linked_to_their_repositories(tmp_path, mon
         "title": "GCC 2.8.1 (SN64)",
         "dependency": {"name": "GCC 2.8.1", "repository": "https://github.com/pmret/gcc-papermario"},
         "downloads": [{"url": "https://x.test/releases/download/master/linux.tar.gz", "sha256": "ab"}],
-        "assemble": ["{n64link}"],
+        "assemble": ["{abumas}"],
     }
     monkeypatch.setattr(configuration, "toolchains", lambda: {"cc": row})
     text = "<!-- progress -->\n<!-- /progress -->\n<!-- dependencies -->\nold\n<!-- /dependencies -->\n"
     out = report.readme(text, config, current)
     block = out.split("<!-- dependencies -->\n")[1].split("<!-- /dependencies -->")[0]
     assert block == (
-        "- [GCC 2.8.1](https://github.com/pmret/gcc-papermario)\n- [n64link](https://github.com/AbuN64/mas-n64)\n"
+        "- [GCC 2.8.1](https://github.com/pmret/gcc-papermario)\n- [abumas](https://github.com/AbuN64/mas-n64)\n"
     )
     for bad in ({}, {"name": "GCC 2.8.1", "repository": "https://x.test/releases/download/master/linux.tar.gz"}):
         monkeypatch.setitem(row, "dependency", bad)

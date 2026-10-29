@@ -15,7 +15,7 @@ from typing import Any
 
 from unbake.contracts import Config, Json, NativeResult, Proof, Submission, digest, sha1, sha256
 
-TOOLS = (*("git", "make", "cpp", "mips_as", "mips_ld", "mips_objcopy", "mips_objdump"), *("n64link", "splat", "armips"))
+TOOLS = (*("git", "make", "cpp", "mips_as", "mips_ld", "mips_objcopy", "mips_objdump"), *("abumas", "splat", "armips"))
 
 
 def _value(item: Any) -> str:

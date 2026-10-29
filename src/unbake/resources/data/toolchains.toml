@@ -145,7 +145,7 @@ fingerprint = { epilogue = "unfilled", addresses = "macro", save_area = "top", f
 decompme = "gcc2.7.2kmc"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
-assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+assemble = ["{abumas}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
 
 [toolchain."gcc-2.7.2-kmc".whatif]
 # reg_note values the cc1 passes to add_dependence (read from this cc1's reg_note_name table: REG_DEP_ANTI is entry 14); a true dependence is 0
@@ -192,7 +192,7 @@ fingerprint = { epilogue = "unfilled", addresses = "split", save_area = "top", f
 decompme = "gcc2.7.2snew"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
-assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+assemble = ["{abumas}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
 
 [toolchain."gcc-2.7.2-sn64".whatif]
 # reg_note values the cc1 passes to add_dependence (read from this cc1's reg_note_name table: REG_DEP_ANTI is entry 14); a true dependence is 0
@@ -215,7 +215,7 @@ data_split = "subsegment"
 jump_table_base = 0x80000000  # a jump table entry holds its label's address less this (the ROM's tables do)
 rdata_alloc = true  # asn64 leaves .rdata unallocated: the link would drop the object's read-only data
 function_sections = "-ffunction-sections"  # the compiler flag that gives each function a section of its own
-normalise = ["{n64link}", "asn64", "{source}"]  # the assembler front's rewrite of the compiler's assembly, on stdout
+normalise = ["{abumas}", "asn64", "{source}"]  # the assembler front's rewrite of the compiler's assembly, on stdout
 title = "GCC 2.8.1 (SN64)"
 dependency = { name = "GCC 2.8.1", repository = "https://github.com/pmret/gcc-papermario" }  # the README link: the source repository, never a download
 family = "gcc"
@@ -244,7 +244,7 @@ probe_flags = [["-mfp32"], ["-msplit-addresses"], ["-fno-thread-jumps", "-fno-re
 decompme = "gcc2.8.1sn"
 preprocess = ["{cpp}", "{cppflags}", "{defines}", "{includes}", "{source}"]
 compile = ["{cc}", "-quiet", "{codegen}", "{source}", "-o", "{out}"]
-assemble = ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
+assemble = ["{abumas}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"]
 
 [toolchain."gcc-2.8.1-sn64".whatif]
 # reg_note values the cc1 passes to add_dependence (gcc 2.8 rtl.h): REG_DEP_ANTI, REG_DEP_OUTPUT; a true dependence is 0

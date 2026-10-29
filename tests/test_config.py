@@ -183,7 +183,7 @@ def test_host_missing_file_refused(tmp_path: Path) -> None:
     assert _keys(_refusal(configuration.load_host, tmp_path / "absent.toml")) == {"config.missing"}
 
 
-@pytest.mark.parametrize("tool", ["cpp", "mips_as", "mips_ld", "mips_objcopy", "mips_objdump", "n64link", "armips"])
+@pytest.mark.parametrize("tool", ["cpp", "mips_as", "mips_ld", "mips_objcopy", "mips_objdump", "abumas", "armips"])
 def test_optional_host_tool_absent_and_bad_path(tmp_path: Path, tool: str) -> None:
     path = fixture.host(tmp_path)
     path.write_text("\n".join(line for line in path.read_text().splitlines() if not line.startswith(tool + " = ")))

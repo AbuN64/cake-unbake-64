@@ -49,7 +49,7 @@ def assemble_template(row: Json | None) -> tuple[tuple[str, ...], str]:
 def host_tools(config: Config) -> dict[str, str]:
     return {
         k: str(process.tool(config, k))
-        for k in ("cpp", "mips_as", "mips_ld", "mips_objcopy", "n64link", "armips")
+        for k in ("cpp", "mips_as", "mips_ld", "mips_objcopy", "abumas", "armips")
         if k in config.host.tools
     }
 
@@ -134,7 +134,7 @@ class TemplateToolchain:
             else [str(config.host.tools[row["as_host"]])]
             if row["as_host"] in config.host.tools
             else [],
-            **{k: [str(process.tool(config, k))] for k in ("cpp", "n64link") if k in config.host.tools},
+            **{k: [str(process.tool(config, k))] for k in ("cpp", "abumas") if k in config.host.tools},
         }
 
     def tool_files(self) -> list[Path]:

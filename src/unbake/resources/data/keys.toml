@@ -111,7 +111,7 @@ sentence = "the request does not name a publishable function"
 
 [key."link.error"]
 owner = "adapters"
-sentence = "n64link or ld failed"
+sentence = "abumas or ld failed"
 
 [key."tool.version"]
 owner = "adapters"

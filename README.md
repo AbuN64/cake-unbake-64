@@ -15,7 +15,7 @@ pip install "splat64[mips]==0.50.0" spimdisasm==1.42.4 rabbitizer==1.16.2 \
   git+https://github.com/AbuN64/cache-64 git+https://github.com/AbuN64/cake-unbake-64
 ```
 
-Toolchains that assemble with `n64link` need it from [mas-n64](https://github.com/AbuN64/mas-n64/releases).
+Toolchains that assemble with `abumas` need it from [mas-n64](https://github.com/AbuN64/mas-n64/releases).
 
 ## Usage
 

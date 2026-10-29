@@ -314,7 +314,7 @@ class Host:
     cache_dir: Path  # cache.dir: the one content cache every project and worktree on the host shares
     cache_max_bytes: int
     toolchain_root: Path
-    # tools, exactly: git make cpp mips_as mips_ld mips_objcopy mips_objdump n64link splat armips
+    # tools, exactly: git make cpp mips_as mips_ld mips_objcopy mips_objdump abumas splat armips
     tools: Mapping[str, Path]
     sdk_catalog: Path | None  # n64sym-style signature JSON, None = no SDK identification
     serial_seconds: float  # budgets.*: a leaf stage this long must use at least serial_cores

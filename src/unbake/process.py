@@ -221,7 +221,7 @@ def _matches(path: Path | None, sha256: str) -> bool:
 
 
 def tool(config: Config, name: str, *, kind: str | None = None) -> Path:
-    """The host tool `name`. For a tool the project build fetches as a pinned release (n64link) the tree's own
+    """The host tool `name`. For a tool the project build fetches as a pinned release (abumas) the tree's own
     fetched copy (tools/<name>/) comes first when it is the pinned file: a measure assembles with the rules the build
     uses, not with another build of the tool that happens to sit at the host path."""
     if pin := _pin(name):

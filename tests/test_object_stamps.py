@@ -68,7 +68,7 @@ class Tree:
                     + "' sh $@ $< $(@:.i.ok=.d)",
                 ),
                 f"CC_gcc_2_8_1_sn64={sys.executable} {self.cc}",
-                f"N64LINK={sys.executable} {self.asm}",
+                f"ABUMAS={sys.executable} {self.asm}",
                 "OBJCOPY=true",
                 f"TRIM_TEXT={sys.executable} {self.trim}",
                 CCPY,

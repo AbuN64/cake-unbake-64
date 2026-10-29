@@ -95,7 +95,7 @@ def test_toolchain_as_host_required(toolchains, native_mock, invalid):
 
 
 def test_host_tools(adapter_config):
-    expected = ("cpp", "mips_as", "mips_ld", "mips_objcopy", "n64link", "armips")
+    expected = ("cpp", "mips_as", "mips_ld", "mips_objcopy", "abumas", "armips")
     assert adapters.host_tools(adapter_config) == {name: str(adapter_config.host.tools[name]) for name in expected}
 
 
@@ -323,7 +323,7 @@ def chains(toolchains):
         **deepcopy(toolchains["toolchain"]["gcc-test"]),
         "emits_asm": True,
         "compile": ["{cc}", "{armips}", "{source}", "-o", "{out}"],
-        "assemble": ["{n64link}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"],
+        "assemble": ["{abumas}", "asn64", "--as", "{as}", "{asflags}", "{source}", "-o", "{out}"],
         "pins": {"cc": "d" * 64},
     }
     return toolchains
@@ -382,7 +382,7 @@ def _tool_files(config, names):
 
 @pytest.mark.parametrize("id,extra", [("gcc-test", False), ("fake-9", True)])
 def test_tool_identity_follows_the_bytes_of_the_tools_the_commands_name(adapter_config, chains, id, extra):
-    _tool_files(adapter_config, [f"{id}/cc", "n64link", "mips_as", "armips", "mips_ld"])
+    _tool_files(adapter_config, [f"{id}/cc", "abumas", "mips_as", "armips", "mips_ld"])
     first = adapters.tool_identity(adapter_config, id)
     assert adapters.tool_identity(adapter_config, id) == first
     (adapter_config.host.toolchain_root / id / "cc").write_bytes(b"another compiler")
@@ -441,10 +441,10 @@ def test_unused_tools_not_resolved(adapter_config, toolchains):
     assert adapters.host_tools(cfg) == {}
 
 
-def test_n64link_required_only_when_the_row_names_it(adapter_config, chains, monkeypatch):
+def test_abumas_required_only_when_the_row_names_it(adapter_config, chains, monkeypatch):
     without = replace(
         adapter_config,
-        host=replace(adapter_config.host, tools={k: v for k, v in adapter_config.host.tools.items() if k != "n64link"}),
+        host=replace(adapter_config.host, tools={k: v for k, v in adapter_config.host.tools.items() if k != "abumas"}),
     )
     assert adapters.toolchain(without, "gcc-test").argv("compile", codegen=(), source=("a",), out=("b",))
 
@@ -458,8 +458,8 @@ def test_n64link_required_only_when_the_row_names_it(adapter_config, chains, mon
     with pytest.raises(Refusal) as caught:
         adapters.toolchain(without, "fake-9").argv("assemble", **parts)
     (finding,) = caught.value.findings
-    assert finding.key == "native.missing_tool" and "n64link" in finding.reason
-    assert adapters.toolchain(adapter_config, "fake-9").argv("assemble", **parts)[0].endswith("n64link")
+    assert finding.key == "native.missing_tool" and "abumas" in finding.reason
+    assert adapters.toolchain(adapter_config, "fake-9").argv("assemble", **parts)[0].endswith("abumas")
 
 
 def test_armips_missing_names_resource(adapter_config, native_mock, tmp_path, monkeypatch):
