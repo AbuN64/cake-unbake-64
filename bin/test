@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 [[ -x .venv/bin/python ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
 export PYTHONPATH=src
-lock="${XDG_RUNTIME_DIR:-$PWD/.test-tmp}/abu-tests.lock"
+lock="${XDG_RUNTIME_DIR:-${TMPDIR:?TMPDIR or XDG_RUNTIME_DIR names the test lock directory}}/abu-tests.lock"
 if [[ -z "${ABU_TESTS_LOCKED:-}" ]]; then mkdir -p "$(dirname "$lock")"; ABU_TESTS_LOCKED=1 exec flock "$lock" "$PWD/bin/$(basename "$0")" "$@"; fi
 # a venv installed from another pyproject (a dependency pin bumped since) is installed again before tests run
 if [[ "$(sha256sum pyproject.toml)" != "$(cat .venv/.pyproject.sha256 2>/dev/null)" ]]; then
@@ -20,4 +20,4 @@ ulimit -v 4194304
 workers=$(( (free_mb - 4096) / 4096 )); cores=$(nproc)
 (( workers > cores )) && workers=$cores; [[ -n "${UNBAKE_CORES:-}" ]] && (( workers > UNBAKE_CORES )) && workers=$UNBAKE_CORES; (( workers < 1 )) && workers=1
 # The workers come out of the one host core budget (the same slots unbake itself divides), at most the memory allows.
-exec .venv/bin/python -m unbake.pool --work "$workers" -- .venv/bin/python -m pytest -q -n '{j}' --basetemp="$PWD/.test-tmp" "$@"
+exec .venv/bin/python -m unbake.pool --work "$workers" -- .venv/bin/python -m pytest -q -n '{j}' "$@"

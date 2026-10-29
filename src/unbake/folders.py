@@ -217,6 +217,12 @@ def _regrouped(folder: str, tracked: Sequence[str], mapping: Mapping[str, str]) 
 
 
 # ---- plan
+def _covers_same(kind: str, before: set[str], after: set[str]) -> bool:
+    """Whether a row's files stay together: a library root may also take in files from elsewhere (moving files into a
+    library is an ordinary layout move); every other row keeps exactly the files it covered."""
+    return before <= after if kind == "library" else before == after
+
+
 def _memberships(tracked: Sequence[str], mapping: Mapping[str, str]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Directory membership before/after, using original file identities on both sides.
 
@@ -433,7 +439,7 @@ def rewrite(
             continue
         for key in list(table):
             new = mapping.get(key) or dirs.get(key) or key
-            if key.endswith("/") and members_before.get(key, set()) != members_after.get(new, set()):
+            if key.endswith("/") and not _covers_same(kind, members_before.get(key, set()), members_after.get(new, set())):
                 problems.append(
                     Finding("layout.split", f"[{kind}] row {key} covers files that move to different places")
                 )
@@ -459,7 +465,9 @@ def rewrite(
         for index, folder in enumerate(list(flat)):
             if folder in dirs:
                 flat[index] = dirs[folder]
-            if members_before.get(folder, set()) != members_after.get(dirs.get(folder, folder), set()):
+            if not _covers_same(
+                "library", members_before.get(folder, set()), members_after.get(dirs.get(folder, folder), set())
+            ):
                 problems.append(Finding("layout.split", f"library {folder} covers files that move to different places"))
     if problems:
         raise Refusal(*problems)

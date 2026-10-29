@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 [[ -x .venv/bin/python ]] || { echo "run bin/dev-setup first" >&2; exit 1; }
 export PYTHONPATH=src
-lock="${XDG_RUNTIME_DIR:-$PWD/.test-tmp}/abu-tests.lock"
+lock="${XDG_RUNTIME_DIR:-${TMPDIR:?TMPDIR or XDG_RUNTIME_DIR names the test lock directory}}/abu-tests.lock"
 if [[ -z "${ABU_TESTS_LOCKED:-}" ]]; then mkdir -p "$(dirname "$lock")"; ABU_TESTS_LOCKED=1 exec flock "$lock" "$PWD/bin/$(basename "$0")" "$@"; fi
 targets=("$@")
 if [[ "$#" -eq 0 ]]; then targets=(src tests); fi

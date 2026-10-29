@@ -18,4 +18,3 @@ credentials.json
 id_rsa*
 *.pem
 *.key
-.test-tmp/

@@ -164,6 +164,41 @@ def test_a_directory_row_over_files_that_split_is_refused() -> None:
     assert refusal.value.findings[0].key == "layout.split"
 
 
+# The SDK-IN-SRC slice: files from src/ move into the library roots sdk/MATH/ and sdk/libultra/.
+LIBRARY_TRACKED = ["sdk/MATH/sqrt.c", "sdk/libultra/io/pi.c", "src/MATH/cos.c", "src/LEO/leo.c", "src/main.c"]
+LIBRARY_RULES = [
+    {"match": "src/MATH/", "to": "sdk/MATH/"},
+    {"match": "src/LEO/", "to": "sdk/libultra/leo/"},
+]
+LIBRARY_CONFIG = """\
+schema = 4
+name = "T"
+toolchain = "gcc-def"
+
+[library."sdk/MATH/"]
+origin = "ultralib"
+
+[library."sdk/libultra/"]
+origin = "ultralib"
+"""
+
+
+def test_files_move_into_a_library_root_keeping_its_row() -> None:
+    mapping, rows = folders.moves(LIBRARY_RULES, LIBRARY_TRACKED)
+    text, _ = folders.rewrite(LIBRARY_CONFIG, LIBRARY_TRACKED, mapping, rows, "gcc-def")
+    assert tomllib.loads(text)["library"] == {"sdk/MATH/": {"origin": "ultralib"}, "sdk/libultra/": {"origin": "ultralib"}}
+    text, _ = folders.rewrite('libraries = ["sdk/MATH/"]\n' + LIBRARY_CONFIG, LIBRARY_TRACKED, mapping, rows, "gcc-def")
+    assert tomllib.loads(text)["libraries"] == ["sdk/MATH/"]
+
+
+def test_files_leaving_a_library_root_are_still_refused() -> None:
+    mapping, rows = folders.moves([{"match": "sdk/MATH/sqrt.c", "to": "src/sqrt.c"}], LIBRARY_TRACKED)
+    for config in (LIBRARY_CONFIG, 'libraries = ["sdk/MATH/"]\n' + LIBRARY_CONFIG.replace('[library."sdk/MATH/"]', "")):
+        with pytest.raises(Refusal) as refusal:
+            folders.rewrite(config, LIBRARY_TRACKED, mapping, rows, "gcc-def")
+        assert refusal.value.findings[0].key == "layout.split"
+
+
 PATCH = """\
 diff --git a/src/IO/a.CPP b/src/IO/a.CPP
 index 1111111..2222222 100644
