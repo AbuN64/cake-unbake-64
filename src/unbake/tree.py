@@ -972,7 +972,9 @@ def _listing(config: Config, folder: str) -> list[str]:
 def _files(config: Config, overlay: Mapping[str, bytes | None]) -> dict[str, bytes]:
     """The bytes of every file the parse reads (src, include, symbol files), overlay applied."""
     root = _project(config).root
-    paths = {p for folder in (*configuration.source_roots(), *configuration.header_roots()) for p in _listing(config, folder)}
+    paths = {
+        p for folder in (*configuration.source_roots(), *configuration.header_roots()) for p in _listing(config, folder)
+    }
     paths |= {f(v) for v in _project(config).versions for f in (symbols.path, symbols.aliases_path)}
     paths |= {p for p in overlay if configuration.under_tree(p)}
     blobs: dict[str, bytes] = {}
@@ -1353,6 +1355,17 @@ def _duplicates(owned: Mapping[str, Mapping[str, Iterable[str]]], versions: Sequ
     return findings
 
 
+def _hand_unit(config: Config, path: str, owns: Mapping[str, Iterable[str]]) -> bool:
+    """Whether an assembly file outside every configured library is original hand assembly: it sits in a directory the
+    project marks as an asm home and every name it owns is marked handwritten by splat in the version that owns it
+    (sdk/boot/entry.s: it links byte-exact like a library unit, so it earns the same exact credit)."""
+    homes = tuple(configuration.cheat(config.project)["asm_home"])
+    if not path.startswith(homes):
+        return False
+    names = [(v, n) for v, held in owns.items() for n in held]
+    return bool(names) and all(symbols.handwritten(config, v, n) for v, n in names)
+
+
 def _section(fact: symbols.Symbol, kind: str | None) -> str:
     """The linker section a name's bytes are in: code for a function, else what the source says (a stand-in's own
     `.section`, const, initialised or not)."""
@@ -1401,6 +1414,7 @@ def _module(
         {v: dict(n) for v, n in sections.items()},
         placed,
         {v: tuple(n) for v, n in stale.items() if n},
-        library=configuration.is_assembly(path) and configuration.library(config.project, path),
+        library=configuration.is_assembly(path)
+        and (configuration.library(config.project, path) or _hand_unit(config, path, owns)),
         unnamed={v: tuple(n) for v, n in unnamed.items()},
     )

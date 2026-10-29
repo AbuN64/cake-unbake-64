@@ -5,7 +5,7 @@ from types import SimpleNamespace as N
 import fixture
 import pytest
 
-from unbake import adapters, libasm, native, policy, recipes, repo, report, tree, view
+from unbake import adapters, libasm, native, policy, recipes, repo, report, symbols, tree, view
 from unbake.contracts import Refusal, sha1
 
 pytestmark = pytest.mark.usefixtures("toolchains")
@@ -122,17 +122,47 @@ def test_renderer_uses_local_branch_labels_and_preserves_wide_registers():
     assert ".set gp=64" in libasm.render("f", [0xDFBF0000, 0x03E00008, 0], 0x80001000, {})
 
 
+def _boot_entry(tmp_path, marked):
+    """sdk/boot/entry.s of the RageWars data slice: a LEAF unit outside every configured library, in the asm home."""
+    cfg = fixture.config(
+        tmp_path,
+        sources={"src/boot/entry.s": "#include <sys/asm.h>\nLEAF(f)\n    mfc0 $v0, $12\n    jr $ra\nEND(f)\n"},
+        symbols={v: "f = 0x80000400; // type:func rom:0x1000 size:0x10\n" for v in ("a", "b")},
+    )
+    cfg.project.cheat = {"asm_home": ["src/boot/"]}
+    for version in cfg.project.versions:
+        path = cfg.project.root / symbols.asm_path(cfg, version, "f")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(("/* Handwritten function */\n" if marked else "") + "glabel f\n")
+    return cfg
+
+
+def test_handwritten_unit_in_the_asm_home_outside_every_library_earns_exact_credit(tmp_path):
+    cfg = _boot_entry(tmp_path, marked=True)
+    held = tree.capture(cfg)
+    assert held.owner("a", "f") == "src/boot/entry.s" and not cfg.project.libraries
+    credits = report.build_credits(
+        list(cfg.project.versions), held, held.symbols, frozenset({"a", "b"}), {}, frozenset()
+    )
+    assert all(r.exact and r.kept == 16 for r in credits)
+
+
+def test_unmarked_unit_in_the_asm_home_outside_every_library_stays_without_credit(tmp_path):
+    cfg = _boot_entry(tmp_path, marked=False)
+    held = tree.capture(cfg)
+    credits = report.build_credits(
+        list(cfg.project.versions), held, held.symbols, frozenset({"a", "b"}), {}, frozenset()
+    )
+    assert all(not r.exact and not r.kept for r in credits)
+
+
 def test_scan_reads_the_entry_macros_of_sys_asm_h_as_global_definitions():
     text = (
         "#include <sys/asm.h>\n.set noreorder\n.section .text\n"
         "LEAF(Decompress_ExpandBackReferences)\n    addiu $t5, $zero, 0x0\n.Lloop:\n    b .Lloop\n"
         "END(Decompress_ExpandBackReferences)\nXLEAF(alias)\nNESTED(nested, 24, ra)\n# LEAF(commented)\n/* LEAF(c2) */\n"
     )
-    assert libasm.scan(text) == {
-        "Decompress_ExpandBackReferences": ".text",
-        "alias": ".text",
-        "nested": ".text",
-    }
+    assert libasm.scan(text) == {"Decompress_ExpandBackReferences": ".text", "alias": ".text", "nested": ".text"}
 
 
 def test_renderer_reads_a_target_inside_another_routine_as_an_offset_from_it():
