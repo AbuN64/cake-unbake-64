@@ -439,7 +439,9 @@ def rewrite(
             continue
         for key in list(table):
             new = mapping.get(key) or dirs.get(key) or key
-            if key.endswith("/") and not _covers_same(kind, members_before.get(key, set()), members_after.get(new, set())):
+            if key.endswith("/") and not _covers_same(
+                kind, members_before.get(key, set()), members_after.get(new, set())
+            ):
                 problems.append(
                     Finding("layout.split", f"[{kind}] row {key} covers files that move to different places")
                 )

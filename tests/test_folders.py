@@ -165,11 +165,15 @@ def test_a_directory_row_over_files_that_split_is_refused() -> None:
 
 
 # The SDK-IN-SRC slice: files from src/ move into the library roots sdk/MATH/ and sdk/libultra/.
-LIBRARY_TRACKED = ["sdk/MATH/sqrt.c", "sdk/libultra/io/pi.c", "src/MATH/cos.c", "src/LEO/leo.c", "src/main.c"]
-LIBRARY_RULES = [
-    {"match": "src/MATH/", "to": "sdk/MATH/"},
-    {"match": "src/LEO/", "to": "sdk/libultra/leo/"},
+LIBRARY_TRACKED = [
+    "sdk/MATH/sqrt.c",
+    "sdk/MATH/sin.c",
+    "sdk/libultra/io/pi.c",
+    "src/MATH/cos.c",
+    "src/LEO/leo.c",
+    "src/main.c",
 ]
+LIBRARY_RULES = [{"match": "src/MATH/", "to": "sdk/MATH/"}, {"match": "src/LEO/", "to": "sdk/libultra/leo/"}]
 LIBRARY_CONFIG = """\
 schema = 4
 name = "T"
@@ -186,13 +190,16 @@ origin = "ultralib"
 def test_files_move_into_a_library_root_keeping_its_row() -> None:
     mapping, rows = folders.moves(LIBRARY_RULES, LIBRARY_TRACKED)
     text, _ = folders.rewrite(LIBRARY_CONFIG, LIBRARY_TRACKED, mapping, rows, "gcc-def")
-    assert tomllib.loads(text)["library"] == {"sdk/MATH/": {"origin": "ultralib"}, "sdk/libultra/": {"origin": "ultralib"}}
+    assert tomllib.loads(text)["library"] == {
+        "sdk/MATH/": {"origin": "ultralib"},
+        "sdk/libultra/": {"origin": "ultralib"},
+    }
     text, _ = folders.rewrite('libraries = ["sdk/MATH/"]\n' + LIBRARY_CONFIG, LIBRARY_TRACKED, mapping, rows, "gcc-def")
     assert tomllib.loads(text)["libraries"] == ["sdk/MATH/"]
 
 
 def test_files_leaving_a_library_root_are_still_refused() -> None:
-    mapping, rows = folders.moves([{"match": "sdk/MATH/sqrt.c", "to": "src/sqrt.c"}], LIBRARY_TRACKED)
+    mapping, rows = folders.moves([{"match": "sdk/MATH/sin.c", "to": "src/sin.c"}], LIBRARY_TRACKED)
     for config in (LIBRARY_CONFIG, 'libraries = ["sdk/MATH/"]\n' + LIBRARY_CONFIG.replace('[library."sdk/MATH/"]', "")):
         with pytest.raises(Refusal) as refusal:
             folders.rewrite(config, LIBRARY_TRACKED, mapping, rows, "gcc-def")
@@ -420,15 +427,24 @@ def test_in_place_child_renames_preserve_boundary_facts(kind: str) -> None:
     result, changes = folders.rewrite(text, tracked, mapping, [], "gcc-default")
     assert tomllib.loads(result) == tomllib.loads(text)
     assert changes["exceptions"] == []
-    for move in ({"src/sdk/a.CPP": "src/game/a.CPP"}, {"src/game/g.c": "src/sdk/g.c"}):
+    leaving, arriving = {"src/sdk/a.CPP": "src/game/a.CPP"}, {"src/game/g.c": "src/sdk/g.c"}
+    with pytest.raises(Refusal, match="different places"):
+        folders.rewrite(text, tracked, leaving, [], "gcc-default")
+    if kind == "library":  # a library root takes in files from elsewhere
+        folders.rewrite(text, tracked, arriving, [], "gcc-default")
+    else:
         with pytest.raises(Refusal, match="different places"):
-            folders.rewrite(text, tracked, move, [], "gcc-default")
+            folders.rewrite(text, tracked, arriving, [], "gcc-default")
     assert folders.rewrite(result, [mapping.get(p, p) for p in tracked], {}, [], "gcc-default")[0] == result
 
 
 def test_a_folder_keeping_its_name_while_its_contents_are_renamed_inside_is_folded() -> None:
     tracked = ["src/sdk/lib/a/x.c", "src/sdk/lib/b/y.c", "src/sdk/lib/z.c"]
-    mapping = {"src/sdk/lib/a/x.c": "sdk/lib/a2/x.c", "src/sdk/lib/b/y.c": "sdk/lib/b/y.c", "src/sdk/lib/z.c": "sdk/lib/z.c"}
+    mapping = {
+        "src/sdk/lib/a/x.c": "sdk/lib/a2/x.c",
+        "src/sdk/lib/b/y.c": "sdk/lib/b/y.c",
+        "src/sdk/lib/z.c": "sdk/lib/z.c",
+    }
     assert folders.folded(tracked, mapping)["src/sdk/lib/"] == "sdk/lib/"
 
 
