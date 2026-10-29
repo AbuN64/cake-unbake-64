@@ -6,4 +6,4 @@ The adapter extends the existing `symbols.py` name join; there is no separate na
 
 Pass the emitted moves to the existing `recipemaker.structure.build`, include `symbol_files` through Recipe’s existing `Files.put`/`Files.diff`, then apply the combined patch using `recipe apply PATCH` (which runs Unbake sync). There is no SYM decoder in Unbake, no new source rewriting engine, and no direct source edits.
 
-Scoped field/parameter renames are unsupported by the current Recipe path and are listed explicitly as unmatched. The external reader is pinned in pyproject.toml to `https://github.com/AbuN64/abu-psyq-64@b497183aadecb2243c08caed4bac691a78ad5d34`. The generic symbols adapter imports no reader-specific code.
+Scoped field/parameter renames are unsupported by the current Recipe path and are listed explicitly as unmatched. The external reader is pinned in pyproject.toml to `https://github.com/AbuN64/psyq-sym-64@b497183aadecb2243c08caed4bac691a78ad5d34`. The generic symbols adapter imports no reader-specific code.
