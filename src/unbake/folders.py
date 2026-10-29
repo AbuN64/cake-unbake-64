@@ -1126,7 +1126,14 @@ def merge(config: Config, params: Json) -> Row:
         def identity(unit: str) -> Any:
             facts = file_facts(config.project, unit)
             libraries = tuple(p for p in config.project.libraries if unit == p or unit.startswith(p.rstrip("/") + "/"))
-            return (facts.toolchain or config.project.toolchain, facts.cflags, facts.omit, facts.hilo_nops, libraries)
+            return (
+                facts.toolchain or config.project.toolchain,
+                facts.cflags,
+                facts.omit,
+                facts.hilo_nops,
+                facts.unrelocated,
+                libraries,
+            )
 
         for module in selected:
             if module not in grouped:

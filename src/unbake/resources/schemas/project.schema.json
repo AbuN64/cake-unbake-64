@@ -176,6 +176,9 @@
      },
      "hilo_nops": {
       "type": "boolean"
+     },
+     "unrelocated": {
+      "type": "boolean"
      }
     },
     "additionalProperties": false
@@ -205,6 +208,9 @@
       }
      },
      "hilo_nops": {
+      "type": "boolean"
+     },
+     "unrelocated": {
       "type": "boolean"
      }
     },

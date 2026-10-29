@@ -302,6 +302,12 @@ def hilo_hazard_script() -> str:
     return text.split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0] + "\n"
 
 
+def unreloc_script() -> str:
+    """The python of the generated Makefile's UNRELOC_PASS: the one text both builds run."""
+    text = configuration.template("Makefile.in")
+    return text.split("define UNRELOC_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
+
+
 def fsplit_script() -> str:
     """The python of the generated Makefile's FSPLIT_PASS: the one text the build runs on an object whose functions the
     ROM places apart."""
@@ -317,12 +323,21 @@ def strip_align_script() -> str:
 
 
 def chain_steps(
-    config: Config, id: str, recipe: Recipe, include: Sequence[Path], stem: str, align: int = 0, hilo: bool = False
+    config: Config,
+    id: str,
+    recipe: Recipe,
+    include: Sequence[Path],
+    stem: str,
+    align: int = 0,
+    hilo: bool = False,
+    unrelocated: bool = False,
 ) -> tuple[Step, ...]:
     """The compile and assemble commands of a unit with {in} and {out} for their files, for abucache's compile cache.
     `align` is the address mod 8 the ROM puts the unit's data at (the Makefile's NOALIGN): the assembly drops the
     alignment that start does not meet before it is assembled. `hilo` is the unit's file row hilo_nops: the Makefile's
-    HILO_HAZARD pass puts two nops between an mfhi/mflo and an adjacent mult/div before the assembly is assembled."""
+    HILO_HAZARD pass puts two nops between an mfhi/mflo and an adjacent mult/div before the assembly is assembled.
+    `unrelocated` is its file row unrelocated: the Makefile's UNRELOC_PASS zeroes the relocated fields and empties
+    the relocation sections of the object."""
     chain = toolchain(config, id)
     row, includes = chain.row, [f"-I{p}" for p in include]
     steps = [
@@ -367,6 +382,8 @@ def chain_steps(
             flags = (".rdata=alloc,load,readonly,data,contents",)
             objcopy = str(process.tool(config, "mips_objcopy"))
             steps.append(Step("objcopy", "allocated.o", (objcopy, "--set-section-flags", *flags, "{in}", "{out}")))
+        if unrelocated:
+            steps.append(Step("unrelocate", "source.o", (sys.executable, "-I", "-c", unreloc_script(), "{in}")))
     return tuple(steps)
 
 

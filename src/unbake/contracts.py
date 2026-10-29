@@ -356,6 +356,9 @@ class FileFacts:
     cflags: tuple[str, ...] = ()
     omit: tuple[str, ...] = ()
     hilo_nops: bool = False  # the ROM assembler put two nops between an mfhi/mflo and an adjacent mult/div
+    unrelocated: bool = (
+        False  # the ROM holds the unit as an object before its link: relocated fields zero, no relocations left
+    )
 
 
 @dataclass(frozen=True)

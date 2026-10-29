@@ -156,10 +156,10 @@ def test_a_units_file_row_hilo_nops_reaches_the_cached_chain(case, monkeypatch, 
     case, _, _ = _tools(case, monkeypatch, toolchains)
     snapshot, unit, recipe, _, work, _ = case
     native.objects(snapshot, unit, "a", recipe, work)
-    assert native.adapters.chain_steps.call_args.args[5:] == (0, False)
+    assert native.adapters.chain_steps.call_args.args[5:] == (0, False, False)
     monkeypatch.setattr(native, "file_facts", lambda project, path: FileFacts(hilo_nops=path == unit.path))
     native.objects(snapshot, unit, "a", recipe, work / "hot")
-    assert native.adapters.chain_steps.call_args.args[5:] == (0, True)
+    assert native.adapters.chain_steps.call_args.args[5:] == (0, True, False)
 
 
 def test_stamp_names_the_text_the_recipe_and_the_tools_and_nothing_else(case, monkeypatch, toolchains):

@@ -204,6 +204,7 @@ def _recipe(id: str) -> str:
         parts.append(f"{_THEN} {assemble}")
         if row.get("rdata_alloc"):
             parts.append(f"{_THEN} $(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
+        parts.append(f"$(if $(UNRELOC),{_THEN} @py UNRELOC_PASS $@)")
         body = " ".join(parts)
     return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
@@ -226,6 +227,8 @@ def _file_blocks(config: Config, tree: str = "") -> list[str]:
         ]
         if facts.hilo_nops:
             rows.append(f"{target}: HILO := 1")
+        if facts.unrelocated:
+            rows.append(f"{target}: UNRELOC := 1")
     return rows
 
 

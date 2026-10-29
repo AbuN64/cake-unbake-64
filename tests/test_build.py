@@ -1030,7 +1030,10 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     table = next(i for i, line in enumerate(lines) if line.startswith("@jumptable"))
     asm = max(i for i, line in enumerate(lines) if "asn64" in line)  # the plain assembler, after the apart branch's
     assert table < asm and lines[table] == "@jumptable $(@:.o=.s) 80000000"
-    assert lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
+    assert (
+        lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
+        " $(if $(UNRELOC),'&&' @py UNRELOC_PASS $@)"
+    )
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and "@jumptable" not in build._recipe("gcc-2.7.2-kmc")
 
 
