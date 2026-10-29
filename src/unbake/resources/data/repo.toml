@@ -69,11 +69,11 @@ binary = "abumas"
 dependency = { name = "abumas", repository = "https://github.com/AbuN64/mas-n64" }  # the README link: the source repository, never a download
 [make.tools.ABUMAS.download]
 url = "https://github.com/AbuN64/mas-n64/releases/download/v0.5.0/abumas-v0.5.0-linux-x86_64.tar.gz"
-sha256 = "a9abac57731274b10f39b966e9443e0a25b1bfd0fcb34847c5ef2870b7377851"
+sha256 = "9173e4f2f3bad16d94eaf149cbe09e5363060dcdf72fa64f6f66fc7b7bdb9e03"
 files = ["abumas-v0.5.0-linux-x86_64/abumas"]
 strip = 1
 [make.tools.ABUMAS.pins]
-"abumas" = "6db3b12f185461e27824f1ff160cbc8b93632d1892642fe2761ccb9d123d0d2d"
+"abumas" = "0fe945e19ccfb49b2b6cebd42d93de6de52c9bd811a8f4b0275c074050f6d418"
 [make.tools.SPLAT]
 host = "splat"
 default = "splat"
