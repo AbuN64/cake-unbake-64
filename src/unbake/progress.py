@@ -27,7 +27,7 @@ def locations(config: Any, tree: Any) -> dict[tuple[str, str], int]:
         if configuration.is_assembly(module.path):
             for name in libasm.scan(text):
                 for number, line in enumerate(text.splitlines(), 1):
-                    if line.strip().startswith(name + ":"):
+                    if line.strip().startswith((name + ":", f"LEAF({name})", f"XLEAF({name})", f"NESTED({name},")):
                         found.setdefault((module.path, name), number)
             continue
         for item in publish.items(text):

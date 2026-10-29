@@ -199,8 +199,12 @@ def _writes(word: int, register: int) -> bool:
     ) and word >> 16 & 31 == register
 
 
+_ENTRY = re.compile(r"(?:X?LEAF|NESTED)\(\s*([\w.$]+)\s*[,)]")
+
+
 def scan(text: str) -> dict[str, str]:
-    """Global definitions and sections in ordinary assembler source; local labels never become units."""
+    """Global definitions and sections in ordinary assembler source; local labels never become units. A function
+    entry macro of sys/asm.h (`LEAF(name)`, `XLEAF(name)`, `NESTED(name, ...)`) defines its name as `.globl` does."""
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     globals_ = set(re.findall(r"(?m)^\s*\.glob(?:l|al)\s+([\w.$]+)", text))
     found: dict[str, str] = {}
@@ -213,6 +217,8 @@ def scan(text: str) -> dict[str, str]:
             if match[1] in globals_:
                 found[match[1]] = section
         elif match := re.match(r"[gd]label\s+([\w.$]+)", line):
+            found[match[1]] = section
+        elif match := _ENTRY.match(line):
             found[match[1]] = section
     return found
 

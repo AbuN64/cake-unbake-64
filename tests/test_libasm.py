@@ -122,6 +122,19 @@ def test_renderer_uses_local_branch_labels_and_preserves_wide_registers():
     assert ".set gp=64" in libasm.render("f", [0xDFBF0000, 0x03E00008, 0], 0x80001000, {})
 
 
+def test_scan_reads_the_entry_macros_of_sys_asm_h_as_global_definitions():
+    text = (
+        "#include <sys/asm.h>\n.set noreorder\n.section .text\n"
+        "LEAF(Decompress_ExpandBackReferences)\n    addiu $t5, $zero, 0x0\n.Lloop:\n    b .Lloop\n"
+        "END(Decompress_ExpandBackReferences)\nXLEAF(alias)\nNESTED(nested, 24, ra)\n# LEAF(commented)\n/* LEAF(c2) */\n"
+    )
+    assert libasm.scan(text) == {
+        "Decompress_ExpandBackReferences": ".text",
+        "alias": ".text",
+        "nested": ".text",
+    }
+
+
 def test_renderer_reads_a_target_inside_another_routine_as_an_offset_from_it():
     jump, branch = 0x08000106, 0x0741FFFE  # j 0x80000418; bgez $k0 back to 0x800003FC (before every function)
     functions = {0x80000410: "g"}
