@@ -160,7 +160,8 @@ def test_scan_reads_the_entry_macros_of_sys_asm_h_as_global_definitions():
     text = (
         "#include <sys/asm.h>\n.set noreorder\n.section .text\n"
         "LEAF(Decompress_ExpandBackReferences)\n    addiu $t5, $zero, 0x0\n.Lloop:\n    b .Lloop\n"
-        "END(Decompress_ExpandBackReferences)\nXLEAF(alias)\nNESTED(nested, 24, ra)\n# LEAF(commented)\n/* LEAF(c2) */\n"
+        "END(Decompress_ExpandBackReferences)\nXLEAF(alias)\nNESTED(nested, 24, ra)\n"
+        "# LEAF(commented)\n/* LEAF(c2) */\n"
     )
     assert libasm.scan(text) == {"Decompress_ExpandBackReferences": ".text", "alias": ".text", "nested": ".text"}
 
