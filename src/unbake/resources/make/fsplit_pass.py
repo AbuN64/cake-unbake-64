@@ -86,7 +86,11 @@ for i, line in enumerate(lines):
                 pad = -(phase[block] + used[block]) % width
                 used[block] += pad
                 if width > 4:  # a word alignment holds on any section start; only a wider one can pad against the wrong phase
-                    out += ["\t.space %d" % pad] if pad else []
+                    # the assembler moves a label written just before `.align` to the aligned place: so does this
+                    names_before = []
+                    while out and re.fullmatch(r"\s*[.\w$]+:\s*", out[-1]):
+                        names_before.insert(0, out.pop())
+                    out += (["\t.space %d" % pad] if pad else []) + names_before
                     continue
         else:
             size = size_of(line)

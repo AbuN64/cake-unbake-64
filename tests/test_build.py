@@ -2015,6 +2015,12 @@ def test_fsplit_pass_pads_a_double_against_the_address_of_a_pool_the_rom_holds_a
     assert len(words) == 7 and 4 * len(words) + 4 == 0x20  # the ROM's size of the pool
 
 
+def test_fsplit_pass_moves_the_label_of_a_padded_double_behind_the_pad(tmp_path):
+    out = _fsplit(tmp_path, _POOL, "literals_f_1:4")
+    at = next(i for i, ln in enumerate(out) if ln.strip() == ".space 4")
+    assert out[at + 1].strip() == "RODATA_SYM_2:"  # the code reads the double at its aligned address, as the ROM does
+
+
 def test_fsplit_pass_leaves_a_pool_the_rom_holds_on_an_8_as_the_compiler_wrote_it(tmp_path):
     for phases in ((), ("literals_f_1:0",), ("literals_other:4",)):
         out = _pool(_fsplit(tmp_path, _POOL, *phases))
