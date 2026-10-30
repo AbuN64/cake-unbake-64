@@ -388,6 +388,7 @@ class Project:
     library_origin: Mapping[str, str] = field(default_factory=dict)  # [library] row path -> where it came from
     non_matching: str | None = None  # the macro of the NON_MATCHING build: set when config.toml has [non_matching]
     module_map: str | None = None  # repo-relative module map (MODULES.tsv): the prefix authority
+    paths: Mapping[str, Any] = field(default_factory=dict)  # config.toml [paths]: keys over repo.toml's [paths]
     layout: Mapping[str, Any] = field(default_factory=dict)  # config.toml [layout]: keys over repo.toml's [layout]
     cheat: Mapping[str, Any] = field(default_factory=dict)  # config.toml [cheat]: keys over repo.toml's [cheat]
     audit: Mapping[str, Any] = field(default_factory=dict)  # config.toml [audit]: tables over rules.toml's [audit]

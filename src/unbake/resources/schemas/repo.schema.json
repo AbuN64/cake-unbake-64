@@ -339,6 +339,56 @@
     "makefile_row"
    ],
    "additionalProperties": false
+  },
+  "union": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   },
+   "minItems": 1,
+   "uniqueItems": true
+  },
+  "linguist": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "minLength": 1
+   },
+   "uniqueItems": true
+  },
+  "license": {
+   "const": "CC0-1.0",
+   "description": "SPDX id of the licence sync writes as LICENSE (templates/LICENSE.in)"
+  },
+  "paths": {
+   "type": "object",
+   "properties": {
+    "platform": {
+     "type": "string",
+     "minLength": 1,
+     "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+    },
+    "blobs": {
+     "type": "string",
+     "minLength": 1,
+     "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+    },
+    "prose": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+     }
+    }
+   },
+   "required": [
+    "platform",
+    "blobs",
+    "prose"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [
@@ -350,7 +400,11 @@
   "splat",
   "layout",
   "splat_pip",
-  "cheat"
+  "cheat",
+  "union",
+  "linguist",
+  "license",
+  "paths"
  ],
  "additionalProperties": false
 }

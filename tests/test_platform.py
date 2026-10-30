@@ -6,8 +6,8 @@ import pytest
 import tomlkit
 from test_blobs import _config, _credits, _tree
 
+from unbake import blobs, effort, platform, report
 from unbake import config as configuration
-from unbake import effort, platform, report
 from unbake.contracts import Refusal, sha1, sha256
 
 
@@ -36,6 +36,18 @@ def test_platform_is_boot_plus_exact_hash_rsp_and_has_no_boot_output(tmp_path):
     assert p["platform"] == 4352 and p["code"] == 16
     assert "boot" not in p and "boot" not in p["spans"]
     assert sum(p[k] for k in ("code", "data", "platform", "blobs", "unknown")) == 0x10000
+
+
+def test_platform_and_blobs_files_are_read_from_the_configured_paths(tmp_path):
+    config = _config(tmp_path)
+    config.project.paths = {"platform": "config/platform.toml", "blobs": "config/blobs.toml"}
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "platform.toml").write_text(tomlkit.dumps(document()))
+    (tmp_path / "rom.toml").write_text("not the platform file")  # the default name is no longer read
+    assert platform.ranges(config, "v") == [(0, 4096), (0x8000, 0x8100)]
+    assert blobs.sha(config) == "" and blobs.path_of(config) == "config/blobs.toml"
+    (tmp_path / "config" / "blobs.toml").write_text("schema = 1\n")
+    assert blobs.sha(config) != ""
 
 
 @pytest.mark.parametrize(

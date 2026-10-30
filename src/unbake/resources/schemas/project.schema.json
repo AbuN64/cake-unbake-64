@@ -388,6 +388,31 @@
     }
    },
    "additionalProperties": false
+  },
+  "paths": {
+   "type": "object",
+   "properties": {
+    "platform": {
+     "type": "string",
+     "minLength": 1,
+     "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+    },
+    "blobs": {
+     "type": "string",
+     "minLength": 1,
+     "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+    },
+    "prose": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+     }
+    }
+   },
+   "additionalProperties": false,
+   "description": "Optional: keys of repo.toml [paths] this project replaces (platform, blobs, prose): where its input files are."
   }
  },
  "required": [

@@ -572,6 +572,28 @@ def test_segment_address_space_rejects_ambiguous_or_unsafe_facts(tmp_path, repla
         _load(tmp_path, RW.replace("vram = 0x80200400", replacement))
 
 
+FILES_DEFAULT = {  # the packaged file lists with `${platform}` and `${blobs}` spelled as the default [paths]
+    "infra": ["local.mk", "include/include_asm.h", "rom.toml", "roms", "tools", "ci", "asm"],
+    "facts": ["config.toml", "versions", "blobs.toml"],
+    "blobs": ["blobs.toml"],
+}
+
+
+def test_paths_move_the_input_files_and_the_cheat_file_lists_follow(tmp_path: Path) -> None:
+    moved = _load(tmp_path, RW + '\n[paths]\nplatform = "config/platform.toml"\nblobs = "config/blobs.toml"\n')
+    assert configuration.paths(moved) == {
+        "platform": "config/platform.toml",
+        "blobs": "config/blobs.toml",
+        "prose": ["docs/sweep.toml"],
+    }
+    rules = configuration.cheat(moved)
+    assert "config/platform.toml" in rules["infra"] and rules["blobs"] == ["config/blobs.toml"]
+    assert configuration.paths_at(tmp_path) == configuration.paths(moved)
+    assert configuration.module_map_at(tmp_path) is None
+    with pytest.raises(Refusal):
+        _load(tmp_path, RW + '\n[paths]\nblobs = "../blobs.toml"\n')
+
+
 def test_config_toml_layout_and_cheat_rows_are_read_over_the_packaged_ones(tmp_path: Path) -> None:
     rows = (
         '\n[layout]\nsource_roots = ["src", "sdk"]\nlibrary_source = "sdk/{library}"\n\n[cheat]\nasm_home = ["sdk/"]\n'
@@ -580,7 +602,8 @@ def test_config_toml_layout_and_cheat_rows_are_read_over_the_packaged_ones(tmp_p
     (tmp_path / "b").mkdir()
     plain, moved = _load(tmp_path / "a", RW), _load(tmp_path / "b", RW + rows)
     packaged = configuration.load_resource("repo.toml")
-    assert configuration.layout(plain) == packaged["layout"] and configuration.cheat(plain) == packaged["cheat"]
+    assert configuration.layout(plain) == packaged["layout"] and configuration.paths(plain) == packaged["paths"]
+    assert configuration.cheat(plain) == {**packaged["cheat"], **FILES_DEFAULT}
     assert configuration.layout(moved)["source_roots"] == ["src", "sdk"]
     assert configuration.layout(moved)["library_header"] == packaged["layout"]["library_header"]
     assert configuration.cheat(moved)["asm_home"] == ["sdk/"]

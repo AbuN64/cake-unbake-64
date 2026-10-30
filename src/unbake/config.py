@@ -11,6 +11,7 @@ from contextlib import suppress
 from functools import cache, partial
 from importlib import resources
 from pathlib import Path
+from string import Template
 from typing import Any
 
 import psutil
@@ -134,24 +135,55 @@ def layout(project: Project) -> Json:
 
 
 def cheat(project: Project) -> Json:
-    """The no-cheat rules: repo.toml [cheat] with each key its config.toml [cheat] spells replaced."""
-    return {**load_resource("repo.toml")["cheat"], **getattr(project, "cheat", {})}
+    """The no-cheat rules: repo.toml [cheat] with each key its config.toml [cheat] spells replaced. The file lists
+    (infra, facts, blobs) name an input path as `${platform}` or `${blobs}`: the project's [paths] value."""
+    rules = {**load_resource("repo.toml")["cheat"], **getattr(project, "cheat", {})}
+    named = {key: value for key, value in paths(project).items() if isinstance(value, str)}
+    for key in ("infra", "facts", "blobs"):
+        rules[key] = [Template(item).safe_substitute(named) for item in rules[key]]
+    return rules
+
+
+def paths(project: Project) -> Json:
+    """The project's input paths: repo.toml [paths] with each key its config.toml [paths] spells replaced."""
+    return {**load_resource("repo.toml")["paths"], **getattr(project, "paths", {})}
+
+
+def _declared_at(root: Path, table: str) -> Json:
+    """The validated config.toml table of a root, empty where the root has no config.toml or no such table."""
+    path = root / "config.toml"
+    try:
+        declared = tomllib.loads(path.read_text(encoding="utf-8")).get(table, {}) if path.is_file() else {}
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        raise Refusal(Finding("config.schema", f"not valid TOML: {error}", path=str(path))) from error
+    errors = sorted(
+        e.message for e in Draft202012Validator(_schema("project")["properties"][table]).iter_errors(declared)
+    )
+    if errors:
+        raise Refusal(*(Finding("config.schema", m, path=f"{path}:{table}") for m in errors))
+    declared_table: Json = declared
+    return declared_table
+
+
+def module_map_at(root: Path) -> str | None:
+    """The repo-relative module map config.toml names (`module_map`), None where the root has none."""
+    path = root / "config.toml"
+    try:
+        spelled = tomllib.loads(path.read_text(encoding="utf-8")).get("module_map") if path.is_file() else None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        raise Refusal(Finding("config.schema", f"not valid TOML: {error}", path=str(path))) from error
+    return spelled if isinstance(spelled, str) else None
 
 
 def layout_at(root: Path) -> Json:
     """`layout` for a caller holding only the project root (the sibling toolkits): its config.toml [layout] over
     repo.toml's, validated like the project's own (the packaged layout where the root has no config.toml)."""
-    path = root / "config.toml"
-    try:
-        declared = tomllib.loads(path.read_text(encoding="utf-8")).get("layout", {}) if path.is_file() else {}
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
-        raise Refusal(Finding("config.schema", f"not valid TOML: {error}", path=str(path))) from error
-    errors = sorted(
-        e.message for e in Draft202012Validator(_schema("project")["properties"]["layout"]).iter_errors(declared)
-    )
-    if errors:
-        raise Refusal(*(Finding("config.schema", m, path=f"{path}:layout") for m in errors))
-    return {**load_resource("repo.toml")["layout"], **declared}
+    return {**load_resource("repo.toml")["layout"], **_declared_at(root, "layout")}
+
+
+def paths_at(root: Path) -> Json:
+    """`paths` for a caller holding only the project root, validated like the project's own."""
+    return {**load_resource("repo.toml")["paths"], **_declared_at(root, "paths")}
 
 
 def audit_settings(declared: Mapping[str, Any] | None) -> Json:
@@ -591,6 +623,7 @@ def load_project(
         non_matching=(document["non_matching"].get("define", "NON_MATCHING") if "non_matching" in document else None),
         module_map=spelled_map,
         layout=document.get("layout", {}),
+        paths=document.get("paths", {}),
         cheat=document.get("cheat", {}),
         audit=document.get("audit", {}),
     )

@@ -379,16 +379,15 @@ def cheat_command(config: Config, params: Json) -> Json:
         findings.append(
             Finding(
                 "cheat.infra",
-                "build/compare infrastructure changed (ci/, tools/, asm/, roms/, rom.toml, local.mk and the macros of"
-                " include_asm.h are infrastructure; a declaration line in a header is not; a project data file, such as"
-                " findings, notes or a feed, lives in docs/)",
+                "build/compare infrastructure changed (ci/, tools/, asm/, roms/, the platform file, local.mk and the"
+                " macros of include_asm.h are infrastructure; a declaration line in a header is not; a project data"
+                " file, such as findings, notes or a feed, lives in docs/)",
                 missing=tuple(infra),
             )
         )
     if git("diff", "--name-only", base, head, "--", *rules["blobs"]).strip():
-        findings.extend(
-            import_module("unbake.blobs").verify(config, git("show", f"{base}:blobs.toml", ok=(0, 128)).encode())
-        )
+        blobs = import_module("unbake.blobs")
+        findings.extend(blobs.verify(config, git("show", f"{base}:{blobs.path_of(config)}", ok=(0, 128)).encode()))
     rows = re.compile(rules["makefile_row"])
     changed = [
         ln

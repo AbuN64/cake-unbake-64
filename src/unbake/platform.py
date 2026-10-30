@@ -8,16 +8,22 @@ from unbake import config as configuration
 from unbake import effort
 from unbake.contracts import Config, Finding, Json, Refusal, digest, sha256
 
-FILE = "rom.toml"
+RESOURCE = "rom.toml"  # the packaged platform facts a project without its own file gets
+
+
+def file(config: Config) -> str:
+    """The repo-relative path of the project platform file: config.toml [paths] platform over repo.toml's."""
+    return str(configuration.paths(config.project)["platform"])
 
 
 def load(config: Config) -> Json:
-    """Project platform facts, or the packaged boot facts when no project rom.toml exists."""
-    path = config.project.root / FILE
+    """Project platform facts, or the packaged boot facts when the project has no platform file."""
+    name = file(config)
+    path = config.project.root / name
     document = (
-        configuration.toml("platform", path.read_bytes(), FILE, "platform.schema")
+        configuration.toml("platform", path.read_bytes(), name, "platform.schema")
         if path.is_file()
-        else {"schema": 1, "platform": deepcopy(configuration.load_resource(FILE)["platform"])}
+        else {"schema": 1, "platform": deepcopy(configuration.load_resource(RESOURCE)["platform"])}
     )
     validate(config, document)
     return document
@@ -46,25 +52,26 @@ def validate(config: Config, document: Json) -> None:
 
 
 def _validate(config: Config, document: Json) -> bool:
-    configuration.validate("platform", document, FILE)
+    name = file(config)
+    configuration.validate("platform", document, name)
     block = document["platform"]
-    if block["boot"] != configuration.load_resource(FILE)["platform"]["boot"]:
+    if block["boot"] != configuration.load_resource(RESOURCE)["platform"]["boot"]:
         raise Refusal(Finding("platform.schema", "boot must retain the packaged platform range; put RSP spans in rsp"))
     for name, row in block.get("rsp", {}).items():
         if set(row["rom"]) != set(row["sha256"]):
-            raise Refusal(Finding("platform.hash", f"{name}: ROM versions and hash versions differ", path=FILE))
+            raise Refusal(Finding("platform.hash", f"{name}: ROM versions and hash versions differ", path=name))
         for version, spans in row["rom"].items():
             if version not in config.project.version or len(spans) != len(row["sha256"][version]):
                 raise Refusal(
-                    Finding("platform.range", f"{name}: unknown version or one hash per span missing", path=FILE)
+                    Finding("platform.range", f"{name}: unknown version or one hash per span missing", path=name)
                 )
             for (start, end), wanted in zip(spans, row["sha256"][version], strict=True):
                 if not 0 <= start < end <= config.project.version[version].size:
-                    raise Refusal(Finding("platform.range", f"{name}: range outside {version}", path=FILE))
+                    raise Refusal(Finding("platform.range", f"{name}: range outside {version}", path=name))
                 raw = read(config, version, start, end)
                 if sha256(raw) != wanted:
                     raise Refusal(
-                        Finding("platform.hash", f"{name}: {version} range does not match its exact SHA-256", path=FILE)
+                        Finding("platform.hash", f"{name}: {version} range does not match its exact SHA-256", path=name)
                     )
     return True
 
@@ -80,8 +87,8 @@ def ranges(config: Config, version: str, document: Json | None = None) -> list[t
 
 def sha(config: Config) -> str:
     """The declaration and ROM content identities that invalidate a cached byte partition."""
-    path = config.project.root / FILE
-    data = path.read_bytes() if path.is_file() else repr(configuration.load_resource(FILE)["platform"]).encode()
+    path = config.project.root / file(config)
+    data = path.read_bytes() if path.is_file() else repr(configuration.load_resource(RESOURCE)["platform"]).encode()
     roms = []
     for version, row in config.project.version.items():
         try:

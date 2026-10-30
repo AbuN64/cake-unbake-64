@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from contextlib import contextmanager, nullcontext
+from string import Template
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -376,9 +377,23 @@ def test_sync_check_lists_changes_and_writes_nothing(world):
     (finding,) = refused.value.findings
     assert finding.key == "sync.changed"
     assert {"Makefile", "demo.ld", "ci/run", ".gitlab-ci.yml", "include/include_asm.h"} <= set(finding.missing)
+    assert {".gitignore", ".gitattributes", "requirements.txt", "LICENSE"} <= set(finding.missing)
     assert sorted(p.name for p in world.root.iterdir()) == ["roms", "src", "versions"]
     repo.sync(world.cfg, {"check": False})
     assert repo.sync(world.cfg, {"check": True}) == {"written": [], "stand_ins": {}}  # now nothing would change
+
+
+def test_scaffold_is_the_shared_git_files_from_repo_toml() -> None:
+    files = repo.scaffold()
+    assert set(files) == {".gitignore", ".gitattributes", "requirements.txt", "LICENSE"}
+    assert files[".gitignore"].startswith(b"/.env\n/asm/\n") and b"/.boards/" not in files[".gitignore"]
+    assert files[".gitattributes"] == (
+        b"*.CPP linguist-language=C\n*.H linguist-language=C\n"
+        b"versions/*/symbol_addrs.txt merge=union\nversions/*/aliases.txt merge=union\n"
+    )
+    assert files["requirements.txt"] == b"splat64[mips]==0.50.0\nspimdisasm==1.42.4\n"
+    assert b"CC0 1.0 Universal" in files["LICENSE"]
+    assert b"SHA-1" in Template(configuration.template("README.md.in")).safe_substitute().encode()
 
 
 def test_sync_leaves_an_existing_makefile_alone_until_asked(world):
@@ -690,7 +705,7 @@ def test_init_writes_a_schema_4_config_seeded_from_splat_and_then_syncs(init_cas
         {"name": "header", "rom": 0, "kind": "bin"},
         {"name": "main", "rom": 0x1000, "vram": 0x80000400},
     ]
-    assert (root / "include/include_asm.h").read_text() == HEADER_TEXT and (root / ".gitignore").is_file()
+    assert (root / "include/include_asm.h").read_text() == HEADER_TEXT
     assert synced == [{"check": False}] and "Makefile" in result["created"]
     assert not list(root.glob("*.yaml")) and ("--version",) not in calls
 

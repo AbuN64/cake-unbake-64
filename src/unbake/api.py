@@ -47,11 +47,13 @@ __all__ = [
     "load",
     "make",
     "memo",
+    "module_map",
     "name_bindings",
     "name_issues",
     "naming_census",
     "naming_debt",
     "naming_findings",
+    "paths",
     "pool_map",
     "preprocess",
     "record_scope",
@@ -73,6 +75,17 @@ def layout(root: Path) -> Json:
     """The project's layout at `root` (repo.toml [layout] with its config.toml [layout] keys over it): source_roots,
     header_roots, library_source, library_header, subsystem_source, subsystem_header, shared_headers, module_cap."""
     return _config.layout_at(root)
+
+
+def module_map(root: Path) -> str | None:
+    """The repo-relative module map the project's config.toml names, None where it names none."""
+    return _config.module_map_at(root)
+
+
+def paths(root: Path) -> Json:
+    """The project's input paths at `root` (repo.toml [paths] with its config.toml [paths] keys over it): platform,
+    blobs, and prose (the files whose sentences name symbols)."""
+    return _config.paths_at(root)
 
 
 def symbols(config: Config, v: str) -> dict[str, tuple[int, int | None, int | None, str]]:

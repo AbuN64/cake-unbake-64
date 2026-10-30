@@ -1,6 +1,6 @@
 # Contributing to ${title}
 
-You need GNU Make, curl, tar, sha256sum, python3, cpp, the MIPS binutils, splat (`pip install ${splat}`) and,
+You need GNU Make, curl, tar, sha256sum, python3, cpp, the MIPS binutils, splat (`pip install -r requirements.txt`) and,
 only for toolchains that assemble with it, armips. Tool commands default to conventional names. Put other paths in
 `local.mk`.
 

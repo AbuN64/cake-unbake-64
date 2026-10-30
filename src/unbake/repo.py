@@ -197,7 +197,6 @@ def init(params: Json) -> Json:
             store.write(root / path, value)
             created.append(path)
 
-        write(".gitignore", ("\n".join(rules["ignore"]) + "\n").encode())
         write(HEADER, configuration.template("include_asm.h.in").encode())
         for v, source in sorted(roms.items()):
             path = f"roms/baserom.{v}.z64"
@@ -228,8 +227,7 @@ def init(params: Json) -> Json:
             _render("README.md.in", title=params["title"], begin=rules["readme"]["begin"], end=rules["readme"]["end"]),
         )
         roms_list = "\n".join(f"- `roms/baserom.{v}.z64`" for v in sorted(roms))
-        splat = " ".join(f'"{pin}"' for pin in rules["splat_pip"])
-        write("CONTRIBUTING.md", _render("CONTRIBUTING.md.in", title=params["title"], roms=roms_list, splat=splat))
+        write("CONTRIBUTING.md", _render("CONTRIBUTING.md.in", title=params["title"], roms=roms_list))
         _checked(
             process.run("git init repository", [str(host.tools["git"]), "init"], root, tmp=process.scratch(root)),
             "native.exit",
@@ -594,6 +592,24 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes | None]:
     return writes
 
 
+def _lines(rows: Iterable[str]) -> bytes:
+    return ("\n".join(rows) + "\n").encode()
+
+
+def scaffold() -> dict[str, bytes]:
+    """The repository files every game repository shares, from repo.toml: what git ignores and merges, the splat pins
+    `make extract` installs, and the licence text."""
+    rules = configuration.load_resource("repo.toml")
+    lines = [f"{glob} linguist-language=C" for glob in rules["linguist"]]
+    lines += [f"{glob} merge=union" for glob in rules["union"]]
+    return {
+        ".gitignore": _lines(rules["ignore"]),
+        ".gitattributes": _lines(lines),
+        "requirements.txt": _lines(rules["splat_pip"]),
+        "LICENSE": configuration.template("LICENSE.in").encode(),
+    }
+
+
 def _generated(config: Config, current: Any) -> dict[str, bytes]:
     project = config.project
     wanted = {
@@ -602,6 +618,7 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
         **{f"versions/{v}/splat.yaml": build.splat_yaml(config, v, current) for v in project.versions},
         **{f"versions/{v}/text_sizes.mk": build.text_sizes(config, current, v) for v in project.versions},
         **ci.files(),
+        **scaffold(),
     }
     if not (project.root / HEADER).is_file():
         wanted[HEADER] = configuration.template("include_asm.h.in").encode()
@@ -609,7 +626,7 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
 
 
 def generated(config: Config, current: Any) -> dict[str, bytes]:
-    """The files sync generates from the tree (Makefile, link script, splat.yaml, text sizes, CI), by path."""
+    """The files sync generates from the tree (Makefile, link script, splat.yaml, text sizes, CI, scaffold), by path."""
     return _generated(config, current)
 
 

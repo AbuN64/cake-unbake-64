@@ -19,7 +19,6 @@ from unbake import config as configuration
 from unbake import effort, journal, rnc, store
 from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha256, sha256_file
 
-FILE = "blobs.toml"
 Spans = list[tuple[int, int]]
 LEFTOVER_FORMATS = (
     "sn-debug",
@@ -39,8 +38,13 @@ RUN_MIN = 16  # the shortest one-value run that proves padding inside a gap of o
 _ORDER = ("name", "aliases", "type", "format", "codec", "state", "stored_size", "decoded_size", "parent", "decoded")
 
 
+def path_of(config: Config) -> str:
+    """The repo-relative path of the blobs file: config.toml [paths] blobs over repo.toml's."""
+    return str(configuration.paths(config.project)["blobs"])
+
+
 def _read(config: Config) -> bytes | None:
-    path = Path(config.project.root) / FILE
+    path = Path(config.project.root) / path_of(config)
     return path.read_bytes() if path.is_file() else None
 
 
@@ -55,8 +59,9 @@ def sha(config: Config) -> str:
     return sha256(data) if data is not None else ""
 
 
-def parse(config: Config, data: bytes, file: str = FILE) -> Json:
+def parse(config: Config, data: bytes, file: str | None = None) -> Json:
     """The checked document of blobs.toml bytes: schema, parents and ranges are verified, every failure blocking."""
+    file = file or path_of(config)
     try:
         document = configuration.toml("blobs", data, file, "blobs.schema")
     except Refusal as refusal:
@@ -75,9 +80,10 @@ def load(config: Config) -> Json:
     return effort.memo(("blobs", sha256(data), tuple(config.project.version)), lambda: parse(config, data))
 
 
-def check(config: Config, document: Json, file: str = FILE) -> tuple[Finding, ...]:
+def check(config: Config, document: Json, file: str | None = None) -> tuple[Finding, ...]:
     """Blocking findings of a document: a parent that is missing or cyclic, a child with ROM bytes of its own, a range
     that is empty, outside the ROM or in an unknown version."""
+    file = file or path_of(config)
     found: list[Finding] = []
     blob = document.get("blob", {})
     for name, row in blob.items():
@@ -342,7 +348,7 @@ def superseded_ids(document: Json, packet: Json) -> list[str]:
     return [n for n in packet.get("supersedes", ()) if n in document["blob"]]
 
 
-def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> list[Finding]:
+def supersede_findings(document: Json, packet: Json, superseded: list[str], file: str) -> list[Finding]:
     """Blocking findings for a packet's `supersedes`. Only an observed row (an accounting claim that a span has a row,
     D8) can be replaced; the packet must not also write that id; and in every version the packet's own credited rows
     (decoded or identified, not children) must cover every byte of the row, so no byte loses its row and none is both
@@ -351,7 +357,7 @@ def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> l
     for name in packet.get("supersedes", ()):
         if name in packet["blob"]:
             found.append(
-                Finding("blobs.supersede", f"blob {name} is both superseded and written by the packet", path=FILE)
+                Finding("blobs.supersede", f"blob {name} is both superseded and written by the packet", path=file)
             )
     covers = {
         v: merge(
@@ -371,7 +377,7 @@ def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> l
                 Finding(
                     "blobs.supersede",
                     f"blob {name} is {row['state']}, only an observed row can be superseded",
-                    path=FILE,
+                    path=file,
                 )
             )
             continue
@@ -386,7 +392,7 @@ def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> l
                     Finding(
                         "blobs.supersede",
                         f"blob {name} in {v}: {loose} bytes are not covered by the packet's decoded or identified rows",
-                        path=FILE,
+                        path=file,
                         versions=(v,),
                     )
                 )
@@ -396,6 +402,7 @@ def supersede_findings(document: Json, packet: Json, superseded: list[str]) -> l
 def import_plan(config: Config, packet: Json) -> Plan:
     """The reviewed plan that merges an evidence packet into blobs.toml: the packet's ROM and artifact sha256 must match
     what the project holds and what each row cites; a row already present is replaced by the packet's."""
+    file = path_of(config)
     configuration.validate("blobs.packet", packet, "packet")
     old = _read(config)
     document = load(config)
@@ -413,16 +420,16 @@ def import_plan(config: Config, packet: Json) -> Plan:
                     Finding(
                         "blobs.evidence",
                         f"blob {name} cites {item['artifact']} with a sha256 the packet does not pin",
-                        path=FILE,
+                        path=file,
                     )
                 )
     superseded = superseded_ids(document, packet)
-    blocking += supersede_findings(document, packet, superseded)
+    blocking += supersede_findings(document, packet, superseded, file)
     kept = {n: row for n, row in document["blob"].items() if n not in superseded}
     merged = {"schema": 1, "blob": {**kept, **packet["blob"]}}
     blocking += check(config, merged)
-    blocking += _overlap_findings(merged, document)
-    writes = {FILE: emit(merged)}
+    blocking += _overlap_findings(merged, document, file)
+    writes = {file: emit(merged)}
     added = sum(n not in document["blob"] for n in packet["blob"])
     message = f"Add {added} blobs to blobs.toml" if added else "Update blobs.toml"
     if superseded:
@@ -433,8 +440,9 @@ def import_plan(config: Config, packet: Json) -> Plan:
 
 def apply_import(config: Config, plan: Plan) -> Json:
     """Write a plan (never Git), read it back and name the git add/commit that records it."""
+    file = path_of(config)
     old = _read(config)
-    reads = _Reads(config, {FILE: sha256(old) if old is not None else None})
+    reads = _Reads(config, {file: sha256(old) if old is not None else None})
     with store.exclusive(config, "structure", wait=True):
         files = journal.apply(config, plan, reads)
     return {
@@ -468,6 +476,7 @@ def land(config: Config, packet: Json) -> Json:
     HEAD and check the partition of every version, no ROM build (blobs.toml is no build input: the build key reads
     src, include, symbols and the extract recipe). A failed check puts the old file back and refuses, so a landing is
     all or nothing. Returns the git commands, the counts and the per-version credit delta."""
+    file = path_of(config)
     with effort.stage("blobs.land"):
         old = _read(config)
         plan = import_plan(config, packet)
@@ -476,7 +485,7 @@ def land(config: Config, packet: Json) -> Json:
         before = _partitions(config)
         have = load(config)["blob"]
         counts = _counts(have, packet)
-        text = plan.writes[FILE]
+        text = plan.writes[file]
         assert text is not None
         done = (
             apply_import(config, plan)
@@ -486,18 +495,18 @@ def land(config: Config, packet: Json) -> Json:
         try:
             with effort.stage("blobs.land.readback"):
                 if _read(config) != text:
-                    raise Refusal(Finding("blobs.land", "blobs.toml read back differs from the plan", path=FILE))
+                    raise Refusal(Finding("blobs.land", "blobs.toml read back differs from the plan", path=file))
                 document = parse(config, text)
                 wrong = sorted(n for n, r in packet["blob"].items() if document["blob"].get(n) != r)
                 if wrong:
                     raise Refusal(
                         Finding(
-                            "blobs.land", f"rows read back differ from the packet: {', '.join(wrong[:5])}", path=FILE
+                            "blobs.land", f"rows read back differ from the packet: {', '.join(wrong[:5])}", path=file
                         )
                     )
                 gone = sorted(n for n in packet.get("supersedes", ()) if n in document["blob"])
                 if gone:
-                    raise Refusal(Finding("blobs.land", f"superseded rows read back: {', '.join(gone[:5])}", path=FILE))
+                    raise Refusal(Finding("blobs.land", f"superseded rows read back: {', '.join(gone[:5])}", path=file))
             with effort.stage("blobs.land.audit"):
                 audit = import_module("unbake.policy").audit_command(
                     {"project": str(config.project.root), "against": "HEAD"}
@@ -512,15 +521,15 @@ def land(config: Config, packet: Json) -> Json:
                                 "blobs.land",
                                 f"{v}: partition sums to {held} of {p['rom_size']} (overlap {p['overlap']}, "
                                 f"outside {p['outside']})",
-                                path=FILE,
+                                path=file,
                                 versions=(v,),
                             )
                         )
         except Exception:
             if old is None:
-                (Path(config.project.root) / FILE).unlink(missing_ok=True)
+                (Path(config.project.root) / file).unlink(missing_ok=True)
             else:
-                store.write(Path(config.project.root) / FILE, old)
+                store.write(Path(config.project.root) / file, old)
             raise
         delta = {
             v: {k: after[v][k] - before[v][k] for k in ("blobs_decoded", "blobs_identified", "unknown")}
@@ -553,14 +562,14 @@ def _overlaps(document: Json) -> dict[tuple[str, str, str], tuple[int, int, int,
     return out
 
 
-def _overlap_findings(document: Json, previous: Json) -> list[Finding]:
+def _overlap_findings(document: Json, previous: Json, file: str) -> list[Finding]:
     """Import and post-write verification refuse the same new duplicate claims, before any capture or write."""
     known = _overlaps(previous)
     return [
         Finding(
             "blobs.range",
             f"{v}: {one} {a:#x}..{b:#x} and {other} {c:#x}..{d:#x} claim the same bytes",
-            path=FILE,
+            path=file,
             versions=(v,),
         )
         for (v, one, other), (a, b, c, d) in _overlaps(document).items()
@@ -575,6 +584,7 @@ def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
     rows that claim a common byte and did not at `base` (the blobs.toml bytes of the base revision), and the partition
     of every version (the classes sum to the ROM, with no overlap, no byte outside the ROM and none both credited and
     shadowed). Never builds or reads an artifact."""
+    file = path_of(config)
     data = _read(config)
     if data is None:
         return ()
@@ -584,18 +594,18 @@ def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
         return refused.findings
     found: list[Finding] = []
     if emit(document) != data:
-        found.append(Finding("blobs.land", "blobs.toml is not the canonical emit of its own facts", path=FILE))
+        found.append(Finding("blobs.land", "blobs.toml is not the canonical emit of its own facts", path=file))
     for name, row in document["blob"].items():
         for item in row.get("evidence", ()):
             if not _SHA.fullmatch(str(item.get("sha256", ""))):
-                found.append(Finding("blobs.evidence", f"blob {name} cites a malformed sha256", path=FILE))
+                found.append(Finding("blobs.evidence", f"blob {name} cites a malformed sha256", path=file))
         if row["state"] in ("decoded", "identified") and "parent" not in row and not row.get("evidence"):
-            found.append(Finding("blobs.evidence", f"blob {name} is {row['state']} without evidence", path=FILE))
+            found.append(Finding("blobs.evidence", f"blob {name} is {row['state']} without evidence", path=file))
     try:
         previous = parse(config, base) if base else {"blob": {}}
     except Refusal:
         previous = {"blob": {}}
-    found.extend(_overlap_findings(document, previous))
+    found.extend(_overlap_findings(document, previous, file))
     if found:
         return tuple(found)
     parts = import_module("unbake.report").partitions(config, import_module("unbake.tree").capture(config))
@@ -607,7 +617,7 @@ def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
                     "blobs.land",
                     f"{v}: partition sums to {held} of {p['rom_size']} (overlap {p['overlap']}, "
                     f"outside {p['outside']}, shadowed {p['shadowed']})",
-                    path=FILE,
+                    path=file,
                     versions=(v,),
                 )
             )
@@ -753,10 +763,11 @@ def _result(config: Config, extra: Json, with_rows: bool) -> Json:
 
 def shadows(config: Config, version: str, credit: Spans) -> tuple[Finding, ...]:
     """Non-blocking findings for blobs under a credited symbol: those bytes stay counted as code or data."""
+    file = path_of(config)
     found = []
     for name, row in sorted(load(config)["blob"].items()):
         mine = merge(row.get("rom", {}).get(version, ()))
         if row["state"] != "observed" and (hit := length(mine) - length(subtract(mine, credit))):
             message = f"blob {name} has {hit} bytes under a credited symbol"
-            found.append(Finding("blobs.shadowed", message, path=FILE, versions=(version,), blocking=False))
+            found.append(Finding("blobs.shadowed", message, path=file, versions=(version,), blocking=False))
     return tuple(found)

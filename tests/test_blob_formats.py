@@ -171,11 +171,11 @@ def test_copy_needs_decoded_source_and_byte_equality():
 def test_retired_unclassified_observation_can_be_removed_without_fake_credit():
     document = {"blob": {"old": {"type": "unclassified", "state": "observed", "rom": {"v": [[8, 12]]}}}}
     packet = {"blob": {}, "supersedes": ["old"]}
-    assert blobs.supersede_findings(document, packet, {"old"}) == []
+    assert blobs.supersede_findings(document, packet, {"old"}, "blobs.toml") == []
     before = blobs.ranges(document, "v")
     assert before == blobs.ranges({"blob": {}}, "v") == ([], [])
     document["blob"]["old"]["state"] = "decoded"
-    assert blobs.supersede_findings(document, packet, {"old"})
+    assert blobs.supersede_findings(document, packet, {"old"}, "blobs.toml")
 
 
 def copy_config(tmp_path, other):
