@@ -244,7 +244,7 @@ def test_sync_place_puts_the_aliases_back_when_the_sync_after_it_refuses(monkeyp
     monkeypatch.setattr(repo.tree, "capture", lambda config: None)
     seen = []
 
-    def failing(config, params):
+    def failing(config, params, refresh=False):
         seen.append((root / p.file).read_text())
         raise Refusal(repo.Finding("sync.literals", "x"))
 

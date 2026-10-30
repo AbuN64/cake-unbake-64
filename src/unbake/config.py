@@ -150,7 +150,7 @@ def paths(project: Project) -> Json:
 
 
 def repo(project: Project) -> Json:
-    """The project's generated paths: config.toml [repo] (`generated` globs, `regenerate` command), empty where it declares none."""
+    """The project's generated paths: config.toml [repo] (`generated` globs, `regenerate` command); empty where none."""
     return dict(getattr(project, "repo", {}))
 
 

@@ -607,7 +607,7 @@ def _unignored(ignore: Sequence[str], command: str) -> list[str]:
     kept = [f"{row}*" if row == above[first] else row for row in ignore]
     for folder in above[first + 1 :]:
         kept += [f"!{folder}", f"{folder}*"]
-    return kept + [f"!/{command}"]
+    return [*kept, f"!/{command}"]
 
 
 def scaffold(declared: Mapping[str, Any] | None = None) -> dict[str, bytes]:
