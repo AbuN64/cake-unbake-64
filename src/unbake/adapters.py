@@ -296,37 +296,10 @@ def _asflags(row: Json, recipe: Recipe, includes: Sequence[str]) -> list[str]:
     return [*recipe.asflags, *(() if "{includes}" in row["assemble"] else includes)]
 
 
-def hilo_hazard_script() -> str:
-    """The python of the generated Makefile's HILO_HAZARD: the one text both builds run."""
-    text = configuration.template("Makefile.in")
-    return text.split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0] + "\n"
-
-
-def unreloc_script() -> str:
-    """The python of the generated Makefile's UNRELOC_PASS: the one text both builds run."""
-    text = configuration.template("Makefile.in")
-    return text.split("define UNRELOC_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
-
-
-def textcut_script() -> str:
-    """The python of the generated Makefile's TEXTCUT_PASS: the one text the build runs on an object whose function the
-    ROM holds in several runs."""
-    text = configuration.template("Makefile.in")
-    return text.split("define TEXTCUT_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
-
-
-def fsplit_script() -> str:
-    """The python of the generated Makefile's FSPLIT_PASS: the one text the build runs on an object whose functions the
-    ROM places apart."""
-    text = configuration.template("Makefile.in")
-    return text.split("define FSPLIT_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
-
-
-def strip_align_script() -> str:
-    """The python of the generated Makefile's STRIP_ALIGN: the one text both builds run, so what a measure assembles is
-    what the build assembles."""
-    text = configuration.template("Makefile.in")
-    return text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0] + "\n"
+def make_tool(name: str) -> str:
+    """The path of one of the build's helper programs (resources/make/, the Makefile's MKTOOLS): the one file both the
+    Makefile and a measure run."""
+    return str(Path(__file__).parent / "resources" / "make" / name)
 
 
 def chain_steps(
@@ -357,10 +330,10 @@ def chain_steps(
     if row["emits_asm"]:
         if align:
             steps.append(
-                Step("align", "source.s", (sys.executable, "-I", "-c", strip_align_script(), "{in}", str(align)))
+                Step("align", "source.s", (sys.executable, "-I", make_tool("strip_align.py"), "{in}", str(align)))
             )
         if hilo:
-            steps.append(Step("hilo", "source.s", (sys.executable, "-I", "-c", hilo_hazard_script(), "{in}")))
+            steps.append(Step("hilo", "source.s", (sys.executable, "-I", make_tool("hilo_hazard.py"), "{in}")))
         argv = (
             chain.argv(
                 "assemble",
@@ -390,7 +363,7 @@ def chain_steps(
             objcopy = str(process.tool(config, "mips_objcopy"))
             steps.append(Step("objcopy", "allocated.o", (objcopy, "--set-section-flags", *flags, "{in}", "{out}")))
         if unrelocated:
-            steps.append(Step("unrelocate", "source.o", (sys.executable, "-I", "-c", unreloc_script(), "{in}")))
+            steps.append(Step("unrelocate", "source.o", (sys.executable, "-I", make_tool("unreloc_pass.py"), "{in}")))
     return tuple(steps)
 
 

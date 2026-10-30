@@ -8,21 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from unbake import config as configuration
+from unbake import adapters
 
 pytestmark = pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C compiler, as the generated Makefile does")
-
-
-def source() -> str:
-    text = configuration.template("Makefile.in")
-    return text.split("define HDRKEY_C\n", 1)[1].split("\nendef", 1)[0] + "\n"
 
 
 @pytest.fixture(scope="session")
 def hdrkey(tmp_path_factory) -> Path:
     where = tmp_path_factory.mktemp("hdrkey")
-    (where / "hdrkey.c").write_text(source())
-    subprocess.run(["cc", "-O2", "-Wall", "-Werror", "-o", str(where / "hdrkey"), str(where / "hdrkey.c")], check=True)
+    subprocess.run(
+        ["cc", "-O2", "-Wall", "-Werror", "-o", str(where / "hdrkey"), adapters.make_tool("hdrkey.c")], check=True
+    )
     return where / "hdrkey"
 
 
@@ -34,10 +30,6 @@ def key(hdrkey, tmp_path):
         return subprocess.run([str(hdrkey), str(unit)], check=True, capture_output=True, text=True).stdout
 
     return run
-
-
-def test_embedded_source_has_no_dollar():
-    assert "$" not in source()
 
 
 def test_unused_extern_variable_is_dropped_and_used_one_kept(key):

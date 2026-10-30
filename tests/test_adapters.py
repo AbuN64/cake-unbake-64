@@ -342,7 +342,7 @@ def test_chain_steps_are_neutral(adapter_config, chains, recipe, id, names):
 def test_a_hilo_step_runs_the_makefiles_hazard_pass_between_compile_and_assemble(adapter_config, chains, recipe):
     steps = adapters.chain_steps(adapter_config, "fake-9", recipe, [], "unit", 0, True)
     assert [s.phase for s in steps] == ["compile", "hilo", "assemble"] and steps[1].out == "source.s"
-    assert "HILO_HAZARD" not in steps[1].argv[3] and "nop" in steps[1].argv[3]
+    assert steps[1].argv[2:] == (adapters.make_tool("hilo_hazard.py"), "{in}")
     assert [s.phase for s in adapters.chain_steps(adapter_config, "fake-9", recipe, [], "unit", 4, True)] == [
         "compile",
         "align",

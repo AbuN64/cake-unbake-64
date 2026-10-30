@@ -39,7 +39,7 @@ def test_schema_of_has_no_features() -> None:
 
 
 def test_template_known_and_missing() -> None:
-    assert "${compile_recipes}" in configuration.template("Makefile.in")
+    assert "$(MKTOOLS)/%.c" in configuration.template("Makefile.in")
     assert configuration.template("sdk/" + next(p for p in _sdk_names()))
     refusal = _refusal(configuration.template, "nope")
     assert _keys(refusal) == {"config.resource"}

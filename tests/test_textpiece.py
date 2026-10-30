@@ -72,9 +72,7 @@ def test_the_file_is_built_apart_cut_by_the_makefile_and_each_run_laid_at_its_ro
     assert "build/us/src/a.c.o: TEXTCUT := f_1:32:textpiece1_f_1 textpiece1_f_1:48:textpiece2_f_1" in rows
     assert "TEXTSIZE" not in rows.split("src/a.c.o: TEXTCUT")[0].splitlines()[-1]  # code in three runs: no trim
     recipe = build._recipe("gcc-2.8.1-sn64").splitlines()[-1]
-    assert "$(if $(TEXTCUT),'&&' @py TEXTCUT_PASS $@ $(TEXTCUT))" in recipe
-    makefile = build.makefile(config).decode()
-    assert "define TEXTCUT_PASS\n" in makefile and "export TEXTCUT_PASS\n" in makefile
+    assert "$(if $(TEXTCUT),'&&' $(PASS)textcut_pass.py $@ $(TEXTCUT))" in recipe
     body = [
         ln.strip()
         for ln in build.linker(config, held).decode().splitlines()
@@ -110,8 +108,8 @@ def test_the_pass_cuts_one_text_section_in_two_and_the_link_lays_the_runs_apart(
     source, obj = tmp_path / "s.s", tmp_path / "s.o"
     source.write_text(SOURCE)
     subprocess.run(["mips-linux-gnu-as", "-march=vr4300", "-EB", "-mips3", str(source), "-o", str(obj)], check=True)
-    subprocess.run([sys.executable, "-I", "-c", adapters.unreloc_script(), str(obj)], check=True)
-    run = lambda *a: subprocess.run([sys.executable, "-I", "-c", adapters.textcut_script(), str(obj), *a])  # noqa: E731
+    subprocess.run([sys.executable, "-I", adapters.make_tool("unreloc_pass.py"), str(obj)], check=True)
+    run = lambda *a: subprocess.run([sys.executable, "-I", adapters.make_tool("textcut_pass.py"), str(obj), *a])  # noqa: E731
     assert run("F:12:G").returncode == 0
     sections = subprocess.run(["mips-linux-gnu-readelf", "-SW", str(obj)], capture_output=True, text=True).stdout
     assert ".text.F" in sections and ".text.G" in sections
@@ -137,8 +135,8 @@ def test_the_pass_refuses_a_cut_that_does_not_lie_inside_the_section(tmp_path):
     source, obj = tmp_path / "s.s", tmp_path / "s.o"
     source.write_text(SOURCE)
     subprocess.run(["mips-linux-gnu-as", "-march=vr4300", "-EB", "-mips3", str(source), "-o", str(obj)], check=True)
-    subprocess.run([sys.executable, "-I", "-c", adapters.unreloc_script(), str(obj)], check=True)
+    subprocess.run([sys.executable, "-I", adapters.make_tool("unreloc_pass.py"), str(obj)], check=True)
     for cut in ("F:0:G", "F:99:G", "H:4:G"):
-        argv = [sys.executable, "-I", "-c", adapters.textcut_script(), str(obj), cut]
+        argv = [sys.executable, "-I", adapters.make_tool("textcut_pass.py"), str(obj), cut]
         done = subprocess.run(argv, capture_output=True)
         assert done.returncode != 0

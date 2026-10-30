@@ -334,24 +334,25 @@ def includes(texts: Mapping[str, str], tracked: Sequence[str], mapping: Mapping[
     return changed
 
 
-_MAKE_RULE = re.compile(r"(build/(?:nmraw/)?\$\(v\)/)(\S+?)(%?)(\.o\):)")
+_MAKE_RULE = re.compile(r"^((?:FILE|CPPFLAGS|CFLAGS|OMIT|HILO|UNRELOC)\.)(\S+?)(/?)( :=)", re.M)
 
 
 def makefile_rules(text: str, tracked: Sequence[str], mapping: Mapping[str, str]) -> tuple[str, int]:
-    """A Makefile's per-file and per-folder flag rules (`build/$(v)/<file>.o` and `<dir>/%.o`, also in the second
-    object tree) named for the layout after the move. Sync leaves an existing Makefile alone, so a rule keyed to an old
-    path would stop applying to its moved source. Returns the new text and the count of rules respelled."""
+    """A Makefile's per-file and per-folder [file] rows (`FILE.<file> :=` and `FILE.<dir>/ :=`, likewise CPPFLAGS,
+    CFLAGS, OMIT, HILO, UNRELOC) named for the layout after the move. Sync leaves an existing Makefile alone, so a rule
+    keyed to an old path would stop applying to its moved source. Returns the new text and the count of rules
+    respelled."""
     dirs = folded(tracked, mapping)
     count = 0
 
     def respell(match: re.Match[str]) -> str:
         nonlocal count
         old = match.group(2)
-        new = dirs.get(old) if match.group(3) else mapping.get(old)
+        new = dirs.get(old + "/") if match.group(3) else mapping.get(old)
         if not new or new == old:
             return match.group(0)
         count += 1
-        return match.group(1) + new + match.group(3) + match.group(4)
+        return match.group(1) + new.rstrip("/") + match.group(3) + match.group(4)
 
     return _MAKE_RULE.sub(respell, text), count
 

@@ -12,9 +12,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from test_build import make_config
 
-from unbake import build
+from unbake import adapters
 from unbake.resources import cc_cache
 
 CC = Path(cc_cache.__file__)
@@ -48,12 +47,9 @@ def stamprec(tmp_path_factory) -> str:
     cc = shutil.which("cc") or shutil.which("gcc")
     if cc is None:
         pytest.skip("no C compiler")
-    text = build.makefile(make_config(tmp_path_factory.mktemp("cfg"))).decode()
-    source = re.search(r"define STAMPREC_C\n(.*?)\nendef\n", text, re.S)[1].replace("$$", "$")  # make's own unescape
     folder = tmp_path_factory.mktemp("stamprec")
-    (folder / "stamprec.c").write_text(source + "\n")
     done = subprocess.run(
-        [cc, "-O2", "-Wall", "-Werror", "-o", str(folder / "stamprec"), str(folder / "stamprec.c")],
+        [cc, "-O2", "-Wall", "-Werror", "-o", str(folder / "stamprec"), adapters.make_tool("stamprec.c")],
         capture_output=True,
         text=True,
     )
@@ -313,17 +309,10 @@ def test_a_rotate_keeps_the_last_assembly_and_a_kept_one_still_there_says_the_la
         assert (files.get(S + ".prev") == b"assembly\n") if not kept else (files[S + ".prev"] == b"older\n")
 
 
-def test_the_out_and_py_steps_redirect_a_command_and_run_an_exported_pass(tmp_path, stamprec):
-    program = ["@out", S, "echo", "text", "&&", "@py", "PASS", S, "&&", "@nonempty", S, "&&", *MAKE]
-    done, files = both(
-        tmp_path,
-        stamprec,
-        "stale",
-        "",
-        "0x8",
-        program,
-        env={"PASS": "import sys;open(sys.argv[1], 'a').write('more\\n')"},
-    )
+def test_the_out_step_redirects_a_command_and_a_pass_runs_on_its_output(tmp_path, stamprec):
+    more = [sys.executable, "-c", "import sys;open(sys.argv[1], 'a').write('more\\n')", S]
+    program = ["@out", S, "echo", "text", "&&", *more, "&&", "@nonempty", S, "&&", *MAKE]
+    done, files = both(tmp_path, stamprec, "stale", "", "0x8", program)
     assert done.returncode == 0, done.stderr
     assert files[S] == b"text\nmore\n"
 

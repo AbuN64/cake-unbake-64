@@ -182,8 +182,8 @@ def _recipe(id: str) -> str:
             f"@rotate {asm} {keep} {_THEN} {compile} {_THEN} @nonempty {asm}"
         ]  # nonempty: a compiler that exited 0 without assembly has not compiled
         # the alignment the ROM's start of the data does not meet is dropped (data packed at the byte, or off 8)
-        parts.append(f"$(if $(NOALIGN),{_THEN} @py STRIP_ALIGN {asm} $(NOALIGN))")
-        parts.append(f"$(if $(HILO),{_THEN} @py HILO_HAZARD {asm})")
+        parts.append(f"$(if $(NOALIGN),{_THEN} $(PASS)strip_align.py {asm} $(NOALIGN))")
+        parts.append(f"$(if $(HILO),{_THEN} $(PASS)hilo_hazard.py {asm})")
         if row.get("jump_table_base"):
             parts.append(f"{_THEN} @jumptable {asm} {row['jump_table_base']:X}")
         # Only the .i moved (a header edit rewrites many) and the compiler's assembly is the last one's, byte for byte,
@@ -199,37 +199,33 @@ def _recipe(id: str) -> str:
             plain = adapters.render(
                 ("{as}", "{asflags}", "{source}", "-o", "{out}"), {**values, "source": [split], "out": ["$@"]}
             )
-            apart = f"@out {norm} {_shell(front)} {_THEN} @py FSPLIT_PASS {norm} {split} {_THEN} {_shell(plain)}"
+            apart = f"@out {norm} {_shell(front)} {_THEN} $(PASS)fsplit_pass.py {norm} {split} {_THEN} {_shell(plain)}"
             assemble = f"$(if $(FSPLIT),{apart},{assemble})"
         parts.append(f"{_THEN} {assemble}")
         if row.get("rdata_alloc"):
             parts.append(f"{_THEN} $(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
-        parts.append(f"$(if $(UNRELOC),{_THEN} @py UNRELOC_PASS $@)")
-        parts.append(f"$(if $(TEXTCUT),{_THEN} @py TEXTCUT_PASS $@ $(TEXTCUT))")
+        parts.append(f"$(if $(UNRELOC),{_THEN} $(PASS)unreloc_pass.py $@)")
+        parts.append(f"$(if $(TEXTCUT),{_THEN} $(PASS)textcut_pass.py $@ $(TEXTCUT))")
         body = " ".join(parts)
     return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
 
-def _file_blocks(config: Config, tree: str = "") -> list[str]:
-    """Target-specific variables per [file] row: a dir/ key is a pattern over its objects, a path is one object.
-    `tree` is the build/ subfolder of a second object tree ("nmraw/": the NON_MATCHING objects) that takes the
-    same rows."""
+def _file_rows(config: Config) -> list[str]:
+    """The [file] rows as data the Makefile's `row` lookup reads: FILE.<key> names the row's toolchain (a "dir/" key
+    holds for the sources under it), CPPFLAGS.<key> and CFLAGS.<key> are the flags it adds, OMIT.<key> the ones it
+    drops, HILO.<key> and UNRELOC.<key> its passes."""
     project, rows = config.project, []
-    for path in sorted(project.files, key=lambda p: (not p.endswith("/"), len(p), p)):
+    for path in sorted(project.files):
         facts = file_facts(project, path)
         id = facts.toolchain or project.toolchain
-        row = configuration.toolchain(id)
-        target = f"$(foreach v,$(VERSIONS),build/{tree}$(v)/" + (f"{path}%.o)" if path.endswith("/") else f"{path}.o)")
-        cpp, cc = _preprocessor_split(row, facts.cflags)
+        cpp, cc = _preprocessor_split(configuration.toolchain(id), facts.cflags)
+        rows.append(f"FILE.{path} := {_key(id)}")
         rows += [
-            f"{target}: TC := {_key(id)}",
-            f"{target}: CPPFLAGS := {' '.join([*row.get('cppflags', []), *project.cppflags, *cpp])}",
-            f"{target}: CFLAGS := {' '.join(_flags(row, config, cc, facts.omit))}",
+            f"{var}.{path} := {' '.join(words)}"
+            for var, words in (("CPPFLAGS", cpp), ("CFLAGS", cc), ("OMIT", facts.omit))
+            if words
         ]
-        if facts.hilo_nops:
-            rows.append(f"{target}: HILO := 1")
-        if facts.unrelocated:
-            rows.append(f"{target}: UNRELOC := 1")
+        rows += [f"{var}.{path} := 1" for var, on in (("HILO", facts.hilo_nops), ("UNRELOC", facts.unrelocated)) if on]
     return rows
 
 
@@ -246,134 +242,6 @@ def _preprocessor_split(row: Json, flags: Sequence[str]) -> tuple[list[str], lis
         if word in paired:
             into.append(next(words, ""))
     return cpp, cc
-
-
-_PATHS = """ver = $(firstword $(subst /, ,$1))
-src = $(patsubst $(call ver,$1)/%,%,$1)
-DEFINES = -D$(VMACRO_$(call ver,$*))"""
-# build/nmraw/<version>/ holds the objects of a NON_MATCHING compile and build/nm/<version>/ the ones the NM link uses;
-# the version is the first path word that is neither.
-_PATHS_NM = """ver = $(firstword $(filter-out nm nmraw,$(subst /, ,$1)))
-src = $(patsubst $(call ver,$1)/%,%,$(patsubst nmraw/%,%,$(patsubst nm/%,%,$1)))
-DEFINES = -D$(VMACRO_$(call ver,$*)) $(if $(filter nmraw/%,$*),-D@DEFINE@)"""
-_NM_GOAL = """ifeq ($(NON_MATCHING),1)
-.DEFAULT_GOAL := nm
-endif
-"""
-# A unit's NON_MATCHING object may stand in for its matching one when the unit keeps its size: the same sections but
-# a text that is no longer than the ROM's, filled with zeros up to it. Then every unit starts where it did, the link
-# script needs no change and the ROM keeps its size. A draft that makes its unit's text or data longer leaves the
-# matching object in: it is not in that ROM (report.txt names it). Inside a padded unit the code after the first
-# draft moves, so a raw table of the ROM that names such a function is stale: the report counts the symbols that move.
-_NM_PICK = r"""import os, shutil, struct, subprocess, sys
-def read(path):
-    d = open(path, "rb").read()
-    o = struct.unpack_from(">I", d, 32)[0]
-    e, c, x = struct.unpack_from(">HHH", d, 46)
-    rows = [struct.unpack_from(">10I", d, o + k * e) for k in range(c)]
-    names = d[rows[x][4]:rows[x][4] + rows[x][5]]
-    name = lambda r: names[r[0]:].split(b"\0")[0].decode()
-    skip = (".pdr", ".comment", ".mdebug", ".reginfo", ".gnu.attributes")
-    sizes = {name(r): r[5] for r in rows if r[1] in (1, 8) and name(r) not in skip}
-    data = {name(r): d[r[4]:r[4] + r[5]] for r in rows if r[1] == 1 and name(r) not in skip}
-    syms, table, undef = set(), {}, set()
-    for k, r in enumerate(rows):
-        if r[1] == 2:
-            strs = d[rows[r[6]][4]:rows[r[6]][4] + rows[r[6]][5]]
-            for j in range(r[5] // 16):
-                n, v, z, i, _, sh = struct.unpack_from(">IIIBBH", d, r[4] + 16 * j)
-                s = strs[n:].split(b"\0")[0].decode()
-                table[(k, j)] = s
-                if sh == 0 and s and j and i >> 4:
-                    undef.add(s)
-                if 0 < sh < 0xFF00 and i & 15 not in (3, 4) and s and not s.startswith(".L"):
-                    syms.add((s, name(rows[sh]), v))
-    relocs = set()
-    for r in rows:
-        if r[1] == 9 and name(rows[r[7]]) not in skip:
-            for j in range(r[5] // 8):
-                off, info = struct.unpack_from(">II", d, r[4] + 8 * j)
-                relocs.add((name(rows[r[7]]), off, info & 255, table.get((r[6], info >> 8), "")))
-    return sizes, syms, data, relocs, undef
-raw, matching, out, objcopy, ld = sys.argv[1:6]
-a, b = read(raw), read(matching)
-rest = lambda sizes: {k: v for k, v in sizes.items() if k != ".text"}
-missing = sorted(a[4] - b[4] - {x[0] for x in b[1]})
-if missing:
-    # a draft naming a symbol the unit does not (a fuzzy draft's own data name) cannot link to this ROM
-    verdict, pick = "left-out undefined " + " ".join(missing[:3]), matching
-elif a == b:
-    verdict, pick = "same", matching
-elif a[:2] == b[:2]:
-    verdict, pick = "draft", raw
-elif rest(a[0]) == rest(b[0]) and a[0].get(".text", 0) <= b[0].get(".text", 0):
-    # a shorter text keeps the unit's size when zeros fill the rest: the next unit starts where it did
-    # ld -r keeps the relocations, which objcopy --update-section drops from a section it replaces
-    open(out + ".lds", "w").write("SECTIONS { .text : { *(.text) . = %d; } }\n" % b[0][".text"])
-    subprocess.run([ld, "-r", "-T", out + ".lds", "-o", out, raw], check=True)
-    os.remove(out + ".lds")
-    moved = len({sym[0] for sym in a[1] ^ b[1]})
-    verdict, pick = "draft-padded %d bytes, %d symbols move" % (b[0][".text"] - a[0][".text"], moved), None
-else:
-    grown = [k for k in sorted(set(a[0]) | set(b[0])) if a[0].get(k, 0) != b[0].get(k, 0)]
-    why = " ".join("%s:%d->%d" % (k, b[0].get(k, 0), a[0].get(k, 0)) for k in grown)
-    verdict, pick = "left-out " + (why or "symbols moved"), matching
-if pick:
-    shutil.copyfile(pick, out)
-open(out + ".pick", "w").write("%s %s\n" % (verdict, out))"""
-_NM_RULES = r"""# make NON_MATCHING=1 (or make nm): every draft compiles in (-D@DEFINE@) and one ROM per version
-# links under build/nm/<version>/. The drafts compile into a second tree build/nmraw/<version>/ with the
-# matching build's rules and flags. A unit whose NON_MATCHING object keeps the unit's size (NM_PICK: the same
-# sections, a text no longer than the ROM's, zero-filled to it) takes the matching object's place in the link; any
-# other unit keeps its matching object. The ROM so keeps its size and every unit's address, and matches no SHA-1, so
-# nothing here checks one. build/nm/<version>/report.txt names the units whose draft is in (and how many symbols
-# move in them) and the ones left out (and the section that grew).
-define NM_PICK
-@NM_PICK@
-endef
-export NM_PICK
-.PHONY: nm
-nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)
-$(foreach v,$(VERSIONS),$(eval OBJS_nm_$(v) := $(patsubst build/$(v)/%,build/nm/$(v)/%,$(OBJS_$(v)))))
--include $(foreach v,$(VERSIONS),$(patsubst build/$(v)/%,build/nmraw/$(v)/%,$(OBJS_$(v):.o=.d)))
-# A raw object follows the extracted files its matching twin names, and takes the same text sizes.
-$(shell sed -E 's@^build/@build/nmraw/@' build/asm.deps > build/asm-nmraw.deps.$$$$ && mv build/asm-nmraw.deps.$$$$ build/asm-nmraw.deps)
--include build/asm-nmraw.deps
-$(shell cat $(VERSIONS:%=versions/%/text_sizes.mk) | sed -E 's@^build/@build/nmraw/@' > build/text_sizes_nmraw.mk.$$$$ && mv build/text_sizes_nmraw.mk.$$$$ build/text_sizes_nmraw.mk)
--include build/text_sizes_nmraw.mk
-build/nm/%.o: build/nmraw/%.o build/%.o
-	$(Q)mkdir -p $(@D)
-	$(Q)python3 -I -c "$$NM_PICK" $^ $@ $(OBJCOPY) $(LD)
-# An assembly or binary piece is the matching build's.
-build/nm/%.s.o: build/%.s.o
-	$(Q)mkdir -p $(@D)
-	$(Q)cp -p $< $@
-build/nm/%.bin.o: build/%.bin.o
-	$(Q)mkdir -p $(@D)
-	$(Q)cp -p $< $@
-# Static pattern rules: build/%/link.ld would also match build/nm/<version>/link.ld and write an empty script.
-$(VERSIONS:%=build/nm/%/link.ld): build/nm/%/link.ld: build/%/link.ld
-	$(Q)mkdir -p $(@D)
-	$(Q)cp $< $@
-$(VERSIONS:%=build/nm/%/undefined_syms.ld): build/nm/%/undefined_syms.ld: build/%/undefined_syms.ld
-	$(Q)mkdir -p $(@D)
-	$(Q)cp $< $@
-# A draft may define a name that this version's ROM keeps as data, or the other way round: the first definition in link
-# order wins and link.err lists every such name; any other link error stops the build.
-$(VERSIONS:%=build/nm/%/$(NAME).elf): build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld \
-	build/nm/%/undefined_syms.ld
-	$(Q)cd build/nm/$* && { $(LD) -T link.ld -o $(NAME).elf 2> link.err \
-	|| $(LD) -T link.ld --allow-multiple-definition -o $(NAME).elf 2>> link.err; } \
-	|| { cat build/nm/$*/link.err >&2; exit 1; }
-$(VERSIONS:%=build/nm/%/$(NAME).bin): build/nm/%/$(NAME).bin: build/nm/%/$(NAME).elf
-	$(Q)$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary --gap-fill 0 $< $@
-$(VERSIONS:%=build/nm/%/$(NAME).z64): build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin roms/baserom.%.z64
-	$(Q){ head -c $(ROM0_$*) roms/baserom.$*.z64; cat $<; } > $@
-	$(Q)truncate -s $$(wc -c < roms/baserom.$*.z64) $@
-	$(Q)cat $(addsuffix .pick,$(OBJS_nm_$*)) 2>/dev/null | grep -v '^same ' | sort > build/nm/$*/report.txt; \
-	echo "NM ROM $*: $$(grep -c '^draft' build/nm/$*/report.txt) unit(s) with drafts in," \
-	"$$(grep -c '^left-out' build/nm/$*/report.txt) left out (build/nm/$*/report.txt)"
-"""
 
 
 def generator_version() -> str:
@@ -402,7 +270,6 @@ def makefile(config: Config) -> bytes:
     with effort.stage("build.makefile"):
         project, rows = config.project, configuration.toolchains()
         nm = getattr(project, "non_matching", None)  # the macro of a NON_MATCHING build, when the project has one
-        default = rows[project.toolchain]
         used = sorted({project.toolchain, *(f.toolchain for f in project.files.values() if f.toolchain)})
         pinned = _fetched(used)
         tools = [
@@ -431,35 +298,35 @@ def makefile(config: Config) -> bytes:
             stamps.append(f"$(TOOLCHAIN_{key})")
             if n:
                 chains.append(_fetch_rule(f"tools/{id}", row["downloads"][0], row["pins"]))
-        platform = configuration.load_resource("rom.toml").get("asflags", [])
-        version_vars = []
-        for v in project.versions:
-            version_vars += [
-                f"VMACRO_{v} := {macro(v)}",
-                f"SHA1_{v} := {project.version[v].sha1}",
-                f"ROM0_{v} := {project.version[v].segments[0].rom}",
-                f"ROM_SECTIONS_{v} := {' '.join(_image_sections(config, v))}".rstrip(),
-            ]
-        text = Template(configuration.template("Makefile.in")).substitute(
-            title=project.title,
-            generator=generator_version(),
-            name=project.name,
-            versions=" ".join(project.versions),
-            tool_defaults="\n".join(tools),
-            version_vars="\n".join(version_vars),
-            toolchain=_key(project.toolchain),
-            cppflags=" ".join([*default.get("cppflags", []), *project.cppflags]),
-            cflags=" ".join(_flags(default, config)),
-            asflags=" ".join([*platform, *project.asflags]),
-            compile_recipes="\n".join(_recipe(id) for id in used),
-            file_blocks="\n".join(_file_blocks(config) + (_file_blocks(config, "nmraw/") if nm else [])),
-            path_rules=_PATHS_NM.replace("@DEFINE@", nm) if nm else _PATHS,
-            nm_goal=_NM_GOAL if nm else "",
-            nm_rules=_NM_RULES.replace("@DEFINE@", nm).replace("@NM_PICK@", _NM_PICK) + "\n" if nm else "",
-            stamps=" ".join(stamps),
-            toolchain_rules="\n".join(chains),
-            label="[A-Za-z_.]*" + re.escape(_REPO["splat"]["options"]["symbol_name_format"].replace("$VRAM", "")),
-        )
+        rom = configuration.load_resource("rom.toml")
+        platform = rom.get("asflags", [])
+        flags = []
+        for id in used:
+            key, row = _key(id), rows[id]
+            flags.append(f"CPPFLAGS_{key} := {' '.join([*row.get('cppflags', []), *project.cppflags])}".rstrip())
+            flags.append(f"CFLAGS_{key} := {' '.join(_flags(row, config))}".rstrip())
+        facts = [
+            f"# {project.title}: matching build. Generated by `unbake sync` from config.toml: edit that, never this file.",
+            f"# generator: {generator_version()}",
+            f"NAME := {project.name}",
+            f"VERSIONS := {' '.join(project.versions)}",
+            f"TOOLCHAIN := {_key(project.toolchain)}",
+            f"NM_DEFINE := {nm or ''}".rstrip(),
+            "LABEL := [A-Za-z_.]*" + re.escape(_REPO["splat"]["options"]["symbol_name_format"].replace("$VRAM", "")),
+            f"ASFLAGS := {' '.join([*platform, *project.asflags])}".rstrip(),
+            f"AS_CPPFLAGS := {' '.join([*rom['as_cppflags'], *project.cppflags])}",
+            "# The tools and toolchains: a variable local.mk sets wins.",
+            *tools,
+            *flags,
+            f"STAMPS := {' '.join(stamps)}".rstrip(),
+            "# The program of each toolchain in use (PASS runs a helper of MKTOOLS).",
+            "PASS = python3 -I $(MKTOOLS)/",
+            *(_recipe(id) for id in used),
+            "# The [file] rows of config.toml.",
+            *_file_rows(config),
+            *chains,
+        ]
+        text = "\n".join([*facts, "", configuration.template("Makefile.in")])
         return text.encode()
 
 
@@ -631,7 +498,8 @@ def _functions(config: Config, held: Tree, v: str, paths: set[str]) -> dict[str,
 
 
 def text_sizes(config: Config, held: Tree, v: str) -> bytes:
-    """versions/<v>/text_sizes.mk: the size each object's `.text` has in the ROM, from its first owned address to the
+    """versions/<v>/text_sizes.mk, the version's make facts: its macro, SHA-1, ROM start and image sections, and the
+    size each object's `.text` has in the ROM, from its first owned address to the
     next owned bytes of anything else. A compiler or assembler may pad a section past its last function (IDO and
     gas round `.text` up to 16 bytes); the build cuts a zero tail back to this size before the object links. Only an
     object whose code lies in one run and is followed by owned bytes of its segment gets a row."""
@@ -652,7 +520,14 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
                     continue
                 after = runs[k + 1][0] if k + 1 < len(runs) else end
                 sizes[path] = None if path in sizes or after is None else after - rom
-        rows = [f"build/{v}/{path}.o: TEXTSIZE := 0x{size:X}" for path, size in sorted(sizes.items()) if size]
+        version = config.project.version[v]
+        rows = [
+            f"VMACRO_{v} := {macro(v)}",
+            f"SHA1_{v} := {version.sha1}",
+            f"ROM0_{v} := {version.segments[0].rom}",
+            f"ROM_SECTIONS_{v} := {' '.join(_image_sections(config, v))}".rstrip(),
+        ]
+        rows += [f"build/{v}/{path}.o: TEXTSIZE := 0x{size:X}" for path, size in sorted(sizes.items()) if size]
         rows += [f"build/{v}/{path}.o: NOALIGN := {m}" for path, m in _unaligned(config, held, v).items()]
         if "function_sections" in configuration.toolchain(config.project.toolchain):
             rows += [f"build/{v}/{path}.o: FSPLIT := fsplit" for path in sorted(_apart_paths(config, held, v))]
@@ -1112,6 +987,7 @@ def local_mk(config: Config) -> bytes:
             f"JOBS := {config.host.workers}",
             f"PPUNIT := {_preprocess_unit(config)}",
             f"CCPY := {_cc_cache()}",
+            f"MKTOOLS := {_stable(Path(__file__).parent / 'resources' / 'make')}",
             *(
                 f"{var} := {_stable(config.host.tools[row['host']]) if row['host'] in config.host.tools else ''}"
                 for var, row in sorted(_REPO["make"]["tools"].items())
@@ -1174,7 +1050,16 @@ def project_inputs(project: Project) -> str:
     return sha256(repr(rows).encode())
 
 
-_FILE_RULE = re.compile(r"^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/(.+?\.o)\):")
+_FILE_ROW = re.compile(r"^(?:FILE|CPPFLAGS|CFLAGS|OMIT|HILO|UNRELOC)\.(\S+) :?= ")
+
+
+def _row_objects(line: str) -> str | None:
+    """The objects a [file] row line of the Makefile reaches, as a path under build/<version>/ ("dir/%.o" for a
+    directory row), None when the line is no row."""
+    row = _FILE_ROW.match(line)
+    return None if row is None else row.group(1) + ("%.o" if row.group(1).endswith("/") else ".o")
+
+
 _INCLUDED = re.compile(rb'^\s*\.include\s+"([^"]+)"', re.M)
 
 
@@ -1211,28 +1096,17 @@ def drop_including(config: Config, version: str, names: set[str]) -> int:
     return dropped
 
 
-_DEPENDENCY_LINE = re.compile(r"asm-deps\.py|asm\.deps|stamp-sweep\.py|mkdir -p build\)")
+_DEPENDENCY_LINE = re.compile(r"asm_deps\.py|asm\.deps|stamp_sweep\.py|mkdir -p build\)")
 
 
 def _dependency_lines(text: str) -> set[str]:
-    """The lines of a Makefile that only add prerequisites to objects: the ASM_DEPS script that lists the extracted
-    files each source names, and the lines that run and include its output. They decide when an object is made again,
+    """The lines of a Makefile that only add prerequisites to objects: the lines that run asm_deps.py (the extracted
+    files each source names) and the stamp sweep, and include their output. They decide when an object is made again,
     never what its recipe writes, so a change to them reaches no object."""
-    found: set[str] = set()
-    inside = False
-    for line in text.splitlines():
-        if line.startswith(("define ASM_DEPS", "define STAMP_SWEEP")):
-            inside = True
-            found.add(line)
-        elif inside and line == "endef":
-            inside = False
-            found.add(line)
-        elif inside or _DEPENDENCY_LINE.search(line):
-            found.add(line)
-    return found
+    return {line for line in text.splitlines() if _DEPENDENCY_LINE.search(line)}
 
 
-_PREPROCESS_LINE = re.compile(r"^(?:\S.*?: )?(?:CPPFLAGS|DEFINES|INCLUDES) :?= ")
+_PREPROCESS_LINE = re.compile(r"^(?:CPPFLAGS[._]\S+|CPPFLAGS|DEFINES|INCLUDES) :?= ")
 
 
 def _preprocess_lines(text: str) -> set[str]:
@@ -1294,9 +1168,9 @@ def _make_blocks(text: str) -> list[_Block]:
             rule.prefixes.update(_COMPUTED.findall("\n".join(group)))
         elif not first.strip() or first.lstrip().startswith("#"):
             continue  # neither ends a recipe
-        elif row := _FILE_RULE.match(first):
-            block = _Block("row", row.group(1), group)
-            value = "\n".join(group)[row.end() :].partition("=")[2]  # the row sets its variable; only the value uses
+        elif row := _row_objects(first):
+            block = _Block("row", row, group)
+            value = "\n".join(group).partition("=")[2]  # the row sets its variable; only the value uses
             block.words, block.prefixes = set(_WORD.findall(value)), set(_COMPUTED.findall(value))
             found.append(block)
             rule = None
@@ -1419,8 +1293,8 @@ def drop_reflagged(config: Config, new: bytes | None = None) -> int:
     text_only = _preprocess_lines(before) | _preprocess_lines(after)
 
     def reached(lines: set[str]) -> set[str] | None:
-        rules = {_FILE_RULE.match(line) for line in lines}
-        return None if None in rules else {m.group(1) for m in rules if m}
+        rows = {_row_objects(line) for line in lines}
+        return None if None in rows else {row for row in rows if row}
 
     objects = {line for line in moved if line not in text_only}
     reach = _reach(before, after, objects) if objects else (set(), set())

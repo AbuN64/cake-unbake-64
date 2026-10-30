@@ -493,7 +493,15 @@ def record_stamp(stamprec: str, stamp: str, *extracted: str) -> int:
     ):
         return 0
     return subprocess.run(
-        ["python3", "-I", "build/stamp-sweep.py", "record", stamp, *extracted], check=False
+        [
+            "python3",
+            "-I",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "make", "stamp_sweep.py"),
+            "record",
+            stamp,
+            *extracted,
+        ],
+        check=False,
     ).returncode
 
 
@@ -601,8 +609,8 @@ def object_step(words: list[str], state: dict[str, object]) -> int:
 
     `@rotate S KEPT`: the last assembly is kept (a KEPT still there says the last run failed: S goes, never into it).
     `@compile COMMAND...`: the compiler front (compile_step).  `@nonempty S`: a compiler that exited 0 without assembly
-    has not compiled.  `@jumptable S HEX`: jump_table.  `@py NAME ARGS...`: python3 -I -c "$NAME" ARGS (a pass the
-    Makefile exports).  `@out FILE COMMAND...`: the command's output goes to FILE.  `@settle S KEPT`: the object stands
+    has not compiled.  `@jumptable S HEX`: jump_table.
+    `@out FILE COMMAND...`: the command's output goes to FILE.  `@settle S KEPT`: the object stands
     as it was when only its .i moved, its size is the wanted one and S is KEPT byte for byte (the rest of the program
     is skipped, `.same` tells the rule its trim is held); KEPT goes either way."""
     import subprocess
@@ -620,12 +628,6 @@ def object_step(words: list[str], state: dict[str, object]) -> int:
         return jump_table(*rest)
     if head == "@compile" and rest:
         return compile_step(rest)
-    if head == "@py" and rest:
-        code = os.environ.get(rest[0])
-        if code is None:
-            sys.stderr.write(f"cc_cache: {rest[0]} is not set\n")
-            return 1
-        return subprocess.call(["python3", "-I", "-c", code, *rest[1:]])
     if head == "@out" and len(rest) >= 2:
         with open(rest[0], "wb") as handle:
             return subprocess.call(rest[1:], stdout=handle)

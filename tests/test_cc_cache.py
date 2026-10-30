@@ -402,7 +402,7 @@ def test_local_mk_puts_the_stamp_recipe_in_one_process(tmp_path):
     )
     rule = Path(build.__file__).parent / "resources" / "templates" / "Makefile.in"
     lines = rule.read_text().split("\nbuild/%.i.ok:")[1].split("\n# The extracted files")[0].splitlines()
-    assert lines[1:] == ["\t$$(PREPROCESS_$$(TC))"]  # the stamp's recipe is the one process, no shell lines around it
+    assert lines[1:] == ["\t$(PREPROCESS_$(TC))"]  # the stamp's recipe is the one process, no shell lines around it
 
 
 def test_a_unit_leaves_the_text_the_flags_a_dated_stamp_and_a_record(tmp_path):

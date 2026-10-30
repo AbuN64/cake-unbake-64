@@ -166,7 +166,7 @@ def test_missing_tool(tmp_path, monkeypatch, kind):
 
 
 def test_no_creation_bypass():
-    allowed = {"cc_cache.py", "effort.py", "pool.py", "process.py", "runslice.py"}
+    allowed = {"cc_cache.py", "effort.py", "nm_pick.py", "pool.py", "process.py", "runslice.py"}
     banned = ("subprocess", "multiprocessing", "concurrent.futures", "threading")
     violations = []
     for path in sorted(Path(process.__file__).parent.rglob("*.py")):

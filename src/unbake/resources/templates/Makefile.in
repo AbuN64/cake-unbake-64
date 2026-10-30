@@ -1,67 +1,79 @@
-# ${title}: matching build.
-# generator: ${generator}
+# The rules of every project's Makefile, the same text for each: `unbake sync` writes the project's facts above them
+# (from config.toml and the toolchain rows) and each version's facts live in versions/<version>/text_sizes.mk.
+#
 # make check             builds every version ROM from the committed sources and verifies its SHA-1.
 # make check CHECK=tree  verifies only that the committed generated files are present (no ROMs needed).
 # make extract           splits every baserom into asm/<version>/ with splat; a data file's section is its stand-in's.
 #                        A build extracts a version that has no asm/<version>/ yet on its own.
-# Tool commands default to conventional names; put local paths in local.mk.
+# make nm                (or NON_MATCHING=1) links one ROM per version with every draft compiled in (see below).
+# make V=1               echoes every command; JOBS (local.mk) sets the parallel jobs.
+# local.mk (machine-local, written by `unbake sync --makefile`) names the tools: compilers, CCPY, MKTOOLS (the folder
+# of the build's helper programs), SPLAT, CPP...
 SHELL := /bin/sh
 .SUFFIXES:
 .DELETE_ON_ERROR:
 .SECONDARY:
 .SECONDEXPANSION:
 .DEFAULT_GOAL := all
-Q = $$(if $$(filter 1,$$(V)),,@)
-NAME := ${name}
-VERSIONS := ${versions}
+Q = $(if $(filter 1,$(V)),,@)
 CHECK ?= rom
 -include local.mk
-ifneq ($$(JOBS),)
-ifeq ($$(filter -j% --jobserver%,$$(MAKEFLAGS)),)
-MAKEFLAGS += -j$$(JOBS)
+ifneq ($(JOBS),)
+ifeq ($(filter -j% --jobserver%,$(MAKEFLAGS)),)
+MAKEFLAGS += -j$(JOBS)
 endif
 endif
-${nm_goal}${tool_defaults}
-${version_vars}
-STAMPS := ${stamps}
+ifeq ($(CHECK),rom)
+MKTOOLS ?= $(error MKTOOLS is not set: run unbake sync --makefile to write local.mk)
+endif
+HOSTCC ?= cc
 
-# The first path word under build/ is the version: build/<version>/<source path>.o
-${path_rules}
-INCLUDES = -Iinclude -I$$(dir $$<)
-ASINC = -Iasm/$$(call ver,$$*)
+# ---------------------------------------------------------------- paths and facts
+# build/<version>/<source path>.o is a matching object; build/nmraw/<version>/ holds the objects of a NON_MATCHING
+# compile and build/nm/<version>/ the ones the NM link uses. The version is the first path word that is neither.
+ver = $(firstword $(filter-out nm nmraw,$(subst /, ,$1)))
+src = $(patsubst $(call ver,$1)/%,%,$(patsubst nmraw/%,%,$(patsubst nm/%,%,$1)))
+# The [file] row of a source: its own path, else its longest directory with a row (FILE.<key> names its toolchain).
+parents = $(if $(findstring /,$1),$(dir $1) $(call parents,$(patsubst %/,%,$(dir $1))))
+row = $(firstword $(foreach k,$1 $(call parents,$1),$(if $(FILE.$k),$k)))
+# Looked up once per source and once per target stem: make reads each object's row many times (its flags, its
+# passes) for every version. Only the row is kept so: a value that holds a target-specific variable (FSPLIT) is not.
+rowof = $(if $(filter undefined,$(origin ROWOF.$1)),$(eval ROWOF.$1 := $(call row,$1)))$(ROWOF.$1)
+ROW = $(if $(filter undefined,$(origin ROW@$*)),$(eval ROW@$* := $(call rowof,$(call src,$*))))$(ROW@$*)
+# A row's toolchain and flags: the toolchain's flags and the project's, less the row's OMIT, plus the row's own.
+TC = $(or $(FILE.$(ROW)),$(TOOLCHAIN))
+CPPFLAGS = $(strip $(CPPFLAGS_$(TC)) $(CPPFLAGS.$(ROW)))
+CFLAGS = $(strip $(filter-out $(OMIT.$(ROW)),$(CFLAGS_$(TC))) $(CFLAGS.$(ROW)))
+HILO = $(HILO.$(ROW))
+UNRELOC = $(UNRELOC.$(ROW))
+DEFINES = -D$(VMACRO_$(call ver,$*)) $(if $(filter nmraw/%,$*),-D$(NM_DEFINE))
+INCLUDES = -Iinclude -I$(dir $<)
+ASINC = -Iasm/$(call ver,$*)
 # Every version macro for the assembler, 1 for the version built and 0 for the others: library assembly keeps the
 # lines its versions disagree on in `.if VERSION_A || VERSION_B` blocks
-ASDEFS = $$(foreach w,$$(VERSIONS),--defsym $$(VMACRO_$$(w))=$$(if $$(filter $$(w),$$(call ver,$$*)),1,0))
-TC := ${toolchain}
-CPPFLAGS := ${cppflags}
-CFLAGS := ${cflags}
-ASFLAGS := ${asflags}
-
-# One recipe per toolchain in use; a path picks its toolchain and flags below.
-${compile_recipes}
-# Per-file facts ([file] rows of config.toml): a toolchain and flags for a path or a directory.
-${file_blocks}
-# The size each object's .text has in the ROM: a compiler may pad the section past its last function, and a zero tail
-# past that size is cut from the section header before the object links.
--include $$(VERSIONS:%=versions/%/text_sizes.mk)
+ASDEFS = $(foreach w,$(VERSIONS),--defsym $(VMACRO_$(w))=$(if $(filter $(w),$(call ver,$*)),1,0))
+# Each version's facts (VMACRO_, SHA1_, ROM0_, ROM_SECTIONS_) and the size each object's .text has in the ROM: a
+# compiler may pad the section past its last function, and a zero tail past that size is cut before the object links.
+-include $(VERSIONS:%=versions/%/text_sizes.mk)
 # Compare each object's last successful size with its own target-specific value during second expansion.
 # A shared text_sizes.mk timestamp would rebuild every object; removed sizes must also invalidate the old trim.
-text_size_changed = $$(if $$(filter x$$(TEXTSIZE),x$$(file <$$@.textsize)),,text-size-changed)
+text_size_changed = $(if $(filter x$(TEXTSIZE),x$(file <$@.textsize)),,text-size-changed)
 .PHONY: text-size-changed
 text-size-changed:
-TRIM_TEXT = $$(CCPY) --trim
+TRIM_TEXT = $(CCPY) --trim
 
 .PHONY: all check extract
 all: check
-ifeq ($$(CHECK),tree)
+ifeq ($(CHECK),tree)
 check:
-	$$(Q)for f in Makefile $$(NAME).ld include/include_asm.h $$(VERSIONS:%=versions/%/splat.yaml); do test -s $$$$f || { echo "$$$$f is missing" >&2; exit 1; }; done
-else ifeq ($$(CHECK),rom)
-check: $$(VERSIONS:%=build/%/$$(NAME).z64)
+	$(Q)for f in Makefile $(NAME).ld include/include_asm.h $(VERSIONS:%=versions/%/splat.yaml); do test -s $$f || { echo "$$f is missing" >&2; exit 1; }; done
+else ifeq ($(CHECK),rom)
+check: $(VERSIONS:%=build/%/$(NAME).z64)
 else
-$$(error CHECK must be rom or tree)
+$(error CHECK must be rom or tree)
 endif
 
+# ---------------------------------------------------------------- extraction
 # A data file holds the ROM bytes from its symbol to the next one, in the section its stand-in names: its own
 # section line goes, no .align asks more than its first address has (alignment counts from the section start),
 # and a .double, which the assembler would align, is written as its two words.
@@ -72,1599 +84,202 @@ DATA_SED := -e '/^\.section /d' -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8
 # relocation on the word, whose low half the link fills. A `b` is spelled as the branch its word is: an
 # assembler may encode `b` as either beq or bgez. A handwritten line that carries a relocation (%hi, %lo, %gp_rel)
 # keeps its symbol: as a .word the link has no operand to fill, and the %lo of a lui/addiu pair is left unpaired.
-CODE_SED := -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)[^%]*/\* handwritten instruction \*/$$$$@\1.word 0x\2@' \
+CODE_SED := -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)[^%]*/\* handwritten instruction \*/$$@\1.word 0x\2@' \
 	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{4})[0-9A-F]{4} \*/\s*)(ld|sd|ldl|ldr|sdl|sdr|lld|scd)\s[^%]*%lo\(([A-Za-z0-9_.]+)\).*@\1.reloc ., R_MIPS_LO16, \4\n    .word 0x\20000@' \
-	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)\s[^%]*$$$$@\1.word 0x\2@' \
-	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 1000[0-9A-F]{4} \*/\s*)b(\s+)@\1beq\2$$$$zero, $$$$zero, @' \
-	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 0401[0-9A-F]{4} \*/\s*)b(\s+)@\1bgez\2$$$$zero, @'
-# An object whose data starts off an 8-byte boundary in the ROM (NOALIGN in text_sizes.mk, the start's address mod 8)
-# has the alignment its compiler asks for and the start does not meet dropped from the data sections of its assembly:
-# the assembler pads from the section start, so it would pad where the ROM, aligned by address, did not. Off a word
-# boundary the ROM packs the data at the byte: all alignment goes and words and halves are spelled as unaligned data.
-define STRIP_ALIGN
-import re, sys
-path, start, section, out = sys.argv[1], int(sys.argv[2]), "text", []
-for line in open(path):
-    found = re.match(r"\s*\.section\s+\.?(\w+)", line) or re.match(r"\s*\.(text|data|rdata|sdata|bss|rodata)\b", line)
-    if found:
-        section = found.group(1)
-    elif section in ("data", "rdata", "rodata", "sdata"):
-        asked = re.match(r"\s*\.(p2)?align\b\s*(\d*)", line)
-        if asked and (start % 4 or (asked.group(2) and start % (1 << int(asked.group(2))))):
-            continue
-        if start % 4:
-            line = re.sub(r"^(\s*)\.word\b", r"\1.4byte", re.sub(r"^(\s*)\.(half|short)\b", r"\1.2byte", line))
-    out.append(line)
-open(path, "w").write("".join(out))
-endef
-export STRIP_ALIGN
-# A compiler run with its function-sections flag gives each function a section of its own (`.Fn`), but its assembler
-# front rewrites the assembly and puts every function back in `.text`, every string, jump table and float pool in one
-# `.rdata`. FSPLIT (text_sizes.mk: an object whose functions or read-only data the ROM places apart) puts each function
-# in `.text.Fn` again and tags each read-only block with the function it belongs to, as `.rdata.Fn`: a block inside the
-# function (jump table, float pool) is that function's, a block is named as the ROM names it (its first label, else its
-# function's pool), so the link script lays every block at its ROM address.
-define FSPLIT_PASS
-import re, sys
-lines = open(sys.argv[1]).read().replace("\r", "").split("\n")
-code = re.compile(r"^\.section\s+\.([^\s,\"]+),\"ax\"")
-reopen = re.compile(r"^\.section\s+\.([^\s,\"]+)\Z")
-names = [m.group(1) for m in map(code.match, lines) if m]
-funcs = set(names)
-label_re = re.compile(r"^((?!RODATA_SYM_)[A-Za-z_][A-Za-z_0-9]*):")  # not the compiler front's own pool labels
-def next_block(i):
-    for j in range(i + 1, len(lines)):
-        if lines[j].startswith(".section") or lines[j].strip() in (".text", ".data"):
-            return j
-    return len(lines)
-def next_section(i):
-    for j in range(i + 1, len(lines)):
-        text = lines[j].strip()
-        if text.startswith((".section", ".data")) or text == ".text":
-            return lines[j]
-    return ""
-# the compiler writes a pool where the previous function ends or where its own code is: the function a pool belongs to
-# is the first one whose code names a label of it
-label_any = re.compile(r"^([.A-Za-z_][\w.]*):")
-token = re.compile(r"[.A-Za-z_][\w.]*")
-owner, at, in_code = {}, None, False
-for line in lines:
-    found = code.match(line) or (reopen.match(line) if reopen.match(line) and reopen.match(line).group(1) in funcs else None)
-    if found:
-        at, in_code = found.group(1), True
-    elif line.strip() == ".text":
-        in_code = True
-    elif re.match(r"\s*\.(section|data)\b", line):
-        in_code = False
-    elif in_code and at and not label_any.match(line):
-        for word in token.findall(line):
-            owner.setdefault(word, at)
-out, current = [], None
-for i, line in enumerate(lines):
-    found = code.match(line)
-    if found:
-        current = found.group(1)
-        out.append('.section\t.text.%s,"ax",@progbits' % current)
-    elif reopen.match(line) and reopen.match(line).group(1) in funcs:
-        current = reopen.match(line).group(1)
-        out.append('.section\t.text.%s,"ax",@progbits' % current)
-    elif line.strip() == ".text":
-        out.append('.section\t.text.%s,"ax",@progbits' % current if current else line)
-    elif re.match(r"^\s*\.section\s+\.(rdata|rodata)\s*\Z", line):
-        base = "rdata" if "rdata" in line else "rodata"
-        label = next((m.group(1) for m in map(label_re.match, lines[i + 1 : next_block(i)]) if m), None)
-        # a block is named as the ROM names it: its first source label, else the pool of the function it sits in (strings before the first function: that one's)
-        user = next((owner[m.group(1)] for m in map(label_any.match, lines[i + 1 : next_block(i)]) if m and m.group(1) in owner), None)
-        key = label or ("literals_" + (user or current or names[0]) if names else None)
-        out.append('.section\t.%s.%s,"a",@progbits' % (base, key) if key else line)
-        # `SUBALIGN(1)` drops the section's alignment: a block aligned to 8 says so to the link script
-        if key and any(re.match(r"\s*\.align\s+[3-9]\b", x) for x in lines[i + 1 : next_block(i)]):
-            out.append("\t.weak __align8_%s\n\t.set __align8_%s, 0" % (key, key))
-    else:
-        out.append(line)
-open(sys.argv[2], "w").write("\n".join(out))
-endef
-export FSPLIT_PASS
-# The R4000 reads HI/LO late: an mfhi/mflo needs two instructions before the next mult/div/mthi/mtlo. The assembler the
-# ROMs were made with wrote two nops where the compiler placed the two back to back (gas lays the gap itself only when
-# one instruction is already between, so here they stay adjacent). A toolchain row's hilo_hazard_nops puts those two
-# nops into the compiler's assembly, only in `.set reorder` text, where the assembler owns the slots.
-define HILO_HAZARD
-import re, sys
-path, out, last, reorder = sys.argv[1], [], None, True
-for line in open(path):
-    text = line.split("#", 1)[0].strip()
-    if text.startswith(".set"):
-        if re.match(r"\.set\s+noreorder\b", text):
-            reorder = False
-        elif re.match(r"\.set\s+reorder\b", text):
-            reorder = True
-    elif text and not text.startswith(".") and not re.match(r"[\w.\x24]+:", text):
-        word = text.split(None, 1)[0]
-        if word in ("mult", "multu", "dmult", "dmultu", "div", "divu", "ddiv", "ddivu", "mthi", "mtlo"):
-            if reorder and last == 0 and (len(text.split(",")) < 3 or word.startswith("m")):
-                out.append("\tnop\n\tnop\n")
-        last = 0 if word in ("mfhi", "mflo") else (None if last is None else last + 1)
-    out.append(line)
-open(path, "w").write("".join(out))
-endef
-export HILO_HAZARD
-# A unit whose file row says `unrelocated` is a relocatable object the ROM holds before its link: the relocated fields of
-# its code and data stay zero (the ROM keeps the patches elsewhere) and the object carries no relocations, so the link
-# lays its bytes down as they are. This zeroes the field each REL entry names (a 26-bit jump target, a 16-bit half of an
-# address, a 32-bit word) and empties the REL sections. The compiler's own read-only data (a switch's jump table, a
-# literal pool) is the ROM's already, in the data the file stands over, so those sections stop being loaded: the link
-# places none of them.
-define UNRELOC_PASS
-import struct, sys
-path = sys.argv[1]
-raw = bytearray(open(path, "rb").read())
-assert raw[:4] == b"\x7fELF" and raw[4] == 1 and raw[5] == 2, path + " is not a 32-bit big-endian ELF object"
-shoff, shentsize, shnum, shstrndx = struct.unpack_from(">I", raw, 32)[0], struct.unpack_from(">H", raw, 46)[0], struct.unpack_from(">H", raw, 48)[0], struct.unpack_from(">H", raw, 50)[0]
-sections = [struct.unpack_from(">IIIIIIIIII", raw, shoff + i * shentsize) for i in range(shnum)]
-names = sections[shstrndx]
-fields = {2: 0xFFFFFFFF, 4: 0x03FFFFFF, 5: 0xFFFF, 6: 0xFFFF}
-for index, (name, kind, flags, addr, off, size, link, info, align, entsize) in enumerate(sections):
-    called = raw[names[4] + name:raw.index(0, names[4] + name)]
-    if called.startswith((b".rodata", b".rdata")):
-        struct.pack_into(">I", raw, shoff + index * shentsize + 8, flags & ~2)
-    if kind != 9:
-        continue
-    target = sections[info]
-    for at in range(off, off + size, 8):
-        place, what = struct.unpack_from(">II", raw, at)
-        mask = fields.get(what & 255)
-        if mask is None:
-            sys.exit("%s: relocation type %d is not one a ROM-held object keeps" % (path, what & 255))
-        word = struct.unpack_from(">I", raw, target[4] + place)[0] & ~mask
-        struct.pack_into(">I", raw, target[4] + place, word)
-    raw[off:off + size] = bytes(size)
-    struct.pack_into(">I", raw, shoff + index * shentsize + 20, 0)
-open(path, "wb").write(raw)
-endef
-export UNRELOC_PASS
-# A function the ROM holds in several runs (other bytes of its file between them: a string, a static, a record) is one
-# `.text.<function>` in the object. A fact `textpiece<n>_<function>` per later run makes the Makefile set TEXTCUT to
-# `section:size:next` entries; each cuts the input section `.text.<section>` after `size` bytes and the rest becomes
-# the new section `.text.<next>`, so the link script lays each run at its ROM address. An object whose relocations are
-# gone (unrelocated) has no field that names a cut section; any relocation left against one is refused.
-define TEXTCUT_PASS
-import struct, sys
-path, cuts = sys.argv[1], sys.argv[2:]
-raw = bytearray(open(path, "rb").read())
-assert raw[:4] == b"\x7fELF" and raw[4] == 1 and raw[5] == 2, path + " is not a 32-bit big-endian ELF object"
-shoff, shentsize, shnum, shstrndx = struct.unpack_from(">I", raw, 32)[0], struct.unpack_from(">H", raw, 46)[0], struct.unpack_from(">H", raw, 48)[0], struct.unpack_from(">H", raw, 50)[0]
-sections = [list(struct.unpack_from(">IIIIIIIIII", raw, shoff + i * shentsize)) for i in range(shnum)]
-names = bytearray(raw[sections[shstrndx][4]:sections[shstrndx][4] + sections[shstrndx][5]])
-def called(section):
-    return names[section[0]:names.index(0, section[0])].decode()
-for cut in cuts:
-    old, size, new = cut.split(":")
-    size = int(size)
-    index = next((i for i, section in enumerate(sections) if called(section) == ".text." + old), None)
-    if index is None:
-        sys.exit("%s: no section .text.%s to cut at %d" % (path, old, size))
-    head = sections[index]
-    if not 0 < size < head[5]:
-        sys.exit("%s: .text.%s is %d bytes, not more than the cut at %d" % (path, old, head[5], size))
-    if any(section[1] in (4, 9) and section[7] == index and section[5] for section in sections):
-        sys.exit("%s: .text.%s still has relocations: a cut section needs an unrelocated object" % (path, old))
-    while len(raw) % 16:
-        raw.append(0)
-    rest = bytes(raw[head[4] + size:head[4] + head[5]])
-    sections.append([len(names), head[1], head[2], 0, len(raw), len(rest), 0, 0, 4, 0])
-    names += (".text." + new).encode() + b"\0"
-    raw += rest
-    head[5] = size
-    head[8] = min(head[8], 4)
-    for section in sections:
-        if section[1] == 2:
-            for at in range(section[4], section[4] + section[5], 16):
-                value, shndx = struct.unpack_from(">I", raw, at + 4)[0], struct.unpack_from(">H", raw, at + 14)[0]
-                if shndx == index and value >= size:
-                    struct.pack_into(">I", raw, at + 4, value - size)
-                    struct.pack_into(">H", raw, at + 14, len(sections) - 1)
-while len(raw) % 4:
-    raw.append(0)
-sections[shstrndx][4], sections[shstrndx][5] = len(raw), len(names)
-raw += names
-while len(raw) % 4:
-    raw.append(0)
-struct.pack_into(">I", raw, 32, len(raw))
-struct.pack_into(">H", raw, 48, len(sections))
-for section in sections:
-    raw += struct.pack(">IIIIIIIIII", *section)
-open(path, "wb").write(raw)
-endef
-export TEXTCUT_PASS
-# A data piece is the ROM bytes from its address to the next row of splat.yaml: splat drops string padding, a partial
-# last word and whole tiny pieces, so each extracted data file is rewritten as its ROM slice, every label kept at its
-# offset (from the ROM column of the line after it).
-define FILL_DATA
-import os, re, sys
-v = sys.argv[1]
-rom = open("roms/baserom.%s.z64" % v, "rb").read()
-rows = []
-for line in open("versions/%s/splat.yaml" % v):
-    m = re.match(r"\s+- \[0x([0-9A-Fa-f]+)(?:, (\w+), (\S+))?\]", line) or re.match(r"\s+start: 0x([0-9A-Fa-f]+)()()", line)
-    if m:
-        rows.append((int(m.group(1), 16), m.group(2), m.group(3)))
-for (start, kind, name), (end, _, _) in zip(rows, rows[1:]):
-    path = "asm/%s/data/%s.s" % (v, name)
-    if kind not in ("data", "rodata") or not os.path.exists(path):
-        continue
-    head, labels, waiting = [], [], []
-    for line in open(path):
-        text = line.strip()
-        m = re.match(r"(?:dlabel|glabel)\s+(\S+)", text)
-        at = re.match(r"/\* ([0-9A-F]+) [0-9A-F]{8}", text)
-        if m:
-            waiting.append(m.group(1))
-        elif text.startswith(".include"):
-            head.append(text)
-        elif at and waiting:
-            labels += [(int(at.group(1), 16), n) for n in waiting]
-            waiting = []
-    labels += [(end, n) for n in waiting]
-    out, here = head, start
-    for offset, label in sorted(labels, key=lambda row: row[0]) + [(end, None)]:
-        offset = min(max(offset, start), end)
-        out += ["    .byte " + ", ".join("0x%02X" % b for b in rom[k : min(k + 16, offset)]) for k in range(here, offset, 16)]
-        out += ["dlabel " + label] if label else []
-        here = offset
-    open(path, "w").write("\n".join(out) + "\n")
-endef
-export FILL_DATA
-# splat writes every extracted file again, so each new date would remake every object of the version (through the
-# extraction stamp and the files a source names) although nothing changed. A file whose bytes are the same gets its old
-# date back. A changed or added file reaches exactly the objects whose lines name it (build/asm.deps), so the stamp
-# keeps its date unless the shared asm/<v>/include changed; an object that named a file the extraction no longer
-# makes (asm.deps as make read it before the extraction) is dated long ago, so make compiles it and says what it lacks.
-define KEEP_DATES
-import hashlib, json, os, sys
-mode, version = sys.argv[1], sys.argv[2]
-root, keep = "asm/" + version, "build/.extract-dates-" + version + ".json"
-stamp = root + "/.extracted"
-def scan():
-    found = {}
-    for here, _, names in os.walk(root):
-        for name in names:
-            path = os.path.join(here, name)
-            if path != stamp:
-                with open(path, "rb") as data:
-                    found[path] = hashlib.sha1(data.read()).hexdigest()
-    return found
-if mode == "save":
-    os.makedirs("build", exist_ok=True)
-    files = {path: [digest, os.stat(path).st_mtime_ns] for path, digest in scan().items()}
-    when = os.stat(stamp).st_mtime_ns if os.path.exists(stamp) else None
-    with open(keep, "w") as out:
-        json.dump({"files": files, "stamp": when}, out)
-else:
-    with open(keep) as saved:
-        old = json.load(saved)
-    files = scan()
-    for path, digest in files.items():
-        if old["files"].get(path, [None])[0] == digest:
-            os.utime(path, ns=(old["files"][path][1], old["files"][path][1]))
-    moved = set(files) ^ set(old["files"]) | {path for path in files if old["files"].get(path, [None])[0] != files[path]}
-    if old["stamp"] is not None and not any(path.startswith(root + "/include/") for path in moved):
-        os.utime(stamp, ns=(old["stamp"], old["stamp"]))
-    gone = set(old["files"]) - set(files)
-    if gone and os.path.exists("build/asm.deps"):
-        for line in open("build/asm.deps"):
-            target, _, named = line.partition(": ")
-            if gone.intersection(named.split()) and os.path.exists(target):
-                os.utime(target, ns=(1000000000, 1000000000))
-    os.remove(keep)
-endef
-export KEEP_DATES
+	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)(ld|sd|ldl|ldr|sdl|sdr|lld|scd|ddiv|ddivu)\s[^%]*$$@\1.word 0x\2@' \
+	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 1000[0-9A-F]{4} \*/\s*)b(\s+)@\1beq\2$$zero, $$zero, @' \
+	-e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} 0401[0-9A-F]{4} \*/\s*)b(\s+)@\1bgez\2$$zero, @'
 # One extraction per input: a version whose baserom, splat.yaml, symbol_addrs.txt, splat and extract recipe are those of its last
 # extraction (build/.extract-key-<v>) is not split again, so a build or probe extracts only a version whose inputs it changed.
 # `make extract-force-<v>` (or removing asm/<v>/.extracted) splits regardless. One recipe, no sub-make (parallel sub-makes raced
 # on remaking the included files). Bump rev1 when the recipe changes.
-export EXTRACT_RECIPE := rev1 $$(DATA_SED) $$(CODE_SED)
-EXTRACT_KEY = { cat roms/baserom.$$*.z64 versions/$$*/splat.yaml versions/$$*/symbol_addrs.txt; $$(SPLAT) --version 2>&1; printf %s "$$$$EXTRACT_RECIPE"; } | sha1sum | cut -d" " -f1
+export EXTRACT_RECIPE := rev1 $(DATA_SED) $(CODE_SED)
+EXTRACT_KEY = { cat roms/baserom.$*.z64 versions/$*/splat.yaml versions/$*/symbol_addrs.txt; $(SPLAT) --version 2>&1; printf %s "$$EXTRACT_RECIPE"; } | sha1sum | cut -d" " -f1
 # asm/<v>/.extracted has only the ROM as prerequisite: a rebase that changed symbol_addrs.txt or splat.yaml left stale asm. A version whose
 # two files differ from build/.extract-src-<v> (or have no record) gets the phony extract-stale: the full key is checked once, then recorded.
-SRC_KEY = cat versions/$$*/splat.yaml versions/$$*/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1
+SRC_KEY = cat versions/$*/splat.yaml versions/$*/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1
 .PHONY: extract-stale
-$$(foreach v,$$(VERSIONS),$$(if $$(wildcard build/.extract-key-$$(v)),$$(if $$(filter $$(shell cat versions/$$(v)/splat.yaml versions/$$(v)/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1),$$(shell cat build/.extract-src-$$(v) 2>/dev/null)),,$$(eval asm/$$(v)/.extracted: extract-stale))))
+$(foreach v,$(VERSIONS),$(if $(wildcard build/.extract-key-$(v)),$(if $(filter $(shell cat versions/$(v)/splat.yaml versions/$(v)/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1),$(shell cat build/.extract-src-$(v) 2>/dev/null)),,$(eval asm/$(v)/.extracted: extract-stale))))
 # asm/<v>/.extracted holds the hash of the facts it was made from; an object of other facts is refused (an empty mark is not checked).
-$$(foreach v,$$(VERSIONS),$$(eval FACTS_NOW_$$(v) := $$(shell cat versions/$$(v)/symbol_addrs.txt versions/$$(v)/splat.yaml 2>/dev/null | sha1sum | cut -d' ' -f1)))
-extract: $$(VERSIONS:%=extract-%)
+$(foreach v,$(VERSIONS),$(eval FACTS_NOW_$(v) := $(shell cat versions/$(v)/symbol_addrs.txt versions/$(v)/splat.yaml 2>/dev/null | sha1sum | cut -d' ' -f1)))
+extract: $(VERSIONS:%=extract-%)
 extract-force-%:
-	$$(Q)rm -f build/.extract-key-$$* && $$(MAKE) --no-print-directory extract-$$*
+	$(Q)rm -f build/.extract-key-$* && $(MAKE) --no-print-directory extract-$*
 # Records the inputs asm/<v>/ holds the extraction of (the tool that extracts runs it too).
 extract-stamp-%:
-	$$(Q)mkdir -p build && { $$(EXTRACT_KEY); } > build/.extract-key-$$* && { $$(SRC_KEY); } > build/.extract-src-$$*
+	$(Q)mkdir -p build && { $(EXTRACT_KEY); } > build/.extract-key-$* && { $(SRC_KEY); } > build/.extract-src-$*
 extract-%:
-	$$(Q)mkdir -p build; flock build/.extract-lock-$$* $$(MAKE) --no-print-directory extract-do-$$*
+	$(Q)mkdir -p build; flock build/.extract-lock-$* $(MAKE) --no-print-directory extract-do-$*
+# keep_dates.py gives a file splat wrote again with the same bytes its old date back; fill_data.py rewrites each data
+# file as its ROM slice (splat drops string padding, a partial last word and whole tiny pieces).
 extract-do-%:
-	$$(Q)mkdir -p build; if test -f asm/$$*/.extracted && test "$$$$($$(EXTRACT_KEY))" = "$$$$(cat build/.extract-key-$$* 2>/dev/null)"; then rm -f build/.extract-run-$$*; echo "extract-$$*: inputs unchanged, not split again (make extract-force-$$* splits)"; { $$(SRC_KEY); } > build/.extract-src-$$*; else touch build/.extract-run-$$*; fi
-	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" save $$*
-	$$(Q)test -e build/.extract-run-$$* || exit 0; $$(SPLAT) split versions/$$*/splat.yaml
-	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
-		case $$$$(grep -m1 -oE '^ */\* [0-9A-F]+ [0-9A-F]{8}' "$$$$f" | tail -c 2) in \
+	$(Q)mkdir -p build; if test -f asm/$*/.extracted && test "$$($(EXTRACT_KEY))" = "$$(cat build/.extract-key-$* 2>/dev/null)"; then rm -f build/.extract-run-$*; echo "extract-$*: inputs unchanged, not split again (make extract-force-$* splits)"; { $(SRC_KEY); } > build/.extract-src-$*; else touch build/.extract-run-$*; fi
+	$(Q)test -e build/.extract-run-$* || exit 0; python3 -I $(MKTOOLS)/keep_dates.py save $*
+	$(Q)test -e build/.extract-run-$* || exit 0; $(SPLAT) split versions/$*/splat.yaml
+	$(Q)test -e build/.extract-run-$* || exit 0; find asm/$* \( -name '*.data.s' -o -name '*.rodata.s' \) | while read f; do \
+		case $$(grep -m1 -oE '^ */\* [0-9A-F]+ [0-9A-F]{8}' "$$f" | tail -c 2) in \
 		0*) c='';; 8*) c='s/^\.align [4-9]/.align 3/';; [4C]*) c='s/^\.align [3-9]/.align 2/';; \
 		[26AE]*) c='s/^\.align [2-9]/.align 1/';; *) c='s/^\.align [1-9]/.align 0/';; esac; \
-		sed -E $$(DATA_SED) -e "$$$$c" "$$$$f" > "$$$${f%.*.s}.s" && rm "$$$$f"; done
-	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$FILL_DATA" $$*
-	$$(Q)test -e build/.extract-run-$$* || exit 0; find asm/$$*/nonmatchings -name '*.s' -exec sed -i -E $$(CODE_SED) {} +
-	$$(Q)test -e build/.extract-run-$$* || exit 0; printf '%s\n' $$(FACTS_NOW_$$*) > asm/$$*/.extracted
-	$$(Q)test -e build/.extract-run-$$* || exit 0; python3 -I -c "$$$$KEEP_DATES" restore $$*
-	$$(Q)test -e build/.extract-run-$$* || exit 0; { $$(EXTRACT_KEY); } > build/.extract-key-$$* && { $$(SRC_KEY); } > build/.extract-src-$$* && rm -f build/.extract-run-$$*
+		sed -E $(DATA_SED) -e "$$c" "$$f" > "$${f%.*.s}.s" && rm "$$f"; done
+	$(Q)test -e build/.extract-run-$* || exit 0; python3 -I $(MKTOOLS)/fill_data.py $*
+	$(Q)test -e build/.extract-run-$* || exit 0; find asm/$*/nonmatchings -name '*.s' -exec sed -i -E $(CODE_SED) {} +
+	$(Q)test -e build/.extract-run-$* || exit 0; printf '%s\n' $(FACTS_NOW_$*) > asm/$*/.extracted
+	$(Q)test -e build/.extract-run-$* || exit 0; python3 -I $(MKTOOLS)/keep_dates.py restore $*
+	$(Q)test -e build/.extract-run-$* || exit 0; { $(EXTRACT_KEY); } > build/.extract-key-$* && { $(SRC_KEY); } > build/.extract-src-$* && rm -f build/.extract-run-$*
 # An object assembles extracted files its source only names through a macro: every object follows the extraction.
 asm/%/.extracted: | roms/baserom.%.z64
-	+$$(Q)$$(MAKE) --no-print-directory extract-$$*
+	+$(Q)$(MAKE) --no-print-directory extract-$*
 
-# Both scripts run before make reads a directory of build/: make keeps the listing it first read, so a stamp the sweep
-# removes later would still look present.
-# The compiler's assembly for a unit holds only an `.include` line for each extracted file its INCLUDE_ASM, INCLUDE_RODATA
-# and INCLUDE_DATA lines name: the assembler reads the file's content, so an edit in place (a symbol renamed by hand or
-# by a tool, with the .i unchanged and the compile answered by the cache) is an input of the object that no other rule
-# lists, and the object would keep the old symbols until it is deleted. Every source's object so depends on the files
-# of each version that its lines name and that exist (a line another version does not extract adds nothing).
-define ASM_DEPS
-import os, re, sys
-named = re.compile(rb'INCLUDE_(ASM|RODATA|DATA)\(\s*"(\w+)"\s*,\s*(\w+)\s*[,)]')
-out, lines = sys.argv[1], []
-for here, _, names in sorted(os.walk("src")):
-    for name in sorted(names):
-        path = os.path.join(here, name)
-        with open(path, "rb") as source:
-            found = sorted(set(named.findall(source.read())))
-        for version in sys.argv[2:]:
-            files = []
-            for kind, segment, symbol in found:
-                folder = "nonmatchings" if kind == b"ASM" else "data"
-                asm = "asm/%s/%s/%s/%s.s" % (version, folder, segment.decode(), symbol.decode())
-                if os.path.exists(asm):
-                    files.append(asm)
-            if files:
-                lines.append("build/%s/%s.o: %s\n" % (version, path, " ".join(files)))
-tmp = "%s.%d" % (out, os.getpid())
-with open(tmp, "w") as handle:
-    handle.write("".join(lines))
-os.replace(tmp, out)
-endef
-$$(shell mkdir -p build)
-# Parallel makes of one tree (a check beside an extract's sub-make) each parse this: the file a make -includes is only
-# ever replaced whole (REV1-ONE-40: `build/asm.deps:157: missing separator` read mid-rewrite), and a script is rewritten
-# only when its text changed, so a make never runs another's half-written copy.
-$$(if $$(subst $$(file <build/asm-deps.py),,$$(ASM_DEPS)),$$(file >build/asm-deps.py,$$(ASM_DEPS)))
-$$(shell python3 -I build/asm-deps.py build/asm.deps $$(VERSIONS))
+# ---------------------------------------------------------------- what make reads before any date
+# Both run before make reads a directory of build/: make keeps the listing it first read, so a stamp the sweep removes
+# later would still look present. asm_deps.py: every object depends on the extracted files its INCLUDE_ASM,
+# INCLUDE_RODATA and INCLUDE_DATA lines name (build/asm.deps). stamp_sweep.py: a stamp or object whose inputs' bytes
+# changed while its date did not (a tree copied, rebased or fast-forwarded) is dated long ago or removed. Only the
+# top-level make sweeps: a recursive one (extract-<v> from a recipe) would drop an object its parent is about to link.
+ifeq ($(CHECK),rom)
+$(shell mkdir -p build)
+$(shell python3 -I $(MKTOOLS)/asm_deps.py build/asm.deps $(VERSIONS))
 -include build/asm.deps
+$(if $(filter 0,$(MAKELEVEL)),$(shell python3 -I $(MKTOOLS)/stamp_sweep.py sweep $(VERSIONS) >&2))
+endif
+# The link script names every object, so no rule here lists a file: build/<version>/objs.mk is its list, made again
+# (and make restarted) only when the script changes.
+build/%/objs.mk: $(NAME).ld
+	$(Q)mkdir -p $(@D)
+	$(Q){ printf 'OBJS_$* :='; $(CPP) -P -undef -D$(VMACRO_$*) $< | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u | sed 's@^@ build/$*/@' | tr -d '\n'; echo; } > $@
+ifeq ($(CHECK),rom)
+-include $(VERSIONS:%=build/%/objs.mk)
+endif
+-include $(foreach v,$(VERSIONS),$(OBJS_$(v):.o=.d))
 
-# Make trusts file dates, and a date can lie: a tree copied, rebased or fast-forwarded gives a stamp that is newer than the
-# inputs it was made from. STAMP_SWEEP runs before make reads any date. For each .i.ok stamp it hashes the inputs the
-# preprocess read (the source and every header in its .d); for each object it hashes the extracted files the
-# object assembles (its .i is dated by the preprocess rule, which writes it only when its bytes change) (asm.deps). The hashes seen at the last sweep are kept beside the stamp's date (build/.inputs.json).
-# A stamp whose date did not move but whose inputs' bytes did was made from other bytes: it is dated long ago (make
-# skips a missing stamp when the object is newer than the source), so make makes it again, and an object is removed. A stamp that was rebuilt since (its date moved) records the bytes it now has.
-define STAMP_SWEEP
-import hashlib, json, os, sys, time
-state_path = "build/.inputs.json"
-seen = {}
-known = {}
-cache_path = "build/.dep-stat.json"
-def fingerprint(path):
-    try:
-        info = os.stat(path)
-    except OSError:
-        return [0, 0, -1]
-    return [info.st_mtime_ns, info.st_ctime_ns, info.st_size]
-def digest(path):
-    if path not in seen:
-        fp, old = fingerprint(path), known.get(path)
-        if old and old[:3] == fp:
-            seen[path] = old[3]
-        else:
-            try:
-                with open(path, "rb") as handle:
-                    seen[path] = hashlib.sha1(handle.read()).hexdigest()
-            except OSError:
-                seen[path] = "-"
-        known[path] = fp + [seen[path]]
-    return seen[path]
-def dependencies(dfile):
-    try:
-        text = open(dfile).read()
-    except OSError:
-        return None
-    names = []
-    for line in text.replace(chr(92) + chr(10), " ").splitlines():
-        target, colon, named = line.partition(": ")
-        if colon and named.strip():
-            names += named.split()
-    return names
-def stamp_key(stamp):
-    deps = dependencies(stamp[: -len(".i.ok")] + ".d")
-    return None if deps is None else hashlib.sha1(" ".join(digest(d) for d in deps).encode()).hexdigest()
-def object_key(obj, extracted):
-    return hashlib.sha1(" ".join(digest(a) for a in sorted(set(extracted))).encode()).hexdigest()
-log_path = "build/.inputs.log"
-def replay(state, path):
-    try:
-        with open(path) as handle:
-            for line in handle:
-                try:
-                    name, when, key = json.loads(line)
-                except ValueError:
-                    continue
-                state[name] = [when, key]
-    except OSError:
-        pass
-def load():
-    try:
-        with open(state_path) as handle:
-            state = json.load(handle)
-    except (OSError, ValueError):
-        state = {}
-    replay(state, log_path)
-    return state
-def save(state):
-    os.makedirs("build", exist_ok=True)
-    tmp = state_path + "." + str(os.getpid())
-    with open(tmp, "w") as handle:
-        json.dump(state, handle)
-    os.replace(tmp, state_path)
-if sys.argv[1] == "record":
-    path, key = sys.argv[2], None
-    key = stamp_key(path) if path.endswith(".i.ok") else object_key(path, sys.argv[3:])
-    if key is not None:
-        line = (json.dumps([path, os.stat(path).st_mtime_ns, key]) + chr(10)).encode()
-        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-        try:
-            os.write(fd, line)
-        finally:
-            os.close(fd)
-    sys.exit(0)
-asm = {}
-asm_text = ""
-if os.path.exists("build/asm.deps"):
-    with open("build/asm.deps") as handle:
-        asm_text = handle.read()
-for line in asm_text.splitlines():
-    target, _, named = line.partition(": ")
-    asm[target] = named.split()
-versions = set(sys.argv[2:])
-def twin(obj):
-    parts = obj.split("/")
-    return obj if parts[1] in versions else "/".join(parts[:1] + parts[2:])
-def save_cache(doc):
-    tmp = cache_path + "." + str(os.getpid())
-    with open(tmp, "w") as handle:
-        json.dump(doc, handle)
-    os.replace(tmp, cache_path)
-# Incremental sweep: no output's key can have changed while every file a key was made from still has the date, change
-# time and size the last sweep saw (build/.dep-stat.json). Then only the outputs recorded since (build/.inputs.log) matter:
-# the files they were made from join the cache, and the log stays unfolded until it is large. Anything else walks all.
-sig = [sorted(versions), hashlib.sha1(asm_text.encode()).hexdigest()]
-try:
-    with open(cache_path) as handle:
-        doc = json.load(handle)
-except (OSError, ValueError):
-    doc = {}
-FOLD = 2000000
-def moved_outputs(outs):
-    for path, when in outs.items():
-        try:
-            if os.stat(path).st_mtime_ns != when:
-                return True
-        except OSError:
-            return True
-    return False
-if (doc.get("sig") == sig and time.time() - doc.get("at", 0) < 600 and "outs" in doc
-        and all(fingerprint(p) == v[:3] for p, v in doc.get("files", {}).items()) and not moved_outputs(doc["outs"])):
-    known.update(doc["files"])
-    try:
-        size = os.stat(log_path).st_size
-    except OSError:
-        size = 0
-    if size <= FOLD:
-        done = doc.get("log", 0) if doc.get("log", 0) <= size else 0
-        if size > done:
-            fresh = {}
-            with open(log_path, "rb") as handle:
-                handle.seek(done)
-                data = handle.read(size - done)
-            data = data[: data.rfind(b"\n") + 1]  # a record being appended is read at the next sweep
-            size = done + len(data)
-            for line in data.decode(errors="replace").splitlines():
-                try:
-                    name, when, _ = json.loads(line)
-                    fresh[name] = when
-                except (ValueError, TypeError):
-                    continue
-            if all(os.path.exists(n) and os.stat(n).st_mtime_ns == w for n, w in fresh.items()):
-                for name in fresh:
-                    if name.endswith(".i.ok"):
-                        for dep in dependencies(name[: -len(".i.ok")] + ".d") or []:
-                            digest(dep)
-                    else:
-                        for dep in asm.get(twin(name), []):
-                            digest(dep)
-                doc["outs"].update(fresh)
-                save_cache({"sig": sig, "files": known, "log": size, "outs": doc["outs"], "at": doc["at"]})
-                sys.exit(0)
-        else:
-            sys.exit(0)
-known.clear()
-known.update(doc.get("files", {}) if doc.get("sig") == sig else {})
-pending = log_path + "." + str(os.getpid())
-try:
-    os.replace(log_path, pending)
-except OSError:
-    pending = None
-state = load()
-if pending:
-    replay(state, pending)
-removed = 0
-visited = {}
-def check(path, key):
-    global removed
-    if key is None:
-        return
-    try:
-        when = os.stat(path).st_mtime_ns
-    except OSError:
-        state.pop(path, None)
-        return
-    visited[path] = when
-    old = state.get(path)
-    if old and old[0] == when and old[1] != key:
-        if path.endswith(".o"):
-            os.unlink(path)
-        else:
-            os.utime(path, ns=(1000000000, 1000000000))
-        state.pop(path, None)
-        removed += 1
-    else:
-        state[path] = [when, key]
-for here, _, names in os.walk("build"):
-    for name in names:
-        if name.endswith(".i.ok"):
-            stamp = os.path.join(here, name)
-            check(stamp, stamp_key(stamp))
-            obj = stamp[: -len(".i.ok")] + ".o"
-            check(obj, object_key(obj, asm.get(twin(obj), [])))
-save(state)
-save_cache({"sig": sig, "files": {p: known[p] for p in seen}, "log": 0, "outs": visited, "at": time.time()})
-if pending:
-    os.unlink(pending)
-if removed:
-    sys.stderr.write("stamp sweep: %d outputs made from other bytes than their inputs now hold were dropped\n" % removed)
-endef
-$$(if $$(subst $$(file <build/stamp-sweep.py),,$$(STAMP_SWEEP)),$$(file >build/stamp-sweep.py,$$(STAMP_SWEEP)))
-# Only the top-level make sweeps: a recursive one (extract-<v> from a recipe) would drop an object its parent is about to
-# link, because the parent's own extraction has just changed the bytes the object's key names (first `make check` after a
-# fast-forward failed to link eu/eu-x: no MENU_2/*.CPP.o).
-$$(if $$(filter 0,$$(MAKELEVEL)),$$(shell python3 -I build/stamp-sweep.py sweep $$(VERSIONS) >&2))
-# The link script names every object, so no rule here lists a file.
-$$(foreach v,$$(VERSIONS),$$(eval OBJS_$$(v) := $$(addprefix build/$$(v)/,$$(shell $$(CPP) -P -undef -D$$(VMACRO_$$(v)) $$(NAME).ld 2>/dev/null | grep -oE '[[:alnum:]_./+-]+[.]o' | sort -u))))
--include $$(foreach v,$$(VERSIONS),$$(OBJS_$$(v):.o=.d))
-
-
+# ---------------------------------------------------------------- objects
 # An object follows the text its source preprocesses to, not the time its headers were written: the .i is replaced only
-# when its bytes change, so a header edit that leaves a source's text alone (a comment, a part another version reads)
-# preprocesses that source again and compiles nothing. The stamp (.i.ok) carries the header times; the object compiles
-# when its .i is newer than it or another input (the extraction, the text size) changed, else it is only touched.
-# A flags row (TC, CPPFLAGS, CFLAGS of a [file] row, the toolchain's compiler) that changes remakes the objects it
-# reaches: each object keeps the flags it was made with beside it (`.flags` for the compile, `.i.ok.flags` for the
-# preprocess) and, when its own flags differ, make sees one more prerequisite that is out of date. A stamp a build never
-# wrote (an object made before the stamps) is trusted, so the first run after an upgrade rebuilds nothing.
-# The compile key of a unit (tools: hdrkey, below). The .i is kept, and the object with it, when the key of the new
-# preprocess equals the key of the one the object was made from: the key leaves out every top-level declaration (extern,
-# prototype, typedef, struct/union/enum definition) the unit never names, so a header edit that adds or changes a
-# declaration this unit does not use compiles nothing. Without a C compiler the .i is compared byte for byte.
-HOSTCC ?= cc
+# when its bytes change, so a header edit that leaves a source's text alone preprocesses that source again and compiles
+# nothing. The stamp (.i.ok) carries the header times; the object compiles when its .i is newer than it or another input
+# (the extraction, the text size) changed, else it is only touched. A row's flags that change remake the objects it
+# reaches: each object keeps the flags it was made with beside it (`.flags`, `.i.ok.flags`) and, when its own flags
+# differ, make sees one more prerequisite that is out of date. hdrkey (the compile key of a unit: the .i without the
+# declarations it never names) and stamprec (the input record each made output appends to build/.inputs.log) are
+# small C tools; without a C compiler the .i is compared byte for byte and the python record runs instead.
 HDRKEY := build/hdrkey
-define HDRKEY_C
-/* hdrkey: the compile key of a preprocessed C unit (cpp -P output).
- *
- * Prints the unit with every top-level declaration it never references left out: extern variables, prototypes,
- * typedefs and struct/union/enum definitions whose names are not used, transitively, by what is kept. Function
- * and variable definitions, pragmas and anything not understood are always kept, in their order. The text is
- * compilable C (whitespace collapsed to one space where the source had any), so cc1 gives the same object for
- * it as for the full unit; two units with equal keys compile to the same object.
- * Anything this parser does not understand makes the key the whole file ("RAW" and its bytes): a key may be
- * less reduced, never wrong.
- *
- *   hdrkey FILE            key to stdout
- *   hdrkey --stats FILE    key to stdout, one line "items kept dropped" to stderr
- */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-enum { T_ID, T_NUM, T_STR, T_PRAG, T_PUNCT };
-typedef struct { int off, len, kind, id, sp; } Tok;
-typedef struct { int a, b, root, kept, d0, nd; } Item;
-
-static char *src; static long srclen;
-static Tok *tk; static int ntk, ctk;
-static Item *it; static int nit, cit;
-static int *defs; static int ndefs, cdefs;
-static int fallback;
-
-/* identifier table: open addressing; kw[] marks C keywords, td[] typedef names */
-typedef struct { int off, len, kw, td; } Name;
-static Name *nm; static int nnm, cnm; static int *tab; static int tabn;
-
-static const char *KW[] = {"auto","break","case","char","const","continue","default","do","double","else","enum",
- "extern","float","for","goto","if","int","long","register","return","short","signed","sizeof","static","struct",
- "switch","typedef","union","unsigned","void","volatile","while","inline","__inline","__inline__","__volatile__",
- "__const","__const__","__signed__","asm","__asm","__asm__","__attribute__","__attribute","__extension__",
- "__typeof__","typeof","restrict","__restrict","_Bool",0};
-
-static unsigned hash(const char *s, int n) { unsigned h = 2166136261u; while (n--) h = (h ^ (unsigned char)*s++) * 16777619u; return h; }
-static int intern(const char *s, int n) {
-    unsigned h = hash(s, n) & (tabn - 1);
-    while (tab[h] >= 0) {
-        Name *x = &nm[tab[h]];
-        if (x->len == n && !memcmp(src + x->off, s, n)) return tab[h];
-        h = (h + 1) & (tabn - 1);
-    }
-    if (nnm == cnm) { cnm = cnm ? cnm * 2 : 1024; nm = realloc(nm, cnm * sizeof *nm); }
-    nm[nnm].off = s - src; nm[nnm].len = n; nm[nnm].kw = 0; nm[nnm].td = 0;
-    tab[h] = nnm;
-    return nnm++;
-}
-
-static int dbg;
-static void badat(int line, int tokidx) { if (!fallback && dbg) { fprintf(stderr, "RAW at hdrkey.c:%d token %d\n", line, tokidx); if (tokidx > 0 && tokidx < ntk) { int o = tk[tokidx].off; fprintf(stderr, "%.*s\n", 200, src + (o > 100 ? o - 100 : 0)); } } fallback = 1; }
-#define bad() badat(__LINE__, i)
-
-static int isid0(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == 36; }
-static int isid(int c) { return isid0(c) || (c >= '0' && c <= '9'); }
-static int isdig(int c) { return c >= '0' && c <= '9'; }
-
-static void addtok(int off, int len, int kind, int id, int sp) {
-    if (ntk == ctk) { ctk = ctk ? ctk * 2 : 4096; tk = realloc(tk, ctk * sizeof *tk); }
-    tk[ntk].off = off; tk[ntk].len = len; tk[ntk].kind = kind; tk[ntk].id = id; tk[ntk].sp = sp; ntk++;
-}
-
-static void lex(void) {
-    long i = 0; int sp = 0, bol = 1;
-    while (i < srclen) {
-        int c = (unsigned char)src[i];
-        if (c == '\n') { bol = 1; sp = 1; i++; continue; }
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v') { sp = 1; i++; continue; }
-        if (c == '#' && bol) {               /* a directive left by cpp -P (pragma, ident): kept verbatim */
-            long j = i;
-            while (j < srclen && src[j] != '\n') { if (src[j] == '\\' && j + 1 < srclen) j++; j++; }
-            addtok(i, j - i, T_PRAG, -1, sp); i = j; sp = 1; continue;
-        }
-        bol = 0;
-        if (isid0(c)) {
-            long j = i + 1; while (j < srclen && isid((unsigned char)src[j])) j++;
-            addtok(i, j - i, T_ID, intern(src + i, j - i), sp); i = j; sp = 0; continue;
-        }
-        if (isdig(c) || (c == '.' && i + 1 < srclen && isdig((unsigned char)src[i + 1]))) {
-            long j = i + 1;
-            while (j < srclen) {
-                int d = (unsigned char)src[j];
-                if ((d == '+' || d == '-') && (src[j-1]=='e'||src[j-1]=='E'||src[j-1]=='p'||src[j-1]=='P')) { j++; continue; }
-                if (isid(d) || d == '.') { j++; continue; }
-                break;
-            }
-            addtok(i, j - i, T_NUM, -1, sp); i = j; sp = 0; continue;
-        }
-        if (c == '"' || c == '\'') {
-            long j = i + 1;
-            while (j < srclen && src[j] != c) { if (src[j] == '\\') j++; if (j < srclen && src[j] == '\n') { bad(); break; } j++; }
-            if (j >= srclen) { bad(); return; }
-            addtok(i, j + 1 - i, T_STR, -1, sp); i = j + 1; sp = 0; continue;
-        }
-        addtok(i, 1, T_PUNCT, -1, sp); i++; sp = 0;
-    }
-}
-
-static int is_p(int i, char c) { return i >= 0 && i < ntk && tk[i].kind == T_PUNCT && src[tk[i].off] == c; }
-static int is_id(int i) { return i >= 0 && i < ntk && tk[i].kind == T_ID; }
-static int is_kw(int i, const char *w) {
-    return is_id(i) && tk[i].len == (int)strlen(w) && !memcmp(src + tk[i].off, w, tk[i].len);
-}
-static int iskwid(int i) { return is_id(i) && nm[tk[i].id].kw; }
-
-/* index of the token after the group opened at i (( [ {), or -1 when unbalanced */
-static int skip_group(int i) {
-    int d = 0;
-    for (; i < ntk; i++) {
-        if (tk[i].kind != T_PUNCT) continue;
-        char c = src[tk[i].off];
-        if (c == '(' || c == '[' || c == '{') d++;
-        else if (c == ')' || c == ']' || c == '}') { if (--d == 0) return i + 1; if (d < 0) return -1; }
-    }
-    return -1;
-}
-
-static void adddef(int id) {
-    if (ndefs == cdefs) { cdefs = cdefs ? cdefs * 2 : 4096; defs = realloc(defs, cdefs * sizeof *defs); }
-    defs[ndefs++] = id;
-}
-
-/* Split [a,b) into declarators at depth-0 commas and collect names. Returns 0 when it cannot say what is
- * declared (the item is then kept). *allfn is set to 1 when every declarator is a function declarator. */
-static int declare(int a, int b, int *allfn, int noadd) {
-    int i = a, seg = 1, nfn = 0, nvar = 0;
-    while (i < b) {
-        /* one segment */
-        int last = -1, kind = 0, j = i;     /* kind: 0 none, 1 var, 2 fn */
-        while (j < b) {
-            if (is_p(j, ',')) break;
-            if (iskwid(j) && (is_kw(j, "struct") || is_kw(j, "union") || is_kw(j, "enum"))) {
-                int k = j + 1;
-                while (is_kw(k, "__attribute__")) { k = skip_group(k + 1); if (k < 0) return 0; }
-                if (is_id(k) && !iskwid(k)) { if (!noadd) adddef(tk[k].id); k++; }
-                if (is_p(k, '{')) {
-                    int e = skip_group(k); if (e < 0) return 0;
-                    if (is_kw(j, "enum")) {      /* enumerators: identifiers after { or , at brace depth 1 */
-                        int d = 0;
-                        for (int m = k; m < e; m++) {
-                            if (is_p(m, '{') || is_p(m, '(') || is_p(m, '[')) d++;
-                            else if (is_p(m, '}') || is_p(m, ')') || is_p(m, ']')) d--;
-                            else if (d == 1 && is_id(m) && (is_p(m - 1, '{') || is_p(m - 1, ',')) && !noadd) adddef(tk[m].id);
-                        }
-                    } else {                    /* nested tags and enums inside: add their names too */
-                        for (int m = k; m < e; m++)
-                            if ((is_kw(m, "struct") || is_kw(m, "union") || is_kw(m, "enum")) && is_id(m + 1) && !iskwid(m + 1) && !noadd)
-                                adddef(tk[m + 1].id);
-                        for (int m = k; m < e; m++)
-                            if (is_kw(m, "enum")) return 0;     /* enum inside a struct body: do not guess */
-                    }
-                    k = e;
-                }
-                j = k; continue;
-            }
-            if (is_kw(j, "__attribute__") || is_kw(j, "__attribute")) { j = skip_group(j + 1); if (j < 0) return 0; continue; }
-            if (is_kw(j, "asm") || is_kw(j, "__asm") || is_kw(j, "__asm__")) return 0;
-            if (is_p(j, '{')) return 0;
-            if (is_id(j)) { if (!iskwid(j)) last = j; j++; continue; }
-            if (is_p(j, '[')) { if (last >= 0) { kind = 1; } j = skip_group(j); if (j < 0) return 0; continue; }
-            if (is_p(j, '=')) return 0;
-            if (is_p(j, '(') && last == -2) { j = skip_group(j); if (j < 0) return 0; continue; }   /* params of a (*name) */
-            if (is_p(j, '(')) {
-                int nx = j + 1;
-                if (is_p(nx, '*') || is_p(nx, '(') || is_p(nx, '^')) {      /* (*name)(...): a pointer declarator */
-                    int e = skip_group(j); if (e < 0) return 0;
-                    int any = 0;
-                    for (int m = j + 1; m < e - 1; m++) if (is_id(m) && !iskwid(m)) { if (!noadd) adddef(tk[m].id); any = 1; }
-                    if (!any) return 0;
-                    kind = 1; last = -2; j = e; continue;
-                }
-                if (last < 0) return 0;
-                int e = skip_group(j); if (e < 0) return 0;
-                if (e - j == 3 && is_id(j + 1) && !iskwid(j + 1) && !nm[tk[j + 1].id].td) {
-                    /* (name) after a type: a parenthesised declarator or an untyped parameter; keep both */
-                    if (!noadd) { adddef(tk[last].id); adddef(tk[j + 1].id); }
-                    kind = 2; last = -2; j = e; continue;
-                }
-                if (!noadd) adddef(tk[last].id);
-                kind = 2; last = -2; j = e; continue;
-            }
-            j++;
-        }
-        if (kind == 0 && last >= 0) { kind = 1; }
-        if (kind == 1 && last >= 0) { if (!noadd) adddef(tk[last].id); }
-        if (kind == 0 && last < 0 && seg == 1 && j >= b) { /* specifiers only (struct S {...}; or struct S;) */ }
-        else if (kind == 0) return 0;
-        if (kind == 2) nfn++; else if (kind == 1) nvar++;
-        i = j + 1; seg++;
-    }
-    *allfn = (nfn > 0 && nvar == 0);
-    return 1;
-}
-
-static void classify(Item *x) {
-    int a = x->a, b = x->b;
-    x->d0 = ndefs; x->nd = 0; x->root = 1;
-    if (!is_p(b - 1, ';')) return;          /* a function definition: always kept */
-    int e = b - 1, typedef_ = 0, extern_ = 0;
-    for (int i = a; i < e; i++) {
-        if (tk[i].kind == T_PRAG) return;
-        if (is_kw(i, "typedef")) typedef_ = 1;
-        else if (is_kw(i, "extern")) extern_ = 1;
-        else if (is_p(i, '{')) { int g = skip_group(i); if (g < 0) return; i = g - 1; }
-    }
-    if (e == a) return;                     /* a stray ; */
-    int allfn = 0;
-    if (!declare(a, e, &allfn, 0)) { ndefs = x->d0; return; }
-    if (!typedef_ && !extern_ && !allfn) {
-        /* a variable definition allocates space and is kept; a declaration of no variable (struct S {...};) is a type */
-        for (int i = a; i < e; i++) {
-            if (is_p(i, '{')) { i = skip_group(i) - 1; continue; }
-            if (is_id(i) && !iskwid(i) && !(i > a && (is_kw(i - 1, "struct") || is_kw(i - 1, "union") || is_kw(i - 1, "enum"))))
-                { ndefs = x->d0; return; }
-        }
-    }
-    x->root = 0; x->nd = ndefs - x->d0;
-}
-
-static int bad_after_paren(int i) {      /* K&R: ) followed by an identifier that is not an attribute/asm */
-    return is_id(i) && !is_kw(i, "__attribute__") && !is_kw(i, "__attribute") && !is_kw(i, "asm") && !is_kw(i, "__asm__") && !is_kw(i, "__asm");
-}
-
-static void split(void) {
-    int i = 0;
-    while (i < ntk && !fallback) {
-        int a = i;
-        if (tk[i].kind == T_PRAG) { i++; goto push; }
-        int pd = 0, eq = 0;
-        for (;;) {
-            if (i >= ntk) { bad(); return; }
-            if (tk[i].kind == T_PRAG) { i++; continue; }
-            if (pd == 0 && (is_kw(i, "__attribute__") || is_kw(i, "__attribute"))) {
-                int g = skip_group(i + 1); if (g < 0) { bad(); return; }
-                i = g; continue;
-            }
-            if (tk[i].kind == T_PUNCT) {
-                char c = src[tk[i].off];
-                if (c == '(' || c == '[') { pd++; i++; continue; }
-                if (c == ')' || c == ']') {
-                    if (--pd < 0) { bad(); return; }
-                    i++;
-                    if (c == ')' && pd == 0 && !eq && bad_after_paren(i)) { bad(); return; }
-                    continue;
-                }
-                if (c == '=' && pd == 0) eq = 1;
-                if (c == '{' && pd == 0) {
-                    int g = skip_group(i); if (g < 0) { bad(); return; }
-                    int p = i - 1;
-                    while (p >= a && tk[p].kind == T_PRAG) p--;
-                    int agg = 0, fn = 0; (void)agg;
-                    if (p >= a && is_p(p, '=')) agg = 1;
-                    else if (p >= a && (is_kw(p, "struct") || is_kw(p, "union") || is_kw(p, "enum"))) agg = 1;
-                    else if (p - 1 >= a && is_id(p) && (is_kw(p - 1, "struct") || is_kw(p - 1, "union") || is_kw(p - 1, "enum"))) agg = 1;
-                    else if (p >= a && is_p(p, ')')) {
-                        int ty = 0;
-                        for (int m = a, d = 0; m < i; m++) {
-                            if (is_p(m, '(') || is_p(m, '[') || is_p(m, '{')) d++;
-                            else if (is_p(m, ')') || is_p(m, ']') || is_p(m, '}')) d--;
-                            else if (d == 0 && is_kw(m, "typedef")) ty = 1;
-                        }
-                        if (ty) { bad(); return; }
-                        fn = 1;
-                    } else { bad(); return; }
-                    i = g;
-                    if (fn) { goto push; }
-                    continue;
-                }
-                if (c == '}') { bad(); return; }
-                if (c == ';' && pd == 0) { i++; goto push; }
-            }
-            i++;
-        }
-    push:
-        if (nit == cit) { cit = cit ? cit * 2 : 1024; it = realloc(it, cit * sizeof *it); }
-        it[nit].a = a; it[nit].b = i; it[nit].root = 1; it[nit].kept = 0; it[nit].d0 = 0; it[nit].nd = 0; nit++;
-    }
-}
-
-static void emit_tokens(FILE *o, int a, int b) {
-    for (int i = a; i < b; i++) {
-        if (tk[i].kind == T_PRAG) { fputc('\n', o); fwrite(src + tk[i].off, 1, tk[i].len, o); fputc('\n', o); continue; }
-        if (tk[i].sp && i > a) fputc(' ', o);
-        fwrite(src + tk[i].off, 1, tk[i].len, o);
-    }
-}
-
-int main(int argc, char **argv) {
-    int stats = 0; const char *path = 0;
-    for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "--stats")) stats = dbg = 1; else path = argv[i]; }
-    if (!path) { fprintf(stderr, "usage: hdrkey [--stats] FILE\n"); return 2; }
-    FILE *f = fopen(path, "rb"); if (!f) { perror(path); return 2; }
-    fseek(f, 0, SEEK_END); srclen = ftell(f); fseek(f, 0, SEEK_SET);
-    src = malloc(srclen + 1);
-    if (fread(src, 1, srclen, f) != (size_t)srclen) { perror(path); return 2; }
-    src[srclen] = 0; fclose(f);
-    tabn = 1 << 12; while (tabn < srclen / 4) tabn <<= 1;
-    tab = malloc(tabn * sizeof *tab); memset(tab, -1, tabn * sizeof *tab);
-    /* keywords live in a static copy appended to the buffer so intern() can point into src */
-    {
-        long extra = 0; for (int i = 0; KW[i]; i++) extra += strlen(KW[i]) + 1;
-        src = realloc(src, srclen + extra + 1);
-        long p = srclen;
-        for (int i = 0; KW[i]; i++) { int n = strlen(KW[i]); memcpy(src + p, KW[i], n); int id = intern(src + p, n); nm[id].kw = 1; p += n + 1; src[p - 1] = 0; }
-    }
-    long full = srclen;
-    srclen = full;
-    lex();
-    if (!fallback) split();
-    if (!fallback) {
-        /* typedef names first: they tell a type in (name) apart from a declarator */
-        for (int pass = 0; pass < 2; pass++) {
-            ndefs = 0;
-            for (int k = 0; k < nit; k++) {
-                Item *x = &it[k];
-                if (pass == 0) {
-                    int e = x->b - 1, a = x->a, isty = 0;
-                    if (!is_p(e, ';')) continue;
-                    for (int i = a; i < e; i++) { if (is_kw(i, "typedef")) isty = 1; if (is_p(i, '{')) { int g = skip_group(i); if (g < 0) break; i = g - 1; } }
-                    if (!isty) continue;
-                    int fnx = 0, d0 = ndefs;
-                    if (declare(a, e, &fnx, 0)) for (int q = d0; q < ndefs; q++) nm[defs[q]].td = 1;
-                    ndefs = d0;
-                } else classify(x);
-            }
-        }
-        /* reachability: roots first, then declarations naming something live */
-        int *head = malloc((nnm + 1) * sizeof *head), *nxt = malloc((ndefs + 1) * sizeof *nxt), *own = malloc((ndefs + 1) * sizeof *own);
-        char *live = calloc(nnm + 1, 1);
-        int *stack = malloc((ntk + nnm + 16) * sizeof *stack), sp = 0;
-        for (int i = 0; i < nnm; i++) head[i] = -1;
-        for (int k = 0; k < nit; k++) if (!it[k].root) for (int q = it[k].d0; q < it[k].d0 + it[k].nd; q++) { own[q] = k; nxt[q] = head[defs[q]]; head[defs[q]] = q; }
-        #define KEEP(K) do { Item *y = &it[K]; y->kept = 1; for (int m = y->a; m < y->b; m++) if (tk[m].kind == T_ID && !live[tk[m].id]) { live[tk[m].id] = 1; stack[sp++] = tk[m].id; } } while (0)
-        for (int k = 0; k < nit; k++) if (it[k].root) KEEP(k);
-        while (sp) {
-            int id = stack[--sp];
-            for (int q = head[id]; q >= 0; q = nxt[q]) if (!it[own[q]].kept) KEEP(own[q]);
-        }
-        int kept = 0, dropped = 0;
-        for (int k = 0; k < nit; k++) { if (it[k].kept) kept++; else dropped++; }
-        for (int k = 0; k < nit; k++) if (it[k].kept) { emit_tokens(stdout, it[k].a, it[k].b); fputc('\n', stdout); }
-        if (stats) fprintf(stderr, "%d %d %d\n", nit, kept, dropped);
-        return 0;
-    }
-    fputs("RAW\n", stdout);
-    fwrite(src, 1, full, stdout);
-    if (stats) fprintf(stderr, "RAW\n");
-    return 0;
-}
-endef
-$$(HDRKEY): Makefile
-	$$(Q)mkdir -p build
-	$$(file >build/hdrkey.c,$$(HDRKEY_C))
-	$$(Q)$$(HOSTCC) -O2 -o $$@ build/hdrkey.c 2>/dev/null || rm -f $$@
-# Each made output appends its record (the input key the next sweep compares) to build/.inputs.log. The record is a
-# small C tool (stamprec, below) built like hdrkey: a python record per output cost 20 ms, 70% of a no-op header
-# rebuild. Without a C compiler the python record runs instead.
 STAMPREC := build/stamprec
-define STAMPREC_C
-/* stamprec: one stamp record, appended to build/.inputs.log exactly as `stamp-sweep.py record` writes it.
- *
- * A record per output costs a python start and a hash of every header the unit read (20 ms; two per unit, so a
- * header edit that preprocesses 2000 units again spent 80 of its 117 CPU s on records). This is the same record
- * in C: the key of a preprocess stamp is the SHA-1 of the SHA-1s of the files its .d names (" "-joined, "-" for one
- * that cannot be read); the key of an object is that of the extracted files named after it, sorted and once each.
- * Exit 0 with no line when the stamp has no .d (as the python record); exit 2, before writing, for a path JSON
- * would escape, so the caller falls back to the python record.
- *
- *   stamprec record PATH [EXTRACTED...]
- *
- * The same process does what cc_cache.py does for the object rule, for the same reason (a python start is 12 ms,
- * this is under 1): `object` is the whole recipe of one X.o (cc_cache.object_file), and its PROGRAM, the compile
- * chain the toolchain's row spells, runs here without a shell: steps are separated by the word `&&` and a step is
- * a command to start or one of the file operations the chain used to start a process for (`@rotate`, `@compile`,
- * `@nonempty`, `@jumptable`, `@settle`, `@py`, `@out`: cc_cache.object_file lists them).
- *
- *   stamprec object OUT VERSION FACTS CHANGED TEXTSIZE FLAGS STAMPREC [EXTRACTED...] -- PROGRAM...
- */
-#include <errno.h>
-#include <fcntl.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-typedef struct { uint32_t h[5]; uint64_t n; unsigned char b[64]; int k; } Sha;
-
-static uint32_t rol(uint32_t x, int s) { return (x << s) | (x >> (32 - s)); }
-
-static void sha_block(Sha *c, const unsigned char *p) {
-    uint32_t w[80], A, B, C, D, E, f, k, t;
-    int i;
-    for (i = 0; i < 16; i++)
-        w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
-    for (; i < 80; i++) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    A = c->h[0]; B = c->h[1]; C = c->h[2]; D = c->h[3]; E = c->h[4];
-    for (i = 0; i < 80; i++) {
-        if (i < 20) { f = (B & C) | (~B & D); k = 0x5A827999u; }
-        else if (i < 40) { f = B ^ C ^ D; k = 0x6ED9EBA1u; }
-        else if (i < 60) { f = (B & C) | (B & D) | (C & D); k = 0x8F1BBCDCu; }
-        else { f = B ^ C ^ D; k = 0xCA62C1D6u; }
-        t = rol(A, 5) + f + E + k + w[i];
-        E = D; D = C; C = rol(B, 30); B = A; A = t;
-    }
-    c->h[0] += A; c->h[1] += B; c->h[2] += C; c->h[3] += D; c->h[4] += E;
-}
-
-static void sha_init(Sha *c) {
-    c->h[0] = 0x67452301u; c->h[1] = 0xEFCDAB89u; c->h[2] = 0x98BADCFEu; c->h[3] = 0x10325476u; c->h[4] = 0xC3D2E1F0u;
-    c->n = 0; c->k = 0;
-}
-
-static void sha_add(Sha *c, const unsigned char *p, size_t n) {
-    c->n += n;
-    while (n) {
-        size_t room = (size_t)(64 - c->k), take = room < n ? room : n;
-        memcpy(c->b + c->k, p, take);
-        c->k += take; p += take; n -= take;
-        if (c->k == 64) { sha_block(c, c->b); c->k = 0; }
-    }
-}
-
-static void sha_hex(Sha *c, char out[41]) {
-    uint64_t bits = c->n * 8;
-    unsigned char pad = 0x80, zero = 0, len[8];
-    int i;
-    sha_add(c, &pad, 1);
-    while (c->k != 56) sha_add(c, &zero, 1);
-    for (i = 0; i < 8; i++) len[i] = (unsigned char)(bits >> (56 - 8 * i));
-    sha_add(c, len, 8);
-    for (i = 0; i < 20; i++) sprintf(out + 2 * i, "%02x", (unsigned)(c->h[i / 4] >> (24 - 8 * (i % 4))) & 0xFF);
-    out[40] = 0;
-}
-
-/* the SHA-1 of a file's bytes, or "-" when it cannot be opened or read (a directory, a missing file) */
-static void digest(const char *path, char out[41]) {
-    static unsigned char buf[1 << 16];
-    Sha c;
-    ssize_t got;
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) { strcpy(out, "-"); return; }
-    sha_init(&c);
-    while ((got = read(fd, buf, sizeof buf)) > 0) sha_add(&c, buf, (size_t)got);
-    close(fd);
-    if (got < 0) { strcpy(out, "-"); return; }
-    sha_hex(&c, out);
-}
-
-static char *slurp(const char *path, long *size) {
-    FILE *f = fopen(path, "rb");
-    char *text;
-    long n;
-    if (!f) return 0;
-    if (fseek(f, 0, SEEK_END) || (n = ftell(f)) < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return 0; }
-    text = malloc(n + 1);
-    if (!text || (long)fread(text, 1, n, f) != n) { fclose(f); free(text); return 0; }
-    fclose(f);
-    text[n] = 0;
-    *size = n;
-    return text;
-}
-
-static int is_space(char ch) { return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f'; }
-
-/* the key over NAMES (in order, repeats kept): SHA-1 of their digests joined by one space */
-static void key_of(char **names, int count, char out[41]) {
-    Sha c;
-    char d[41];
-    int i;
-    sha_init(&c);
-    for (i = 0; i < count; i++) {
-        digest(names[i], d);
-        if (i) sha_add(&c, (const unsigned char *)" ", 1);
-        sha_add(&c, (const unsigned char *)d, strlen(d));
-    }
-    sha_hex(&c, out);
-}
-
-/* the names after the first ": " of each line of a make dependency file, backslash-newlines joined (stamp-sweep.py's
-   dependencies()); -1 when the file cannot be read */
-static int dependencies(const char *dfile, char ***names) {
-    long size = 0, i, j;
-    int count = 0, cap = 64;
-    char *text = slurp(dfile, &size), *line, *end, *colon, *p;
-    if (!text) return -1;
-    for (i = j = 0; i < size; i++) {  /* "\\\n" -> " " */
-        if (text[i] == '\\' && i + 1 < size && text[i + 1] == '\n') { text[j++] = ' '; i++; }
-        else text[j++] = text[i];
-    }
-    text[j] = 0;
-    *names = malloc(cap * sizeof **names);
-    for (line = text; line && *line; line = end ? end + 1 : 0) {
-        end = line + strcspn(line, "\n\r");
-        if (*end) *end = 0; else end = 0;
-        colon = strstr(line, ": ");
-        if (!colon) continue;
-        for (p = colon + 2;;) {
-            while (*p && is_space(*p)) p++;
-            if (!*p) break;
-            if (count == cap) *names = realloc(*names, (cap *= 2) * sizeof **names);
-            (*names)[count++] = p;
-            while (*p && !is_space(*p)) p++;
-            if (*p) *p++ = 0;
-        }
-        if (!end) break;
-    }
-    return count;
-}
-
-static int by_bytes(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
-
-/* the record of PATH: its input key and date appended to build/.inputs.log; EXTRACTED are the files an object follows */
-static int record(const char *path, char **extracted, int given) {
-    char key[41], line[8192], **names = 0;
-    size_t n;
-    int count, i, fd;
-    struct stat st;
-    for (i = 0; path[i]; i++)
-        if ((unsigned char)path[i] < 0x20 || (unsigned char)path[i] >= 0x80 || path[i] == '"' || path[i] == '\\') return 2;
-    n = strlen(path);
-    if (n > 5 && !strcmp(path + n - 5, ".i.ok")) {
-        char dfile[4096];
-        if (n - 5 + 3 > sizeof dfile) return 2;
-        memcpy(dfile, path, n - 5);
-        strcpy(dfile + n - 5, ".d");
-        count = dependencies(dfile, &names);
-        if (count < 0) return 0;  /* no .d: no key, no record */
-        key_of(names, count, key);
-    } else {
-        names = extracted;
-        count = given;
-        qsort(names, count, sizeof *names, by_bytes);
-        for (i = 1, n = count ? 1 : 0; i < count; i++)
-            if (strcmp(names[i], names[n - 1])) names[n++] = names[i];
-        key_of(names, (int)n, key);
-    }
-    if (stat(path, &st)) return 1;
-    i = snprintf(line, sizeof line, "[\"%s\", %lld, \"%s\"]\n", path,
-                 (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec, key);
-    if (i < 0 || i >= (int)sizeof line) return 2;
-    fd = open("build/.inputs.log", O_WRONLY | O_APPEND | O_CREAT, 0644);
-    if (fd < 0) return 1;
-    if (write(fd, line, (size_t)i) != i) { close(fd); return 1; }
-    close(fd);
-    return 0;
-}
-
-typedef struct { uint32_t h[8]; uint64_t n; unsigned char b[64]; int k; } Sha2;
-
-static uint32_t ror(uint32_t x, int s) { return (x >> s) | (x << (32 - s)); }
-
-static void sha2_block(Sha2 *c, const unsigned char *p) {
-    static const uint32_t K[64] = {
-        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
-        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
-        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
-        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
-        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
-        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
-        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
-        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u};
-    uint32_t w[64], v[8], t1, t2;
-    int i;
-    for (i = 0; i < 16; i++)
-        w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
-    for (; i < 64; i++)
-        w[i] = (ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >> 10)) + w[i - 7] +
-               (ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >> 3)) + w[i - 16];
-    for (i = 0; i < 8; i++) v[i] = c->h[i];
-    for (i = 0; i < 64; i++) {
-        t1 = v[7] + (ror(v[4], 6) ^ ror(v[4], 11) ^ ror(v[4], 25)) + ((v[4] & v[5]) ^ (~v[4] & v[6])) + K[i] + w[i];
-        t2 = (ror(v[0], 2) ^ ror(v[0], 13) ^ ror(v[0], 22)) + ((v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]));
-        v[7] = v[6]; v[6] = v[5]; v[5] = v[4]; v[4] = v[3] + t1; v[3] = v[2]; v[2] = v[1]; v[1] = v[0]; v[0] = t1 + t2;
-    }
-    for (i = 0; i < 8; i++) c->h[i] += v[i];
-}
-
-static void sha2_init(Sha2 *c) {
-    static const uint32_t H[8] = {0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-                                  0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
-    memcpy(c->h, H, sizeof H);
-    c->n = 0; c->k = 0;
-}
-
-static void sha2_add(Sha2 *c, const unsigned char *p, size_t n) {
-    c->n += n;
-    while (n) {
-        size_t room = (size_t)(64 - c->k), more = room < n ? room : n;
-        memcpy(c->b + c->k, p, more);
-        c->k += more; p += more; n -= more;
-        if (c->k == 64) { sha2_block(c, c->b); c->k = 0; }
-    }
-}
-
-static void sha2_hex(Sha2 *c, char out[65]) {
-    uint64_t bits = c->n * 8;
-    unsigned char pad = 0x80, zero = 0, len[8];
-    int i;
-    sha2_add(c, &pad, 1);
-    while (c->k != 56) sha2_add(c, &zero, 1);
-    for (i = 0; i < 8; i++) len[i] = (unsigned char)(bits >> (56 - 8 * i));
-    sha2_add(c, len, 8);
-    for (i = 0; i < 32; i++) sprintf(out + 2 * i, "%02x", (unsigned)(c->h[i / 4] >> (24 - 8 * (i % 4))) & 0xFF);
-    out[64] = 0;
-}
-
-/* take COMPILER ARGS...: the batch's answer for a compile (`OUT.cc`, key `OUT.cc.key`) moved to OUT when the key is the
-   SHA-256 of this command (joined by \037, then a newline) and the text it compiles, else dropped; 0 only when it was
-   moved. V[0] is the compiler, V[1..N-1] its arguments. */
-static int take(char **v, int n) {
-    static unsigned char buf[1 << 16];
-    char *out = 0, *source = 0, *key, want[65], a[4200], b[4200];
-    long size = 0;
-    int i, sources = 0, fd;
-    ssize_t got;
-    size_t len;
-    Sha2 c;
-    for (i = 1; i < n; i++) {
-        len = strlen(v[i]);
-        if (!out && !strcmp(v[i], "-o") && i + 1 < n) out = v[i + 1];
-        if (len > 2 && !strcmp(v[i] + len - 2, ".i")) { source = v[i]; sources++; }
-    }
-    if (!out || sources != 1 || strlen(out) < 2 || strlen(out) > 4000 || strcmp(out + strlen(out) - 2, ".s")) return 1;
-    fd = open(source, O_RDONLY);
-    if (fd < 0) return 1;
-    sha2_init(&c);
-    for (i = 0; i < n; i++) {
-        if (i) sha2_add(&c, (const unsigned char *)"\037", 1);
-        sha2_add(&c, (const unsigned char *)v[i], strlen(v[i]));
-    }
-    sha2_add(&c, (const unsigned char *)"\n", 1);
-    while ((got = read(fd, buf, sizeof buf)) > 0) sha2_add(&c, buf, (size_t)got);
-    close(fd);
-    if (got < 0) return 1;
-    sha2_hex(&c, want);
-    snprintf(a, sizeof a, "%s.cc.key", out);
-    snprintf(b, sizeof b, "%s.cc", out);
-    key = slurp(a, &size);
-    while (key && size && is_space(key[size - 1])) key[--size] = 0;
-    if (key && !strcmp(key, want) && !rename(b, out)) { unlink(a); free(key); return 0; }
-    free(key);
-    unlink(b);
-    unlink(a);
-    return 1;
-}
-
-#define U32(p) ((unsigned long)(p)[0] << 24 | (unsigned long)(p)[1] << 16 | (unsigned long)(p)[2] << 8 | (p)[3])
-#define U16(p) ((unsigned long)(p)[0] << 8 | (p)[1])
-
-/* the .text size of a big-endian ELF32 cut to KEEP bytes when what lies past it is zero (cc_cache.trim_text) */
-static void trim_text(const char *path, unsigned long keep) {
-    long size = 0, k;
-    unsigned char *d = (unsigned char *)slurp(path, &size), word[4];
-    unsigned long o, e, c, x, names, text = 0, start, length, at;
-    int found = 0, fd;
-    if (!d || size < 52) { free(d); return; }
-    o = U32(d + 32); e = U16(d + 46); c = U16(d + 48); x = U16(d + 50);
-    if (e < 24 || x >= c || o + c * e > (unsigned long)size) { free(d); return; }
-    names = U32(d + o + x * e + 16);
-    for (k = 0; k < (long)c && !found; k++) {
-        at = names + U32(d + o + k * e);
-        if (at < (unsigned long)size && !strcmp((char *)d + at, ".text")) { text = o + k * e; found = 1; }
-    }
-    if (!found) { free(d); return; }
-    start = U32(d + text + 16); length = U32(d + text + 20);
-    if (length > keep && start + length <= (unsigned long)size) {
-        for (at = start + keep; at < start + length && !d[at]; at++) ;
-        if (at == start + length) {
-            word[0] = keep >> 24; word[1] = keep >> 16; word[2] = keep >> 8; word[3] = keep;
-            fd = open(path, O_WRONLY);
-            if (fd >= 0) { if (pwrite(fd, word, 4, text + 20) != 4) fputs("stamprec: trim failed\n", stderr); close(fd); }
-        }
-    }
-    free(d);
-}
-
-/* a whole file written (created or replaced); 0 when it is all there */
-static int put(const char *path, const char *text, size_t n) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return 1;
-    if (write(fd, text, n) != (ssize_t)n) { close(fd); return 1; }
-    return close(fd) != 0;
-}
-
-static int put_line(const char *path, const char *text) {
-    size_t n = strlen(text);
-    char *line = malloc(n + 2);
-    int bad;
-    if (!line) return 1;
-    memcpy(line, text, n);
-    line[n] = '\n';
-    bad = put(path, line, n + 1);
-    free(line);
-    return bad;
-}
-
-typedef struct { const char *out, *changed, *textsize, *recorded; int stop; } Object;
-
-static int is_file(const char *path) {
-    struct stat st;
-    return !stat(path, &st) && S_ISREG(st.st_mode);
-}
-
-/* the exit code of a started process: its status, 128 + the signal that ended it, 1 when it was not started */
-static int finish(pid_t pid) {
-    int status;
-    if (pid < 0 || waitpid(pid, &status, 0) < 0) return 1;
-    if (!WIFEXITED(status)) return 128 + WTERMSIG(status);
-    return WEXITSTATUS(status);
-}
-
-/* ARGV (null-ended) as a process, its output in INTO when given */
-static int spawn(char **argv, const char *into) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        if (into) {
-            int fd = open(into, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-            if (fd < 0 || dup2(fd, 1) < 0) _exit(126);
-            close(fd);
-        }
-        execvp(argv[0], argv);
-        fprintf(stderr, "stamprec: cannot run %s: %s\n", argv[0], strerror(errno));
-        _exit(127);
-    }
-    return finish(pid);
-}
-
-/* the compile command `sh .../cc_front.sh CACHE COMPILER ARGS...` is the front: while the build only collects, its
-   command is recorded and failed (125); else the batch's answer is moved into place; a unit the batch could not answer
-   is the front's own run (the cache, then the compiler). Any other command is just started. */
-static int compile(char **w) {
-    int n = 0;
-    size_t k;
-    const char *collect = getenv("ABU_CC_COLLECT");
-    while (w[n]) n++;
-    if (n >= 5 && !strcmp(w[0], "sh") && (k = strlen(w[1])) >= 11 && !strcmp(w[1] + k - 11, "cc_front.sh")) {
-        if (collect && *collect) {
-            size_t size = 2;
-            char *line, *at;
-            int fd, i, bad;
-            for (i = 3; i < n; i++) size += strlen(w[i]) + 1;
-            line = at = malloc(size);
-            if (!line) return 1;
-            for (i = 3; i < n; i++) {
-                if (i > 3) *at++ = '\037';
-                at = stpcpy(at, w[i]);
-            }
-            *at++ = '\n';
-            fd = open(collect, O_WRONLY | O_APPEND | O_CREAT, 0666);  /* one write: lines this short never interleave */
-            bad = fd < 0 || write(fd, line, (size_t)(at - line)) != (ssize_t)(at - line);
-            if (fd >= 0) close(fd);
-            free(line);
-            return bad ? 1 : 125;
-        }
-        if (!take(w + 3, n - 3)) return 0;
-    }
-    return spawn(w, 0);
-}
-
-/* a jump table entry `.word .L12` of the assembly holds its label's address less BASE (cc_cache.jump_table) */
-static int jump_table(const char *path, const char *base) {
-    long size = 0, lines = 0, i, from = 0, to = 0, at, digits;
-    char *d = slurp(path, &size), *o;
-    size_t add = strlen(base) + 4;
-    int changed = 0, bad;
-    if (!d) return 1;
-    for (i = 0; i < size; i++) lines += d[i] == '\n';
-    o = malloc((size_t)size + (size_t)(lines + 1) * add + 1);
-    if (!o) { free(d); return 1; }
-    for (i = 0; i <= size; i++) {
-        long end, p, q;
-        if (i < size && d[i] != '\n') continue;
-        end = i;
-        p = from;
-        while (p < end && (d[p] == ' ' || d[p] == '\t')) p++;
-        if (end - p >= 5 && !memcmp(d + p, ".word", 5)) {
-            p += 5;
-            q = p;
-            while (q < end && (d[q] == ' ' || d[q] == '\t')) q++;
-            if (q > p && q + 1 < end && (d[q] == '.' || d[q] == '$$$$') && d[q + 1] == 'L') {
-                at = q += 2;
-                for (digits = 0; q < end && d[q] >= '0' && d[q] <= '9'; q++) digits++;
-                at = q;
-                while (q < end && (d[q] == ' ' || d[q] == '\t')) q++;
-                if (digits && q == end) {
-                    memcpy(o + to, d + from, (size_t)(at - from));
-                    to += at - from;
-                    to += sprintf(o + to, "-0x%s", base);
-                    changed = 1;
-                    goto line_done;
-                }
-            }
-        }
-        memcpy(o + to, d + from, (size_t)(end - from));
-        to += end - from;
-    line_done:
-        if (i < size) o[to++] = '\n';
-        from = i + 1;
-    }
-    bad = changed ? put(path, o, (size_t)to) : 0;
-    free(d);
-    free(o);
-    return bad;
-}
-
-/* settle ASSEMBLY KEPT: the object stands as it was when only its .i moved, its size is the wanted one and the compiler's
-   assembly is the kept one's, byte for byte (the rest of the chain is skipped and `.same` tells the rule its trim is held) */
-static int settle(Object *x, const char *assembly, const char *kept) {
-    char *a = 0, *b = 0, flag[4200];
-    long na = 0, nb = 0;
-    int same = 0;
-    if (!*x->changed && !strcmp(x->recorded, x->textsize) && is_file(x->out) && is_file(kept)) {
-        a = slurp(assembly, &na);
-        b = slurp(kept, &nb);
-        same = a && b && na == nb && !memcmp(a, b, (size_t)na);
-    }
-    free(a);
-    free(b);
-    unlink(kept);
-    if (!same) return 0;
-    snprintf(flag, sizeof flag, "%s.same", x->out);
-    x->stop = 1;
-    return utimensat(AT_FDCWD, x->out, 0, 0) || put(flag, "", 0);
-}
-
-/* one step of the program (cc_cache.object_file describes them) */
-static int step(Object *x, char **w) {
-    int n = 0;
-    while (w[n]) n++;
-    if (!n) return 0;
-    if (!strcmp(w[0], "@rotate") && n == 3) {
-        if (is_file(w[2])) unlink(w[1]);
-        else if (is_file(w[1]) && rename(w[1], w[2])) return 1;
-        return 0;
-    }
-    if (!strcmp(w[0], "@nonempty") && n == 2) {
-        struct stat st;
-        return stat(w[1], &st) || st.st_size <= 0;
-    }
-    if (!strcmp(w[0], "@jumptable") && n == 3) return jump_table(w[1], w[2]);
-    if (!strcmp(w[0], "@settle") && n == 3) return settle(x, w[1], w[2]);
-    if (!strcmp(w[0], "@compile") && n >= 2) return compile(w + 1);
-    if (!strcmp(w[0], "@py") && n >= 2) {  /* python3 -I -c "$$$$NAME" ARGS...: a pass the Makefile exports as NAME */
-        char *code = getenv(w[1]), **argv = calloc((size_t)n + 4, sizeof *argv);
-        int i, status;
-        if (!code || !argv) { fprintf(stderr, "stamprec: %s is not set\n", w[1]); return 1; }
-        argv[0] = "python3"; argv[1] = "-I"; argv[2] = "-c"; argv[3] = code;
-        for (i = 2; i < n; i++) argv[i + 2] = w[i];
-        status = spawn(argv, 0);
-        free(argv);
-        return status;
-    }
-    if (!strcmp(w[0], "@out") && n >= 3) return spawn(w + 2, w[1]);
-    if (w[0][0] == '@') { fprintf(stderr, "stamprec: no step %s\n", w[0]); return 64; }
-    return spawn(w, 0);
-}
-
-/* object OUT VERSION FACTS CHANGED TEXTSIZE FLAGS STAMPREC [EXTRACTED...] -- PROGRAM...: cc_cache.object_file, step for step */
-static int object(int argc, char **argv) {
-    char *out = argv[2], *version = argv[3], *facts = argv[4], *changed = argv[5], *textsize = argv[6];
-    char *flags = argv[7];
-    char path[4200], source[4200], made[128], total[64], hex[41], *old, *recorded;
-    static unsigned char buf[1 << 16];
-    struct stat si, so;
-    Sha c;
-    Object x;
-    long size = 0, n;
-    int i, stands = 0, program = 9, extracted;
-    while (program < argc && strcmp(argv[program], "--")) program++;
-    if (program >= argc - 1) return 64;
-    extracted = program - 9;
-    if (strlen(out) < 3 || strlen(out) > 4000 || strlen(version) > 100) return 64;
-    snprintf(path, sizeof path, "asm/%s/.extracted", version);
-    old = slurp(path, &size);
-    snprintf(made, sizeof made, "%s", old ? old : "");
-    free(old);
-    for (n = (long)strlen(made); n && made[n - 1] == '\n';) made[--n] = 0;
-    if (made[0] && strcmp(made, facts)) {
-        fprintf(stderr, "asm/%s was extracted from other symbol_addrs.txt/splat.yaml than this tree holds (%s, now %s): run make extract-%s\n",
-                version, made, facts, version);
-        return 1;
-    }
-    sha_init(&c);
-    for (i = 9; i < program; i++) {  /* the sum of the extracted files an object assembles; one that is not there adds nothing */
-        ssize_t got;
-        int fd = open(argv[i], O_RDONLY);
-        if (fd < 0) continue;
-        while ((got = read(fd, buf, sizeof buf)) > 0) sha_add(&c, buf, (size_t)got);
-        close(fd);
-    }
-    sha_hex(&c, hex);
-    snprintf(total, sizeof total, "%s  -\n", hex);
-    snprintf(path, sizeof path, "%s.asm", out);
-    old = slurp(path, &size);
-    if (old && (size != (long)strlen(total) || memcmp(old, total, size))) unlink(out);  /* other extracted bytes: remade */
-    free(old);
-    snprintf(path, sizeof path, "%s.textsize", out);
-    recorded = slurp(path, &size);
-    if (recorded && size && recorded[size - 1] == '\n') recorded[--size] = 0;
-    snprintf(source, sizeof source, "%s", out);
-    source[strlen(source) - 1] = 'i';  /* X.o -> X.i */
-    if (!*changed && !strcmp(recorded ? recorded : "", textsize) && !stat(source, &si) && !stat(out, &so))
-        stands = si.st_mtim.tv_sec < so.st_mtim.tv_sec ||
-                 (si.st_mtim.tv_sec == so.st_mtim.tv_sec && si.st_mtim.tv_nsec < so.st_mtim.tv_nsec);
-    snprintf(path, sizeof path, "%s.flags", out);
-    if (stands) {
-        free(recorded);
-        if (put_line(path, flags) || utimensat(AT_FDCWD, out, 0, 0)) return 1;
-    } else {
-        int code = 0;
-        x.out = out; x.changed = changed; x.textsize = textsize; x.recorded = recorded ? recorded : ""; x.stop = 0;
-        for (i = program + 1; i < argc && !code && !x.stop;) {  /* the steps, split at `&&` */
-            int j = i;
-            while (j < argc && strcmp(argv[j], "&&")) j++;
-            argv[j] = 0;
-            code = step(&x, argv + i);
-            i = j + 1;
-        }
-        free(recorded);
-        if (code) return code;
-        snprintf(source, sizeof source, "%s.same", out);
-        if (!unlink(source)) {  /* the compile's own check: the object stands as it was, its trim is held */
-        } else {
-            if (*textsize) trim_text(out, strtoul(textsize, 0, 0));
-            snprintf(source, sizeof source, "%s.textsize", out);
-            if (put_line(source, textsize)) return 1;
-        }
-        if (put_line(path, flags)) return 1;
-    }
-    snprintf(path, sizeof path, "%s.asm", out);
-    if (put(path, total, strlen(total))) return 1;
-    return record(out, argv + 9, extracted);
-}
-
-int main(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[1], "record")) return record(argv[2], argv + 3, argc - 3);
-    if (argc >= 11 && !strcmp(argv[1], "object")) return object(argc, argv);
-    fprintf(stderr, "usage: stamprec record PATH [EXTRACTED...] | object OUT VERSION FACTS CHANGED TEXTSIZE FLAGS STAMPREC [EXTRACTED...] -- PROGRAM...\n");
-    return 64;
-}
-endef
-$$(STAMPREC): Makefile
-	$$(Q)mkdir -p build
-	$$(file >build/stamprec.c,$$(STAMPREC_C))
-	$$(Q)$$(HOSTCC) -O2 -o $$@ build/stamprec.c 2>/dev/null || rm -f $$@
-RECORD = { [ -x $$(STAMPREC) ] && $$(STAMPREC) record $$(1); } || python3 -I build/stamp-sweep.py record $$(1)
-shq = '$$(subst ','\'',$$(1))'
-CC_FLAGS = $$(TC) $$(CC_$$(TC)) $$(CFLAGS) $$(ASFLAGS) $$(DEFINES) $$(FSPLIT)
-PP_FLAGS = $$(TC) $$(CPPFLAGS) $$(DEFINES)
-same_flags = $$(and $$(findstring $$(1),$$(2)),$$(findstring $$(2),$$(1)))
-flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(CC_FLAGS),$$(file <$$@.flags)),,flags-changed))
-pp_flags_changed = $$(if $$(wildcard $$@.flags),$$(if $$(call same_flags,$$(PP_FLAGS),$$(file <$$@.flags)),,flags-changed))
+build/hdrkey build/stamprec: build/%: $(MKTOOLS)/%.c
+	$(Q)mkdir -p build
+	$(Q)$(HOSTCC) -O2 -o $@ $< 2>/dev/null || rm -f $@
+RECORD = { [ -x $(STAMPREC) ] && $(STAMPREC) record $(1); } || python3 -I $(MKTOOLS)/stamp_sweep.py record $(1)
+shq = '$(subst ','\'',$(1))'
+CC_FLAGS = $(TC) $(CC_$(TC)) $(CFLAGS) $(ASFLAGS) $(DEFINES) $(FSPLIT)
+PP_FLAGS = $(TC) $(CPPFLAGS) $(DEFINES)
+same_flags = $(and $(findstring $(1),$(2)),$(findstring $(2),$(1)))
+flags_changed = $(if $(wildcard $@.flags),$(if $(call same_flags,$(CC_FLAGS),$(file <$@.flags)),,flags-changed))
+pp_flags_changed = $(if $(wildcard $@.flags),$(if $(call same_flags,$(PP_FLAGS),$(file <$@.flags)),,flags-changed))
 .PHONY: flags-changed
 flags-changed:
-build/%.i.ok: $$$$(call src,$$$$*) $$$$(pp_flags_changed) | $$(STAMPS) $$(HDRKEY) $$(STAMPREC)
-	$$(PREPROCESS_$$(TC))
-# The extracted files an object assembles are an input by their bytes (`.asm`, their sum before the object is made; a make that extracts as it builds reads dates it cached): a different sum removes the object.
-# The object rule's one command (stamprec `object`, else cc_cache.py's): the extracted facts it was made from, whether it stands,
-# the compile when it does not, the flags/size/sum files and the input record.
-OBJECT_ARGS = $$@ $$(call ver,$$*) $$(FACTS_NOW_$$(call ver,$$*)) $$(call shq,$$(filter-out %.i.ok,$$?)$$(flags_changed)) $$(call shq,$$(TEXTSIZE)) $$(call shq,$$(CC_FLAGS)) $$(STAMPREC) $$(filter-out %/.extracted,$$(filter asm/%,$$^)) -- $$(COMPILE_$$(TC))
-build/%.o: build/%.i.ok asm/$$$$(call ver,$$$$*)/.extracted $$$$(text_size_changed) $$$$(flags_changed) | $$(STAMPS) $$(STAMPREC)
-	$$(Q)if [ -x $$(STAMPREC) ]; then exec $$(STAMPREC) object $$(OBJECT_ARGS); fi; exec $$(CCPY) --object $$(OBJECT_ARGS)
-build/%.s.o: $$$$(call src,$$$$*).s $$$$(text_size_changed) | $$(STAMPS)
-	$$(Q)mkdir -p $$(@D)
-	$$(Q)$$(AS) $$(ASFLAGS) $$(ASDEFS) $$(ASINC) -Iinclude $$< -o $$@
-	$$(Q)$$(if $$(TEXTSIZE),$$(TRIM_TEXT) $$@ $$(TEXTSIZE))
-	$$(Q)printf '%s\n' '$$(TEXTSIZE)' > $$@.textsize
+build/%.i.ok: $$(call src,$$*) $$(pp_flags_changed) | $(STAMPS) $(HDRKEY) $(STAMPREC)
+	$(PREPROCESS_$(TC))
+# The extracted files an object assembles are an input by their bytes (`.asm`, their sum before the object is made; a
+# make that extracts as it builds reads dates it cached): a different sum removes the object. The object rule's one
+# command (stamprec `object`, else cc_cache.py's): the extracted facts it was made from, whether it stands, the compile
+# (COMPILE_<toolchain>) when it does not, the flags/size/sum files and the input record.
+OBJECT_ARGS = $@ $(call ver,$*) $(FACTS_NOW_$(call ver,$*)) $(call shq,$(filter-out %.i.ok,$?)$(flags_changed)) $(call shq,$(TEXTSIZE)) \
+	$(call shq,$(CC_FLAGS)) $(STAMPREC) $(filter-out %/.extracted,$(filter asm/%,$^)) -- $(COMPILE_$(TC))
+build/%.o: build/%.i.ok asm/$$(call ver,$$*)/.extracted $$(text_size_changed) $$(flags_changed) | $(STAMPS) $(STAMPREC)
+	$(Q)if [ -x $(STAMPREC) ]; then exec $(STAMPREC) object $(OBJECT_ARGS); fi; exec $(CCPY) --object $(OBJECT_ARGS)
+# A hand-written .s source is preprocessed first (its #include and #if VERSION_ lines); its .d names the headers.
+build/%.s.o: $$(call src,$$*).s $$(text_size_changed) | $(STAMPS)
+	$(Q)mkdir -p $(@D)
+	$(Q)$(CPP) -P -undef -x assembler-with-cpp $(AS_CPPFLAGS) -D$(VMACRO_$(call ver,$*)) -Iinclude -I$(dir $<) \
+	-MMD -MP -MT $@ -MF $(@:.o=.d) $< -o $(@:.o=.pp.s)
+	$(Q)$(AS) $(ASFLAGS) $(ASDEFS) $(ASINC) -Iinclude $(@:.o=.pp.s) -o $@
+	$(Q)$(if $(TEXTSIZE),$(TRIM_TEXT) $@ $(TEXTSIZE))
+	$(Q)printf '%s\n' '$(TEXTSIZE)' > $@.textsize
 build/%.bin.o: asm/%.bin
-	$$(Q)mkdir -p $$(@D)
-	$$(Q)$$(OBJCOPY) -I binary -O elf32-tradbigmips -B mips $$< $$@
+	$(Q)mkdir -p $(@D)
+	$(Q)$(OBJCOPY) -I binary -O elf32-tradbigmips -B mips $< $@
 # splat writes a binary piece while it extracts the version.
-asm/%.bin: | asm/$$$$(call ver,$$$$*)/.extracted
-	$$(Q)test -f $$@ || { echo "$$@ is missing: run make extract-$$(call ver,$$*)" >&2; exit 1; }
+asm/%.bin: | asm/$$(call ver,$$*)/.extracted
+	$(Q)test -f $@ || { echo "$@ is missing: run make extract-$(call ver,$*)" >&2; exit 1; }
 
+# ---------------------------------------------------------------- the ROM
 # The whole ROM links once per version, from build/<version>/, so object paths in the script stay short.
-build/%/link.ld: $$(NAME).ld
-	$$(Q)mkdir -p $$(@D)
-	$$(Q)$$(CPP) -P -undef -D$$(VMACRO_$$*) $$< > $$@
-# Every fact of symbol_addrs.txt and aliases.txt and every name splat left undefined, PROVIDEd: what no object defines (data outside
-# the ROM). So is every name splat made up that the extracted assembly spells, at the address the name carries: a .L
-# label the assembler keeps out of the object, or a label inside bytes a C file compiles.
-# Preprocessed sources retain auto-address references even when a new extraction no longer spells that label.
-# Every object of the version is a prerequisite (the .i/.s the grep reads are complete once it is built) but never an input of the sed.
-build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$$$(wildcard versions/$$$$*/aliases.txt)
-	$$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $$(filter-out %.o,$$^) > $$@
-	$$(Q)grep -rhoE --include='*.s' --include='*.i' '${label}[0-9A-F]{8}\b' asm/$$* build/$$* | sort -u | sed -E 's/^(${label}(.*))$$$$/PROVIDE(\1 = 0x\2);/' >> $$@
-# splat writes these while it extracts the version.
+build/%/link.ld: $(NAME).ld
+	$(Q)mkdir -p $(@D)
+	$(Q)$(CPP) -P -undef -D$(VMACRO_$*) $< > $@
+# Every fact of symbol_addrs.txt and aliases.txt and every name splat left undefined, PROVIDEd: what no object defines
+# (data outside the ROM). So is every name splat made up (LABEL) that the extracted assembly or a preprocessed source
+# spells, at the address the name carries: a .L label the assembler keeps out of the object, or a label inside bytes
+# a C file compiles. Every object of the version is a prerequisite (the .i/.s the grep reads are complete once it is
+# built) but never an input of the sed.
+build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$(wildcard versions/$$*/aliases.txt)
+	$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $(filter-out %.o,$^) > $@
+	$(Q)grep -rhoE --include='*.s' --include='*.i' '$(LABEL)[0-9A-F]{8}\b' asm/$* build/$* | sort -u | sed -E 's/^($(LABEL)(.*))$$/PROVIDE(\1 = 0x\2);/' >> $@
 # The objects are prerequisites of each version's list by a plain rule, not by the pattern rule's second expansion:
-# GNU make 4.4.1 segfaults expanding $$(OBJS_$$*) there once build/<v>/undefined_syms_auto.txt exists (train down 02:12-02:50).
-$$(foreach v,$$(VERSIONS),$$(eval build/$$(v)/undefined_syms.ld: $$(OBJS_$$(v))))
+# GNU make 4.4.1 segfaults expanding $(OBJS_$*) there once build/<v>/undefined_syms_auto.txt exists.
+$(foreach v,$(VERSIONS),$(eval build/$(v)/undefined_syms.ld: $(OBJS_$(v))))
+# splat writes these while it extracts the version.
 build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt: | asm/%/.extracted
-	$$(Q)test -f $$@ || { echo "$$@ is missing: run make extract-$$*" >&2; exit 1; }
-build/%/$$(NAME).elf: $$$$(OBJS_$$$$*) build/%/link.ld build/%/undefined_syms.ld
-	$$(Q)cd build/$$* && $$(LD) -T link.ld -o $$(NAME).elf
-build/%/$$(NAME).bin: build/%/$$(NAME).elf
-	$$(Q)$$(OBJCOPY) $$(ROM_SECTIONS_$$*) -O binary --gap-fill 0 $$< $$@
-build/%/$$(NAME).z64: build/%/$$(NAME).bin roms/baserom.%.z64
-	$$(Q){ head -c $$(ROM0_$$*) roms/baserom.$$*.z64; cat $$<; } > $$@
-	$$(Q)truncate -s $$$$(wc -c < roms/baserom.$$*.z64) $$@
-	$$(Q)test "$$$$(sha1sum < $$@ | cut -d' ' -f1)" = $$(SHA1_$$*) || { echo "$$@: SHA-1 is not $$(SHA1_$$*)" >&2; exit 1; }
+	$(Q)test -f $@ || { echo "$@ is missing: run make extract-$*" >&2; exit 1; }
+build/%/$(NAME).elf: $$(OBJS_$$*) build/%/link.ld build/%/undefined_syms.ld
+	$(Q)cd build/$* && $(LD) -T link.ld -o $(NAME).elf
+build/%/$(NAME).bin: build/%/$(NAME).elf
+	$(Q)$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary --gap-fill 0 $< $@
+build/%/$(NAME).z64: build/%/$(NAME).bin roms/baserom.%.z64
+	$(Q){ head -c $(ROM0_$*) roms/baserom.$*.z64; cat $<; } > $@
+	$(Q)truncate -s $$(wc -c < roms/baserom.$*.z64) $@
+	$(Q)test "$$(sha1sum < $@ | cut -d' ' -f1)" = $(SHA1_$*) || { echo "$@: SHA-1 is not $(SHA1_$*)" >&2; exit 1; }
 
-${nm_rules}${toolchain_rules}
+# ---------------------------------------------------------------- NON_MATCHING
+# make NON_MATCHING=1 (or make nm): every draft compiles in (-D$(NM_DEFINE)) and one ROM per version links under
+# build/nm/<version>/. The drafts compile into a second tree build/nmraw/<version>/ with the matching build's rules
+# and flags. A unit whose NON_MATCHING object keeps the unit's size (nm_pick.py: the same sections, a text no longer
+# than the ROM's, zero-filled to it) takes the matching object's place in the link; any other unit keeps its matching
+# object. The ROM so keeps its size and every unit's address, and matches no SHA-1, so nothing here checks one.
+# build/nm/<version>/report.txt names the units whose draft is in (and how many symbols move in them) and the ones
+# left out (and the section that grew).
+ifneq ($(NM_DEFINE),)
+ifeq ($(NON_MATCHING),1)
+.DEFAULT_GOAL := nm
+endif
+.PHONY: nm
+nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)
+$(foreach v,$(VERSIONS),$(eval OBJS_nm_$(v) := $(patsubst build/$(v)/%,build/nm/$(v)/%,$(OBJS_$(v)))))
+-include $(foreach v,$(VERSIONS),$(patsubst build/$(v)/%,build/nmraw/$(v)/%,$(OBJS_$(v):.o=.d)))
+# A raw object follows the extracted files its matching twin names, and takes the same text sizes.
+ifeq ($(CHECK),rom)
+$(shell sed -E 's@^build/@build/nmraw/@' build/asm.deps > build/asm-nmraw.deps.$$$$ && mv build/asm-nmraw.deps.$$$$ build/asm-nmraw.deps)
+-include build/asm-nmraw.deps
+$(shell cat $(VERSIONS:%=versions/%/text_sizes.mk) | sed -nE 's@^build/@build/nmraw/@p' > build/text_sizes_nmraw.mk.$$$$ && mv build/text_sizes_nmraw.mk.$$$$ build/text_sizes_nmraw.mk)
+-include build/text_sizes_nmraw.mk
+endif
+build/nm/%.o: build/nmraw/%.o build/%.o
+	$(Q)mkdir -p $(@D)
+	$(Q)python3 -I $(MKTOOLS)/nm_pick.py $^ $@ $(OBJCOPY) $(LD)
+# An assembly or binary piece is the matching build's.
+build/nm/%.s.o: build/%.s.o
+	$(Q)mkdir -p $(@D)
+	$(Q)cp -p $< $@
+build/nm/%.bin.o: build/%.bin.o
+	$(Q)mkdir -p $(@D)
+	$(Q)cp -p $< $@
+# Static pattern rules: build/%/link.ld would also match build/nm/<version>/link.ld and write an empty script.
+$(VERSIONS:%=build/nm/%/link.ld): build/nm/%/link.ld: build/%/link.ld
+	$(Q)mkdir -p $(@D)
+	$(Q)cp $< $@
+$(VERSIONS:%=build/nm/%/undefined_syms.ld): build/nm/%/undefined_syms.ld: build/%/undefined_syms.ld
+	$(Q)mkdir -p $(@D)
+	$(Q)cp $< $@
+# A draft may define a name that this version's ROM keeps as data, or the other way round: the first definition in link
+# order wins and link.err lists every such name; any other link error stops the build.
+$(VERSIONS:%=build/nm/%/$(NAME).elf): build/nm/%/$(NAME).elf: $$(OBJS_nm_$$*) build/nm/%/link.ld build/nm/%/undefined_syms.ld
+	$(Q)cd build/nm/$* && { $(LD) -T link.ld -o $(NAME).elf 2> link.err \
+	|| $(LD) -T link.ld --allow-multiple-definition -o $(NAME).elf 2>> link.err; } \
+	|| { cat build/nm/$*/link.err >&2; exit 1; }
+$(VERSIONS:%=build/nm/%/$(NAME).bin): build/nm/%/$(NAME).bin: build/nm/%/$(NAME).elf
+	$(Q)$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary --gap-fill 0 $< $@
+$(VERSIONS:%=build/nm/%/$(NAME).z64): build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin roms/baserom.%.z64
+	$(Q){ head -c $(ROM0_$*) roms/baserom.$*.z64; cat $<; } > $@
+	$(Q)truncate -s $$(wc -c < roms/baserom.$*.z64) $@
+	$(Q)cat $(addsuffix .pick,$(OBJS_nm_$*)) 2>/dev/null | grep -v '^same ' | sort > build/nm/$*/report.txt; \
+	echo "NM ROM $*: $$(grep -c '^draft' build/nm/$*/report.txt) unit(s) with drafts in," \
+	"$$(grep -c '^left-out' build/nm/$*/report.txt) left out (build/nm/$*/report.txt)"
+endif

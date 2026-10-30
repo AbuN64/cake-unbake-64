@@ -8,15 +8,15 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from test_build import CCPY, _pp, make_config
+from test_build import CCPY, _pp, _write_makefile, make_config
 
-from unbake import build
+from unbake import adapters, build
 
 
 class Tree:
     def __init__(self, tmp_path: Path) -> None:
         self.root = tmp_path
-        (tmp_path / "Makefile").write_bytes(build.makefile(make_config(tmp_path)))
+        _write_makefile(tmp_path, make_config(tmp_path))
         (tmp_path / "src").mkdir()
         (tmp_path / "asm/us").mkdir(parents=True)
         (tmp_path / "asm/us/.extracted").touch()
@@ -298,7 +298,9 @@ def test_the_c_record_writes_the_python_record_and_a_tree_without_a_compiler_sti
     lines = []
     for argv in ([stamp], obj, ["build/us/src/nodeps.i.ok"]):
         log.write_text("")
-        subprocess.run([sys.executable, "-I", "build/stamp-sweep.py", "record", *argv], cwd=tmp_path, check=False)
+        subprocess.run(
+            [sys.executable, "-I", adapters.make_tool("stamp_sweep.py"), "record", *argv], cwd=tmp_path, check=False
+        )
         subprocess.run([str(rec), "record", *argv], cwd=tmp_path, check=True)
         lines.append([json.loads(x) for x in log.read_text().splitlines()])
     assert len(lines[0]) == 2 and lines[0][0] == lines[0][1]
@@ -319,28 +321,21 @@ def test_the_c_record_writes_the_python_record_and_a_tree_without_a_compiler_sti
     assert any(".i.ok" in x for x in (bare.root / "build/.inputs.log").read_text().splitlines())
 
 
-def test_asm_deps_is_replaced_whole_and_the_scripts_are_not_rewritten_unchanged(tmp_path):
+def test_asm_deps_is_replaced_whole(tmp_path):
     """REV1-ONE-40: `build/asm.deps:157: missing separator`: a make -included asm.deps another make of the same tree was
-    rewriting in place (shell redirect). It is now written to a temporary file and replaced, and the generated scripts
-    are written only when their text changed (a parallel make never runs a half-written one)."""
-    import os
-
+    rewriting in place (shell redirect). It is now written to a temporary file and replaced."""
     tree = Tree(tmp_path)
     asm = tmp_path / "asm/us/nonmatchings/seg/f.s"
     asm.parent.mkdir(parents=True)
     asm.write_text("glabel f\n")
     tree.write('INCLUDE_ASM("seg", f);\n')
     tree.make(deps=True)
-    deps, script, sweep = (tmp_path / "build" / n for n in ("asm.deps", "asm-deps.py", "stamp-sweep.py"))
+    deps = tmp_path / "build/asm.deps"
     assert "asm/us/nonmatchings/seg/f.s" in deps.read_text()
-    ino, when, swept = deps.stat().st_ino, script.stat().st_mtime_ns, sweep.stat().st_mtime_ns
-    os.utime(script, ns=(10**9, 10**9))
-    os.utime(sweep, ns=(10**9, 10**9))
+    ino = deps.stat().st_ino
     tree.make(deps=True)
     assert deps.stat().st_ino != ino  # a new file took the name: a reader sees the old one or the new one, whole
-    assert script.stat().st_mtime_ns == 10**9 and sweep.stat().st_mtime_ns == 10**9  # unchanged text: not rewritten
     assert not list((tmp_path / "build").glob("asm.deps.*"))
-    assert when and swept
 
 
 def test_a_sweep_with_nothing_moved_does_not_walk_or_rewrite_the_state(tmp_path):

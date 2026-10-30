@@ -97,7 +97,7 @@ def _text(obj: Path) -> bytes:
 
 
 def _unrelocate(obj: Path) -> None:
-    subprocess.run([sys.executable, "-I", "-c", adapters.unreloc_script(), str(obj)], check=True)
+    subprocess.run([sys.executable, "-I", adapters.make_tool("unreloc_pass.py"), str(obj)], check=True)
 
 
 @pytest.mark.skipif(not Path("/usr/bin/mips-linux-gnu-as").exists(), reason="needs the MIPS binutils")
@@ -113,17 +113,19 @@ def test_the_assembled_slice_is_the_rom_bytes_once_unrelocated(tmp_path):
 def test_a_file_row_unrelocated_sets_the_makefile_variable_and_runs_the_pass(tmp_path):
     config = test_build.make_config(tmp_path, {"src/a.c": FileFacts(unrelocated=True)})
     makefile = build.makefile(config).decode()
-    assert "/src/a.c.o): UNRELOC := 1" in makefile
+    assert "\nUNRELOC.src/a.c := 1\n" in makefile
     recipe = build._recipe("gcc-2.8.1-sn64").splitlines()[-1]
-    assert "$(if $(UNRELOC),'&&' @py UNRELOC_PASS $@)" in recipe
-    assert "define UNRELOC_PASS\n" in makefile and "export UNRELOC_PASS\n" in makefile
+    assert "$(if $(UNRELOC),'&&' $(PASS)unreloc_pass.py $@)" in recipe
 
 
 @pytest.mark.skipif(not Path("/usr/bin/mips-linux-gnu-as").exists(), reason="needs the MIPS binutils")
 def test_the_compilers_read_only_data_is_not_loaded_once_unrelocated(tmp_path):
-    # a switch's jump table (.rodata) and a literal pool (.rdata) are the ROM's already, in the data the file stands over
+    # a switch's jump table (.rodata) and a literal pool (.rdata) are the ROM's already, in the data the file
+    # stands over
     source, obj = tmp_path / "s.s", tmp_path / "s.o"
-    source.write_text(SLICE + '\t.section .rodata\n.L41:\n\t.word .L3\n\t.section .rdata.literals_CountActive,"a"\n\t.word 0\n')
+    source.write_text(
+        SLICE + '\t.section .rodata\n.L41:\n\t.word .L3\n\t.section .rdata.literals_CountActive,"a"\n\t.word 0\n'
+    )
     subprocess.run([*AS, "-O0", str(source), "-o", str(obj)], check=True)
     _unrelocate(obj)
     sections = subprocess.run(["mips-linux-gnu-readelf", "-SW", str(obj)], capture_output=True, text=True).stdout

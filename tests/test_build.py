@@ -28,6 +28,12 @@ def _pp(variable: str, command: str) -> str:
 CCPY = f"CCPY={sys.executable} {Path(__file__).parent / 'ccpy_stub.py'}"  # the helper, its trim only logging
 
 
+def _write_makefile(tmp_path: Path, config: SimpleNamespace) -> None:
+    """The Makefile a tree has, with the local.mk that names the build's helper programs (MKTOOLS)."""
+    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    (tmp_path / "local.mk").write_text(f"MKTOOLS := {Path(adapters.make_tool('hdrkey.c')).parent}\n")
+
+
 def segments(version: str) -> tuple[Segment, ...]:
     if version == "us":
         return (Segment("main", 0x1000, 0x80200400, "code"), Segment("assets", 0x2000, None, "bin"))
@@ -329,30 +335,18 @@ def test_splat_yaml_writes_labels_into_the_piece_before_them(tmp_path):
     assert "main/d_1]" in out and "main/d_3]" in out and "d_2" not in out
 
 
-def without_hdrkey(text: str) -> str:
-    """The Makefile without the C sources of hdrkey and stamprec and the stamp sweep it embeds."""
-    for block in ("define HDRKEY_C\n", "define STAMPREC_C\n"):
-        head, rest = text.split(block, 1)
-        text = head + rest.split("\nendef", 1)[1]
-    head, rest = text.split("define STAMP_SWEEP\n", 1)
-    return head + rest.split("\nendef", 1)[1]
-
-
 def test_makefile_variable_blocks(tmp_path):
     config = make_config(tmp_path, {"src/lib/": FileFacts(cflags=("-O1",), omit=("-O2",)), "src/a.c": FileFacts()})
     text = build.makefile(config).decode()
-    assert "VMACRO_eu-1 := VERSION_EU_1" in text
-    assert f"SHA1_us := {'a' * 40}" in text
-    assert "ROM0_us := 4096" in text
-    assert "ROM_SECTIONS_us :=\n" in text
-    block = "$(foreach v,$(VERSIONS),build/$(v)/src/lib/%.o)"
-    lines = [line for line in text.splitlines() if line.startswith(block)]
-    assert [line.split(": ")[1].split(" ")[0] for line in lines] == ["TC", "CPPFLAGS", "CFLAGS"]
-    assert lines[2].endswith("-mno-fix4300 -O1") and " -O2 " not in lines[2]
-    assert "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
-    make_text = without_hdrkey(text)
-    assert "sed -nE" in text
-    assert sum(line.count("sed ") for line in make_text.splitlines() if not line.startswith("#")) == 4
+    lines = text.splitlines()
+    assert "FILE.src/lib/ := gcc_2_8_1_sn64" in lines and "FILE.src/a.c := gcc_2_8_1_sn64" in lines
+    assert "OMIT.src/lib/ := -O2" in lines and "CFLAGS.src/lib/ := -O1" in lines
+    assert not any(line.startswith(("CPPFLAGS.src/lib/", "CFLAGS.src/a.c", "OMIT.src/a.c")) for line in lines)
+    assert next(row for row in lines if row.startswith("CPPFLAGS_gcc_2_8_1_sn64 := ")).endswith(" -DF3DEX_GBI_2")
+    assert next(line for line in lines if line.startswith("CFLAGS_gcc_2_8_1_sn64 := ")).endswith("-mno-fix4300")
+    assert next(row for row in lines if row.startswith("AS_CPPFLAGS := ")).endswith(" -DF3DEX_GBI_2")
+    # the version facts live in versions/<v>/text_sizes.mk, not in the Makefile
+    assert "VMACRO_eu-1" not in text and "SHA1_us" not in text
     # PROVIDE lines (facts, .L labels); data files; code files; jump tables
     assert "DATA_SED := -e '/^\\.section /d'" in text and "s/^\\.align [4-9]/.align 3/" in text
     assert "PATCHES" not in text and " dd " not in text
@@ -360,9 +354,8 @@ def test_makefile_variable_blocks(tmp_path):
 
 def test_a_file_rows_preprocessor_flags_reach_cpp_not_the_compiler(tmp_path):
     config = make_config(tmp_path, {"src/a.c": FileFacts(cflags=("-UF3DEX_GBI_2", "-D", "X=1", "-G8"))})
-    lines = [line for line in build.makefile(config).decode().splitlines() if "build/$(v)/src/a.c.o)" in line]
-    assert lines[1].endswith("-DF3DEX_GBI_2 -UF3DEX_GBI_2 -D X=1")
-    assert lines[2].endswith(" -G8") and "-U" not in lines[2] and "X=1" not in lines[2]
+    lines = build.makefile(config).decode().splitlines()
+    assert "CPPFLAGS.src/a.c := -UF3DEX_GBI_2 -D X=1" in lines and "CFLAGS.src/a.c := -G8" in lines
 
 
 def line_count(tmp_path: Path, n: int) -> int:
@@ -374,7 +367,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(without_hdrkey(text).splitlines()) < 600
+    assert len(text.splitlines()) < 400
     assert "src/f1.c" not in text
 
 
@@ -520,6 +513,10 @@ def test_text_sizes_give_each_object_its_code_up_to_the_next_owned_bytes(tmp_pat
         both("src/e.s", "f_8"),
     )
     assert build.text_sizes(make_config(tmp_path), tree, "us").decode().splitlines()[1:] == [
+        "VMACRO_us := VERSION_US",
+        f"SHA1_us := {'a' * 40}",
+        "ROM0_us := 4096",
+        "ROM_SECTIONS_us :=",
         "build/us/src/a.c.o: TEXTSIZE := 0x20",
         "build/us/src/b.c.o: TEXTSIZE := 0x10",
         "build/us/src/d.c.o: TEXTSIZE := 0x10",
@@ -586,7 +583,7 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
     import sys
 
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "src").mkdir()
     (tmp_path / "asm/us").mkdir(parents=True)
     (tmp_path / "asm/us/.extracted").touch()
@@ -601,7 +598,7 @@ def test_text_size_changes_rebuild_only_the_affected_object(tmp_path, suffix, be
     )
 
     def sizes(size):
-        rows = [f"{targets[1]}: TEXTSIZE := 0x20"]
+        rows = ["VMACRO_eu-1 := VERSION_EU_1", "VMACRO_us := VERSION_US", f"{targets[1]}: TEXTSIZE := 0x20"]
         if size is not None:
             rows.append(f"{targets[0]}: TEXTSIZE := {size}")
         (tmp_path / "versions/us/text_sizes.mk").write_text("\n".join(rows) + "\n")
@@ -646,7 +643,7 @@ def test_an_object_compiles_again_only_when_its_preprocessed_text_changes(tmp_pa
     import sys
 
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "src").mkdir()
     (tmp_path / "asm/us").mkdir(parents=True)
     (tmp_path / "asm/us/.extracted").touch()
@@ -724,7 +721,7 @@ def test_an_extraction_that_changes_nothing_keeps_every_date(tmp_path):
     import sys
 
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "roms").mkdir(exist_ok=True)
     (tmp_path / "roms/baserom.us.z64").write_bytes(bytes(64))
     (tmp_path / "versions/us/splat.yaml").write_text("")
@@ -799,7 +796,7 @@ def test_an_object_follows_the_extracted_files_its_include_lines_name(tmp_path):
     import sys
 
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "src").mkdir()
     (tmp_path / "asm/us/nonmatchings/seg").mkdir(parents=True)
     (tmp_path / "asm/us/data/seg").mkdir(parents=True)
@@ -957,8 +954,6 @@ def test_extract_rewrites_each_data_piece_as_its_rom_slice_keeping_labels(tmp_pa
     import subprocess
     import sys
 
-    text = build.makefile(make_config(tmp_path)).decode()
-    code = text.split("define FILL_DATA\n", 1)[1].split("\nendef", 1)[0]
     work = tmp_path / "work"
     (work / "roms").mkdir(parents=True)
     (work / "roms/baserom.us.z64").write_bytes(bytes(range(0x40)) * 0x100)
@@ -972,7 +967,7 @@ def test_extract_rewrites_each_data_piece_as_its_rom_slice_keeping_labels(tmp_pa
         '.include "macro.inc"\n\ndlabel d_1\n/* 1010 80200410 10111213 */ .word 0x10111213\ndlabel d_2\n'
         "/* 1014 80200414 1415 */ .short 0x1415\n"
     )
-    subprocess.run([sys.executable, "-I", "-c", code, "us"], cwd=work, check=True)
+    subprocess.run([sys.executable, "-I", adapters.make_tool("fill_data.py"), "us"], cwd=work, check=True)
     assert (work / "asm/us/data/main/d_1.s").read_text().splitlines() == [
         '.include "macro.inc"',
         "dlabel d_1",
@@ -994,12 +989,10 @@ def test_an_object_whose_data_starts_off_a_word_gets_noalign_and_its_alignment_d
     config = make_config(tmp_path)
     rows = build.text_sizes(config, held, "us").decode().splitlines()
     assert "build/us/src/b.c.o: NOALIGN := 1" in rows and not any("a.c.o: NOALIGN" in r for r in rows)
-    text = build.makefile(config).decode()
-    assert "$(if $(NOALIGN),'&&' @py STRIP_ALIGN $(@:.o=.s) $(NOALIGN))" in text
-    code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
+    assert "$(if $(NOALIGN),'&&' $(PASS)strip_align.py $(@:.o=.s) $(NOALIGN))" in build._recipe("gcc-2.8.1-sn64")
     source = tmp_path / "x.s"
     source.write_text(".text\n.align 2\nf:\n.section .rodata\n.align 3\n.word 1\n.half 2\n.text\n.align 2\n")
-    subprocess.run([sys.executable, "-I", "-c", code, str(source), "2"], check=True)
+    subprocess.run([sys.executable, "-I", adapters.make_tool("strip_align.py"), str(source), "2"], check=True)
     assert source.read_text() == ".text\n.align 2\nf:\n.section .rodata\n.4byte 1\n.2byte 2\n.text\n.align 2\n"
 
 
@@ -1016,11 +1009,9 @@ def test_data_starting_word_aligned_but_off_eight_loses_only_the_eight_alignment
     assert not any(
         "NOALIGN" in r for r in build.text_sizes(config, held, "us").decode().splitlines()
     )  # the Makefile keeps its own
-    text = build.makefile(config).decode()
-    code = text.split("define STRIP_ALIGN\n", 1)[1].split("\nendef", 1)[0]
     source = tmp_path / "x.s"
     source.write_text(".text\n.align 3\nf:\n.section .rodata\n.word 1\n.align 2\n.align 3\n.word 2\n.half 3\n")
-    subprocess.run([sys.executable, "-I", "-c", code, str(source), "4"], check=True)
+    subprocess.run([sys.executable, "-I", adapters.make_tool("strip_align.py"), str(source), "4"], check=True)
     assert source.read_text() == ".text\n.align 3\nf:\n.section .rodata\n.word 1\n.align 2\n.word 2\n.half 3\n"
 
 
@@ -1032,8 +1023,8 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     assert table < asm and lines[table] == "@jumptable $(@:.o=.s) 80000000"
     assert (
         lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
-        " $(if $(UNRELOC),'&&' @py UNRELOC_PASS $@)"
-        " $(if $(TEXTCUT),'&&' @py TEXTCUT_PASS $@ $(TEXTCUT))"
+        " $(if $(UNRELOC),'&&' $(PASS)unreloc_pass.py $@)"
+        " $(if $(TEXTCUT),'&&' $(PASS)textcut_pass.py $@ $(TEXTCUT))"
     )
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and "@jumptable" not in build._recipe("gcc-2.7.2-kmc")
 
@@ -1044,16 +1035,15 @@ def test_a_file_row_pads_hilo_hazards_the_way_the_rom_assembler_did(tmp_path):
     import sys
 
     recipe = build._recipe("gcc-2.8.1-sn64").splitlines()[-1]
-    assert "$(if $(HILO),'&&' @py HILO_HAZARD $(@:.o=.s))" in recipe
-    assert recipe.index("HILO_HAZARD") < recipe.index("asn64")
-    code = build.makefile(make_config(tmp_path)).decode().split("define HILO_HAZARD\n", 1)[1].split("\nendef", 1)[0]
+    assert "$(if $(HILO),'&&' $(PASS)hilo_hazard.py $(@:.o=.s))" in recipe
+    assert recipe.index("hilo_hazard.py") < recipe.index("asn64")
     source = tmp_path / "x.s"
     source.write_text(
         "f:\n\tmfhi\t$3\n\tmult\t$4,$5\n\tmflo\t$6\n\tandi\t$2,$3,1\n\tdivu\t$4,$5\n"  # adjacent; gap of one
         "\t.set\tnoreorder\n\tmflo\t$6\n\tmult\t$4,$5\n\t.set\treorder\n"  # noreorder: untouched
         "\tmfhi\t$3 # c\n$L1:\n\t#nop\n\tmthi\t$4\n\tmfhi\t$3\n\tdivu\t$2,$4,$5\n"  # label ignored; 3-operand div
     )
-    subprocess.run([sys.executable, "-I", "-c", code, str(source)], check=True)
+    subprocess.run([sys.executable, "-I", adapters.make_tool("hilo_hazard.py"), str(source)], check=True)
     assert source.read_text() == (
         "f:\n\tmfhi\t$3\n\tnop\n\tnop\n\tmult\t$4,$5\n\tmflo\t$6\n\tandi\t$2,$3,1\n\tdivu\t$4,$5\n"
         "\t.set\tnoreorder\n\tmflo\t$6\n\tmult\t$4,$5\n\t.set\treorder\n"
@@ -1066,7 +1056,7 @@ def test_undefined_syms_provide_the_aliases_too(tmp_path):
     import subprocess
 
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "versions/us/symbol_addrs.txt").write_text("f = 0x80200400; // type:func rom:0x1000\n")
     (tmp_path / "versions/us/aliases.txt").write_text("g = 0x80200400;\n")
     (tmp_path / "build/us").mkdir(parents=True)
@@ -1168,7 +1158,7 @@ def test_the_makefile_builds_and_verifies_standalone_without_our_tools(tmp_path)
     """make check is the ROMs, each checked by SHA-1; nothing calls unbake (the verdict is recorded from outside), and
     a version not yet extracted is extracted by the build itself."""
     text = build.makefile(make_config(tmp_path)).decode()
-    assert "unbake" not in text.lower()
+    assert not any("unbake" in line.lower() for line in text.splitlines() if line.startswith("\t"))  # no recipe
     assert "else ifeq ($(CHECK),rom)\ncheck: $(VERSIONS:%=build/%/$(NAME).z64)\n" in text
     assert "asm/%/.extracted: | roms/baserom.%.z64\n\t+$(Q)$(MAKE) --no-print-directory extract-$*\n" in text
     assert "build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt: | asm/%/.extracted\n" in text
@@ -1307,7 +1297,7 @@ def _reflag_tree(tmp_path, makefile):
     return config
 
 
-ROW = "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): CFLAGS := -O1\n"
+ROW = "CFLAGS.src/a.c := -O1\n"
 
 
 def test_a_changed_per_file_row_drops_that_object_in_every_version(tmp_path):
@@ -1351,13 +1341,12 @@ def test_a_changed_variable_reaches_the_objects_of_the_rules_using_it(tmp_path):
 
 
 def test_dependency_lines_added_to_the_makefile_keep_every_compiled_object(tmp_path):
-    """The deploy that adds the extracted-file prerequisites (the ASM_DEPS script and the lines that run and include
-    it) must not read as a change nothing names: that would drop every compiled object of every tree."""
+    """The deploy that adds the extracted-file prerequisites (the lines that run asm_deps.py and the sweep and include
+    their output) must not read as a change nothing names: that would drop every compiled object of every tree."""
     config = _reflag_tree(tmp_path, RULES)
     block = (
-        "define ASM_DEPS\nimport os, sys\nprint(os.getcwd(), sys.argv)\nendef\n"
-        "$(shell mkdir -p build)\n$(file >build/asm-deps.py,$(ASM_DEPS))\n"
-        "$(shell python3 -I build/asm-deps.py $(VERSIONS) >build/asm.deps)\n-include build/asm.deps\n"
+        "$(shell mkdir -p build)\n$(shell python3 -I $(MKTOOLS)/asm_deps.py build/asm.deps $(VERSIONS))\n"
+        "-include build/asm.deps\n$(shell python3 -I $(MKTOOLS)/stamp_sweep.py sweep $(VERSIONS) >&2)\n"
     )
     assert build.drop_reflagged(config, (RULES + block).encode()) == 0
     assert all((tmp_path / f"build/{v}/src/{u}.c.o").exists() for v in ("us", "de") for u in ("a", "b"))
@@ -1389,7 +1378,7 @@ def _stamped(tmp_path):
             _stamp(tmp_path, v, unit).write_bytes(b"")
 
 
-CPPROW = "$(foreach v,$(VERSIONS),build/$(v)/src/a.c.o): CPPFLAGS := -DA\n"
+CPPROW = "CPPFLAGS.src/a.c := -DA\n"
 
 
 def test_a_changed_preprocessor_row_remakes_that_text_and_keeps_every_object(tmp_path):
@@ -1505,7 +1494,7 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
     import sys
 
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "src").mkdir()
     (tmp_path / "asm/us").mkdir(parents=True)
     (tmp_path / "asm/us/.extracted").touch()
@@ -1580,16 +1569,17 @@ def test_an_object_is_not_assembled_again_when_the_compilers_assembly_is_the_las
 
 def test_a_project_without_a_non_matching_table_gets_no_nm_build(tmp_path):
     text = build.makefile(make_config(tmp_path)).decode()
-    assert "nmraw" not in text and "NM_PICK" not in text and "DEFAULT_GOAL := nm" not in text
-    assert "ver = $(firstword $(subst /, ,$1))" in text
+    assert "\nNM_DEFINE :=\n" in text  # no define: the template's NON_MATCHING rules stay out of the build
 
 
 def test_a_non_matching_table_adds_the_nm_build_with_the_files_rows(tmp_path):
     config = make_config(tmp_path, {"src/a.c": FileFacts(cflags=("-O1",))})
     config.project.non_matching = "DRAFT"
     text = build.makefile(config).decode()
-    assert "-DDRAFT" in text and "ifeq ($(NON_MATCHING),1)\n.DEFAULT_GOAL := nm\nendif" in text
-    assert "$(foreach v,$(VERSIONS),build/nmraw/$(v)/src/a.c.o): TC := gcc_2_8_1_sn64" in text
+    lines = text.splitlines()
+    assert "NM_DEFINE := DRAFT" in lines and "ifeq ($(NON_MATCHING),1)\n.DEFAULT_GOAL := nm\nendif" in text
+    assert "FILE.src/a.c := gcc_2_8_1_sn64" in lines and "CFLAGS.src/a.c := -O1" in lines
+    assert not any(line.startswith(("FILE.", "CFLAGS.")) and "nmraw" in line for line in lines)
     assert "nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)" in text
     assert "$(VERSIONS:%=build/nm/%/link.ld): build/nm/%/link.ld: build/%/link.ld" in text
     nm_link = text[text.index("build/nm/%/$(NAME).z64: build/nm/%/$(NAME).bin") :]
@@ -1647,10 +1637,6 @@ def test_an_nm_object_replaces_the_matching_one_only_when_the_layout_stays(tmp_p
     import subprocess
     import sys
 
-    config = make_config(tmp_path)
-    config.project.non_matching = "NON_MATCHING"
-    text = build.makefile(config).decode()
-    script = text[text.index("define NM_PICK\n") + len("define NM_PICK\n") : text.index("\nendef\nexport NM_PICK")]
     matching = elf({".text": 16}, [("f", ".text", 0), ("g", ".text", 8)])
     (tmp_path / "raw.o").write_bytes(raw)
     (tmp_path / "matching.o").write_bytes(matching)
@@ -1661,8 +1647,7 @@ def test_an_nm_object_replaces_the_matching_one_only_when_the_layout_stays(tmp_p
         [
             sys.executable,
             "-I",
-            "-c",
-            script,
+            adapters.make_tool("nm_pick.py"),
             "raw.o",
             "matching.o",
             "out.o",
@@ -1690,12 +1675,14 @@ def test_the_nm_object_of_a_unit_builds_with_the_define_and_is_picked_against_th
 
     config = make_config(tmp_path)
     config.project.non_matching = "NON_MATCHING"
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "src").mkdir()
     (tmp_path / "src/a.c").write_text("int a;\n")
     (tmp_path / "asm/us").mkdir(parents=True)
     (tmp_path / "asm/us/.extracted").touch()
-    (tmp_path / "versions/us/text_sizes.mk").write_text("build/us/src/a.c.o: TEXTSIZE := 0x10\n")
+    (tmp_path / "versions/us/text_sizes.mk").write_text(
+        "VMACRO_us := VERSION_US\nbuild/us/src/a.c.o: TEXTSIZE := 0x10\n"
+    )
     run = subprocess.run(
         [
             *("make", "-n", "STAMPS=", "TC=stub", "PREPROCESS_stub=@echo pre $(DEFINES) $<"),
@@ -1709,10 +1696,7 @@ def test_the_nm_object_of_a_unit_builds_with_the_define_and_is_picked_against_th
     lines = run.stdout.splitlines()
     assert any("pre -DVERSION_US -DNON_MATCHING src/a.c" in line for line in lines)
     assert any(re.search(r"pre -DVERSION_US\s+src/a.c", line) for line in lines)  # the matching object takes no define
-    assert any(
-        "build/nmraw/us/src/a.c.o build/us/src/a.c.o build/nm/us/src/a.c.o" in line and "$NM_PICK" in line
-        for line in lines
-    )
+    assert any("nm_pick.py build/nmraw/us/src/a.c.o build/us/src/a.c.o build/nm/us/src/a.c.o" in line for line in lines)
     assert "build/nmraw/us/src/a.c.o: TEXTSIZE := 0x10" in (tmp_path / "build/text_sizes_nmraw.mk").read_text()
 
 
@@ -1726,16 +1710,12 @@ def test_a_padded_nm_object_keeps_its_relocations(tmp_path):
     if not all(tools):
         pytest.skip("no mips binutils")
     as_, ld, objcopy, readelf = tools
-    config = make_config(tmp_path)
-    config.project.non_matching = "NON_MATCHING"
-    text = build.makefile(config).decode()
-    script = text[text.index("define NM_PICK\n") + len("define NM_PICK\n") : text.index("\nendef\nexport NM_PICK")]
     (tmp_path / "raw.s").write_text(".text\n.globl f\nf:\n jal g\n nop\n")
     (tmp_path / "match.s").write_text(".text\n.globl f\nf:\n jal g\n nop\n nop\n nop\n")
     for n in ("raw", "match"):
         subprocess.run([as_, "-march=vr4300", "-EB", "-o", f"{n}.o", f"{n}.s"], cwd=tmp_path, check=True)
     run = subprocess.run(
-        [sys.executable, "-I", "-c", script, "raw.o", "match.o", "out.o", objcopy, ld],
+        [sys.executable, "-I", adapters.make_tool("nm_pick.py"), "raw.o", "match.o", "out.o", objcopy, ld],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -1767,11 +1747,12 @@ def test_distinct_images_keep_physical_bounds_and_extraction_namespaces(tmp_path
     assert yaml.count('exclusive_ram_id: "earlier"') == 2
     main = yaml.split("  - name: old\n")[0]
     assert 'exclusive_ram_id: "main"' in main
+    sections = build.text_sizes(config, held, "us").decode()
+    assert "--set-section-flags .old=alloc,load,readonly,code,contents --change-section-lma .old=0x2000" in sections
     make = build.makefile(config).decode()
-    assert "--set-section-flags .old=alloc,load,readonly,code,contents --change-section-lma .old=0x2000" in make
     assert "$(OBJCOPY) $(ROM_SECTIONS_$*) -O binary" in make
     assert "--no-check-sections" not in make
-    assert "--allow-multiple-definition" not in make
+    assert "--allow-multiple-definition" not in make.split("\nifneq ($(NM_DEFINE),)")[0]  # the matching link only
 
 
 def test_distinct_image_emission_also_applies_to_nonmatching_rom(tmp_path):
@@ -1798,7 +1779,7 @@ def test_separate_images_at_same_vma_do_not_share_namespace(tmp_path):
 def _extract_world(tmp_path):
     """A tree whose fake splat appends a line to runs.log (and sleeps) each time it splits."""
     config = make_config(tmp_path)
-    (tmp_path / "Makefile").write_bytes(build.makefile(config))
+    _write_makefile(tmp_path, config)
     (tmp_path / "roms").mkdir(exist_ok=True)
     (tmp_path / "roms/baserom.us.z64").write_bytes(bytes(64))
     (tmp_path / "versions/us/splat.yaml").write_text("")
@@ -1963,8 +1944,8 @@ def _fsplit(tmp_path, text: str) -> list[str]:
     import sys
 
     (tmp_path / "in.s").write_text(text)
-    script = adapters.fsplit_script()
-    subprocess.run([sys.executable, "-I", "-c", script, str(tmp_path / "in.s"), str(tmp_path / "out.s")], check=True)
+    script = adapters.make_tool("fsplit_pass.py")
+    subprocess.run([sys.executable, "-I", script, str(tmp_path / "in.s"), str(tmp_path / "out.s")], check=True)
     return (tmp_path / "out.s").read_text().splitlines()
 
 
@@ -1983,3 +1964,24 @@ def test_fsplit_pass_gives_each_function_and_each_read_only_block_a_section_of_i
     ]
     assert "\t.set __align8_D_blob_1, 0" in out  # a block aligned to 8 says so (SUBALIGN(1) drops the section's)
     assert not any("__align8_literals_f_1" in line for line in out)
+
+
+def test_fsplit_pass_marks_a_block_aligned_to_8_only_by_its_first_item(tmp_path):
+    out = _fsplit(
+        tmp_path,
+        '.section .f_1,"ax"\nf_1:\n lui $4, %hi(.LC0)\n.section .rdata\n.align 2\n.LC0:\n.word 0x3f000000\n'
+        '.align 3\n.LC1:\n.word 0x41e00000\n.word 0\n',
+    )  # fmt: skip
+    assert not any("__align8_" in line for line in out)  # the ROM may hold this pool at 4 mod 8: the double pads inside
+
+
+def test_fsplit_pass_judges_a_pool_written_in_pieces_by_its_first_piece(tmp_path):
+    # the compiler writes a pool where its constants are used: the double's piece is not where the block starts
+    out = _fsplit(
+        tmp_path,
+        '.section .f_1,"ax"\nf_1:\n lui $4, %hi(.LC0)\n lui $5, %hi(.LC1)\n'
+        '.section .rdata\n.align 2\n.LC0:\n.word 0x3f000000\n'
+        '.section .f_1,"ax"\n nop\n.section .rdata\n.align 3\n.LC1:\n.word 0x41e00000\n.word 0\n',
+    )  # fmt: skip
+    assert out.count('.section\t.rdata.literals_f_1,"a",@progbits') == 2
+    assert not any("__align8_" in line for line in out)

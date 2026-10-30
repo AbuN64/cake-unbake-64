@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_build import make_config
 
 from unbake import api, build, cheat, symbols, tree
 from unbake import config as configuration
@@ -40,7 +41,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     (tmp_path / "src/a.c").write_text(
         '#include "include_asm.h"\nint f(void) { return 1; }\nINCLUDE_ASM("seg", func_80000000);\n'
     )
-    (tmp_path / "Makefile").write_text("all:\n$(foreach v,$(VERSIONS),build/$(v)/src/a.o): TC := gcc\n")
+    (tmp_path / "Makefile").write_text("all:\nFILE.src/a.c := gcc\n")
     (tmp_path / "config.toml").write_text("x\n")
     _git(tmp_path, "init", "-q", "-b", "main")
     (tmp_path / ".gitignore").write_text(".unbake/\n")
@@ -225,7 +226,7 @@ def test_a_declaration_edit_cannot_carry_an_asm_line_in(repo: SimpleNamespace) -
 def test_makefile_rows_pass_other_lines_fail_unless_generated(
     repo: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    row = "$(foreach v,$(VERSIONS),build/$(v)/src/a.o): TC := ido\n"
+    row = "FILE.src/a.c := ido\n"
     assert repo.check(Makefile="all:\n" + row)["makefile"] == "behind"  # row-only edit, unstamped Makefile
     assert _refused(repo, Makefile="all:\n" + row + "evil:\n\tcp a b\n") == {"cheat.makefile"}
     monkeypatch.setattr(cheat, "_makefile_generated", lambda cfg, git, head, rows: True)
@@ -352,11 +353,11 @@ def test_a_makefile_behind_the_generator_is_mains_lag_not_a_refusal(
     assert run() == "unchanged"  # the deployed generator wrote it: nothing behind
 
 
-def test_the_generator_version_follows_the_template_and_stamps_the_makefile() -> None:
+def test_the_generator_version_follows_the_template_and_stamps_the_makefile(tmp_path: Path) -> None:
     first = build.generator_version()
     assert re.fullmatch(r"[0-9a-f]{12}", first) and build.generator_version() == first
     assert build.generator_of(f"# t: matching build.\n# generator: {first}\nNAME := x\n") == first
-    assert "# generator: ${generator}" in configuration.template("Makefile.in")
+    assert build.generator_of(build.makefile(make_config(tmp_path)).decode()) == first
 
 
 def test_the_uncommitted_tree_still_refuses_added_assembly(
@@ -396,7 +397,7 @@ MOVED = {
     "cheat": {
         "source": ["src", "include", "sdk"],
         "asm_home": ["sdk/"],
-        "makefile_row": r"^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/(src|sdk)/[^ ]+\.o\): (TC|CPPFLAGS|CFLAGS) :=",
+        "makefile_row": r"^(FILE|CPPFLAGS|CFLAGS)\.(src|sdk)/[^ ]+ :=",
     }
 }
 
@@ -415,7 +416,7 @@ def test_a_project_cheat_table_leaves_the_old_asm_home_to_fail(repo: SimpleNames
 
 def test_a_project_cheat_table_replaces_the_makefile_row(repo: SimpleNamespace) -> None:
     repo.config.project.cheat = MOVED["cheat"]
-    row = "$(foreach v,$(VERSIONS),build/$(v)/sdk/a.o): TC := ido\n"
+    row = "FILE.sdk/a.c := ido\n"
     assert repo.check(Makefile="all:\n" + row)["makefile"] == "behind"
 
 

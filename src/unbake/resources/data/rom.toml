@@ -3,6 +3,9 @@
 # relocation-masked code windows of the names_from ROM found in each other ROM.
 schema = 1
 asflags = ["-march=vr4300", "-mabi=32", "-EB", "--no-pad-sections", "-mips3"]
+# The macros a hand-written .s source preprocesses with (the host cpp is not the MIPS one): the 32-bit MIPS ABI of
+# the IRIX/libultra assembly headers.
+as_cppflags = ["-D_LANGUAGE_ASSEMBLY", "-Dmips", "-D_MIPS_SIM_ABI32=1", "-D_MIPS_SIM=1"]
 text_mask = 0x1FFFFFFF
 
 # The cartridge header and IPL3 boot code. A project rom.toml records exact-hash RSP spans beside this range.

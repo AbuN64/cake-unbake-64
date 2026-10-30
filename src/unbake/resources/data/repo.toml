@@ -126,7 +126,7 @@ source = ["src", "include"]
 declaration_files = '\.(h|H)$'  # a header under a source root in infra: declaration-only edits are not infrastructure
 asm_home = ["src/sdk/"]  # path prefixes where a new `.s` may be added if every global symbol it defines is handwritten
 source_suffix = '\.(c|C|CPP|cpp|h|H|inc)$'
-makefile_row = '^\$\(foreach v,\$\(VERSIONS\),build/\$\(v\)/src/[^ ]+\.o\): (TC|CPPFLAGS|CFLAGS) :='
+makefile_row = '^(FILE|CPPFLAGS|CFLAGS)\.src/[^ ]+ :='
 added = [
   '\basm\s*\(', '__asm', 'GLOBAL_ASM', 'INCLUDE_RODATA', '\.incbin', '^\s*\.word\b', '"\s*\.word\b', ';\s*\.word\b',
   '#\s*(un)?define\s+NON_MATCHING', '#\s*pragma', '__attribute__\s*\(\(\s*section',
