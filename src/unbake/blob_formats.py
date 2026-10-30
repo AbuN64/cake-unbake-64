@@ -18,6 +18,7 @@ from unbake import (
     objcode,
     rnc,
     rncrepack,
+    snpage,
     snsym,
 )
 from unbake.contracts import Config, Json, sha256
@@ -31,6 +32,7 @@ READERS = frozenset(
         "c-string",
         "sn-debug",
         "sn-head",
+        "sn-page",
         "copy",
         "segment-fill",
         "pad",
@@ -317,6 +319,12 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         return snsym.stream_receipt(rom, start, end, row.get("dialect", "sym"))
     if reader == "sn-head":
         return _sn_head(config, row, rom, start, end)
+    if reader == "sn-page":
+        others = {v: _baserom(config, v) for v in sorted(config.project.version) if v != row["version"]}
+        try:
+            return snpage.prove(rom, start, end, row["page"], others)
+        except (snpage.PageError, snsym.SymError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"sn-page: {error}") from error
     if reader == "mips-stream":
         try:
             return mipsstream.prove(rom, start, end, row["stream"])

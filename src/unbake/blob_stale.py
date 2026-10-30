@@ -15,7 +15,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import blobs, earlier_build, mipsstream, objcode, rncrepack, snsym
+from unbake import blobs, earlier_build, mipsstream, objcode, rncrepack, snpage, snsym
 from unbake.contracts import Config, Json
 
 MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
@@ -191,6 +191,24 @@ def objects(rom: bytes, targets: Spans) -> list[Json]:
     return found
 
 
+def pages(rom: bytes, targets: Spans) -> list[Json]:
+    """The rows of the last-write pages of an object file's record stream (`snpage`: stale code behind a cut, whole
+    records, a cut code record) that fill `targets`: each credits the part of a page inside the spans, the page named
+    whole for its proof."""
+    rows: list[Json] = []
+    for low, high in targets:
+        for page in snpage.find(rom, low, high):
+            rows.append(
+                {
+                    "version": "",
+                    "reader": "sn-page",
+                    "region": [max(low, page), min(high, page + snpage.SECTOR)],
+                    "page": [page, page + snpage.SECTOR],
+                }
+            )
+    return rows
+
+
 def code_streams(rom: bytes, targets: Spans) -> list[Json]:
     """The rows of code streams (`mipsstream`: whole functions of canonical instructions, no body to compare to) that
     fill `targets`: each credits the part of a stream inside the spans, the stream named whole for its proof."""
@@ -236,7 +254,8 @@ def scan(config: Config) -> Json:
         cuts = heads(roms, v, targets, starts, list(parts))
         targets = blobs.subtract(targets, blobs.merge([tuple(c["region"]) for c in cuts]))
         streams = [{**s, "version": v} for s in objects(roms[v], targets)]
-        left_over = blobs.subtract(targets, blobs.merge([tuple(s["region"]) for s in streams]))
+        sectors = [{**r, "version": v} for r in pages(roms[v], targets)]
+        left_over = blobs.subtract(targets, blobs.merge([tuple(s["region"]) for s in [*streams, *sectors]]))
         code = bodies.regions(roms[v], v, left_over)
         left_code = blobs.subtract(left_over, blobs.merge([tuple(r["rom"]) for r in code]))
         mips = [{**r, "version": v} for r in code_streams(roms[v], left_code)]
@@ -255,6 +274,7 @@ def scan(config: Config) -> Json:
         out[v] = {
             "unknown": blobs.length(targets),
             "streams": streams,
+            "pages": sectors,
             "code": [
                 {"version": v, "region": r["rom"], "reader": "obj-code", "tiles": r["tiles"], "bodies": r["bodies"]}
                 for r in code
