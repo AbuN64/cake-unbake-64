@@ -777,6 +777,7 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
             if per_object and section == ".text" and (path, ".rodata") not in named:
                 items.append((path, ".rodata", None, False))
     _apart(held, v, [row for row in rows if row[1] not in apart], config)
+    unaligned = _unaligned(config, held, v)
     out: list[str] = []
     for path, section, offset, apart_section in items:
         if offset is not None:
@@ -785,8 +786,9 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
             out.append(f". = MAX(., 0x{offset:X})")
         if apart_section:
             for one in section.split():
-                if one.startswith(".rodata."):
-                    # the assembler tagged the blocks it aligned to 8 (FSPLIT_PASS): `SUBALIGN(1)` drops that
+                if one.startswith(".rodata.") and path not in unaligned:
+                    # the assembler tagged the blocks it aligned to 8 (FSPLIT_PASS): `SUBALIGN(1)` drops that. An
+                    # object the build packs at the byte (NOALIGN) was not aligned: its rows' addresses stand
                     out.append(f". = DEFINED({_ALIGN8}{one[len('.rodata.') :]}) ? ALIGN(8) : .")
                 out.append(f"{path}.o({_spelled(one)})")
             continue

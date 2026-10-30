@@ -1927,6 +1927,16 @@ def test_an_apart_object_is_placed_function_by_function_at_the_offset_of_its_rom
     assert "src/b.c.o(.text);" in body  # an object whole in the ROM keeps its one `.text`
 
 
+def test_an_object_packed_at_the_byte_is_not_aligned_to_8_by_the_link_script(tmp_path):
+    tree = _merged_unit()
+    for v in ("us", "eu-1"):
+        tree.symbols[v]["literals_f_1"] = (0x80200000 + 0xA, 0x1000 + 0xA, 8, "data")
+    text = build.linker(make_config(tmp_path), tree).decode()
+    body = [ln.strip() for ln in text.splitlines() if ln.strip().startswith(("src/", ". = ")) and ".bss" not in ln]
+    assert "__align8" not in " ".join(body)  # its rows' addresses stand
+    assert "src/a.c.o(.rodata.literals_f_1 .rdata.literals_f_1);" in body
+
+
 def test_every_object_is_placed_at_the_offset_of_its_first_row_so_a_dropped_gap_stays_zeros(tmp_path):
     tree = make_tree(
         both("src/a.c", "f_1", "f_2"), both("src/b.c", "f_4")
