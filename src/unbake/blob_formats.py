@@ -322,7 +322,8 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
     if reader == "sn-page":
         others = {v: _baserom(config, v) for v in sorted(config.project.version) if v != row["version"]}
         try:
-            return snpage.prove(rom, start, end, row["page"], others)
+            low = start // snpage.SECTOR * snpage.SECTOR
+            return snpage.prove(rom, start, end, [low, low + snpage.SECTOR], others)
         except (snpage.PageError, snsym.SymError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"sn-page: {error}") from error
     if reader == "mips-stream":

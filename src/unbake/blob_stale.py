@@ -193,8 +193,8 @@ def objects(rom: bytes, targets: Spans) -> list[Json]:
 
 def pages(rom: bytes, targets: Spans) -> list[Json]:
     """The rows of the last-write pages of an object file's record stream (`snpage`: stale code behind a cut, whole
-    records, a cut code record) that fill `targets`: each credits the part of a page inside the spans, the page named
-    whole for its proof."""
+    records, a cut code record) that fill `targets`: each credits the part of a page inside the spans; the proof reads
+    the sector the region lies in."""
     rows: list[Json] = []
     for low, high in targets:
         for page in snpage.find(rom, low, high):
@@ -203,7 +203,6 @@ def pages(rom: bytes, targets: Spans) -> list[Json]:
                     "version": "",
                     "reader": "sn-page",
                     "region": [max(low, page), min(high, page + snpage.SECTOR)],
-                    "page": [page, page + snpage.SECTOR],
                 }
             )
     return rows

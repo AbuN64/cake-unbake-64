@@ -140,12 +140,12 @@ def test_find_lists_the_proven_pages_that_overlap_a_span():
     assert snpage.find(rom(b"\xaa" * snpage.SECTOR), 0, 0x1000) == []
 
 
-def test_scan_rows_credit_the_spans_inside_a_page_and_name_the_page_whole():
+def test_scan_rows_credit_the_spans_inside_a_page():
     data = rom(sector())
     rows = blob_stale.pages(data, [(0x400, 0x415), (0x439, 0x600), (0x700, 0x800)])
     assert rows == [
-        {"version": "", "reader": "sn-page", "region": [0x400, 0x415], "page": [0x400, 0x600]},
-        {"version": "", "reader": "sn-page", "region": [0x439, 0x600], "page": [0x400, 0x600]},
+        {"version": "", "reader": "sn-page", "region": [0x400, 0x415]},
+        {"version": "", "reader": "sn-page", "region": [0x439, 0x600]},
     ]
 
 
@@ -154,9 +154,8 @@ def test_the_blobs_prove_reader_takes_the_row_and_compares_with_the_other_versio
     (tmp_path / "roms" / "baserom.b.z64").write_bytes(bytes(0x40) + pack(LATER))
     config = N(project=N(root=tmp_path, version={"v": None, "b": None}))
     data = rom(sector())
-    spec = dict(id="fixture", version="v", region=[0x400, 0x415], reader="sn-page", page=[0x400, 0x600])
+    spec = dict(id="fixture", version="v", region=[0x400, 0x415], reader="sn-page")
     got = blob_formats.prove(config, spec, data, {"blob": {}})
     assert got["records"]["count"] == 12 and got["compared"][0]["version"] == "b"
-    for wrong in (dict(spec, page=[0x400, 0x5FF]), dict(spec, page=[0x600, 0x800]), {k: v for k, v in spec.items() if k != "page"}):
-        with pytest.raises(ValueError, match="sn-page"):
-            blob_formats.prove(config, wrong, data, {"blob": {}})
+    with pytest.raises(ValueError, match="sn-page"):  # a region in a sector that is no page
+        blob_formats.prove(config, dict(spec, region=[0x600, 0x680]), data, {"blob": {}})

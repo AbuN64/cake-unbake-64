@@ -23,6 +23,7 @@ Spans = list[tuple[int, int]]
 LEFTOVER_FORMATS = (
     "sn-debug",
     "earlier-link",
+    "sn-page",
     "copy",
     "mips-stream",
     "earlier-build",
