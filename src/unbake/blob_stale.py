@@ -15,7 +15,18 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import blobs, earlier_build, mipsstream, objcode, rncrepack, snpage, snsym
+from unbake import (
+    blobs,
+    earlier_build,
+    framed_copy,
+    framing,
+    mipsstream,
+    objcode,
+    rnc_whole,
+    rncrepack,
+    snpage,
+    snsym,
+)
 from unbake.contracts import Config, Json
 
 MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
@@ -229,6 +240,38 @@ def rnc_streams(rom: bytes, targets: Spans) -> list[Json]:
     return [{"version": "", "reader": "rnc-repack", **row} for row in rncrepack.spans(found, targets)]
 
 
+def frames(rom: bytes, targets: Spans) -> list[framing.Frame]:
+    """The block frames the ROM holds whose header is one of the short unknown spans (`framing.discover`)."""
+    return framing.discover(rom, {rom[a:b] for a, b in targets if 0 < b - a <= framing.MAX_HEADER})
+
+
+def whole_streams(rom: bytes, held: list[framing.Frame], targets: Spans) -> list[Json]:
+    """The rows of stale RNC2 streams that are whole once the block headers inside them are taken out
+    (`rnc_whole`) that fill `targets`."""
+    found = rnc_whole.find(rom, held, targets[0][0], targets[-1][1]) if targets else []
+    return [{"version": "", "reader": "rnc-whole", **row} for row in rnc_whole.spans(found, targets)]
+
+
+def framed_copies(roms: dict[str, bytes], v: str, held: list[framing.Frame], targets: Spans) -> list[Json]:
+    """The rows of block headers a stale copy of another version carries (`framed_copy`): the short spans that stand
+    on a held lattice point between two runs of one other version's bytes."""
+    rows: list[Json] = []
+    rom = roms[v]
+    for a, b in targets:
+        for frame in held:
+            if b - a != len(frame.header) or rom[a:b] != frame.header or (a - frame.anchor) % frame.period:
+                continue
+            for other, data in roms.items():
+                at = framed_copy.find(rom, data, a, b) if other != v else None
+                if at is not None:
+                    rows.append(
+                        {"version": v, "reader": "framed-copy", "region": [a, b], "source_version": other,
+                         "source": at, "frame": frame.row()}
+                    )
+                    break
+    return rows
+
+
 def scan(config: Config) -> Json:
     """`unbake blobs scan stale`: per version, the object-code regions, the code streams, the pieces the compiler
     rebuilds from the current source (with their receipts) and the exact copies that fill unknown bytes, as the rows
@@ -263,6 +306,11 @@ def scan(config: Config) -> Json:
         rebuilt = earlier_build.scan(roms, {v: holes}, compiler)[v]
         built = [{**r, "version": v, "reader": "earlier-build"} for r in rebuilt["rows"]]
         left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in built]))
+        held = frames(roms[v], left_mips)
+        whole = [{**r, "version": v} for r in whole_streams(roms[v], held, left_mips)]
+        left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in whole]))
+        framed = framed_copies(roms, v, held, left_mips)
+        left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in framed]))
         packed = [{**r, "version": v} for r in rnc_streams(roms[v], left_mips)]
         rest = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in packed]))
         copies = find(roms, spans, windows, v, rest, list(parts))
@@ -284,6 +332,8 @@ def scan(config: Config) -> Json:
             "earlier_left": rebuilt["left"],
             "not_code": rebuilt["not_code"],
             "rnc_streams": packed,
+            "rnc_whole": whole,
+            "framed_copies": framed,
             "copies": copies,
             "heads": cuts,
             "left": blobs.length(left),

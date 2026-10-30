@@ -14,9 +14,11 @@ from unbake import (
     blob_stale,
     blobs,
     earlier_build,
+    framed_copy,
     mipsstream,
     objcode,
     rnc,
+    rnc_whole,
     rncrepack,
     snpage,
     snsym,
@@ -41,6 +43,8 @@ READERS = frozenset(
         "earlier-build",
         "rnc-repack",
         "rnc-copy",
+        "rnc-whole",
+        "framed-copy",
     }
 )
 _CORPUS: dict[object, objcode.Corpus] = {}  # the known bodies of a project, once per Config digest
@@ -346,6 +350,20 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             return rncrepack.prove(rom, start, end, row["stream"])
         except (rncrepack.StreamError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"rnc-repack: {error}") from error
+    if reader == "rnc-whole":
+        try:
+            return rnc_whole.prove(rom, start, end, row["stream"], row.get("frame"))
+        except (rnc_whole.StreamError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"rnc-whole: {error}") from error
+    if reader == "framed-copy":
+        version = row.get("source_version")
+        if version not in config.project.version:
+            raise ValueError(f"framed-copy: source version {version} is unknown")
+        try:
+            other = rom if version == row["version"] else _baserom(config, version)
+            return {**framed_copy.prove(rom, other, start, end, row["source"], row["frame"]), "source_version": version}
+        except (framed_copy.CopyError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"framed-copy: {error}") from error
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":

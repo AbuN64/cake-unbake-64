@@ -237,6 +237,23 @@ misses of the command's cache lookups, in total and per kind, in every result (`
 tree it was once read from). `setup` extracts a version again exactly when the facts it was extracted from
 (`symbol_addrs.txt`, `splat.yaml`, the ROM, splat) differ from the stamp in that tree's `asm/<version>/`.
 
+## Block headers in a builder's image (`rnc-whole`, `framed-copy`)
+
+A ROM builder that wrote its image in fixed blocks put the same header bytes in front of every block, so the headers sit
+on a lattice, `anchor + k * (len(header) + block)`. Whatever an older link wrote through that image is cut by them: a
+stream or a copy of another version's bytes that crosses a block boundary has the header inside it and reads as damaged
+until the header is taken out. `framing` names the lattice (`anchor`, `header` hex, `block`), holds it as far as the
+header really stands at every point from the anchor (at least `MIN_HELD`, 6, points; a read that crosses a point the
+ROM does not hold is refused) and `blobs scan stale` finds the frames whose header is one of the short unknown spans.
+
+`rnc-whole` rows name a `stream` (the offset of its RNC header) and the `frame` (none when the stream crosses no point).
+The proof removes the frame's header bytes inside the stream's extent and the rest must be the stream the header
+describes: packed CRC, size and unpacked CRC all pass, so a wrong frame or stream cannot be proven. The region lies
+inside the raw extent; the receipt names the stream, the frame, the header offsets inside the region and the decoded
+sha256. `framed-copy` rows name a header span on a held lattice point, the `source_version` and the `source` offset where
+the copy goes on: the ROM must equal the source for at least `MIN_RUN` (32) bytes before the header and after it, so the
+header is the only insertion; the receipt lists both runs.
+
 ## Stale RNC2 streams (`rnc-repack`)
 
 An older link left RNC method 2 streams in a ROM that later writes damaged, so their packed CRC fails and `rnc` cannot
