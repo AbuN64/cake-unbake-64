@@ -98,6 +98,7 @@ and a name has the same declaration everywhere (cached in the `header.names` kin
 | pads | `Pads(...)`; `clean(text: str) -> str`; `zeros(body: str) -> bool`; `inside(table: Mapping[str, tuple[int, int | None, int | None, str]]) -> set[str]`; `lying(rows: Sequence[tuple[str, str, int, str]], names: Collection[str]) -> set[str]`; `pads(text: str, versions: Sequence[str], known: Mapping[str, Collection[str]]) -> Pads` |
 | collapse | `OPEN: constant`; `MID: constant`; `END: constant`; `Block(...)`; `Collapse(...)`; `version_key(token: str) -> str`; `guard_versions(test: str, kind: str, versions: Sequence[str]) -> frozenset[str] | None`; `strip(text: str) -> str`; `mask(text: str) -> str`; `definitions(body: str) -> list[str] | None`; `shape(body: str, names: Sequence[str]) -> str`; `blocks(lines: Sequence[str], versions: Sequence[str]) -> list[Block]`; `collapse(text: str, versions: Sequence[str], facts: Mapping[str, Mapping[str, int]], names_from: str) -> Collapse` |
 | mergecheck | `read_modules(text: str) -> list[tuple[str, str]]`; `merged_path(module: str) -> str`; `merged_modules(text: str, mapping: Mapping[str, str]) -> str`; `parse_link(text: str) -> list[dict[str, Any]]`; `object_facts(path: Path) -> tuple[dict[str, int], set[str], dict[str, list[tuple[int, int]]], set[str]]`; `fills(path: Path, symbol: str) -> bool | None`; `spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int]]`; `facts_of(...)`; `code_order(units: Sequence[str], seqs: Mapping[str, Sequence[Row]]) -> list[str]`; `verdicts(...)` |
+| objectplan | `read_plan(files: str, objects: str, assign: str) -> Plan`; `reachable(cursor: int, address: int) -> bool`; `regions(atoms: Sequence[Atom]) -> list[list[Atom]]`; `runs(region: Sequence[Atom]) -> list[list[Atom]]`; `is_code(atom: Atom, segment: str) -> bool`; `lay_out(run: Sequence[Atom], segment: str) -> tuple[list[str], int, int, int]`; `stretches(plan: Plan) -> dict[tuple[str, str], list[Stretch]]`; `judge(plan: Plan) -> list[Row]`; `tsv(rows: Sequence[Row]) -> str`; `read_dir(files: Path) -> Plan` |
 | merge | `mask(text: str) -> str`; `signature(head: str) -> tuple[str, str]`; `decls(body: str, unit: str) -> list[Decl]`; `drop_pads(body: str, unit: str, droppable: Droppable) -> tuple[str, list[str]]`; `aliases(text: str) -> dict[str, str]`; `reconcile(parts: Sequence[tuple[str, list[Decl]]]) -> tuple[dict[str, list[Decl]], list[Row]]`; `merge(units: Sequence[tuple[str, str]], droppable: Droppable) -> Row` |
 | foreign | `KEY: constant`; `FLOOR: constant`; `findings(config: Config, modules: Sequence[Any], scores: Mapping[str, Mapping[str, float]]) -> tuple[Finding, ...]` |
 | renameproof | `prove(root: Path, against: str, patches: Sequence[Path], inert: Sequence[str], steps: bool=False) -> Json`; `rename_command(params: Json) -> Json`; `scope(texts: Mapping[str, str], tag: str, path: str, line: int=0) -> tuple[list[str], str]` |
@@ -249,6 +250,7 @@ Tracked generated files (`unbake sync`; each starts with the stamp `generated fr
 - non_matching: 200
 - folders: 700
 - mergecheck: 190
+- objectplan: 240
 - hoist: 560
 - collapse: 310
 - pads: 160

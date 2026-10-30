@@ -249,6 +249,15 @@ The scan reads each ELF once, counts named function/data sections individually, 
 input alignment overrides and defined alignment markers. Missing selected objects and units absent from every version's
 linker inputs refuse: merging an unplaced unit could activate its data. An internal linker hole
 cannot disappear merely because the source files are concatenated. These checks do not replace the final ROM proof.
+`unbake layout mergecheck --plan FILES.tsv --out mergecheck.tsv` judges a recovered object plan instead: FILES.tsv, with
+OBJECTS.tsv and ASSIGN.tsv beside it, names every target and the objects the linker built for it in each version. Each
+target gets one row (`version`, `target`, `verdict`, measured `reason`): the merged object is laid out the way the linker
+places it (functions 4-aligned, data reachable by its own alignment, linker pad atoms and fill under 16 bytes absorbed,
+a hole between two atoms of one object is that object's unnamed bytes) and compared with the ROM addresses. `refuse`
+means real bytes of no atom between two objects, an overlap, or code in two code segments; `settle` means another file's
+object sits between runs of the target, so the first run keeps the target and the later runs keep their function-name
+module; `merge` is one adjacent run; `absent` means the version has no such object.
+
 `unbake layout merge --modules reviewed.tsv --prove` prepares all of those modules, reports every refusal before writing,
 then stages the selected files, rewrites the map, syncs once and proves every ROM once. `--module NAME` restricts the
 same operation to one module. The response lists each changed module under `modules`; `kept` counts already merged

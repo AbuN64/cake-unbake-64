@@ -1,0 +1,4 @@
+target	rule	obj_de	obj_eu	obj_eu-x	obj_us	obj_us-rev1	fn_de	fn_eu	fn_eu-x	fn_us	fn_us-rev1	data_de	data_eu	data_eu-x	data_us	data_us-rev1	header	header_origin
+SOURCE/AI/PLAYERAI.CPP	header-match	-	38	39	40	39	0	20	14	20	20	0	28	24	27	34	SOURCE/AI/PLAYERAI.H	evidenced
+SOURCE/ENGINE/SETN64.CPP	evidenced	118,119,120,121	113,114,115,117	117,118,119,121	119,120,121,122,123,124	116,117,118,119	127	124	124	120	126	110	116	258	97	197	SOURCE/ENGINE/SETN64.H	evidenced
+SOURCE/MENU.CPP	header-match	298	295	-	-	-	2	2	0	0	0	0	0	0	0	0	SOURCE/MENU.H	evidenced

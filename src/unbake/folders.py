@@ -50,7 +50,7 @@ from elftools.elf.elffile import ELFFile
 
 from unbake import collapse as collapsing
 from unbake import config as configuration
-from unbake import effort, guards, hoist, process, repo, store, symbols
+from unbake import effort, guards, hoist, objectplan, process, repo, store, symbols
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake import pads as padding
@@ -1073,9 +1073,30 @@ def mergecheck(config: Config, params: Json) -> Row:
     """Which modules of a module map may become one source file and which must stay separate files, from the link
     order and the built objects of every version (`ld` and `obj` are patterns over {version} and {unit})."""
     with effort.stage("layout.mergecheck"):
+        if params.get("plan"):
+            return _mergecheck_plan(params)
         modules = _verdicts(config, params)[0]
         separate = sum(1 for m in modules if m["verdict"] == "separate")
         return {"action": "mergecheck", "modules": modules, "separate": separate, "mergeable": len(modules) - separate}
+
+
+def _mergecheck_plan(params: Json) -> Row:
+    """The verdict on every FILES.tsv target of a source plan in every version, judged on the object the linker built
+    (OBJECTS.tsv, ASSIGN.tsv beside it); `out` receives mergecheck.tsv."""
+    files = Path(str(params["plan"]))
+    missing = [str(f) for f in (files, files.parent / "OBJECTS.tsv", files.parent / "ASSIGN.tsv") if not f.is_file()]
+    if missing:
+        raise _refuse(
+            "mergecheck --plan needs FILES.tsv with OBJECTS.tsv and ASSIGN.tsv beside it", missing=tuple(missing)
+        )
+    rows = objectplan.judge(objectplan.read_dir(files))
+    if params.get("out"):
+        Path(str(params["out"])).write_text(objectplan.tsv(rows))
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        counts[row["verdict"]] += 1
+    refused = [f"{r['version']} {r['target']}: {r['reason']}" for r in rows if r["verdict"] == "refuse"]
+    return {"action": "mergecheck", "targets": len(rows), "verdicts": dict(counts), "refused": refused}
 
 
 def merge(config: Config, params: Json) -> Row:

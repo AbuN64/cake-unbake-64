@@ -314,8 +314,9 @@ params = [
   { name = "obj", kind = "option", type = "str", required = false, multiple = false, help = "mergecheck, merge: the object of a unit, a path with {version} and {unit}, default build/{version}/{unit}.o" },
   { name = "prove", kind = "flag", type = "str", required = false, multiple = false, help = "reorg, merge: after the move run make check once, so every ROM is compared against the single move" },
   { name = "jobs", kind = "option", type = "int", required = false, multiple = false, help = "reorg, merge --prove: make -j, default 4" },
-  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "apply, carry, verify: the plan file, default .unbake/layout/plan.json" },
+  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "apply, carry, verify: the plan file, default .unbake/layout/plan.json; mergecheck: the FILES.tsv of a source plan (OBJECTS.tsv and ASSIGN.tsv beside it), judging each target by the object the linker built" },
   { name = "patch", kind = "option", type = "path", required = false, multiple = false, help = "carry: where to write the patch, default .unbake/layout/carry.patch" },
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "mergecheck --plan: write mergecheck.tsv (version, target, verdict, reason) here" },
   { name = "old", kind = "option", type = "path", required = false, multiple = false, help = "verify: a directory holding the build tree and link script from before the move" },
 ]
 
