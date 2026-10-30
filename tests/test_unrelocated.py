@@ -117,3 +117,17 @@ def test_a_file_row_unrelocated_sets_the_makefile_variable_and_runs_the_pass(tmp
     recipe = build._recipe("gcc-2.8.1-sn64").splitlines()[-1]
     assert "$(if $(UNRELOC),'&&' @py UNRELOC_PASS $@)" in recipe
     assert "define UNRELOC_PASS\n" in makefile and "export UNRELOC_PASS\n" in makefile
+
+
+@pytest.mark.skipif(not Path("/usr/bin/mips-linux-gnu-as").exists(), reason="needs the MIPS binutils")
+def test_the_compilers_read_only_data_is_not_loaded_once_unrelocated(tmp_path):
+    # a switch's jump table (.rodata) and a literal pool (.rdata) are the ROM's already, in the data the file stands over
+    source, obj = tmp_path / "s.s", tmp_path / "s.o"
+    source.write_text(SLICE + '\t.section .rodata\n.L41:\n\t.word .L3\n\t.section .rdata.literals_CountActive,"a"\n\t.word 0\n')
+    subprocess.run([*AS, "-O0", str(source), "-o", str(obj)], check=True)
+    _unrelocate(obj)
+    sections = subprocess.run(["mips-linux-gnu-readelf", "-SW", str(obj)], capture_output=True, text=True).stdout
+    for line in sections.splitlines():
+        if ".rodata" in line or ".rdata" in line:
+            assert " A " not in line.split("]", 1)[1], line
+    assert ".rdata.literals_CountActive" in sections and ".text" in sections
