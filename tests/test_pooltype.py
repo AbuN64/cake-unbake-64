@@ -49,6 +49,13 @@ def test_units_split_per_file_after_the_last_string_before_a_path():
     assert pt.stem(PATH) == "Gsky"
 
 
+def test_a_double_off_its_windows_8_byte_phase_opens_its_own_window():
+    pool = words(0x3F800000, 0x4123D70A, 0xA4060000, 0x40000000)
+    items, _ = pt.itemize(pool, 0, len(pool), 4)
+    assert [i.kind for i in items] == ["float", "double", "float"]
+    assert [[i.kind for i in u.items] for u in pt.units(items)] == [["float"], ["double", "float"]]
+
+
 def test_render_floats_exactly_and_strings_padded():
     floats = pt.objects([pt.Item("float", 0, 4, (0x3F800000,)), pt.Item("float", 4, 4, (0x3FC90FDB,))])
     assert pt.render(floats[0], "x") == ["float x[2] = { 1.0f, 1.57079637f };"]

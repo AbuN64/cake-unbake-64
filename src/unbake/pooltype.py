@@ -164,7 +164,9 @@ def _settle(items: Sequence[Item]) -> list[Item]:
 def _contiguous(items: Sequence[Item]) -> list[list[Item]]:
     runs: list[list[Item]] = []
     for item in items:
-        if runs and runs[-1][-1].at + runs[-1][-1].size == item.at:
+        # a double keeps its 8-byte phase only where its window offset is a multiple of 8; elsewhere it opens a window
+        phased = item.kind != "double" or not runs or (item.at - runs[-1][0].at) % 8 == 0
+        if runs and phased and runs[-1][-1].at + runs[-1][-1].size == item.at:
             runs[-1].append(item)
         else:
             runs.append([item])

@@ -779,7 +779,8 @@ def linker(config: Config, held: Tree) -> bytes:
                         out += [f"#if {guard}"] if guard else []
                         kind = "INFO" if by[v].address_space != "main" else "NOLOAD"
                         out += [
-                            f"    .{name}.bss ADDR(.{name}) + SIZEOF(.{name}) ({kind}) :",
+                            f"    .{name}.bss ADDR(.{name}) + SIZEOF(.{name}) ({kind}) :"
+                            + (" SUBALIGN(1)" if kind == "INFO" else ""),
                             "    {",
                             *_pass(_blocks({v: [f"{f}.o(.bss .sbss COMMON)" for f in files[v]]}), [v]),
                             "    }",
