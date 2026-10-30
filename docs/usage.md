@@ -240,3 +240,18 @@ consumers participate in the refusal sweep. Repeating the operation makes no edi
 Ordinary layout moves carry a guard automatically only when it equals the generated spelling of
 the original path. Other guards require explicit reviewed selection; vendor provenance is never
 inferred from a spelling. Consumers outside the source tree must be regenerated and proved by their owner.
+
+## Rules
+- Files that `unbake setup` rewrites after a landing (layout.toml, Makefile and similar) MUST be committed with that landing, because they are the build repair and not drift.
+- Landing commits MUST take their file list from the landing receipt or `git add -A` minus build state, and MUST NOT use a fixed path list.
+- Only CI workflow rewrites (ci.yml, .gitlab-ci.yml) are drift, and a generated diff MUST NOT be judged drift without a passing `make check`.
+- Every tool stage MUST log hierarchical timing (path, wall, cpu, cores, pool items and workers) with an automatic "(own)" self-time record, so serial versus parallel work is visible from cores.
+- A timing blind spot MUST be fixed in the generic instrumentation layer and MUST NOT be fixed with a one-off wrapper.
+- Every ROM version MUST be treated as equal: a function is one cross-version item, and no command MAY require a row in one particular version.
+- Generated and enforced source MUST use GBI macros from a shared gbi.h and one SDK Gfx type, with shared headers and no local typedef copies, so a new project cannot reach a state that needs cleanup lanes.
+- The source layout MUST be one declarative, rearrangeable map (groups to ordered members) that works for any ROM, with physical files regenerated from it and no one-file-per-symbol sprawl.
+- The default layout MUST be neutral address-range groups, and groups MAY merge only on evidence (rodata or data ownership, padding, statics, codegen) with a byte-identical build in every version as the oracle.
+- Platform facts MUST live in adapters and project facts in config, with no game names in the tool.
+- The tool test suite (bin/test) MUST contain only unit tests that mock splat, make, compilers, binutils, objdiff and git at the calling module, with no real builds or subprocesses, so the whole suite runs in seconds.
+- Real proof SHOULD happen on real projects, not in the tool's test suite.
+- Stage timing records (wall, cpu, cores, cache, waits) MUST exist for visibility only; unbake MUST NOT add blocking budgets or fail or refuse a stage merely because it was slow.
