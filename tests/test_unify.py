@@ -298,3 +298,21 @@ def test_a_build_step_asks_for_every_slot_of_the_host(slots: int, jobs: int) -> 
     host = Host.__new__(Host)
     object.__setattr__(host, "slots", slots)
     assert typeunify.jobs(host) == jobs
+
+
+def test_a_statement_every_unit_repeats_is_parsed_once_per_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = tree(tmp_path)
+    parsed: list[str] = []
+    original = Norm.statement
+
+    def count(self: Norm, text: str, hint: str) -> list:  # type: ignore[type-arg]
+        parsed.append(text)
+        return original(self, text, hint)
+
+    monkeypatch.setattr(Norm, "statement", count)
+    census = typeunify.collect(world.found(), world.read)
+    header = [t for t in parsed if "extern int g" in t]
+    assert len(header) == 2  # the header's statement once per version, not once per unit
+    assert set(typecensus.clashes(census.per)) == {"g", "h"}

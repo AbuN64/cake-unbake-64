@@ -87,14 +87,20 @@ def collect(units: Mapping[str, Sequence[str]], read: Callable[[Sequence[Unit]],
     items = [(v, u) for v in sorted(units) for u in sorted(units[v])]
     held = read(items)
     out = Census()
+    spelled_out: set[str] = set()  # a typedef or a statement of a shared header is in every unit: read it once
     for typedefs, _, _, _ in held:
         for stmt in typedefs:
-            out.norm.define(stmt)
+            if stmt not in spelled_out:
+                spelled_out.add(stmt)
+                out.norm.define(stmt)
     seen: dict[str, dict[str, dict[str, Decl]]] = defaultdict(lambda: defaultdict(dict))
+    parsed: dict[str, set[Stmt]] = defaultdict(set)
     for (version, unit), (_, stmts, files, words) in zip(items, held, strict=True):
         out.closure[(version, unit)] = files
         out.words[(version, unit)] = words
-        for name, decl in declarations(stmts, out.norm, lambda _f: True):
+        fresh = [s for s in stmts if s not in parsed[version]]
+        parsed[version].update(fresh)
+        for name, decl in declarations(fresh, out.norm, lambda _f: True):
             seen[name][version][f"{decl[0]}\t{decl[1]}\t{decl[2]}"] = decl
     out.per = {n: {v: sorted(d.values()) for v, d in vers.items()} for n, vers in seen.items()}
     return out
