@@ -723,9 +723,9 @@ def sync(config: Config, params: Json, refresh: bool = False) -> Json:
     first, unless `refresh` (the `unbake sync` command; a caller inside another transaction does not build): then the
     check runs here, on the tree the generated files just left, so the outputs are never written from a stale verdict
     and are never skipped for want of one (a build that fails refuses `setup.make`). With settle, write and then
-    refuse as check would unless a second sync would write nothing: when it wrote generated or stand-in files the check runs again in
-    this process on the tree it left; the README files it writes are not read by the capture, so their fixed point is
-    the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
+    refuse as check would unless a second sync would write nothing: when it wrote generated or stand-in files the
+    check runs again in this process on the tree it left; the README files it writes are not read by the capture, so
+    their fixed point is the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
     if params.get("place"):
         return _sync_placing(config, params, refresh)
     if params.get("makefile") and not params.get("check"):
