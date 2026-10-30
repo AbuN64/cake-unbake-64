@@ -122,6 +122,43 @@ cited function's argument), `layout` (the offsets have evidence but the line als
 pointee or a name, that assembly cannot give), `partial`, `no-evidence`, `no-record` or `no-offset`; `missing` says
 what is absent.
 
+## One type per name
+
+A name declared with more than one type (an `extern` in a header, another in a source, a prototype with `void*`
+parameters) is a clash. `unbake census` lists the clashes and `unbake unify` removes them, one declared type per name,
+without changing one byte of any object of any version.
+
+```sh
+unbake census --out CLASH.tsv                   # every clash, in the CLASH.tsv shape; writes only --out
+unbake unify --out UNIFY.tsv                    # every clashing name
+unbake unify --names CLASH.tsv --out UNIFY.tsv  # only the names in the first column (a name per line also works)
+```
+
+Inputs. Both commands need a built tree (`unbake setup`): the compiled units are the `build/<version>/**/*.o` that
+come from a source under `source_roots`, and each is read as the text the build's own preprocessor makes of it for
+that version, with line markers. Nothing else is configured: the typedefs, the include roots and the flags come from
+the project. `census` prints a row per clashing name: `name`, `ntypes`, `declarations` (each type, where each is
+declared as `file:line kind` and in which versions), `users` (the count and the files whose text holds the name) and
+`status` (`open`). The kinds are `proto`, `fdef`, `ext` and `vdef`. The first array bound is not part of a type.
+
+`unify` builds the tree as it is (the baseline: every object of every version), then per name takes the candidate
+types in order, the most declared first (a definition with a body or initialiser is the only candidate), rewrites each
+declaration of another type to the chosen one, and makes only the units whose text holds a file the rewrite reads or
+writes. A unit that fails to build or whose object differs from the baseline fails the candidate, the rewrite is put
+back and the next candidate type is tried. Names whose units do not meet share one build, so a failing unit belongs to
+exactly one name. At the end every unit touched is made once more and compared with the baseline. The files stay
+rewritten and uncommitted; the build jobs are the host's `workers`, and a host that limits builds (a slot wrapper)
+wraps the command: `slot unbake unify`.
+
+A name no candidate satisfies stays as it was and is reported (`unresolved`, a non-blocking note, and a row of `--out`)
+with the first failing unit of each candidate type and whether it did not build or its object differed. Per name the
+result and `--out` hold the seconds spent (a batch's time is shared by its names).
+
+Refusals (exit 1, nothing is reported as a pass): `unify.units` (no built unit: run `unbake setup`),
+`unify.baseline` (a unit does not build before any rewrite), `unify.build` (the build did not run: an empty log, a
+make exit that names no failing unit, as with a toolchain variable unset, or an object neither made nor named in a
+failure), `unify.drift` (after the rewrites an object differs from the baseline).
+
 ## Project
 
 A project is `config.toml` at schema 4: `name`, `toolchain`, optional `title`, `names_from`, `libraries`, `cppflags`,

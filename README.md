@@ -22,6 +22,8 @@ Toolchains that assemble with `abumas` need it from [mas-n64](https://github.com
 ```sh
 unbake init NAME
 unbake setup
+unbake census --out CLASH.tsv   # names declared with more than one type
+unbake unify                    # one type per name, every object byte-identical
 ```
 
 `unbake --help` lists the rest. Config, project layout and CI are in [docs/usage.md](docs/usage.md).

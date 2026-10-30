@@ -319,3 +319,17 @@ params = [
   { name = "old", kind = "option", type = "path", required = false, multiple = false, help = "verify: a directory holding the build tree and link script from before the move" },
 ]
 
+[command.census]
+help = "List every declaration of every name read from the preprocessed units of all versions, with type, kind and users, the names with more than one type being the clashes, in the CLASH.tsv shape; writes only --out."
+handler = "typeunify.census_command"
+params = [
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write the clash table (CLASH.tsv shape) here" },
+]
+
+[command.unify]
+help = "Give every name declared with more than one type the one declared type that leaves every object of every version byte-identical to the baseline, rewriting the other declarations; rotates through the declared types, rebuilds only the units a name touches, refuses when the build did not run."
+handler = "typeunify.unify_command"
+params = [
+  { name = "names", kind = "option", type = "path", required = false, multiple = false, help = "only the names in this file (a name per line, or a table in the CLASH.tsv shape); default every clashing name" },
+  { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write one row per name (status, type, seconds, failing unit per candidate type) here" },
+]

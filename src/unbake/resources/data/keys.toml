@@ -785,3 +785,23 @@ sentence = "a generated file was changed by hand or left stale; run unbake sync 
 [key."audit.drift_unchecked"]
 owner = "policy"
 sentence = "generated files changed but no host config was found to run unbake sync --check on them"
+
+[key."unify.build"]
+owner = "typeunify"
+sentence = "the build of a rewrite did not run: an empty log, a make exit naming no unit, or an object neither made nor failed"
+
+[key."unify.baseline"]
+owner = "typeunify"
+sentence = "a unit does not build from the tree as it is, so there is no baseline to compare against"
+
+[key."unify.drift"]
+owner = "typeunify"
+sentence = "after the rewrites an object differs from the baseline"
+
+[key."unify.units"]
+owner = "typeunify"
+sentence = "the tree has no built unit to read the declarations of"
+
+[key."unify.unresolved"]
+owner = "typeunify"
+sentence = "no declared type of a name keeps every object of every version identical"

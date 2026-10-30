@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "unbake:result.census",
+  "type": "object",
+  "required": ["units", "names", "clashing", "declarations", "written"],
+  "properties": {
+    "units": {"type": "integer", "minimum": 0},
+    "names": {"type": "integer", "minimum": 0},
+    "clashing": {"type": "integer", "minimum": 0},
+    "declarations": {"type": "integer", "minimum": 0},
+    "written": {"type": "string"}
+  },
+  "additionalProperties": false
+}

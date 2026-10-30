@@ -283,6 +283,8 @@ def test_the_command_set_is_the_C9_set() -> None:
         "symbols",
         "verify",
         "types",
+        "census",
+        "unify",
     }
     assert [p["name"] for p in COMMANDS["sync"]["params"]] == ["check", "settle", "makefile", "place"]
 
