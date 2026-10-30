@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from unbake import blob_archive, blob_decode, blob_stale, blobs, mipsstream, objcode, rnc, rncrepack, snsym
+from unbake import blob_archive, blob_decode, blob_pad, blob_stale, blobs, mipsstream, objcode, rnc, rncrepack, snsym
 from unbake.contracts import Config, Json, sha256
 
 READERS = frozenset(
@@ -21,6 +21,7 @@ READERS = frozenset(
         "sn-head",
         "copy",
         "segment-fill",
+        "pad",
         "obj-code",
         "mips-stream",
         "rnc-repack",
@@ -226,6 +227,8 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
         if type(value) is not int or not 0 <= value <= 255 or rom[start:end] != bytes([value]) * (end - start):
             raise ValueError("declared segment fill differs from its byte value")
         return {"segment": row["segment"], "rom": [start, end], "value": value}
+    if reader == "pad":
+        return blob_pad.prove(rom, start, end, row.get("limit"))
     if reader == "archive-fill":
         archive = blob_archive.archive(rom, row["base"])
         fills = [(a, b) for a, b, _ in archive["fills"]]

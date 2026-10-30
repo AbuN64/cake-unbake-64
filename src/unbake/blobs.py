@@ -35,7 +35,7 @@ CONTENT = (
     "text",
 )  # the types the published map carries; accounting rows are not content
 RUN_MIN = 16  # the shortest one-value run that proves padding inside a gap of other bytes
-_ORDER = ("name", "aliases", "type", "format", "codec", "state", "stored_size", "decoded_size", "parent", "decoded")
+_ORDER = ("name", "aliases", "type", "format", "codec", "state", "limit", "stored_size", "decoded_size", "parent", "decoded")
 
 
 def path_of(config: Config) -> str:
@@ -107,6 +107,8 @@ def check(config: Config, document: Json, file: str | None = None) -> tuple[Find
                     path=file,
                 )
             )
+        if row.get("format") == "pad" or "limit" in row:
+            found += _pad_findings(name, row, file)
         for v, spans in row.get("rom", {}).items():
             size = _rom_size(config, v) if v in config.project.version else None
             if v not in config.project.version:
@@ -124,6 +126,18 @@ def check(config: Config, document: Json, file: str | None = None) -> tuple[Find
                         )
                     )
     return tuple(found)
+
+
+def _pad_findings(name: str, row: Json, file: str) -> list[Finding]:
+    """A pad row is a decoded fill with a `limit`, and no range of it is longer than that limit."""
+    if row["type"] != "fill" or row.get("format") != "pad" or row["state"] != "decoded" or "limit" not in row:
+        return [Finding("blobs.schema", f"blob {name} needs type fill, format pad, state decoded and a limit", path=file)]
+    return [
+        Finding("blobs.range", f"blob {name} range {a:#x}..{b:#x} is over its limit {row['limit']}", path=file, versions=(v,))
+        for v, spans in row.get("rom", {}).items()
+        for a, b in spans
+        if b - a > row["limit"]
+    ]
 
 
 def ranges(document: Json, version: str) -> tuple[Spans, Spans]:
@@ -577,6 +591,26 @@ def _overlap_findings(document: Json, previous: Json, file: str) -> list[Finding
     ]
 
 
+def _pad_bytes_findings(config: Config, document: Json, file: str) -> list[Finding]:
+    """Every range of a pad row, rebuilt as zero bytes, must equal the ROM bytes of its version."""
+    found: list[Finding] = []
+    for name, row in document["blob"].items():
+        if row.get("format") != "pad":
+            continue
+        for v, spans in row.get("rom", {}).items():
+            path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
+            if not path.is_file():
+                found.append(Finding("blobs.pad", f"blob {name} cannot be proved: no ROM for {v}", path=file, versions=(v,)))
+                continue
+            rom = path.read_bytes()
+            for a, b in spans:
+                if rom[a:b] != bytes(b - a):
+                    found.append(
+                        Finding("blobs.pad", f"blob {name} range {a:#x}..{b:#x} is not zero in the {v} ROM", path=file, versions=(v,))
+                    )
+    return found
+
+
 def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
     """The checks `land` makes on the blobs.toml of the working tree, for a change that did not come through `land`
     (a hand-written or merged file): the schema and ranges, the canonical form (the file is what `emit` writes for its
@@ -601,6 +635,7 @@ def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
                 found.append(Finding("blobs.evidence", f"blob {name} cites a malformed sha256", path=file))
         if row["state"] in ("decoded", "identified") and "parent" not in row and not row.get("evidence"):
             found.append(Finding("blobs.evidence", f"blob {name} is {row['state']} without evidence", path=file))
+    found += _pad_bytes_findings(config, document, file)
     try:
         previous = parse(config, base) if base else {"blob": {}}
     except Refusal:
@@ -646,6 +681,8 @@ def run(config: Config, params: Json) -> Json:
             return blob_proof.run(config, action[1], action[2])
         if action == ["scan"]:
             return _result(config, {"scanned": scan(config)}, bool(params.get("json")))
+        if action == ["scan", "pad"]:
+            return _result(config, {"scanned": import_module("unbake.blob_pad").scan(config)}, bool(params.get("json")))
         if action == ["scan", "stale"]:
             return _result(
                 config, {"scanned": import_module("unbake.blob_stale").scan(config)}, bool(params.get("json"))

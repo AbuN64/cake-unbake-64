@@ -94,6 +94,10 @@
        "observed"
       ]
      },
+     "limit": {
+       "type": "integer",
+       "minimum": 1
+     },
      "stored_size": {
       "type": "integer",
       "minimum": 0
