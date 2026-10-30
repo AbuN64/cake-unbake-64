@@ -3,8 +3,8 @@
 A builder that wrote an image in fixed blocks put the same header bytes in front of every block, so the headers sit
 on an arithmetic lattice: `anchor + k * (len(header) + block)`. Whatever was written through that image is cut by
 them: a compressed stream or a copy of another version's bytes that crosses a block boundary has the header
-inside it, and reads as damaged until the header is removed. A `Frame` names the lattice (anchor, header bytes, block length). It is
-held as far as the header really stands at every lattice point from the anchor on (`held`); a frame is accepted only
+inside it, and reads as damaged until the header is removed. A `Frame` names the lattice (anchor, header bytes,
+block length). It is held as far as the header really stands at every lattice point from the anchor on (`held`); a frame is accepted only
 when it holds at least MIN_HELD points, and a read that crosses a lattice point the ROM does not hold refuses.
 
 `discover` finds the frames a ROM holds for header patterns the caller names; `strip` removes the header bytes inside a
