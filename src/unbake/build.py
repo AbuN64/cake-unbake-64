@@ -199,7 +199,7 @@ def _recipe(id: str) -> str:
             plain = adapters.render(
                 ("{as}", "{asflags}", "{source}", "-o", "{out}"), {**values, "source": [split], "out": ["$@"]}
             )
-            apart = f"@out {norm} {_shell(front)} {_THEN} $(PASS)fsplit_pass.py {norm} {split} {_THEN} {_shell(plain)}"
+            apart = f"@out {norm} {_shell(front)} {_THEN} $(PASS)fsplit_pass.py {norm} {split} $(POOLPHASE) {_THEN} {_shell(plain)}"
             assemble = f"$(if $(FSPLIT),{apart},{assemble})"
         parts.append(f"{_THEN} {assemble}")
         if row.get("rdata_alloc"):
@@ -531,6 +531,7 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
         rows += [f"build/{v}/{path}.o: NOALIGN := {m}" for path, m in _unaligned(config, held, v).items()]
         if "function_sections" in configuration.toolchain(config.project.toolchain):
             rows += [f"build/{v}/{path}.o: FSPLIT := fsplit" for path in sorted(_apart_paths(config, held, v))]
+        rows += [f"build/{v}/{path}.o: POOLPHASE := {m}" for path, m in sorted(_phased(config, held, v).items())]
         rows += [f"build/{v}/{path}.o: TEXTCUT := {cuts}" for path, cuts in sorted(_text_cuts(held, v).items())]
         return "\n".join([f"# {_GENERATED}", *rows, ""]).encode()
 
@@ -551,6 +552,21 @@ def _unaligned(config: Config, held: Tree, v: str) -> dict[str, int]:
                 found |= {path} if vram % 4 else set()
             last = (path, section)
     return {path: 1 for path in sorted(found)}
+
+
+def _phased(config: Config, held: Tree, v: str) -> dict[str, str]:
+    """For each object built with a section per function, the read-only blocks the ROM holds at 4 mod 8 (`key:4`,
+    space apart). The original single `.rdata` padded an `.align 3` in such a block against its address, the
+    object's section against its own start: FSPLIT_PASS spells the pad out, so the block links with the pad word
+    the ROM has. A block at a word boundary or off it (an object packed at the byte, NOALIGN) needs none."""
+    table = held.symbols.get(v, {})
+    apart, packed = _apart_paths(config, held, v), _unaligned(config, held, v)
+    found: dict[str, list[str]] = {}
+    for piece, *_ in versions.pieces(config, v):
+        for _, path, section, name in _named(config, held, v, piece):
+            if path in apart and path not in packed and section == ".rodata" and table[name][0] % 8 == 4:
+                found.setdefault(path, []).append(f"{name}:4")
+    return {path: " ".join(keys) for path, keys in found.items()}
 
 
 def _doubled(config: Config, held: Tree, v: str, piece: str) -> set[str]:

@@ -1939,13 +1939,13 @@ def test_a_function_with_no_pool_row_of_its_own_has_its_pool_kept_with_the_funct
     assert build._covered(functions, rows, "d_9") == ".rodata.d_9"  # not a pool: its own section
 
 
-def _fsplit(tmp_path, text: str) -> list[str]:
+def _fsplit(tmp_path, text: str, *phases: str) -> list[str]:
     import subprocess
     import sys
 
     (tmp_path / "in.s").write_text(text)
     script = adapters.make_tool("fsplit_pass.py")
-    subprocess.run([sys.executable, "-I", script, str(tmp_path / "in.s"), str(tmp_path / "out.s")], check=True)
+    subprocess.run([sys.executable, "-I", script, str(tmp_path / "in.s"), str(tmp_path / "out.s"), *phases], check=True)
     return (tmp_path / "out.s").read_text().splitlines()
 
 
@@ -1985,3 +1985,75 @@ def test_fsplit_pass_judges_a_pool_written_in_pieces_by_its_first_piece(tmp_path
     )  # fmt: skip
     assert out.count('.section\t.rdata.literals_f_1,"a",@progbits') == 2
     assert not any("__align8_" in line for line in out)
+
+
+# A pool shaped like the real one this slice was captured from (compiled as the 1999 compiler writes it, in the order
+# the constants are first used): 0.5f, 2^31 as a float, a double behind `.align 3`, then three floats. The ROM holds
+# it at 4 mod 8 as 0x20 bytes: the double sits on an 8 by address, one pad word behind the 2^31. The object's section
+# starts on an 8, where the same `.align 3` pads nothing, so the object came out 0x1C bytes and its double 4 off.
+_POOL = (
+    '.section .f_1,"ax"\nf_1:\n l.s $f0,%lo(RODATA_SYM_0)($2)\n'
+    ".section .rdata\nRODATA_SYM_0:\n.align 2\n.word 0x3f000000\n.text\n nop\n"
+    ".section .rdata\nRODATA_SYM_1:\n.align 2\n.word 0x4f000000\n.text\n nop\n"
+    ".section .rdata\nRODATA_SYM_2:\n.align 3\n.word 0x41f00000\n.word 0x00000000\n.text\n nop\n"
+    ".section .rdata\nRODATA_SYM_3:\n.align 2\n.word 0x3c8efa36\n.text\n nop\n"
+    ".section .rdata\nRODATA_SYM_4:\n.align 2\n.word 0x3f800000\n.text\n nop\n"
+    ".section .rdata\nRODATA_SYM_5:\n.align 2\n.word 0x42480000\n.text\n jr $31\n"
+)  # fmt: skip
+
+
+def _pool(out: list[str]) -> list[str]:
+    """The directives of the pool's pieces, in order, labels and sections left out."""
+    return [ln.strip() for ln in out if ln.strip().startswith((".word", ".align", ".space"))]
+
+
+def test_fsplit_pass_pads_a_double_against_the_address_of_a_pool_the_rom_holds_at_4_mod_8(tmp_path):
+    out = _pool(_fsplit(tmp_path, _POOL, "literals_f_1:4"))
+    assert out[:5] == [".align 2", ".word 0x3f000000", ".align 2", ".word 0x4f000000", ".space 4"]
+    assert ".align 3" not in out  # the pad is spelled out: 4 + 4 + pad 4 puts the double on an 8 by address
+    words = [ln for ln in out if ln.startswith(".word")]
+    assert len(words) == 7 and 4 * len(words) + 4 == 0x20  # the ROM's size of the pool
+
+
+def test_fsplit_pass_leaves_a_pool_the_rom_holds_on_an_8_as_the_compiler_wrote_it(tmp_path):
+    for phases in ((), ("literals_f_1:0",), ("literals_other:4",)):
+        out = _pool(_fsplit(tmp_path, _POOL, *phases))
+        assert ".align 3" in out and not any(ln.startswith(".space") for ln in out)
+
+
+def test_fsplit_pass_pads_nothing_where_the_address_already_holds_the_alignment(tmp_path):
+    # 4 mod 8 and one word before the double: the double lands on an 8 by address, no pad
+    head = '.section .f_1,"ax"\nf_1:\n l.s $f0,%lo(.LC0)($2)\n.section .rdata\n.align 2\n.LC0:\n'
+    out = _pool(_fsplit(tmp_path, head + ".word 1\n.align 3\n.word 2\n.word 3\n", "literals_f_1:4"))
+    assert out == [".align 2", ".word 1", ".word 2", ".word 3"]
+
+
+def test_fsplit_pass_leaves_a_block_whose_first_item_is_aligned_to_the_link_script(tmp_path):
+    head = '.section .f_1,"ax"\nf_1:\n l.s $f0,%lo(.LC0)($2)\n.section .rdata\n.align 3\n.LC0:\n'
+    out = _fsplit(tmp_path, head + ".word 1\n.word 2\n.align 3\n.word 3\n", "literals_f_1:4")
+    assert _pool(out) == [".align 3", ".word 1", ".word 2", ".align 3", ".word 3"]  # the block starts on an 8
+    assert "\t.set __align8_literals_f_1, 0" in out
+
+
+def test_fsplit_pass_counts_strings_and_guesses_nothing_after_data_it_cannot_measure(tmp_path):
+    head = '.section .f_1,"ax"\nf_1:\n l.s $f0,%lo(.LC0)($2)\n.section .rdata\n.align 2\n.LC0:\n'
+    text = (
+        head + '.ascii "ab\\n\\000"\n.align 3\n.word 2\n'
+    )  # 4 bytes of text (an escape counts one): 4 + 4 is already on an 8 by address
+    assert _pool(_fsplit(tmp_path, text, "literals_f_1:4")) == [".align 2", ".word 2"]
+    text = head + '.ascii "abc"\n.align 3\n.word 2\n'  # 3 bytes: 4 + 3 pads 1 to reach the 8
+    assert _pool(_fsplit(tmp_path, text, "literals_f_1:4")) == [".align 2", ".space 1", ".word 2"]
+    unknown = _pool(_fsplit(tmp_path, head + ".mystery 1\n.align 3\n.word 2\n", "literals_f_1:4"))
+    assert ".align 3" in unknown  # an item of unknown size: the assembler's own alignment stands
+
+
+def test_a_literals_row_at_4_mod_8_in_an_apart_object_is_given_its_phase_and_the_recipe_passes_it_on(tmp_path):
+    config, tree = make_config(tmp_path), _merged_unit()
+    on_an_8 = build.text_sizes(config, tree, "us").decode()
+    assert "POOLPHASE" not in on_an_8  # the pools at 0x8 and 0x18 sit on an 8
+    for v in ("us", "eu-1"):
+        tree.symbols[v]["literals_f_1"] = (0x80200000 + 0xC, 0x1000 + 0xC, 8, "data")  # 4 mod 8
+    rows = build.text_sizes(config, tree, "us").decode().splitlines()
+    assert "build/us/src/a.c.o: POOLPHASE := literals_f_1:4" in rows
+    assert sum("POOLPHASE" in r for r in rows) == 1
+    assert "$(PASS)fsplit_pass.py $(@:.o=.n.s) $(@:.o=.f.s) $(POOLPHASE)" in build._recipe("gcc-2.8.1-sn64")
