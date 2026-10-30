@@ -68,6 +68,19 @@ def _patch(cfg, version, at, words):
     cfg.project.version[version].sha1 = sha1(data)
 
 
+def test_hand_assembly_earns_library_credit_once_extracted_even_from_a_tree_cached_before(library):
+    repo.sync(library, {})
+    library.project.libraries = ()
+    library.project.cheat = {"asm_home": ["src/sdk/"]}
+    library.project.digest = "hand-assembly"
+    assert not next(m for m in tree.capture(library).modules if m.path == "src/sdk/f.s").library  # nothing extracted
+    for version in library.project.versions:
+        path = library.project.root / symbols.asm_path(library, version, "f")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{symbols.HANDWRITTEN}\nglabel f\n")
+    assert next(m for m in tree.capture(library).modules if m.path == "src/sdk/f.s").library  # same sources, cached
+
+
 def test_normal_c_instructions_are_not_extracted(library):
     assert not libasm.foreign([0x24020001, 0x03E00008, 0], 0, adapters.row("gcc-test"))
     _patch(library, "b", 0x1000, [0x24020001])  # version b holds compiler code there: not foreign in every version

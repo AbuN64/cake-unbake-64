@@ -16,7 +16,7 @@ import warnings
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -1027,7 +1027,20 @@ def capture(config: Config, overlay: Mapping[str, bytes | None] = {}) -> Tree:
     with effort.stage("tree.capture"):
         blobs = _files(config, overlay)
         digest = _digest(config, blobs)
-        return effort.memo(("tree", digest), lambda: _captured(config, blobs, digest, overlay))
+        return _hand_marked(config, effort.memo(("tree", digest), lambda: _captured(config, blobs, digest, overlay)))
+
+
+def _hand_marked(config: Config, held: Tree) -> Tree:
+    """The tree with each hand assembly unit credited as a library (`_hand_unit`). That reads splat's marks in the
+    extracted assembly, which the tree's cache key does not hold: a tree cached before `make check` extracted the
+    assembly would deny the credit for good, so it is judged here, after the cache, against the assembly on disk."""
+    modules = tuple(
+        replace(m, library=True)
+        if not m.library and configuration.is_assembly(m.path) and _hand_unit(config, m.path, m.owns)
+        else m
+        for m in held.modules
+    )
+    return held if modules == held.modules else Tree(held.digest, modules, held.symbols)
 
 
 def _captured(config: Config, blobs: Mapping[str, bytes], digest: str, overlay: Mapping[str, bytes | None]) -> Tree:
@@ -1458,7 +1471,6 @@ def _module(
         {v: dict(n) for v, n in sections.items()},
         placed,
         {v: tuple(n) for v, n in stale.items() if n},
-        library=configuration.is_assembly(path)
-        and (configuration.library(config.project, path) or _hand_unit(config, path, owns)),
+        library=configuration.is_assembly(path) and configuration.library(config.project, path),  # + _hand_marked
         unnamed={v: tuple(n) for v, n in unnamed.items()},
     )
