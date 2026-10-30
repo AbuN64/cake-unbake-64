@@ -39,6 +39,17 @@ def test_a_literal_byte_replaced_later_still_packs_back_to_the_same_bytes():
     assert got["settings"]["window"] == 4096 and len(got["decoded_sha256"]) == 64
 
 
+def test_the_end_marker_a_few_bytes_past_the_headers_size_closes_the_tail():
+    data = text(6000)
+    raw = bytearray(rnc2enc.stream(data, 2))
+    whole = len(raw) - 18
+    raw[8:12] = (whole - 3).to_bytes(4, "big")  # damage moved the end marker past the size the header names
+    rom, at = placed(bytes(raw))
+    got = rncrepack.measure(rom, at)
+    assert got["packed"] == whole - 3 and got["runs"] == [[0, whole]] and got["credit"] == whole
+    assert got["decode_stopped"] == "end marker"
+
+
 def test_a_damaged_control_byte_ends_the_run_and_the_proof_stays_off_the_damage():
     data = text(9000)
     raw = bytearray(rnc2enc.stream(data, 2))

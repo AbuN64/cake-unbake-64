@@ -25,6 +25,7 @@ from unbake.contracts import sha256
 
 MARGIN = 2 * rnc2enc.MAX_LENGTH + 16  # decoded bytes a token's choice may have looked at past its end
 MIN_RUN = 16  # the fewest packed bytes a run credits
+SLACK = 16  # packed bytes read past the header's size: damage moves a stream's end marker a few bytes past it
 CAP_FACTOR = 2  # the output may grow to this many times the header's unpacked size before the read gives up
 SETTINGS = {
     "window": rnc2enc.WINDOW,
@@ -53,9 +54,10 @@ def _read(rom: bytes | memoryview, at: int) -> tuple[Any, bytes, Any, list[tuple
     packed = bytes(rom[at + rnc.HEADER : at + head.stored])
     if rnc.crc16(packed) == head.packed_crc:
         raise StreamError("the packed CRC passes: the stream is whole, a rnc reader proves it")
-    walked = rnc2.walk(packed, head.unpacked * CAP_FACTOR)
+    read = packed + bytes(rom[at + head.stored : at + head.stored + SLACK])
+    walked = rnc2.walk(read, head.unpacked * CAP_FACTOR)
     mine = {(t[1], t[0] == "E"): t for t in rnc2enc.parse(walked.data)}
-    complete = walked.ended and len(walked.data) == head.unpacked
+    complete = walked.ended  # the end marker is where the data ends: the packer saw the same end
     reach = len(walked.data) - MARGIN
     same = [mine.get((t[1], t[0] == "E")) == t and (complete or rnc2enc.end(t) <= reach) for t in walked.tokens]
     found, k, count = [], 0, len(same)
@@ -75,7 +77,7 @@ def _read(rom: bytes | memoryview, at: int) -> tuple[Any, bytes, Any, list[tuple
         if first <= last:
             low, high = walked.marks[first][0], walked.marks[last + 1][0]
             rebuilt = rnc2enc.emit(walked.data, walked.tokens[first : last + 1], first == 0)[0]
-            if high - low >= MIN_RUN and rebuilt == packed[low:high]:
+            if high - low >= MIN_RUN and rebuilt == read[low:high]:
                 found.append((low, high, rebuilt))
         k = stop
     return head, packed, walked, found
