@@ -144,6 +144,20 @@ misses of the command's cache lookups, in total and per kind, in every result (`
 tree it was once read from). `setup` extracts a version again exactly when the facts it was extracted from
 (`symbol_addrs.txt`, `splat.yaml`, the ROM, splat) differ from the stamp in that tree's `asm/<version>/`.
 
+## Stale RNC2 streams (`rnc-repack`)
+
+An older link left RNC method 2 streams in a ROM that later writes damaged, so their packed CRC fails and `rnc` cannot
+prove them. `rncrepack` reads them as object code, not by similarity: `rnc2.walk` decodes the bits token by token and
+keeps reading past damaged tokens, `rnc2enc` (the deterministic packer that reproduces all 32 whole method 2 streams of
+the German ROM byte for byte) writes the tokens it would choose for the decoded bytes, and a run of tokens is proven
+when both sides agree on every token and position and the packed bytes rebuilt from the run equal the ROM's. A run
+starts on a control byte and ends where one is spent (or at the end marker), so after a burst of damage the tail of
+the stream is proven again window by window; a token whose choice looked at bytes the walk did not decode is not
+credited. `unbake blobs scan stale` lists the runs that fill unknown bytes as `rnc-repack` rows (`stream` names the
+header, `region` the packed bytes), `unbake blobs prove` rebuilds each row and refuses unless the bytes are equal,
+and whatever no run reproduces stays in `unbake report --unknown`. `MIN_RUN` (16 packed bytes) is the smallest run a
+row credits.
+
 See [compiler ownership](compiler-families.md) and
 [publication](publication.md) for the recipe and proof contracts.
 

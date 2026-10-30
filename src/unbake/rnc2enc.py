@@ -118,10 +118,11 @@ def parse(data: bytes, chunk: int = CHUNK) -> list[Token]:
 
 
 class _Bits:
-    def __init__(self) -> None:
+    def __init__(self, locks: bool = True) -> None:
         self.data = bytearray()
         self.slot = self.used = 0
-        self.put(0, 2)
+        if locks:
+            self.put(0, 2)
 
     def put(self, value: int, count: int) -> None:
         for shift in range(count - 1, -1, -1):
@@ -135,10 +136,11 @@ class _Bits:
 _LENGTH_BITS = {2: (6, 3), 3: (14, 4), 4: (8, 4), 5: (10, 4), 6: (18, 5), 7: (19, 5), 8: (22, 5)}
 
 
-def emit(data: bytes, tokens: Sequence[Token]) -> tuple[bytes, list[int]]:
+def emit(data: bytes, tokens: Sequence[Token], start: bool = True) -> tuple[bytes, list[int]]:
     """The packed bytes of `tokens` over `data` and, per token, how many packed bytes precede it (the control byte its
-    first bit opens is counted before it)."""
-    out = _Bits()
+    first bit opens is counted before it). `start` is false for tokens that begin on a fresh control byte inside a
+    stream: the two lock bits are not written."""
+    out = _Bits(start)
     before: list[int] = []
     for t in tokens:
         before.append(len(out.data))

@@ -108,13 +108,15 @@ def unpack(packed: bytes, size: int) -> bytes:
 class Walk:
     """What reading the bits of one stream gave: the output bytes, the packed bytes read, whether an end marker closed
     it (`error` says why not) and the tokens ('L', at), ('M', at, length, distance), ('R', at, count) and
-    ('E', at, more)."""
+    ('E', at, more). `marks` holds the packed bytes read and the control bits left in the open control byte before each
+    token's first bit and after the last one; the first token's mark is (0, 0): the two lock bits belong to it."""
 
     data: bytes
     cursor: int
     ended: bool
     error: str
     tokens: list[tuple[Any, ...]]
+    marks: list[tuple[int, int]]
 
 
 def walk(packed: bytes, cap: int) -> Walk:
@@ -123,10 +125,12 @@ def walk(packed: bytes, cap: int) -> Walk:
     reader = _Reader(packed)
     output = bytearray()
     tokens: list[tuple[Any, ...]] = []
+    marks: list[tuple[int, int]] = []
     try:
         if reader.bits(2):
             raise ValueError("locked or encrypted stream")
         while True:
+            marks.append((reader.cursor, reader.remaining) if marks else (0, 0))
             if reader.bits(1) == 0:
                 if len(output) >= cap:
                     raise ValueError("literal past the output cap")
@@ -148,7 +152,8 @@ def walk(packed: bytes, cap: int) -> Walk:
                     tokens.append(("E", len(output), more))
                     if more:
                         continue
-                    return Walk(bytes(output), reader.cursor, True, "", tokens)
+                    marks.append((reader.cursor, reader.remaining))
+                    return Walk(bytes(output), reader.cursor, True, "", tokens, marks)
                 length += 8
             high = 0 if length == 2 else reader.prefix(_HIGH)
             distance = high * 256 + reader.raw(1)[0] + 1
@@ -158,4 +163,4 @@ def walk(packed: bytes, cap: int) -> Walk:
             for _ in range(length):
                 output.append(output[-distance])
     except ValueError as error:
-        return Walk(bytes(output), reader.cursor, False, str(error), tokens)
+        return Walk(bytes(output), reader.cursor, False, str(error), tokens, marks)

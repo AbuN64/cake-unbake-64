@@ -1,5 +1,7 @@
 """Stale RNC2 streams the packer reproduces: whole streams are rnc's, damaged ones are proven as far as they re-pack."""
 
+from pathlib import Path
+
 import pytest
 from test_rnc2enc import text
 
@@ -32,29 +34,58 @@ def test_a_literal_byte_replaced_later_still_packs_back_to_the_same_bytes():
     raw[spot] ^= 0x55
     rom, at = placed(bytes(raw))
     got = rncrepack.measure(rom, at)
-    assert got["credit"] == got["packed"] and got["first_difference"] == got["packed"]
+    assert got["credit"] == got["packed"] and got["runs"] == [[0, got["packed"]]]
     assert got["packed_crc_read"] != got["packed_crc"] and got["decoded"] == 6000
     assert got["settings"]["window"] == 4096 and len(got["decoded_sha256"]) == 64
 
 
-def test_a_damaged_control_byte_ends_the_proof_at_the_first_byte_the_packer_would_not_write():
+def test_a_damaged_control_byte_ends_the_run_and_the_proof_stays_off_the_damage():
     data = text(9000)
     raw = bytearray(rnc2enc.stream(data, 2))
     cut = 18 + len(raw) // 2
     raw[cut : cut + 3] = b"\xff\xff\xff"
     rom, at = placed(bytes(raw))
     got = rncrepack.measure(rom, at)
-    assert 200 < got["credit"] <= cut and got["first_difference"] <= cut
-    rows = rncrepack.spans(
-        rncrepack.find(rom, at, at + len(raw)), [(at + 18, at + 18 + 400), (at + cut + 200, at + cut + 300)]
-    )
+    first = got["runs"][0]
+    assert first[0] == 0 and 200 < first[1] <= cut - 18 and got["credit"] == sum(b - a for a, b in got["runs"])
+    assert all(b <= cut - 18 or a >= cut - 18 + 3 for a, b in got["runs"])
+    rows = rncrepack.spans(rncrepack.find(rom, at, at + len(raw)), [(at + 18, at + 18 + 400), (at + cut, at + cut + 3)])
     assert [r["region"] for r in rows] == [[at + 18, at + 18 + 400]]
     ok = rncrepack.prove(rom, at + 18, at + 18 + 400, rows[0]["stream"])
-    assert ok["region"] == [at + 18, at + 18 + 400] and ok["credit"] == got["credit"]
+    assert ok["region"] == [at + 18, at + 18 + 400] and ok["rebuilt_sha256"] == ok["region_sha256"]
     with pytest.raises(rncrepack.StreamError, match="not inside"):
         rncrepack.prove(rom, at + 18, at + cut + 100, rows[0]["stream"])
     with pytest.raises(rncrepack.StreamError, match="not inside"):
         rncrepack.prove(rom, at + 4, at + 40, rows[0]["stream"])  # the header is not proven here
+
+
+REAL = Path(__file__).parent / "data" / "de_stale_1d3917.bin"  # the first 4900 bytes of the German stream at 0x1d3917
+REAL_RUNS = [[0, 4251], [4271, 4602], [4654, 4674]]  # packed-byte offsets of its runs before the cut
+
+
+def test_the_real_german_stream_is_read_past_its_damage_window_by_window():
+    rom, at = placed(REAL.read_bytes())
+    got = rncrepack.measure(rom, at)
+    assert got["runs"][:3] == REAL_RUNS and got["packed_crc_read"] != got["packed_crc"]
+    rows = rncrepack.spans(rncrepack.find(rom, at, at + len(REAL.read_bytes())), [(at + 18 + 4271, at + 18 + 4602)])
+    assert [r["region"] for r in rows] == [[at + 18 + 4271, at + 18 + 4602]]
+    ok = rncrepack.prove(rom, *rows[0]["region"], rows[0]["stream"])  # a run after the first damage
+    assert ok["rebuilt_sha256"] == ok["region_sha256"] and ok["decoded"] > 4900
+    for low, high in ([4251, 4271], [4200, 4300], [4602, 4654]):  # the damage, and regions straddling it
+        with pytest.raises(rncrepack.StreamError, match="not inside"):
+            rncrepack.prove(rom, at + 18 + low, at + 18 + high, rows[0]["stream"])
+
+
+def test_every_run_rebuilds_to_the_rom_bytes_exactly_and_a_flipped_early_bit_leaves_nothing_to_claim():
+    rom, at = placed(REAL.read_bytes())
+    stream = [at, at + 7355]
+    for low, high in rncrepack.measure(rom, at)["runs"]:
+        ok = rncrepack.prove(rom, at + 18 + low, at + 18 + high, stream)
+        assert ok["rebuilt_sha256"] == ok["region_sha256"]
+    spoiled = bytearray(rom)
+    spoiled[at + 18 + 2] ^= 0x80  # the third packed byte: the tokens that follow change
+    with pytest.raises(rncrepack.StreamError, match="no run"):
+        rncrepack.measure(bytes(spoiled), at)
 
 
 def test_noise_and_short_proofs_are_refused():
