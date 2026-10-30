@@ -184,6 +184,7 @@ help = "Refuse source rule rows the working tree adds over REV; no ROMs or host 
 handler = "policy.audit_command"
 params = [
   { name = "against", kind = "option", type = "str", required = true, multiple = false, help = "revision the working tree is compared with" },
+  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "the FILES.tsv of the object plan (OBJECTS.tsv and ASSIGN.tsv beside it) the linker fill records are checked against; required once a version holds records" },
 ]
 
 [command.cheat]

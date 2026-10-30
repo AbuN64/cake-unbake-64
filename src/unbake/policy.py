@@ -21,6 +21,7 @@ from unbake import (
     delta,
     effort,
     fakematch,
+    fillaudit,
     lookalike,
     naming_baseline,
     native,
@@ -1797,6 +1798,7 @@ def _audit(params: Json) -> Json:
     refusals.extend(_placeholder_paths(everything, root, against, run, settings))
     drift, unchecked = _generated_drift(root, everything, settings)
     refusals.extend(drift)
+    refusals.extend(fillaudit.audit(root, params.get("plan")))
     removed = _removed_functions(changed, root, against, git, tmp)
     dropped = _credit_drops(root, against, git, tmp)
     unexplained = {v: n for v, n in dropped.items() if n > removed}

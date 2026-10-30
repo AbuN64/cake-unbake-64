@@ -306,6 +306,36 @@ def test_scan_proves_catalogued_streams_and_lists_streams_in_unknown_bytes(tmp_p
     assert out["candidate_bytes"] == len(stream) and out["fill"] == 0
 
 
+def _fill_file(root: Path, *rows: tuple[int, int]) -> None:
+    """versions/v/linker_fill.toml with one row per (rom, size): size bytes of 0xAB."""
+    (root / "versions" / "v").mkdir(parents=True, exist_ok=True)
+    text = 'version = "v"\n' + "".join(
+        f'\n[[fill]]\nobject = "1"\nsection = ".data"\nrom = {rom:#x}\naddress = {0x80000000 + rom:#x}\n'
+        f'size = {size}\nbytes = "{"ab" * size}"\nprovenance = "unattributed"\n'
+        for rom, size in rows
+    )
+    (root / "versions" / "v" / "linker_fill.toml").write_text(text)
+
+
+def test_linker_fill_is_its_own_class_out_of_unknown_and_never_code(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    _credits(monkeypatch, f=(0x1000, 0x100, "func"))
+    _fill_file(tmp_path, (0x2000, 4), (0x1010, 4))  # the second lies inside the function: the function owns it
+    held = report.accounts(config, _tree("fill"))["v"]
+    assert held["linker_fill_total"] == 4
+    assert held["unknown_total"] == ROM - 0x1100 - 4
+    p = report.partitions(config, _tree("fill"))["v"]
+    assert sum(p[k] for k in blobs.PARTS) == ROM and p["code"] == 0x100
+    assert p["spans"]["linker_fill"] == [(0x2000, 0x2004)]
+
+
+def test_sweep_linker_fill_takes_only_what_no_other_class_holds():
+    out = blobs.sweep(ROM, [(0x1000, 0x1100)], [], [(0, 0x1000)], [], [], None, [(0xFF0, 0x1008), (0x2000, 0x2010)])
+    assert out["linker_fill"] == 0x10  # the part in platform and in code is theirs
+    assert out["unknown"] == ROM - 0x1000 - 0x100 - 0x10
+    assert out["overlap"] == 0 and out["outside"] == 0
+
+
 def test_report_carries_the_blob_fields_per_version(tmp_path, monkeypatch):
     config = _config(tmp_path)
     _credits(monkeypatch, f=(0x1000, 0x100, "func"))
@@ -317,6 +347,7 @@ def test_report_carries_the_blob_fields_per_version(tmp_path, monkeypatch):
         "blobs_decoded": 0,
         "blobs_identified": 0,
         "blobs_fill": 0,
+        "linker_fill_total": 0,
         "blobs_no_row": ROM - 0x1100,
         "unknown_total": ROM - 0x1100,
         "blobs": {},
@@ -542,6 +573,7 @@ def _verify(tmp_path, monkeypatch, document, partition=None, text=None):
         "data": 0,
         "platform": 0,
         "blobs": 0,
+        "linker_fill": 0,
         "unknown": ROM,
         "overlap": 0,
         "outside": 0,

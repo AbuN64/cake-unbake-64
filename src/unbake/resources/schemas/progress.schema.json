@@ -83,6 +83,19 @@
       ],
       "additionalProperties": false
      },
+     "linker_fill": {
+      "type": "object",
+      "properties": {
+       "bytes": {
+        "type": "integer",
+        "minimum": 0
+       }
+      },
+      "required": [
+       "bytes"
+      ],
+      "additionalProperties": false
+     },
      "blobs": {
       "type": "object",
       "properties": {
@@ -202,6 +215,7 @@
      "data",
      "functions",
      "blobs",
+     "linker_fill",
      "header"
     ],
     "additionalProperties": false

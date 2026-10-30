@@ -19,3 +19,5 @@ id_rsa*
 *.pem
 *.key
 .abu/
+# per-project state of the unbake commands (tree lock, journal, stores); never source
+/.unbake/

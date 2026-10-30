@@ -152,6 +152,7 @@ def document(config: Any, tree: Any, current: Json) -> Json:
                     for kind in ("code", "data", "functions")
                 },
                 "blobs": {"decoded": row["blobs_decoded"], "total": row["blobs_total"]},
+                "linker_fill": {"bytes": row["linker_fill_total"]},
                 "header": {"bytes": row["platform_total"], **_header(config, version)},
             }
         )

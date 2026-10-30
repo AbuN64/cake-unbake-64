@@ -91,8 +91,27 @@ the segment (`. = 0x<offset>; BYTE(0x..); ...`), and the generated splat yaml cu
 row ends at the next fill row like at the next symbol. With the records in place the pad arrays, their symbols and the
 sources that only held them go out of the tree, and every ROM still links SHA-1 exact.
 
-The linker-fill report class (the census of the fills, and the audit checks over the file) is a separate card; this
-command and the link are what it reads.
+### Linker fill in the report
+
+The fill rows are a class of their own in the ROM partition, between blobs and unknown: `code + data + platform + blobs
++ linker fill + unknown = rom_size`. A byte is linker fill when a row of its version's `linker_fill.toml` covers it and
+no class above (platform, code, data, blobs) holds it, so a fill byte is never counted as source and never left in
+`unknown`. It never raises a bar either: the README bars and `matched` totals stay what source and blobs earn.
+
+- `unbake report` carries `linker_fill_total` per version beside `platform_total` and `unknown_total`.
+- The README progress block ends each bar row with `, linker fill N bytes` (the `all` row sums the versions).
+- `progress.json` schema 2 carries `linker_fill: {bytes}` per cart, beside `blobs` and `header`.
+
+### Linker fill in the audit
+
+`unbake audit --against REV --plan FILES.tsv` checks every version's records and refuses, one line each:
+
+- `fill.overlap`: a record overlaps a symbol of `versions/<v>/symbol_addrs.txt` (a symbol of no stated size ends at the
+  next symbol or fill row). The bytes are the symbol's, not fill.
+- `fill.gap`: no pad atom of the object plan has the record's object, section, address and size. The plan has no gap
+  there.
+
+A version that holds records with no `--plan` is refused too (`fill.plan`): records cannot be judged without it.
 
 ## Compilers
 

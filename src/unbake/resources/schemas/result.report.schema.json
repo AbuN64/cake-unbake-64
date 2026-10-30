@@ -89,6 +89,10 @@
       "type": "integer",
       "minimum": 0
      },
+     "linker_fill_total": {
+      "type": "integer",
+      "minimum": 0
+     },
      "unknown_total": {
       "type": "integer",
       "minimum": 0

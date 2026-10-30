@@ -31,6 +31,13 @@ adds or states the reason in the commit message.
 | `source.sdk-name` | Refuse | a non-SGI name under a library root, or an SGI-reserved name (`__os*`, `_` + capital) outside one |
 | `source.generated-drift` | Refuse | a hand edit of README/docs/map/progress that `unbake sync` would regenerate |
 
+## Linker fill records
+
+`--plan FILES.tsv` (OBJECTS.tsv and ASSIGN.tsv beside it) adds the linker fill checks, always Refuse: `fill.overlap` (a
+`versions/<v>/linker_fill.toml` record overlaps a symbol), `fill.gap` (the object plan has no pad atom of the record's
+object, section, address and size) and `fill.plan` (records exist and no plan was given). They judge the whole tree, not
+what a change adds: a record is a fact about a gap, not a count.
+
 Proven pad classes (`*TrailingBytes*`, `*Padding*`, `LinkGapWords`, `RetainedWords`, at most 8 bytes) stay allowed by
 `raw-data`. A literal the base already spelled as often is not added: rewriting a neighbour to decimal moves no held
 literal into `hex-value`.

@@ -822,6 +822,14 @@ sentence = "no declared type of a name keeps every object of every version ident
 owner = "linkfill"
 sentence = "a linker fill record is malformed, overlaps another or does not fit its version"
 
+[key."fill.overlap"]
+owner = "fillaudit"
+sentence = "a linker fill record overlaps a symbol"
+
+[key."fill.gap"]
+owner = "fillaudit"
+sentence = "a linker fill record names a gap the object plan does not have"
+
 [key."fill.plan"]
 owner = "linkfill"
-sentence = "the object plan names a gap the ROM cannot place"
+sentence = "the object plan names a gap the ROM cannot place, or an audit of fill records has no plan"

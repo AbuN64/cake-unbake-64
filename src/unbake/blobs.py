@@ -320,6 +320,9 @@ def fill(rom: bytes, gaps: Spans) -> Spans:
     return sorted(out)
 
 
+PARTS = ("code", "data", "platform", "blobs", "linker_fill", "unknown")  # the classes that sum to the ROM size
+
+
 def sweep(
     rom_size: int,
     code: Spans,
@@ -328,12 +331,15 @@ def sweep(
     decoded: Spans,
     identified: Spans,
     rom: bytes | None = None,
+    linker: Spans | None = None,
 ) -> Json:
     """Classify every byte of `[0, rom_size)` once, in this precedence: platform, code, data, decoded blobs,
-    identified blobs, proven fill (with the ROM bytes, see `fill`), unknown. Identified platform bytes (boot, SDK
-    microcode) are platform in every version, whatever symbol covers them: a symbol over them is no credit of ours
-    (`platform_overlap` counts those bytes; the report names the symbols). Fill counts as matched blob bytes: it is
-    inside `blobs` and `blobs_decoded`, and alone in `blobs_fill`. `overlap` is credited bytes counted twice,
+    identified blobs, proven fill (with the ROM bytes, see `fill`), linker fill (`linker`, the spans of the version's
+    fill records: stale alignment bytes that are neither source nor blob, only what no class above holds), unknown.
+    Identified platform bytes (boot, SDK microcode) are platform in every version, whatever symbol covers them: a
+    symbol over them is no credit of ours (`platform_overlap` counts those bytes; the report names the symbols).
+    Fill counts as matched blob bytes: it is inside `blobs` and `blobs_decoded`, and alone in `blobs_fill`. `overlap`
+    is credited bytes counted twice,
     `outside` ranges beyond the ROM; both must be 0. `spans` holds the disjoint ranges of each class for drawing."""
 
     def clamp(spans: Spans) -> Spans:
@@ -351,6 +357,7 @@ def sweep(
     ide = subtract(subtract(merge(clamp(identified)), held), dec)
     every = merge(clamp(decoded) + clamp(identified))
     pad = fill(rom, subtract([(0, rom_size)], merge(held + dec + ide))) if rom is not None else []
+    lnk = subtract(subtract(merge(clamp(linker or [])), merge(held + dec + ide)), pad)
     parts = {
         "rom_size": rom_size,
         "code": length(code_m),
@@ -359,9 +366,10 @@ def sweep(
         "blobs_decoded": length(dec) + length(pad),
         "blobs_identified": length(ide),
         "blobs_fill": length(pad),
+        "linker_fill": length(lnk),
     }
     parts["blobs"] = parts["blobs_decoded"] + parts["blobs_identified"]
-    parts["unknown"] = rom_size - parts["code"] - parts["data"] - parts["platform"] - parts["blobs"]
+    parts["unknown"] = rom_size - sum(parts[k] for k in ("code", "data", "platform", "blobs", "linker_fill"))
     return {
         **parts,
         "overlap": length(off) - length(credit),
@@ -375,6 +383,7 @@ def sweep(
             "decoded": dec,
             "identified": ide,
             "fill": pad,
+            "linker_fill": lnk,
         },
     }
 
@@ -540,7 +549,7 @@ def apply_import(config: Config, plan: Plan) -> Json:
 
 
 # ---------------------------------------------------------------- land
-_KEPT = ("rom_size", "code", "data", "platform", "blobs", "blobs_decoded", "blobs_identified", "unknown")
+_KEPT = ("rom_size", "code", "data", "platform", "blobs", "blobs_decoded", "blobs_identified", "linker_fill", "unknown")
 
 
 def _partitions(config: Config) -> Json:
@@ -600,7 +609,7 @@ def land(config: Config, packet: Json) -> Json:
             with effort.stage("blobs.land.partition"):
                 after = _partitions(config)
                 for v, p in after.items():
-                    held = sum(p[k] for k in ("code", "data", "platform", "blobs", "unknown"))
+                    held = sum(p[k] for k in PARTS)
                     if held != p["rom_size"] or p["overlap"] or p["outside"]:
                         raise Refusal(
                             Finding(
@@ -724,7 +733,7 @@ def verify(config: Config, base: bytes | None = None) -> tuple[Finding, ...]:
         return tuple(found)
     parts = import_module("unbake.report").partitions(config, import_module("unbake.tree").capture(config))
     for v, p in parts.items():
-        held = sum(p[k] for k in ("code", "data", "platform", "blobs", "unknown"))
+        held = sum(p[k] for k in PARTS)
         if held != p["rom_size"] or p["overlap"] or p["outside"] or p["shadowed"]:
             found.append(
                 Finding(
@@ -856,6 +865,7 @@ def _result(config: Config, extra: Json, with_rows: bool) -> Json:
         "blobs_decoded",
         "blobs_identified",
         "blobs_fill",
+        "linker_fill",
         "unknown",
         "blobs_no_row",
         "shadowed",

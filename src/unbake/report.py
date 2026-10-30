@@ -13,7 +13,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from unbake import blobs, effort, fakematch, platform, present, rescore, store
+from unbake import blobs, effort, fakematch, linkfill, platform, present, rescore, store
 from unbake import config as configuration
 from unbake.contracts import Finding, Json, Refusal, sha256_file
 
@@ -540,7 +540,8 @@ def partition(config: Any, v: str, table: Mapping[str, Any], rom_size: int) -> J
     path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
     rom = path.read_bytes() if path.is_file() else None
     rom = rom if rom is not None and len(rom) == rom_size else None
-    result = dict(blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom))
+    linker = [(f.rom, f.rom + f.size) for f in linkfill.read(Path(config.project.root), v)]
+    result = dict(blobs.sweep(rom_size, code, data, platform.ranges(config, v), decoded, identified, rom, linker))
     result["blobs_no_row"] = blobs.no_row(result, document, v)
     return result
 
@@ -576,7 +577,7 @@ def partitions(config: Any, tree: Any) -> dict[str, Json]:
             if (size := _rom_size(config, v)) is None:
                 continue
             parts = partition(config, v, tables[v], size)
-            total = sum(parts[k] for k in ("code", "data", "platform", "blobs", "unknown"))
+            total = sum(parts[k] for k in blobs.PARTS)
             if parts["overlap"] or parts["outside"] or parts["unknown"] < 0 or total != size:
                 why = (
                     f"{parts['overlap']} bytes counted twice, {parts['outside']} beyond the ROM, sum {total} of {size}"
@@ -586,7 +587,8 @@ def partitions(config: Any, tree: Any) -> dict[str, Json]:
         return out
 
     sizes = tuple(_rom_size(config, v) for v in config.project.version)
-    return effort.memo(("partition", tree.digest, blobs.sha(config), platform.sha(config), sizes), build)
+    fills = tuple(linkfill.read_text(Path(config.project.root), v) for v in config.project.version)
+    return effort.memo(("partition", tree.digest, blobs.sha(config), platform.sha(config), sizes, fills), build)
 
 
 def accounts(config: Any, tree: Any) -> dict[str, Json]:
@@ -601,6 +603,7 @@ def accounts(config: Any, tree: Any) -> dict[str, Json]:
             "blobs_identified": p["blobs_identified"],
             "blobs_fill": p["blobs_fill"],
             "blobs_no_row": p["blobs_no_row"],
+            "linker_fill_total": p["linker_fill"],
             "unknown_total": p["unknown"],
             "blobs": blobs.census(document, v),
         }
@@ -694,6 +697,7 @@ _BLOB_KEYS = (
     "blobs_identified",
     "blobs_fill",
     "blobs_no_row",
+    "linker_fill_total",
     "unknown_total",
 )
 
@@ -702,6 +706,11 @@ def _blobs_line(label: str, held: Json, cells: int) -> str:
     """Blobs: █ decoded (proven fill included), ▒ identified, ░ the rest, over the ROM bytes outside code, data and
     platform."""
     return _bar(label, held["blobs_decoded"], held["blobs_total"], held["blobs_total"] + held["unknown_total"], cells)
+
+
+def _linker_fill(bucket: Json, counted: bool) -> str:
+    """The README tail of a bar row: the linker's alignment fill, its own class beside the bar and never part of it."""
+    return f", linker fill {bucket['linker_fill_total']:,} bytes" if counted else ""
 
 
 def _rom_sha256(config: Any, version: str) -> str:
@@ -745,7 +754,7 @@ def readme(text: str, config: Any, report: Json) -> str:
             total.update({k: sum(versions[v][k] for v in project.version) for k in _BLOB_KEYS})
         line = _rom_line if counted else _line
         lines = [
-            line(label.ljust(width), bucket, cells) + " bytes"
+            line(label.ljust(width), bucket, cells) + " bytes" + _linker_fill(bucket, counted)
             for label, bucket in [("all", total), *((v, versions[v]) for v in project.version)]
         ]
         blocks = ["<pre><code>" + "</code><br><code>".join(lines) + "</code></pre>"]

@@ -81,10 +81,16 @@ def parse(text: str, version: str) -> list[Fill]:
     return rows
 
 
+def read_text(root: Path, version: str) -> str:
+    """The text of a version's fill file; empty when the project has no file for it."""
+    file = root / path(version)
+    return file.read_text() if file.is_file() else ""
+
+
 def read(root: Path, version: str) -> list[Fill]:
     """The fill rows of a version; none when the project has no file for it."""
-    file = root / path(version)
-    return parse(file.read_text(), version) if file.is_file() else []
+    text = read_text(root, version)
+    return parse(text, version) if text else []
 
 
 def render(version: str, fills: Iterable[Fill], generator: str) -> str:

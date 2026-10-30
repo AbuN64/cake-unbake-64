@@ -332,6 +332,7 @@ def test_readme_with_blob_accounting_measures_against_the_rom_and_drops_the_part
         row["blobs_identified"] = row["blobs_total"] - row["blobs_decoded"]
         row["blobs_fill"] = 0
         row["blobs_no_row"] = 0
+        row["linker_fill_total"] = 0
         row["unknown_total"] = row["rom_size"] - current["versions"][v]["code_total"] - 4096 - row["blobs_total"]
         current["versions"][v].update(row)
     out = report.readme("<!-- progress -->\n<!-- /progress -->", config, current)
@@ -341,7 +342,8 @@ def test_readme_with_blob_accounting_measures_against_the_rom_and_drops_the_part
     for gone in ("platform  [", "unknown   [", "rom       ", "data = C globals"):
         assert gone not in out
     # the top bars are measured against the exact ROM size: matched code+data+blobs plus platform, reaching fuzzy
-    assert "us   [" in out and " of 8,388,608 bytes</code>" in out and " of 16,777,216 bytes</code>" in out
+    assert " of 8,388,608 bytes, linker fill 0 bytes</code>" in out and "us   [" in out
+    assert " of 16,777,216 bytes, linker fill 0 bytes</code>" in out
     sure = sum(current["versions"]["us"][k] for k in ("code_matched", "data_matched")) + 400 + 4096
     assert f"{sure:,} of 8,388,608 bytes" in out
     assert report.readme(out, config, current) == out
@@ -531,6 +533,7 @@ def published_case(tmp_path, monkeypatch):
                 "blobs_decoded": 32,
                 "blobs_identified": 32,
                 "blobs_fill": 0,
+                "linker_fill_total": 0,
                 "unknown_total": 4000,
                 "blobs": {"graphics": {"decoded": 1, "identified": 1, "observed": 1}},
             }
