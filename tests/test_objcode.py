@@ -120,14 +120,20 @@ def test_a_window_of_mostly_sites_proves_nothing():
     assert corpus(("v", jumps)).tiles(pack(other), "v") == []  # no word equal to its body's: nothing but sites
 
 
-def test_code_in_an_object_file_sits_at_any_byte():
+def test_code_sits_only_at_word_aligned_rom_offsets():
     window = body(hi=0x8020)
-    data = b"\x02\x10\x00" + pack(window) + b"\xff"
     cor = corpus(("v", body()))
-    assert cor.tiles(data, "v") == []
-    (tile,) = cor.tiles(data, "v", (0, 1, 2, 3))
-    assert (tile.start, tile.end) == (3, 3 + 4 * len(window))
-    assert cor.regions(data, "v", [(0, len(data))]) == [{"rom": [3, 3 + 4 * len(window)], "tiles": 1, "bodies": ["v"]}]
+    shifted = b"\x02\x10\x00" + pack(window) + b"\xff"  # the same words three bytes off the word grid
+    assert cor.tiles(shifted, "v") == []
+    assert cor.regions(shifted, "v", [(0, len(shifted))]) == []
+    aligned = b"\x02\x10\x00\x00" + pack(window) + b"\xff"
+    assert cor.regions(aligned, "v", [(0, len(aligned))]) == [
+        {"rom": [4, 4 + 4 * len(window)], "tiles": 1, "bodies": ["v"]}
+    ]
+    # a span that starts off the grid reads on the ROM's grid, not its own
+    assert cor.regions(aligned, "v", [(1, len(aligned))]) == [
+        {"rom": [4, 4 + 4 * len(window)], "tiles": 1, "bodies": ["v"]}
+    ]
 
 
 def test_a_tie_goes_to_the_body_of_the_version_then_the_version_order():

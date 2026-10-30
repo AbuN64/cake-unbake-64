@@ -114,13 +114,15 @@ def test_code_streams_fill_the_unknown_spans_a_stream_covers_and_name_the_stream
     from test_mipsstream import function, pack
 
     words = function(size=14) + function(size=20, frame=48)
-    data = rom((0x203, pack(words)), size=0x800)
-    end = 0x203 + 4 * len(words)
+    data = rom((0x204, pack(words)), size=0x800)
+    end = 0x204 + 4 * len(words)
     rows = blob_stale.code_streams(data, [(0x1F0, 0x240), (0x300, 0x400), (end - 8, end + 0x20)])
     assert rows == [
-        {"version": "", "reader": "mips-stream", "region": [0x203, 0x240], "stream": [0x203, end]},
-        {"version": "", "reader": "mips-stream", "region": [end - 8, end], "stream": [0x203, end]},
+        {"version": "", "reader": "mips-stream", "region": [0x204, 0x240], "stream": [0x204, end]},
+        {"version": "", "reader": "mips-stream", "region": [end - 8, end], "stream": [0x204, end]},
     ]
+    shifted = rom((0x203, pack(words)), size=0x800)  # the same functions one byte off the word grid are not code
+    assert blob_stale.code_streams(shifted, [(0x1F0, 0x240)]) == []
     assert blob_stale.code_streams(rom((0, NOISE)), [(0, 0x1000)]) == []
 
 

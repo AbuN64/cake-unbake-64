@@ -275,14 +275,14 @@ class Corpus:
         }
 
     def regions(self, rom: bytes | memoryview, version: str, spans: Iterable[tuple[int, int]]) -> list[dict[str, Any]]:
-        """The ranges inside `spans` that whole tiles cover, found at every byte phase (code in an object file sits
-        at any byte); tiles that touch are one region."""
+        """The ranges inside `spans` that whole tiles cover, found only at word-aligned ROM offsets (code sits only on
+        word boundaries; a tile at a shifted phase is a false match); tiles that touch are one region."""
         out: list[dict[str, Any]] = []
         for low, high in spans:
             if high - low < 4 * MIN_WORDS:
                 continue
             run: list[Tile] = []
-            for tile in [*self.tiles(rom[low:high], version, (0, 1, 2, 3)), None]:
+            for tile in [*self.tiles(rom[low:high], version, (-low % 4,)), None]:
                 if run and (tile is None or tile.start != run[-1].end):
                     out.append(
                         {

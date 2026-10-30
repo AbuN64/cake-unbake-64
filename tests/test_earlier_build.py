@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from unbake import earlier_build as eb
+from unbake.mipsstream import find as mipsstream_find
 
 RAW = (Path(__file__).parent / "data" / "eu_stale_slice.bin").read_bytes()
 # the five eu spans (ROM 0x14920c, 0x164abd, 0x16b2f8, 0x16eecd, 0x172ced) in order, 3,457 bytes: each is put at a
@@ -43,21 +44,64 @@ def rom_of(*pieces, size=0x400):
     return bytes(out)
 
 
-def test_real_eu_slice_holds_three_code_pieces_and_address_tables():
-    pieces = [eb.disassemble(SLICE, a, b) for a, b in SPANS]
-    assert [[len(p["words"]) for p in ps] for ps in pieces] == [[], [29], [], [29], [29]]
-    assert all(p["head"] and p["tail"] for ps in pieces for p in ps)
+def test_real_eu_slice_holds_no_code_piece_on_a_word_boundary_only_at_shifted_phases():
+    # the five spans start at ROM offsets of phase 0, 1, 2, 3 and 1 in a word (0x14920c, 0x164abd, ...): none is
+    # aligned, so the aligned read finds nothing and the shifted read names the three 29-word runs
+    assert all(eb.disassemble(SLICE, a, b) == [] for a, b in SPANS)
+    shifted = [eb.disassemble(SLICE, a, b, shifted=True) for a, b in SPANS]
+    assert [[len(p["words"]) for p in ps] for ps in shifted] == [[], [29], [], [29], [29]]
+    assert all(p["head"] and p["tail"] and p["phase"] != 0 for ps in shifted for p in ps)
     assert eb.shape(SLICE, *SPANS[2]) == "address table"  # 0x16b2f8: sixteen 0x8015xxxx jump table words
     assert eb.shape(SLICE, SPANS[1][0], SPANS[1][0] + 200) == "address table"  # the head of the 0x164abd span
     assert eb.shape(SLICE, *SPANS[0]) == "unread"
 
 
-def test_real_eu_pieces_have_no_function_in_the_tree_so_they_stay_unknown():
+def test_real_eu_pieces_shifted_off_the_word_grid_are_not_code_and_never_a_candidate():
     index = eb.Index([compiled("A", fn(*body(40)))], ["eu"])
     closed, refused = eb.read(SLICE, "eu", *SPANS[3], index)
-    assert closed == []
-    assert [r["words"] for r in refused] == [29]
-    assert refused[0]["near"] == []
+    assert closed == [] and refused == []
+    (found,) = eb.not_code(SLICE, [SPANS[3]], [])
+    assert found["reason"] == eb.NOT_CODE and found["bytes"] == 29 * 4 and found["phase"] != 0
+    out = eb.scan({"eu": SLICE}, {"eu": [SPANS[3]]}, index)["eu"]
+    assert out["rows"] == [] and out["refused"] == [] and out["not_code"] == [found]
+    assert [r["kind"] for r in out["left"]] == [
+        "address table"
+    ]  # what its aligned words are; the shifted run is listed apart
+
+
+def test_real_eu_159a32_offset_table_is_not_code_though_it_decodes_at_a_shifted_phase():
+    # eu 0x159a32, 64 bytes: a table of 0x00338c54-style offsets that read at phase 2 as sixteen load-class words (the
+    # one skeleton hit of the old reader); the slice is the ROM's 0x159a20..0x159a80 put at 0x1000 + the same phase
+    raw = (Path(__file__).parent / "data" / "eu_159a20_offset_table.bin").read_bytes()
+    rom = bytearray(0x2000)
+    rom[0x1000 : 0x1000 + len(raw)] = raw
+    low, high = 0x1012, 0x1052  # eu 0x159a32..0x159a72
+    assert raw[0x14:0x18].hex() == "00338c54" and raw[0x18:0x1C].hex() == "00338c54"  # the table on the word grid
+    assert eb.disassemble(bytes(rom), low, high) == []
+    assert mipsstream_find(bytes(rom), low, high) == []
+    (piece,) = eb.disassemble(bytes(rom), low, high, shifted=True)
+    assert piece["stream"] == [low, high] and low % 4 == 2 and len(piece["words"]) == 16
+    (found,) = eb.not_code(bytes(rom), [(low, high)], [])
+    assert found["stream"] == [low, high] and found["reason"] == eb.NOT_CODE
+    index = eb.Index([compiled("A", fn(*body(40)))], ["eu"])
+    out = eb.scan({"eu": bytes(rom)}, {"eu": [(low, high)]}, index)["eu"]
+    assert out["rows"] == [] and out["refused"] == [] and out["not_code"] == [found]
+    assert out["left"] == [{"region": [low, high], "bytes": 64, "kind": "not-code"}]
+
+
+def test_a_function_on_a_word_boundary_still_decodes_and_the_same_one_a_byte_off_is_not_code():
+    words = fn(*body(30))
+    index = eb.Index([compiled("A", words)], ["eu"])
+    aligned = rom_of((0x100, words))
+    closed, refused = eb.read(aligned, "eu", 0, len(aligned), index)
+    assert [c["stream"] for c in closed] == [[0x100, 0x100 + 4 * len(words)]] and refused == []
+    assert eb.not_code(aligned, [(0, len(aligned))], [tuple(c["stream"]) for c in closed]) == []
+    off = rom_of((0x101, words))
+    assert eb.read(off, "eu", 0, len(off), index) == ([], [])
+    (found,) = eb.not_code(off, [(0, len(off))], [])
+    assert found["stream"] == [0x101, 0x101 + 4 * len(words)] and found["phase"] == 1
+    with pytest.raises(eb.EarlierBuildError, match=r"not code: .*shifted word phase"):
+        eb.prove(off, 0x101, 0x101 + 64, [0x101, 0x101 + 4 * len(words)], "eu", "A", 0, index)
 
 
 def test_a_stale_function_equal_to_a_compiled_one_closes_with_an_empty_difference_list():

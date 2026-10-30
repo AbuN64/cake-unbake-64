@@ -2,8 +2,9 @@
 
 `objcode` proves code another known function explains. Stale code of an older link has no such function, so this reader
 proves it the way a disassembler's author would: the bytes are a whole number of functions, and nothing in them is
-anything but an instruction. A stream is the word range [start, end) of the ROM on one 4-byte grid (its start may sit at
-any byte) and every one of these holds:
+anything but an instruction. A stream is the word range [start, end) of the ROM and every one of these holds:
+- it starts at a word-aligned ROM offset (the compiler and the linker place code only on word boundaries, so a span
+  that decodes only at a shifted word phase is data read out of step, never code);
 - every word is a canonical VR4300 instruction of compiled code: opcode and function in the instruction set, every
   field the encoding fixes at zero is zero, no base register of a load or store is $zero or $k0/$k1/$gp (the one null
   store `sb $zero, 0($zero)` that an assertion plants is the exception) and no kernel or global pointer register is
@@ -27,6 +28,7 @@ from unbake.contracts import sha256
 
 RETURN = 0x03E00008  # jr $ra
 MIN_WORDS = 16  # the fewest words of one stream (the 64 B a copy needs)
+WORD = 4  # code sits only at ROM offsets that are a multiple of this
 PAGE = 0x1000  # the write size that cuts a stream: a stream ending on a page boundary may lack its return
 MAX_NOPS = 16  # the most zero words in a row inside a stream
 NULL_STORES = frozenset({0xA0000000, 0xAC000000})  # sb/sw $zero, 0($zero): the crash an assertion plants
@@ -190,10 +192,18 @@ def pieces(words: Sequence[int], low: int = 0, high: int | None = None) -> list[
     return sorted(out)
 
 
-def find(rom: bytes | memoryview, low: int, high: int) -> list[tuple[int, int]]:
-    """Every stream (ROM byte range, start on a 4-byte grid of any of the four phases) inside rom[low:high]."""
+def phases(low: int, shifted: bool = False) -> list[int]:
+    """The byte phases of a read that starts at ROM offset `low`: the one that lands on a word-aligned ROM offset, or
+    (shifted) the three that do not, which only a false candidate decodes at."""
+    aligned = -low % WORD
+    return [p for p in range(WORD) if (p != aligned) == shifted]
+
+
+def find(rom: bytes | memoryview, low: int, high: int, shifted: bool = False) -> list[tuple[int, int]]:
+    """Every stream (ROM byte range) inside rom[low:high] that starts at a word-aligned ROM offset; with `shifted`, the
+    streams the three other phases give instead: not code, listed only to name what the aligned read refuses."""
     found: list[tuple[int, int]] = []
-    for phase in range(4):
+    for phase in phases(low, shifted):
         count = (high - low - phase) // 4
         if count < MIN_WORDS:
             continue
@@ -266,6 +276,8 @@ def prove(rom: bytes | memoryview, start: int, end: int, stream: Sequence[int]) 
     first, last = stream
     if not 0 <= first < last <= len(rom) or (last - first) % 4:
         raise StreamError("a stream is a whole number of words inside the ROM")
+    if first % WORD:
+        raise StreamError("not code: the stream starts at a shifted word phase, code sits only on word boundaries")
     if not first <= start < end <= last:
         raise StreamError("the region is not inside its stream")
     data = bytes(rom[first:last])

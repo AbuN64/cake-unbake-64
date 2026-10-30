@@ -263,6 +263,7 @@ def scan(config: Config) -> Json:
             "earlier_build": built,
             "earlier_refused": rebuilt["refused"],
             "earlier_left": rebuilt["left"],
+            "not_code": rebuilt["not_code"],
             "rnc_streams": packed,
             "copies": copies,
             "heads": cuts,

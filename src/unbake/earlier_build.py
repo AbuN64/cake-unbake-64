@@ -3,7 +3,7 @@ never a percentage.
 
 `objcode` proves code a known body explains except at relocation sites; `mipsstream` proves bytes are whole canonical
 functions without saying whose. This reader goes from the second to the first by the compiler:
-- disassemble: the usable runs of a span on the mipsstream word grid (any of the four phases) are cut into pieces
+- disassemble: the usable runs of a span on the mipsstream word grid (word-aligned ROM offsets only) are cut into pieces
   after each return and its delay slot; a piece opens with a prologue or mid-function (`head`) and ends with a return
   or where the span cut it (`tail`);
 - skeleton: a piece reduces to its tokens, one per word: the opcode class and, for a branch, its offset; registers,
@@ -199,11 +199,12 @@ def pieces(words: Sequence[int], low: int, high: int) -> list[Piece]:
     return [p for p in out if p.last - p.first >= MIN_WORDS]
 
 
-def disassemble(rom: bytes | memoryview, low: int, high: int) -> list[Json]:
-    """The pieces of rom[low:high] on each of the four phases of the mipsstream grid, as ROM ranges; a piece that
-    another phase also gives is kept once, at the phase with the longer usable run."""
+def disassemble(rom: bytes | memoryview, low: int, high: int, shifted: bool = False) -> list[Json]:
+    """The pieces of rom[low:high] on the word-aligned phase of the mipsstream grid, as ROM ranges; with `shifted`, the
+    pieces of the other three phases instead (never code: `not_code` names them). A piece that another phase of the
+    same kind also gives is kept once, at the phase with the longer usable run."""
     found: dict[tuple[int, int], Json] = {}
-    for phase in range(4):
+    for phase in mipsstream.phases(low, shifted):
         count = (high - low - phase) // 4
         if count < MIN_WORDS:
             continue
@@ -472,6 +473,14 @@ def shape(rom: bytes | memoryview, low: int, high: int) -> str:
     return "unread"
 
 
+def _kind_of(rom: bytes | memoryview, low: int, high: int, shifted: Sequence[Json]) -> str:
+    """`shape`, except that bytes the aligned read leaves unread and only a shifted phase decodes are `not-code`."""
+    kind = shape(rom, low, high)
+    if kind == "unread" and any(low < n["stream"][1] and n["stream"][0] < high for n in shifted):
+        return "not-code"
+    return kind
+
+
 def _refused(words: Sequence[int], a: int, b: int, base: int, piece: Json, index: Index, version: str) -> Json:
     part = words[a:b]
     return {
@@ -501,6 +510,10 @@ def prove(
     first, last = stream
     if not 0 <= first < last <= len(rom) or (last - first) % 4:
         raise EarlierBuildError("a stream is a whole number of words inside the ROM")
+    if first % mipsstream.WORD:
+        raise EarlierBuildError(
+            "not code: the stream starts at a shifted word phase, code sits only on word boundaries"
+        )
     if not first <= start < end <= last:
         raise EarlierBuildError("the region is not inside its stream")
     words = mipsstream.unpack(bytes(rom[first:last]))
@@ -606,6 +619,28 @@ def blobs_subtract(spans_: Iterable[tuple[int, int]], taken: Iterable[tuple[int,
     return blobs.subtract(blobs.merge(list(spans_)), blobs.merge(list(taken)))
 
 
+NOT_CODE = (
+    "shifted word phase: decodes only at a ROM offset that is not word-aligned, and code sits only on word boundaries"
+)
+
+
+def not_code(
+    rom: bytes | memoryview, spans_: Iterable[tuple[int, int]], taken: Iterable[tuple[int, int]]
+) -> list[Json]:
+    """The spans that decode as code only at a shifted word phase, each with its reason: never a candidate, never
+    counted as code-shaped. `taken` are the ROM ranges the aligned read already holds (a shifted piece inside them is
+    theirs)."""
+    own = sorted(taken)
+    out: list[Json] = []
+    for low, high in spans_:
+        for piece in disassemble(rom, low, high, shifted=True):
+            a, b = piece["stream"]
+            if any(a < e and s < b for s, e in own) or not any(piece["words"]):
+                continue
+            out.append({"stream": [a, b], "bytes": b - a, "phase": a % mipsstream.WORD, "reason": NOT_CODE})
+    return out
+
+
 def scan(roms: Mapping[str, bytes], targets: Mapping[str, Sequence[tuple[int, int]]], index: Index) -> dict[str, Json]:
     """Per version: the rows the compiler closes inside `targets` (as the rows `unbake blobs prove` takes, the receipt
     in each) and the pieces it does not, with their candidates and the words that differ."""
@@ -619,9 +654,14 @@ def scan(roms: Mapping[str, bytes], targets: Mapping[str, Sequence[tuple[int, in
             refused.extend(r)
         rows = spans(closed, spans_)
         left = blobs_subtract(spans_, [tuple(r["region"]) for r in rows])
+        aligned = [tuple(r["stream"]) for r in [*closed, *refused]]
+        shifted = not_code(roms[version], left, aligned)
         out[version] = {
             "rows": rows,
             "refused": refused,
-            "left": [{"region": [a, b], "bytes": b - a, "kind": shape(roms[version], a, b)} for a, b in left],
+            "not_code": shifted,
+            "left": [
+                {"region": [a, b], "bytes": b - a, "kind": _kind_of(roms[version], a, b, shifted)} for a, b in left
+            ],
         }
     return out

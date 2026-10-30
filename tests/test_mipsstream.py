@@ -104,14 +104,26 @@ def test_a_branch_that_leaves_the_stream_cuts_it():
     assert mipsstream.pieces(away) == []  # cut at the branch: neither side holds a frame and a return of 16 words
 
 
-@pytest.mark.parametrize("phase", [0, 1, 2, 3])
-def test_find_reads_a_stream_at_any_byte_phase_and_trims_the_words_either_side(phase):
+def test_find_reads_a_stream_on_a_word_boundary_and_trims_the_words_either_side():
+    words = function(size=14) + function(size=20, frame=48)
+    neighbours = [lw(V0, 8, 0)] * 3  # canonical-looking words of no function (a load through $zero)
+    data = rom_with([*neighbours, *words, *neighbours], 0x200 - 12, filler=b"\x40" * 0x400)
+    (stream,) = mipsstream.find(data, 0, len(data))
+    assert stream == (0x200, 0x200 + 4 * len(words))
+    assert mipsstream.find(data, 0, len(data), shifted=True) == []
+
+
+@pytest.mark.parametrize("phase", [1, 2, 3])
+def test_a_stream_at_a_shifted_word_phase_is_not_code_and_only_the_shifted_read_lists_it(phase):
     words = function(size=14) + function(size=20, frame=48)
     at = 0x200 + phase
-    neighbours = [lw(V0, 8, 0)] * 3  # canonical-looking words of no function (a load through $zero)
-    data = rom_with([*neighbours, *words, *neighbours], at - 12, filler=b"\x40" * 0x400)
-    (stream,) = mipsstream.find(data, 0, len(data))
-    assert stream == (at, at + 4 * len(words))
+    data = rom_with(words, at, filler=b"\x40" * 0x400)
+    assert mipsstream.find(data, 0, len(data)) == []
+    assert mipsstream.find(data, 0, len(data), shifted=True) == [(at, at + 4 * len(words))]
+    with pytest.raises(mipsstream.StreamError, match=r"not code: .*shifted word phase"):
+        mipsstream.prove(data, at, at + 64, (at, at + 4 * len(words)))
+    # a read that starts off the grid still finds the stream on the ROM's grid, at its own aligned phase
+    assert mipsstream.phases(at) == [-at % 4] and mipsstream.phases(0x200) == [0]
 
 
 def test_random_bytes_hold_no_stream():
