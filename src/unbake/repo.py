@@ -29,6 +29,7 @@ from unbake import (
     effort,
     journal,
     libasm,
+    linkfill,
     place,
     pool,
     process,
@@ -888,7 +889,10 @@ def _swallowed_tables(config: Config, current: Any) -> list[Finding]:
             for n in m.owns.get(v, ())
             if m.sections.get(v, {}).get(n, ".text") == ".text" and n not in m.stand_ins.get(v, ())
         }
-        roms = sorted({f[1] for f in table.values() if f[1] is not None})
+        # a fill row cuts its own piece, so it ends the row before it like a symbol would
+        roms = sorted(
+            {f[1] for f in table.values() if f[1] is not None} | {f.rom for f in linkfill.read(config.project.root, v)}
+        )
         ends = dict(itertools.pairwise(roms))
         code = sorted(
             (f[0] & mask, (f[0] & mask) + size, n)

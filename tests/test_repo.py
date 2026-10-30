@@ -1082,7 +1082,7 @@ def test_a_literals_row_running_over_another_functions_jump_table_names_the_row_
     words = b"".join(w.to_bytes(4, "big") for w in (*own, *other))
     (tmp_path / "rom").write_bytes(bytes(0x2000) + words + bytes(4))
     monkeypatch.setattr(repo.configuration, "rom", lambda project, v: tmp_path / "rom")
-    config = SimpleNamespace(project=SimpleNamespace(versions=("a",)))
+    config = SimpleNamespace(project=SimpleNamespace(versions=("a",), root=tmp_path))
     tree_ = _table_tree(monkeypatch, {"literals_f": ".rodata"})
     tree_.modules = (
         *tree_.modules,
@@ -1098,6 +1098,13 @@ def test_a_literals_row_running_over_another_functions_jump_table_names_the_row_
     facts["D_800E1510"] = (0x800E1510, 0x2010, None, "data")  # the row that splits g's table off
     assert repo._swallowed_tables(config, tree_) == []
     del facts["D_800E1510"]
+    (tmp_path / "versions/a").mkdir(parents=True)  # a fill row cuts its own piece there, so it splits the table off too
+    (tmp_path / "versions/a/linker_fill.toml").write_text(
+        'version = "a"\n[[fill]]\nobject = "1"\nsection = ".data"\nrom = 0x2010\naddress = 0x800E1510\nsize = 1\n'
+        'bytes = "01"\nprovenance = "unattributed"\n'
+    )
+    assert repo._swallowed_tables(config, tree_) == []
+    (tmp_path / "versions/a/linker_fill.toml").unlink()
     tree_.modules[0].owns["a"] = (*tree_.modules[0].owns["a"], "g")  # g in C in f's own file: one object's .rodata
     assert repo._swallowed_tables(config, tree_) == []
     tree_.modules[0].stand_ins["a"] = ("g",)  # g behind its stand-in there: the object compiles no table for it

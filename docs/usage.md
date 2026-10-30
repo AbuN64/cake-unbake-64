@@ -57,6 +57,43 @@ feeds, rules tables) belong in `docs/`, which the rule does not guard.
 The commands are `init`, `setup`, `sync`, `check`, `audit`, `cheat`, `compare`, `score`, `submit`, `land`, `report`, `map`,
 `symbols` and `compilers`.
 
+## Linker alignment fill (`unbake layout fill`)
+
+The linker that built a ROM rounded each object up to the alignment of the next and filled the gap with whatever the
+link before it held there, not with zeros. Ours fills a gap with zeros, so those bytes need a producer that is neither a
+source file nor a pad array: a fill record. `unbake layout fill --plan FILES.tsv` (OBJECTS.tsv and ASSIGN.tsv beside
+it) reads each version's ROM and the object plan's pad atoms (`kind=pad`) and writes `versions/<v>/linker_fill.toml`,
+one `[[fill]]` row per gap whose bytes are not all zero; a zero gap gets no row and a version with no row has no file.
+The file is generated, never written by hand, and a pad atom that no single piece of the version holds is refused
+(`fill.plan`).
+
+```toml
+version = "us"
+
+[[fill]]
+object = "361"              # the plan's index of the object whose alignment fill this is
+section = ".ovl_frontendMenu"
+rom = 0x1A7F0C              # ROM offset of the first byte
+address = 0x80439F0C        # its address
+size = 4                    # the length; equals the bytes below
+bytes = "afbf0028"          # the exact bytes, hex, never all zero
+provenance = "unattributed" # or `earlier-link 0x<rom>`
+```
+
+`provenance` is `earlier-link 0x<rom>` where the same bytes occur exactly once in the older link a version carries (an
+earlier-build window) and `unattributed` otherwise, including when several places match. A file that lacks a field,
+carries an unknown one, holds bytes that are not `size` hex bytes or are all zero, or has rows that overlap is refused
+(`fill.record`).
+
+`unbake sync` uses the rows as part of the link: the generated link script emits each row right where its bytes lie in
+the segment (`. = 0x<offset>; BYTE(0x..); ...`), and the generated splat yaml cuts the bytes into a data piece
+`<segment>/fill_<ROM>` of their own, so neither a function nor a data object before them owns the gap. A `literals_`
+row ends at the next fill row like at the next symbol. With the records in place the pad arrays, their symbols and the
+sources that only held them go out of the tree, and every ROM still links SHA-1 exact.
+
+The linker-fill report class (the census of the fills, and the audit checks over the file) is a separate card; this
+command and the link are what it reads.
+
 ## Compilers
 
 `unbake compilers` says which compiler built each unit and how few directory rows say so. It reads the build the project

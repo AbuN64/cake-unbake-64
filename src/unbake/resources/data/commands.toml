@@ -304,7 +304,7 @@ params = [
 help = "Move a project's files to a target folder layout by rules: plan the map, apply it (files, config.toml rows, sync), carry uncommitted work across, verify the objects. Writes only .unbake/layout until apply."
 handler = "folders.run"
 params = [
-  { name = "action", kind = "argument", type = "str", required = true, multiple = false, help = "plan | apply | literals | carry | verify | reorg | header | collapse | mergecheck | merge" },
+  { name = "action", kind = "argument", type = "str", required = true, multiple = false, help = "plan | apply | literals | carry | verify | reorg | header | collapse | mergecheck | merge | pads | fill" },
   { name = "rules", kind = "option", type = "path", required = false, multiple = false, help = "plan: the rules file ([[rule]] rows: match, to, optional row)" },
   { name = "map", kind = "option", type = "path", required = false, multiple = false, help = "plan, reorg: old<TAB>new paths; header: reviewed header identity rows (old equals new) to normalize guards as one batch" },
   { name = "file", kind = "option", type = "path", required = false, multiple = false, help = "header: tracked source whose exports go to its header, or tracked header whose guard is normalized; collapse: one source" },
@@ -314,7 +314,7 @@ params = [
   { name = "obj", kind = "option", type = "str", required = false, multiple = false, help = "mergecheck, merge: the object of a unit, a path with {version} and {unit}, default build/{version}/{unit}.o" },
   { name = "prove", kind = "flag", type = "str", required = false, multiple = false, help = "reorg, merge: after the move run make check once, so every ROM is compared against the single move" },
   { name = "jobs", kind = "option", type = "int", required = false, multiple = false, help = "reorg, merge --prove: make -j, default 4" },
-  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "apply, carry, verify: the plan file, default .unbake/layout/plan.json; mergecheck: the FILES.tsv of a source plan (OBJECTS.tsv and ASSIGN.tsv beside it), judging each target by the object the linker built" },
+  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "apply, carry, verify: the plan file, default .unbake/layout/plan.json; mergecheck, fill: the FILES.tsv of a source plan (OBJECTS.tsv and ASSIGN.tsv beside it); mergecheck judges each target by the object the linker built" },
   { name = "patch", kind = "option", type = "path", required = false, multiple = false, help = "carry: where to write the patch, default .unbake/layout/carry.patch" },
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "mergecheck --plan: write mergecheck.tsv (version, target, verdict, reason) here" },
   { name = "old", kind = "option", type = "path", required = false, multiple = false, help = "verify: a directory holding the build tree and link script from before the move" },

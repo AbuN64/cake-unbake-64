@@ -50,7 +50,7 @@ from elftools.elf.elffile import ELFFile
 
 from unbake import collapse as collapsing
 from unbake import config as configuration
-from unbake import effort, guards, hoist, objectplan, process, repo, store, symbols
+from unbake import effort, guards, hoist, linkfill, objectplan, process, repo, store, symbols
 from unbake import merge as unitmerge
 from unbake import mergecheck as merging
 from unbake import pads as padding
@@ -1254,6 +1254,7 @@ def run(config: Config, params: Json) -> Row:
         "merge": merge,
         "collapse": collapse,
         "pads": pads,
+        "fill": linkfill.generate,
     }
     action = params["action"]
     if action not in actions:

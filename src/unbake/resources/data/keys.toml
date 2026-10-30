@@ -817,3 +817,11 @@ sentence = "the tree has no built unit to read the declarations of"
 [key."unify.unresolved"]
 owner = "typeunify"
 sentence = "no declared type of a name keeps every object of every version identical"
+
+[key."fill.record"]
+owner = "linkfill"
+sentence = "a linker fill record is malformed, overlaps another or does not fit its version"
+
+[key."fill.plan"]
+owner = "linkfill"
+sentence = "the object plan names a gap the ROM cannot place"

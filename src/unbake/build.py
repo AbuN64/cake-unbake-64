@@ -15,7 +15,7 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
 
-from unbake import adapters, effort, front, pool, process, report, store, symbols, tree, versions, windows
+from unbake import adapters, effort, front, linkfill, pool, process, report, store, symbols, tree, versions, windows
 from unbake import config as configuration
 from unbake.contracts import (
     Config,
@@ -650,7 +650,7 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     items: list[
         tuple[str, str, int | None, bool]
     ] = []  # (path, section, offset, whether the section is one function's)
-    start, _, _ = _piece(config, v, piece)
+    start, end, _ = _piece(config, v, piece)
     code = _functions(config, held, v, apart)
     pools = {name for _, path, section, name in named_rows if path in apart and section == ".rodata"}
     seen: set[tuple[str, str]] = set()
@@ -670,7 +670,10 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     _apart(held, v, [row for row in rows if row[1] not in apart], config)
     unaligned = _unaligned(config, held, v)
     out: list[str] = []
+    fills = [f for f in linkfill.read(config.project.root, v) if start <= f.rom < end]
     for path, section, offset, apart_section in items:
+        while fills and offset is not None and fills[0].rom - start < offset:
+            out.append(linkfill.statement(fills.pop(0), start))  # the stale bytes between this object and the last
         if offset is not None:
             # an output section's `.` is relative to its start: never back, so a block that runs past the next row's
             # address (one block holding several rows) is followed on, and the ROM compare stops any real shift
@@ -686,7 +689,7 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
         if section == ".rodata" and path in doubled:
             out.append(f". = ALIGN(8) /* {path}.o */")
         out.append(f"{path}.o({_spelled(section)})")
-    return out
+    return [*out, *(linkfill.statement(f, start) for f in fills)]
 
 
 def _image_sections(config: Config, v: str) -> list[str]:
@@ -902,6 +905,7 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
                 kind = "rodata" if sections.get(r.name, "").startswith(".rodata") else "data"
                 cells.append((r.rom or 0, kind, f"{segment.name}/{r.name}"))
             cells += [(rom, _C, segment.name) for rom in entries if start < rom < end]
+            cells += [linkfill.piece(f, segment.name) for f in linkfill.read(project.root, v) if start <= f.rom < end]
             code_at = {r.rom: r.name for r in rows if r.kind in _CODE and r.rom is not None}
             for at, kind, name in cells:
                 if kind != _C and at in code_at and not name.endswith("/" + code_at[at]):
