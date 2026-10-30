@@ -1,7 +1,7 @@
 # Generated game-repository files (repo.py). Action and image pins are full digests. The tool state directory
-# ignores itself (process.state), so the project's .gitignore never names it.
+# ignores itself (process.state), so the project's .gitignore never names it; .abu/ holds the agent rules of a repo.
 schema = 1
-ignore = ["/.env", "/asm/", "/build/", "/roms/", "/tools/", "/local.mk", "*.z64", "*.n64", "*.v64"]
+ignore = ["/.env", "/asm/", "/build/", "/roms/", "/tools/", "/local.mk", "*.z64", "*.n64", "*.v64", ".abu/"]
 
 # The files git reads beside the ignore list (`unbake sync` writes .gitignore and .gitattributes from these):
 # `union` globs merge by line union (row files), `linguist` globs are counted as C by the forge's language statistics.

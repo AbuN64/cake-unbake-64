@@ -387,6 +387,7 @@ def test_scaffold_is_the_shared_git_files_from_repo_toml() -> None:
     files = repo.scaffold()
     assert set(files) == {".gitignore", ".gitattributes", "requirements.txt", "LICENSE"}
     assert files[".gitignore"].startswith(b"/.env\n/asm/\n") and b"/.boards/" not in files[".gitignore"]
+    assert files[".gitignore"].endswith(b"*.v64\n.abu/\n")
     assert files[".gitattributes"] == (
         b"*.CPP linguist-language=C\n*.H linguist-language=C\n"
         b"versions/*/symbol_addrs.txt merge=union\nversions/*/aliases.txt merge=union\n"
