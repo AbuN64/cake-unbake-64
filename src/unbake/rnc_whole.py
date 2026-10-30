@@ -45,6 +45,15 @@ def _header(raw: bytes) -> rnc.Header:
     return out
 
 
+def _look(rom: bytes | memoryview, at: int, frame: framing.Frame, count: int) -> bytes:
+    """The first stripped bytes of the stream at `at`: the window ends before a header it would cut."""
+    high = min(len(rom), at + LOOK)
+    for point in framing.points(frame, count, high - len(frame.header) + 1, high):
+        if point < high:
+            high = point
+    return framing.strip(rom, at, high, frame, count)[: rnc.HEADER]
+
+
 def _extent(
     rom: bytes | memoryview, at: int, frame: framing.Frame | None, count: int
 ) -> tuple[rnc.Header, bytes, int, list[int]]:
@@ -55,7 +64,7 @@ def _extent(
         if frame is None:
             look = bytes(rom[at : at + rnc.HEADER])
         else:
-            look = framing.strip(rom, at, min(len(rom), at + LOOK + len(frame.header) * 2), frame, count)[: rnc.HEADER]
+            look = _look(rom, at, frame, count)
         head = _header(look)
     except (rnc.RncError, framing.FrameError) as error:
         raise StreamError(str(error)) from error
@@ -127,10 +136,10 @@ def find(
             continue
         for frame in (None, *frames):
             try:
-                _, data, end, inside = _extent(rom, at, frame, counts.get(frame, 0) if frame else 0)
+                _, stream, end, inside = _extent(rom, at, frame, counts.get(frame, 0) if frame else 0)
                 if frame is not None and (not inside or counts[frame] < framing.MIN_HELD):
                     continue
-                rnc.unpack(data, 0)
+                rnc.unpack(stream, 0)
             except (StreamError, rnc.RncError):
                 continue
             if at < high and end > low:

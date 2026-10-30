@@ -154,3 +154,11 @@ def test_framed_copy_dispatch_reads_the_source_rom_of_the_named_version(monkeypa
     assert blob_formats.prove(config, row, bytes(rom), {})["source_version"] == "b"
     with pytest.raises(ValueError, match="framed-copy"):
         blob_formats.prove(config, {**row, "source_version": "zz"}, bytes(rom), {})
+
+
+def test_find_reads_every_stream_not_only_the_first_of_a_scan():
+    first, second = rnc2enc.stream(text(5000), 2), rnc2enc.stream(text(7000), 2)
+    rom = framed(b"\xff" * 8 + first + b"\xff" * (BLOCK - 8 - len(first) - 100) + second, points=10)
+    found = rnc_whole.find(rom, [frame()], 0, len(rom))
+    assert len(found) == 2 and found[0][0] == 0x23 + 8 and found[0][1] == 0x23 + 8 + len(first)
+    assert rnc_whole.prove(rom, found[1][0] + 18, found[1][0] + 30, found[1][0], found[1][2].row())["unpacked"] == 7000
