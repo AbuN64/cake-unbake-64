@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from unbake import config as configuration
-from unbake import effort, journal, rnc, store
+from unbake import effort, journal, rnc, store, windows
 from unbake.contracts import Config, Finding, Json, Plan, Refusal, digest, sha256, sha256_file
 
 Spans = list[tuple[int, int]]
@@ -90,7 +90,14 @@ def load(config: Config) -> Json:
     data = _read(config)
     if data is None:
         return {"schema": 1, "blob": {}}
-    return effort.memo(("blobs", sha256(data), tuple(config.project.version)), lambda: parse(config, data))
+    covered = _covered(config)
+    key = (
+        "blobs",
+        sha256(data),
+        tuple(config.project.version),
+        tuple(sorted((v, tuple(s)) for v, s in covered.items())),
+    )
+    return effort.memo(key, lambda: retire(parse(config, data), covered))
 
 
 def check(config: Config, document: Json, file: str | None = None) -> tuple[Finding, ...]:
@@ -204,6 +211,51 @@ def census(document: Json, version: str | None = None) -> Json:
 def rows(config: Config) -> list[Json]:
     """Every blob as a row with its id, sorted by id."""
     return [{"id": name, **row} for name, row in sorted(load(config).get("blob", {}).items())]
+
+
+# ---------------------------------------------------------------- earlier-build windows
+def retire(document: Json, covered: dict[str, Spans]) -> Json:
+    """`document` without the bytes a typed earlier-build window replaces: each row's ranges in a version lose the
+    window ranges `covered` gives for it, and a row left with no range is dropped (its bytes are source now, never
+    counted twice). A dropped row that still holds children refuses: they live in its stream, which no window types."""
+    blob: dict[str, Any] = {}
+    for name, row in document.get("blob", {}).items():
+        rom = {}
+        for v, spans in row.get("rom", {}).items():
+            kept = subtract(merge(tuple(s) for s in spans), merge(covered.get(v, ())))
+            if kept:
+                rom[v] = [[a, b] for a, b in kept]
+        if rom or "rom" not in row:
+            blob[name] = {**row, "rom": rom} if "rom" in row else row
+    for name in sorted(set(document.get("blob", {})) - set(blob)):
+        if heirs := sorted(n for n, r in document["blob"].items() if r.get("parent") == name):
+            raise Refusal(
+                Finding(
+                    "blobs.window",
+                    f"blob {name} lies wholly in an earlier-build window but holds {', '.join(heirs)}",
+                    path="blobs.toml",
+                    unit=name,
+                )
+            )
+    return {**document, "blob": blob}
+
+
+def _covered(config: Config) -> dict[str, Spans]:
+    """The ROM range of each earlier-build window, per version that declares one."""
+    return {
+        v: windows.spans(s.segments, s.size) for v, s in config.project.version.items() if windows.declared(s.segments)
+    }
+
+
+def retired(config: Config) -> bytes | None:
+    """blobs.toml as it is once the rows under the windows are retired: None when the file holds no row under a
+    window. `load` retires them in memory whatever the file says; this is the file that says the same."""
+    data = _read(config)
+    if data is None:
+        return None
+    document = parse(config, data)
+    after = retire(document, _covered(config))
+    return None if after == document else emit(after)
 
 
 # ---------------------------------------------------------------- the byte partition

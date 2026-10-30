@@ -343,6 +343,7 @@ class Segment:
     vram: int | None  # None = not given (a bin segment, or splat detects it)
     kind: str  # "code" | "bin" (default "code")
     address_space: str = "main"  # separately linked image; ROM offsets remain global
+    window_of: str | None = None  # an earlier-build window: the bin segment whose bytes it carves out
 
 
 @dataclass(frozen=True)

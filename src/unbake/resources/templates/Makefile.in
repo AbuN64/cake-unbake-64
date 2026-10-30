@@ -94,12 +94,12 @@ CODE_SED := -e 's@^(\s*/\* [0-9A-F]+ [0-9A-F]{8} ([0-9A-F]{8}) \*/\s*)[^%]*/\* h
 # `make extract-force-<v>` (or removing asm/<v>/.extracted) splits regardless. One recipe, no sub-make (parallel sub-makes raced
 # on remaking the included files). Bump rev1 when the recipe changes.
 export EXTRACT_RECIPE := rev1 $(DATA_SED) $(CODE_SED)
-EXTRACT_KEY = { cat roms/baserom.$*.z64 versions/$*/splat.yaml versions/$*/symbol_addrs.txt; $(SPLAT) --version 2>&1; printf %s "$$EXTRACT_RECIPE"; } | sha1sum | cut -d" " -f1
+EXTRACT_KEY = { cat roms/baserom.$*.z64 versions/$*/splat.yaml versions/$*/symbol_addrs.txt $(wildcard versions/$*/earlier_build_symbols.txt); $(SPLAT) --version 2>&1; printf %s "$$EXTRACT_RECIPE"; } | sha1sum | cut -d" " -f1
 # asm/<v>/.extracted has only the ROM as prerequisite: a rebase that changed symbol_addrs.txt or splat.yaml left stale asm. A version whose
 # two files differ from build/.extract-src-<v> (or have no record) gets the phony extract-stale: the full key is checked once, then recorded.
-SRC_KEY = cat versions/$*/splat.yaml versions/$*/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1
+SRC_KEY = cat versions/$*/splat.yaml versions/$*/symbol_addrs.txt $(wildcard versions/$*/earlier_build_symbols.txt) 2>/dev/null | sha1sum | cut -d" " -f1
 .PHONY: extract-stale
-$(foreach v,$(VERSIONS),$(if $(wildcard build/.extract-key-$(v)),$(if $(filter $(shell cat versions/$(v)/splat.yaml versions/$(v)/symbol_addrs.txt 2>/dev/null | sha1sum | cut -d" " -f1),$(shell cat build/.extract-src-$(v) 2>/dev/null)),,$(eval asm/$(v)/.extracted: extract-stale))))
+$(foreach v,$(VERSIONS),$(if $(wildcard build/.extract-key-$(v)),$(if $(filter $(shell cat versions/$(v)/splat.yaml versions/$(v)/symbol_addrs.txt $(wildcard versions/$(v)/earlier_build_symbols.txt) 2>/dev/null | sha1sum | cut -d" " -f1),$(shell cat build/.extract-src-$(v) 2>/dev/null)),,$(eval asm/$(v)/.extracted: extract-stale))))
 # asm/<v>/.extracted holds the hash of the facts it was made from; an object of other facts is refused (an empty mark is not checked).
 $(foreach v,$(VERSIONS),$(eval FACTS_NOW_$(v) := $(shell cat versions/$(v)/symbol_addrs.txt versions/$(v)/splat.yaml 2>/dev/null | sha1sum | cut -d' ' -f1)))
 extract: $(VERSIONS:%=extract-%)
@@ -210,7 +210,7 @@ build/%/link.ld: $(NAME).ld
 # spells, at the address the name carries: a .L label the assembler keeps out of the object, or a label inside bytes
 # a C file compiles. Every object of the version is a prerequisite (the .i/.s the grep reads are complete once it is
 # built) but never an input of the sed.
-build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$(wildcard versions/$$*/aliases.txt)
+build/%/undefined_syms.ld: versions/%/symbol_addrs.txt build/%/undefined_syms_auto.txt build/%/undefined_funcs_auto.txt asm/%/.extracted $$(wildcard versions/$$*/aliases.txt versions/$$*/earlier_build_symbols.txt)
 	$(Q)sed -nE 's/^([A-Za-z_.][A-Za-z0-9_.$$]*)[[:space:]]*=[[:space:]]*(0x[0-9A-Fa-f]+);.*/PROVIDE(\1 = \2);/p' $(filter-out %.o,$^) > $@
 	$(Q)grep -rhoE --include='*.s' --include='*.i' '$(LABEL)[0-9A-F]{8}\b' asm/$* build/$* | sort -u | sed -E 's/^($(LABEL)(.*))$$/PROVIDE(\1 = 0x\2);/' >> $@
 # The objects are prerequisites of each version's list by a plain rule, not by the pattern rule's second expansion:

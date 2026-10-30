@@ -355,7 +355,7 @@ def buildproof_command(config: Config, params: Json) -> Json:
         if made:
             process.git(config, "add", "--intent-to-add", "--", *made)
         for v in versions:
-            if any(p in (symbols.path(v), symbols.aliases_path(v)) for p in touched | added):
+            if any(p in symbols.fact_paths(v) for p in touched | added):
                 extracted.append(v)
                 build.extract(config, v)
 

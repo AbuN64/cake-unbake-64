@@ -31,7 +31,7 @@ def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
         v: N(
             sha1=sha1(image(rom)),
             size=rom,
-            segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k) for n, r, k in rows),
+            segments=tuple(N(name=n, rom=r, vram=0x80000000 + r, kind=k, window_of=None) for n, r, k in rows),
             meta={},
         )
         for v in versions

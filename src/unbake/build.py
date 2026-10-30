@@ -15,7 +15,7 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
 
-from unbake import adapters, effort, front, pool, process, report, store, symbols, tree, versions
+from unbake import adapters, effort, front, pool, process, report, store, symbols, tree, versions, windows
 from unbake import config as configuration
 from unbake.contracts import (
     Config,
@@ -817,7 +817,11 @@ def splat_yaml(config: Config, v: str, held: Tree) -> bytes:
         placeholders = {"version": v, "name": project.name, "rom": f"roms/baserom.{v}.z64"}
         out = [f"# {_GENERATED}", "options:"]
         for key, value in _REPO["splat"]["options"].items():
-            out.append(f"  {key}: {_scalar(value.format(**placeholders) if isinstance(value, str) else value)}")
+            text = value.format(**placeholders) if isinstance(value, str) else value
+            if key == "symbol_addrs_path" and windows.declared(project.version[v].segments):
+                out += [f"  {key}:", f"    - {_scalar(text)}", f"    - {_scalar(symbols.earlier_path(v))}"]
+            else:
+                out.append(f"  {key}: {_scalar(text)}")
         out += [f"  compiler: {row['splat']}", "segments:"]
         split = row.get("data_split", "symbol") == "subsegment"
         sections = {n: s for m in held.modules for n, s in m.sections.get(v, {}).items()}

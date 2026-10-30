@@ -17,7 +17,7 @@ from typing import Any
 import psutil
 from jsonschema import Draft202012Validator
 
-from unbake import process
+from unbake import process, windows
 from unbake.contracts import (
     Config,
     FileFacts,
@@ -547,10 +547,9 @@ def load_project(
             problems.append(bad("libraries", f"{folder} must be a source subdirectory"))
     version: dict[str, VersionFacts] = {}
     for vid, row in table.items():
-        segments = tuple(
-            Segment(s["name"], s["rom"], s.get("vram"), s.get("kind", "code"), s.get("address_space", "main"))
-            for s in row.get("segments", ())
-        ) or (Segment("main", 0x1000, None, "code"),)
+        segments, windowing = windows.expand(vid, row.get("segments", ()), row["size"])
+        segments = segments or (Segment("main", 0x1000, None, "code"),)
+        problems += [bad(f"version.{vid}.segments", reason) for reason in windowing]
         for segment in segments:
             if segment.address_space != "main" and (segment.kind != "code" or segment.vram is None):
                 problems.append(

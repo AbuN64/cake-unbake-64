@@ -77,10 +77,20 @@ def symbol_file(version: str) -> str:
 
 
 def symbol_addrs(config: Config, version: str, reader: Callable[[str], bytes] | None = None) -> tuple[Row, ...]:
-    """The fact file of one version, parsed once per content."""
+    """The fact file of one version, parsed once per content, then the rows of its earlier-build windows (the file
+    that names the older build's addresses, loaded apart; required exactly when the version declares a window)."""
     path = symbol_file(version)
     data = reader(path) if reader else (config.project.root / path).read_bytes()
-    return effort.memo(("symbol_addrs", path, sha256(data)), lambda: parse_symbol_addrs(data, path))
+    rows = effort.memo(("symbol_addrs", path, sha256(data)), lambda: parse_symbol_addrs(data, path))
+    earlier = symbols.earlier_path(version)
+    try:
+        extra = reader(earlier) if reader else (config.project.root / earlier).read_bytes()
+    except FileNotFoundError:
+        extra = None
+    symbols.need_earlier(config, version, extra is not None)
+    if extra is None:
+        return rows
+    return rows + effort.memo(("symbol_addrs", earlier, sha256(extra)), lambda: parse_symbol_addrs(extra, earlier))
 
 
 def segments(config: Config, version: str) -> tuple[tuple[str, int, int, int], ...]:
@@ -192,12 +202,16 @@ def symbols_ld(config: Config, version: str, overlays: Mapping[str, bytes | None
     with effort.stage("versions.symbols_ld"):
         data = _fact_bytes(config, symbol_file(version), overlays, True)
         aliases = _fact_bytes(config, symbols.aliases_path(version), overlays, False)
+        earlier = _fact_bytes(config, symbols.earlier_path(version), overlays, False)
+        symbols.need_earlier(config, version, bool(earlier))
         mask = configuration.load_resource("rom.toml").get("text_mask", _WORD)
-        key = digest((version, sha256(data), sha256(aliases), mask, code_identity(_linked, _fact_bytes)))
+        key = digest(
+            (version, sha256(data), sha256(aliases), sha256(earlier), mask, code_identity(_linked, _fact_bytes))
+        )
 
         def produce() -> bytes:
             spans = [(v, v + e - s) for _, s, e, v in segments(config, version) if v]
-            rows = parse_symbol_addrs(data)
+            rows = [*parse_symbol_addrs(data), *parse_symbol_addrs(earlier, symbols.earlier_path(version))]
             named = {r.name for r in rows}
             extra = [r for r in parse_symbol_addrs(aliases, symbols.aliases_path(version)) if r.name not in named]
             out = _linked([*rows, *extra], spans, mask)

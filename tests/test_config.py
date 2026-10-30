@@ -572,6 +572,51 @@ def test_segment_address_space_rejects_ambiguous_or_unsafe_facts(tmp_path, repla
         _load(tmp_path, RW.replace("vram = 0x80200400", replacement))
 
 
+WINDOW = '  {{ name = "assets", rom = 0x2000, kind = "bin", earlier_build = [{window}] }},'
+
+
+def _windowed(window: str) -> str:
+    row = '  { name = "assets", rom = 0x1B5A50, kind = "bin" },'
+    spelled = f'  {{ name = "assets", rom = 0x2000, kind = "bin", earlier_build = [{window}] }},'
+    return RW.replace(row, spelled).replace(f"size = {SIZE}", "size = 0x4000", 1)
+
+
+def test_a_bin_segment_declares_earlier_build_windows(tmp_path):
+    loaded = _load(tmp_path, _windowed("{ rom = 0x3000, end = 0x3100, delta = 0x7FFFD400 }"))
+    head, window, tail = loaded.version["us"].segments[1:]
+    assert (head.name, head.rom, head.kind, head.window_of) == ("assets", 0x2000, "bin", None)
+    assert (window.name, window.rom, window.vram, window.kind) == ("assets_earlier_3000", 0x3000, 0x80000400, "code")
+    assert (window.address_space, window.window_of) == ("earlier_build", "assets")
+    assert (tail.name, tail.rom, tail.kind) == ("assets", 0x3100, "bin")
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        "{ rom = 0x3000, end = 0x3100 }",
+        "{ rom = 0x3000, end = 0x3100, vram = 0x80100000, delta = 4 }",
+        "{ rom = 0x3100, end = 0x3000, vram = 0x80100000 }",
+        "{ rom = 0x3000, end = 0x3100, vram = 0x80100002 }",
+        "{ rom = 0x3000, end = 0x3100, vram = 0x80100000 }, { rom = 0x3080, end = 0x3200, vram = 0x80200000 }",
+        "{ rom = 0x10, end = 0x20, vram = 0x80100000 }",
+        '{ rom = 0x3000, end = 0x3100, vram = 0x80100000, name = "assets" }',
+        "{ rom = 0x3000, end = 0x3100, vram = 0x80100000, color = 1 }",
+    ],
+)
+def test_a_malformed_or_overlapping_window_is_refused(tmp_path, window):
+    with pytest.raises(Refusal):
+        _load(tmp_path, _windowed(window))
+
+
+def test_a_window_belongs_to_a_bin_segment(tmp_path):
+    text = RW.replace(
+        "vram = 0x80200400 }",
+        "vram = 0x80200400, earlier_build = [{ rom = 0x2000, end = 0x2100, vram = 0x80100000 }] }",
+    )
+    with pytest.raises(Refusal):
+        _load(tmp_path, text)
+
+
 FILES_DEFAULT = {  # the packaged file lists with `${platform}` and `${blobs}` spelled as the default [paths]
     "infra": ["local.mk", "include/include_asm.h", "config/platform.toml", "roms", "tools", "ci", "asm"],
     "facts": ["config.toml", "versions", "config/blobs.toml"],

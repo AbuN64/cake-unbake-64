@@ -322,7 +322,7 @@ def infer(
         headers.read(root)
     typing = Typing(headers)
     table: dict[str, symbols.Symbol] = {}
-    for name in (symbols.path(version), symbols.aliases_path(version)):
+    for name in symbols.fact_paths(version):
         file = root / name
         if file.exists():
             table.update(symbols.parse(file.read_text(errors="replace"), name))

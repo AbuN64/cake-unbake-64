@@ -217,7 +217,9 @@ def config(tmp: Path, **kw: Any) -> Config:
         v: SimpleNamespace(
             sha1=sha1(bytes(0x4000)),
             size=0x4000,
-            segments=tuple(SimpleNamespace(name=n, rom=r, vram=m, kind="code") for n, (r, m) in SEGMENTS.items()),
+            segments=tuple(
+                SimpleNamespace(name=n, rom=r, vram=m, kind="code", window_of=None) for n, (r, m) in SEGMENTS.items()
+            ),
         )
         for v in names
     }

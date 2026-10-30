@@ -149,8 +149,8 @@ def _write(root, path, text):
 
 def _config(root, host=None):
     rows = (
-        SimpleNamespace(name="main", rom=0x1000, vram=0x80000400, kind="code"),
-        SimpleNamespace(name="data", rom=0x2000, vram=None, kind="bin"),
+        SimpleNamespace(name="main", rom=0x1000, vram=0x80000400, kind="code", window_of=None),
+        SimpleNamespace(name="data", rom=0x2000, vram=None, kind="bin", window_of=None),
     )
     version = {v: SimpleNamespace(segments=rows) for v in ("a", "b")}
     project = SimpleNamespace(

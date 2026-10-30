@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from unbake import config as configuration
-from unbake import effort, pool, store
+from unbake import effort, pool, store, windows
 from unbake.contracts import Config, Finding, Json, Refusal, digest, sha256
 
 Symbol = tuple[int, int | None, int | None, str]  # vram, rom, size, type ("func" or the data type)
@@ -67,6 +67,16 @@ def aliases_path(version: str) -> str:
     return f"versions/{version}/aliases.txt"
 
 
+def earlier_path(version: str) -> str:
+    """The facts of the earlier-build windows (splat syntax) at the older build's addresses: loaded apart from
+    symbol_addrs.txt, whose addresses are the build's own. Only a version that declares a window has the file."""
+    return windows.symbols_path(version)
+
+
+def fact_paths(version: str) -> tuple[str, str, str]:
+    return (path(version), aliases_path(version), earlier_path(version))
+
+
 def spans(config: Config, version: str) -> tuple[tuple[int, int, int], ...]:
     """(vram start, vram end, rom start) of each loaded segment of a version: a segment ends where the next begins."""
     rows = sorted(config.project.version[version].segments, key=lambda s: s.rom)
@@ -82,10 +92,24 @@ def merged(
     aliases: str,
     held: Sequence[tuple[int, int, int]] = (),
     where: tuple[str, str] = ("symbol_addrs.txt", "aliases.txt"),
+    earlier: str = "",
 ) -> dict[str, Symbol]:
     """symbol_addrs.txt facts, then the aliases.txt facts of names it does not list. An alias written without a rom
-    takes the one the segment holding its vram gives (none when no segment or several do)."""
+    takes the one the segment holding its vram gives (none when no segment or several do). The earlier-build facts
+    join last: their addresses are another build's, but a name is one fact in the link, so a name both files give at
+    different addresses is refused."""
     out = parse(text, where[0])
+    for name, fact in parse(earlier, windows.symbols_path("<version>")).items():
+        if name in out and out[name][0] != fact[0]:
+            raise Refusal(
+                Finding(
+                    "symbols.conflict",
+                    f"{name} is at 0x{out[name][0]:08X} in symbol_addrs.txt and 0x{fact[0]:08X} in the earlier-build "
+                    "symbols: a name is one address in the link",
+                    unit=name,
+                )
+            )
+        out.setdefault(name, fact)
     for name, (vram, rom, size, kind) in parse(aliases, where[1]).items():
         if rom is None:
             found = [start + vram - low for low, high, start in held if low <= vram < high]
@@ -158,14 +182,29 @@ def size_conflicts(*texts: str) -> dict[str, list[tuple[int, ...]]]:
 
 
 def load(config: Config, version: str) -> dict[str, Symbol]:
-    """symbol_addrs.txt and aliases.txt of one version (either may be absent)."""
+    """symbol_addrs.txt, aliases.txt and the earlier-build symbols of one version (the first two may be absent; the
+    last is required exactly when the version declares a window)."""
     texts = []
-    for name in (path(version), aliases_path(version)):
+    for name in fact_paths(version):
         try:
             texts.append((config.project.root / name).read_text(errors="replace"))
         except FileNotFoundError:
             texts.append("")
-    return merged(texts[0], texts[1], spans(config, version), (path(version), aliases_path(version)))
+    need_earlier(config, version, bool(texts[2]) or (config.project.root / earlier_path(version)).is_file())
+    return merged(texts[0], texts[1], spans(config, version), (path(version), aliases_path(version)), texts[2])
+
+
+def need_earlier(config: Config, version: str, present: bool) -> None:
+    """A version that declares an earlier-build window needs its symbol file: no silent empty default."""
+    if not present and windows.declared(config.project.version[version].segments):
+        raise Refusal(
+            Finding(
+                "symbols.earlier",
+                f"{version} declares earlier-build windows but {earlier_path(version)} is absent",
+                path=earlier_path(version),
+                versions=(version,),
+            )
+        )
 
 
 def segment_at(config: Config, version: str, rom: int) -> str | None:

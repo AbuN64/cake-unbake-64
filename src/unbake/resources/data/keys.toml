@@ -501,9 +501,17 @@ sentence = "a packet's ROM or evidence sha256 does not match what the project ho
 owner = "blobs"
 sentence = "a packet supersedes a blob row that is not observed, is replaced by the packet itself, or whose bytes the packet's rows do not all cover"
 
+[key."symbols.earlier"]
+owner = "symbols"
+sentence = "a version declares earlier-build windows but its earlier-build symbol file is absent"
+
 [key."blobs.land"]
 owner = "blobs"
 sentence = "a facts-only landing failed a check after its write (readback, partition sum): blobs.toml is put back"
+[key."blobs.window"]
+owner = "blobs"
+sentence = "a blob row lies wholly in an earlier-build window but holds child rows that no window types"
+
 [key."blobs.packet"]
 owner = "blobs"
 sentence = "the blobs command was given something it cannot read or run"

@@ -976,7 +976,7 @@ def _files(config: Config, overlay: Mapping[str, bytes | None]) -> dict[str, byt
     paths = {
         p for folder in (*configuration.source_roots(), *configuration.header_roots()) for p in _listing(config, folder)
     }
-    paths |= {f(v) for v in _project(config).versions for f in (symbols.path, symbols.aliases_path)}
+    paths |= {p for v in _project(config).versions for p in symbols.fact_paths(v)}
     paths |= {p for p in overlay if configuration.under_tree(p)}
     blobs: dict[str, bytes] = {}
     for path in sorted(paths):
@@ -1067,12 +1067,15 @@ def _build(
 ) -> Tree:
     project = _project(config)
     versions: tuple[str, ...] = tuple(project.versions)
+    for v in versions:
+        symbols.need_earlier(config, v, symbols.earlier_path(v) in blobs)
     tables = {
         v: symbols.merged(
             blobs.get(symbols.path(v), b"").decode(errors="replace"),
             blobs.get(symbols.aliases_path(v), b"").decode(errors="replace"),
             symbols.spans(config, v),
             (symbols.path(v), symbols.aliases_path(v)),
+            blobs.get(symbols.earlier_path(v), b"").decode(errors="replace"),
         )
         for v in versions
     }
