@@ -1,0 +1,13 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.type-pool",
+ "type": "object",
+ "properties": {
+  "windows": {"type": "array", "items": {"type": "object"}},
+  "unfit": {"type": "array", "items": {"type": "object"}},
+  "written": {"type": "array", "items": {"type": "string"}},
+  "bytes": {"type": "integer"}
+ },
+ "required": ["windows", "unfit", "written", "bytes"],
+ "additionalProperties": false
+}

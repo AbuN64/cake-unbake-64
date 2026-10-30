@@ -335,3 +335,12 @@ params = [
   { name = "names", kind = "option", type = "path", required = false, multiple = false, help = "only the names in this file (a name per line, or a table in the CLASH.tsv shape); default every clashing name" },
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write one row per name (status, type, seconds, failing unit per candidate type) here" },
 ]
+
+[command.type-pool]
+help = "Type an older build's rodata pool: strings, floats, doubles and small integer words of a ROM range become typed C (one source per file the path strings name and per run of typed items) with their symbol rows; every item the rules cannot type is refused and listed."
+handler = "pooltype.command"
+params = [
+  { name = "spec", kind = "option", type = "str", required = true, multiple = true, help = "VERSION:LOW:HIGH:DELTA (hex ok): the ROM range of a version and the older build's vram - rom" },
+  { name = "dest", kind = "option", type = "path", required = false, multiple = false, help = "folder of the sources, default src/DATA/EARLIER_BUILD" },
+  { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "report the windows and refusals, write nothing" },
+]
