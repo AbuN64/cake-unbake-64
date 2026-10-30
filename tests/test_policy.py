@@ -411,6 +411,30 @@ def test_raw_gfx_skips_gbi_macro_arguments(snapshot, text, denied):
     assert bool(policy._raw_gfx(text)) is denied
 
 
+@pytest.mark.parametrize(
+    ("text", "denied"),
+    [
+        # real RageWars slices: a frontend resource triple and render flag arrays are typed by their receiver
+        ("static u32 g_resource[3] = { 0x020712D0, 0x00000250, 0x021712D0 };", False),
+        ("u32 g_flags[2] = {\n    0xE7000000, 0xE7000001,\n};", False),
+        ("struct { u32 a; u32 b; } g_pair = { {0xE7000000, 0x00000000}, {0xFC000000, 0x00000001} };", False),
+        ("void F(void) {\n    u32 v[2] = { 0xE7000000, 0x00000000 };\n}", False),
+        # real Gfx command arrays, plain, nested and later in the file
+        ("Gfx g_list[2] = { 0xE7000000, 0x00000000, 0xFB000000, 0x00000001 };", True),
+        ("static const Gfx g_list[] = {\n    {0xE7000000, 0x00000000},\n    {0xFB000000, 0x00000001},\n};", True),
+        ("Gfx g_list[] = { { { 0xE7000000, 0x00000000 } } };", True),
+        ("u32 g_flags[2] = { 1, 2 };\nGfx g_list[] = { 0xE7000000, 0x00000000 };", True),
+        ("void F(void) {}\nGfx g_list[] = { 0xE7000000, 0x00000000 };", True),
+        ("void F(void) { Gfx l[] = { 0xE7000000, 0x00000000 }; }", True),
+        ("void F(void) { Call((Gfx){ 0xE7000000, 0x00000000 }); }", True),
+        # a packet w0 write stays caught beside typed data
+        ("u32 g_flags[2] = { 0xE7000000, 0xE7000001 };\nvoid F(Gfx *d) { d->words.w0 = 0xE7000000; }", True),
+    ],
+)
+def test_raw_gfx_requires_command_context(text, denied):
+    assert bool(policy._raw_gfx(text)) is denied
+
+
 # ------------------------------------------------------------ N-way version differences
 
 THREE_WAY = """int f(list) {

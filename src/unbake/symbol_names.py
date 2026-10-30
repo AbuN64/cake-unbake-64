@@ -103,6 +103,19 @@ def _code(text: str) -> str:
     return re.sub(r"^[ \t]*#(?:\\\n|[^\n])*", lambda m: re.sub(r"[^\n]", " ", m[0]), _mask(text), flags=re.M)
 
 
+def _attributes(code: str) -> str:
+    """`code` with each `__attribute__((...))` group blanked, so an attribute is never read as a declarator.
+    Newlines and every other byte offset stay."""
+    out = code
+    for m in re.finditer(r"\b__attribute(?:__)?\s*\(", code):
+        depth, end = 1, m.end()
+        while end < len(code) and depth:
+            depth += {"(": 1, ")": -1}.get(code[end], 0)
+            end += 1
+        out = out[: m.start()] + re.sub(r"[^\n]", " ", out[m.start() : end]) + out[end:]
+    return out
+
+
 def _heads(head: str, offset: int, global_scope: bool) -> Iterator[tuple[str, int, bool]]:
     """Names declared in a C declaration head, including parameters and comma declarators."""
     offset += len(head) - len(head.lstrip())
@@ -202,7 +215,7 @@ def bindings(text: str) -> tuple[Binding, ...]:
     Locations qualify declarations, not linker identities. This lexical reader does not resolve
     conditional activation, macro expansions or C++ templates; consumers must keep those limits.
     """
-    code = _code(text)
+    code = _attributes(_code(text))
     start = 0
     stack: list[tuple[str, int, str]] = []
     out: dict[int, Binding] = {}
@@ -283,7 +296,7 @@ def bindings(text: str) -> tuple[Binding, ...]:
                 for m in re.finditer(rf"(?:^|,)\s*({_WORD})\s*(?==|,|$)", body):
                     put(m[1], closed[1] + 1 + m.start(1), "enumerator", closed[2])
             if closed[0] in {"record", "enum"}:
-                tail = re.match(rf"\s*({_WORD})\s*(?=[;,])", code[token.end() :])
+                tail = re.match(rf"\s*({_WORD})\s*(?=[;,=]|\[[^\]]*\]\s*[;,=])", code[token.end() :])
                 if tail:
                     # Distinguish an inline typedef from a variable of an inline record type.
                     prefix = code[: closed[1]].rsplit(";", 1)[-1].rsplit("}", 1)[-1]

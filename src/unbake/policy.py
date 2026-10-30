@@ -187,6 +187,34 @@ def _empty_loops(code: str) -> set[int]:
 _PAIR = re.compile(r"\s*\)?\s*,\s*0x[0-9A-Fa-f]{8}\b")
 
 
+_GFX_TYPE = re.compile(r"\bGfx\w*\b")
+
+
+def _gfx_initializer(code: str, at: int) -> bool:
+    """Whether the aggregate initializer holding `at` initializes a Gfx object: the declaration head before its `=`
+    (or a `(Gfx){` compound literal) names a Gfx type. A resource triple or flag array is typed by its receiver."""
+    depth, start = 0, 0
+    for index in range(at - 1, -1, -1):
+        char = code[index]
+        if char == "}":
+            depth += 1
+        elif char == ";" and depth == 0:
+            start = index + 1
+            break
+        elif char == "{":
+            if depth:
+                depth -= 1
+                continue
+            before = code[:index].rstrip()
+            if before.endswith(")") and _GFX_TYPE.search(before[-40:]):
+                return True  # a (Gfx){...} compound literal
+            if not before.endswith(("=", "{", ",")):
+                start = index + 1  # a function body, not an enclosing initializer
+                break
+    head = code[start:at].split("=", 1)
+    return len(head) == 2 and _GFX_TYPE.search(re.split(r"[;}]", head[0])[-1]) is not None
+
+
 def _raw_gfx(code: str) -> set[int]:
     opcodes = set(config.load_resource("rules.toml")["gfx"]["opcodes"])
     result, line = set(), _numbered(code)
@@ -197,7 +225,11 @@ def _raw_gfx(code: str) -> set[int]:
         if (
             re.search(r"\bw0\s*=\s*\(?\s*$", prefix)
             or re.search(r"\bgs?[DS]PWord\s*\([^;]*$", prefix)
-            or (re.search(r"\{\s*\(?\s*$", prefix) and _PAIR.match(code, match.end()))
+            or (
+                re.search(r"\{\s*\(?\s*$", prefix)
+                and _PAIR.match(code, match.end())
+                and _gfx_initializer(code, match.start())
+            )
         ):
             result.add(line(match.start()))
     return result

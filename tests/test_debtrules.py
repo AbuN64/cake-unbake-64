@@ -132,3 +132,34 @@ def test_a_rule_refuses_only_where_a_match_is_certain():
     fuzzy = ("hex-review", "raw-data-review", "raw-offset-cast", "guard-gap")
     assert {rules[r] for r in exact} == {"Refuse"}
     assert {rules[r] for r in fuzzy} == {"Warn"}
+
+
+_BLOCK = "g_LinktablesEncodedWordsBlock15"
+
+
+def test_a_size_assertion_over_an_existing_name_is_no_new_placeholder_name():
+    held = f"Gfx {_BLOCK}[3] = {{ 0 }};\n"
+    after = held + f"typedef char {_BLOCK}SizeCheck[(sizeof({_BLOCK}) == 12) ? 1 : -1];\nu32 n = sizeof({_BLOCK});\n"
+    assert _lines(held, "placeholder_names") == {1: _BLOCK}
+    assert _lines(after, "placeholder_names") == {1: _BLOCK}
+
+
+def test_version_copies_of_one_record_are_one_identity():
+    code = (
+        "#if VERSION_US\ntypedef struct {\n    u32 unk_4;\n} g_Block17;\n"
+        "#else\ntypedef struct {\n    u32 unk_4;\n} g_Block17;\n#endif\n"
+    )
+    assert _lines(code, "placeholder_names") == {3: "unk_4", 4: "g_Block17"}
+    copies = f"#if VERSION_US\nextern u32 {_BLOCK};\n#else\nextern u32 {_BLOCK};\n#endif\n"
+    assert _lines(copies, "placeholder_names") == {2: _BLOCK}
+
+
+def test_distinct_records_keep_distinct_placeholder_members():
+    code = "typedef struct {\n    u32 unk_4;\n} A;\ntypedef struct {\n    u32 unk_4;\n} B;\n"
+    code += "struct C {\n    u32 unk_4;\n};\n"
+    assert set(_lines(code, "placeholder_names")) == {2, 5, 8}
+
+
+def test_a_new_placeholder_definition_and_a_reference_to_it_count_once_at_the_definition():
+    code = "void f(void) {\n    D_80031234 = 1;\n    g(D_80031234);\n}\nint D_80031234;\nint func_80012345(void);\n"
+    assert _lines(code, "placeholder_names") == {5: "D_80031234", 6: "func_80012345"}

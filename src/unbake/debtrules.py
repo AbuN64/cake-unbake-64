@@ -15,6 +15,8 @@ from collections.abc import Mapping, Sequence
 from functools import cache
 from typing import Any
 
+from unbake import symbol_names
+
 Json = Mapping[str, Any]
 
 _TOKEN = re.compile(
@@ -623,16 +625,36 @@ def raw_data(code: str, settings: Json, certain: bool) -> dict[int, str]:
 # ---------------------------------------------------------------- placeholder-name
 
 
+def _owner(code: str, binding: symbol_names.Binding) -> str:
+    """The record a member belongs to: its tag, else the typedef or variable name after the closing brace."""
+    if binding.kind != "member" or binding.owner or not binding.scope:
+        return binding.owner
+    depth = 0
+    for m in re.finditer(r"[{}]", code[binding.scope[-1] :]):
+        depth += 1 if m[0] == "{" else -1
+        if not depth:
+            tail = re.match(r"\s*(\w+)", code[binding.scope[-1] + m.end() :])
+            return tail[1] if tail else ""
+    return ""
+
+
 def placeholder_names(code: str, settings: Json) -> dict[int, str]:
-    """{line: subject} of each identifier named by address or placeholder (func_8XXXXXXX, D_8XXXXXXX,
-    *_padding_<addr>, unk_*, sub_*, a numbered *Block17 / *Words1)."""
+    """{line: subject} of each identity declared with an address or placeholder name (func_8XXXXXXX, D_8XXXXXXX,
+    *_padding_<addr>, unk_*, sub_*, a numbered *Block17 / *Words1). An identity counts once, at its first
+    declaration: a reference, a size assertion over it and a version-conditional copy of its record are the same name,
+    not a new one."""
     names = settings["placeholder"]
     patterns = [_compiled(p) for p in names["patterns"]]
     numbered = _compiled(rf"\b\w*?(?:{'|'.join(names['numbered_suffixes'])})\d+\b")
     found: dict[int, str] = {}
-    for m in re.finditer(r"\b[A-Za-z_]\w*\b", code):
-        if any(p.fullmatch(m[0]) for p in patterns) or numbered.fullmatch(m[0]):
-            found.setdefault(code.count("\n", 0, m.start()) + 1, m[0])
+    seen: set[tuple[str, str, str]] = set()
+    for b in symbol_names.bindings(code):
+        if not (any(p.fullmatch(b.name) for p in patterns) or numbered.fullmatch(b.name)):
+            continue
+        identity = (b.name, b.kind, _owner(code, b))
+        if identity not in seen:
+            seen.add(identity)
+            found.setdefault(code.count("\n", 0, b.start) + 1, b.name)
     return found
 
 

@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from unbake import api, config, policy
+from unbake import api, config, policy, symbol_names
 from unbake.contracts import Refusal
 
 
@@ -268,3 +268,55 @@ def test_naming_census_cache_keeps_each_file_between_runs(tmp_path):
         symbol_names._census = real
     assert calls == ["src/b.c"]  # only the changed file is read again
     assert [f.path for f in again] == [f.path for f in first]
+
+
+_ALFX = (
+    "struct { u32 type; u32 control; u32 width; u32 burst; }"
+    " g_alfxnewDataConstantWords __attribute__((aligned(4))) = {\n    1, 2, 3, 4,\n};\n"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _ALFX,
+        "struct { u32 a; } g_words __attribute__((aligned(4)));",
+        "struct { u32 a; } __attribute__((aligned(4))) g_words = { 1 };",
+        "struct { u32 a; } g_words[2] __attribute__((aligned(8))) = { {1}, {2} };",
+        "struct Tag { u32 a; } g_words __attribute__((aligned(4))) = { 1 };",
+        "struct __attribute__((packed)) Tag { u32 a; };",
+        "typedef struct { u32 a; } __attribute__((packed)) Tag;",
+        "typedef struct { u32 a; } Tag __attribute__((packed));",
+        'union { u32 a; f32 b; } g_pun __attribute__ ((aligned(4), section(".data"))) = { 0 };',
+        "void Halt(int code) __attribute__((noreturn));",
+        "__attribute__((noreturn)) void Halt(int code);",
+        'void Run(void) __attribute__((section(".text"))) { }',
+    ],
+)
+def test_attributes_are_not_declarators(text):
+    assert api.naming_findings({"src/game.c": text}) == ()
+
+
+def test_attribute_masking_keeps_offsets_and_names():
+    names = {b.name: b for b in symbol_names.bindings(_ALFX)}
+    assert "__attribute__" not in names and "aligned" not in names
+    assert names["g_alfxnewDataConstantWords"].kind == "global"
+    assert _ALFX[names["g_alfxnewDataConstantWords"].start :].startswith("g_alfxnewDataConstantWords")
+    assert symbol_names._attributes(_ALFX).count("\n") == _ALFX.count("\n")
+    assert len(symbol_names._attributes(_ALFX)) == len(_ALFX)
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("struct { u32 a; } __secret __attribute__((aligned(4))) = { 1 };", "__secret"),
+        ("struct { u32 a; } __secret __attribute__((aligned(4)));", "__secret"),
+        ("struct Tag { u32 a; } __secret[2] __attribute__((aligned(4))) = { {1}, {2} };", "__secret"),
+        ("typedef struct { u32 a; } __attribute__((packed)) __Secret;", "__Secret"),
+        ("void __secret(void) __attribute__((noreturn));", "__secret"),
+        ("struct { u32 a; } class __attribute__((aligned(4))) = { 1 };", "class"),
+    ],
+)
+def test_reserved_user_declarations_still_refuse_beside_attributes(text, name):
+    findings = api.naming_findings({"src/game.c": text})
+    assert any(f"{name}:" in f.reason for f in findings)
