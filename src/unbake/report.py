@@ -550,6 +550,16 @@ def _rom_size(config: Any, v: str) -> int | None:
     return path.stat().st_size if path.is_file() else None
 
 
+def unowned(config: Any, tree: Any) -> dict[str, list[tuple[int, int, str]]]:
+    """Per version the symbols no source file defines, as (ROM offset, bytes, name): the extents the partition holds as
+    code or data that nothing in the tree explains."""
+    out: dict[str, list[tuple[int, int, str]]] = {v: [] for v in config.project.version}
+    for row in _rows(config, tree, frozenset(), {}):
+        if row.member.state == "unowned" and row.member.rom is not None and row.code + row.data:
+            out[row.version].append((row.member.rom, row.code + row.data, row.name))
+    return {v: sorted(rows) for v, rows in out.items()}
+
+
 def partitions(config: Any, tree: Any) -> dict[str, Json]:
     """The partition of every version whose ROM is present, once per tree, blobs file and ROM size.
     Uses the same source extents as credit reporting without measuring fuzzy scores: scores never change byte

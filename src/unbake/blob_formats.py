@@ -7,7 +7,19 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from unbake import blob_archive, blob_decode, blob_pad, blob_stale, blobs, mipsstream, objcode, rnc, rncrepack, snsym
+from unbake import (
+    blob_archive,
+    blob_decode,
+    blob_pad,
+    blob_stale,
+    blobs,
+    earlier_build,
+    mipsstream,
+    objcode,
+    rnc,
+    rncrepack,
+    snsym,
+)
 from unbake.contracts import Config, Json, sha256
 
 READERS = frozenset(
@@ -24,6 +36,7 @@ READERS = frozenset(
         "pad",
         "obj-code",
         "mips-stream",
+        "earlier-build",
         "rnc-repack",
         "rnc-copy",
     }
@@ -63,6 +76,14 @@ def _baserom(config: Config, version: str) -> bytes:
     path = Path(config.project.root) / "roms" / f"baserom.{version}.z64"
     rom: bytes = _shared(("rom", version), path.read_bytes)
     return rom
+
+
+def _compiled(config: Config) -> earlier_build.Index:
+    """The compiler's output for the whole project: the functions an `earlier-build` row is rebuilt from."""
+    from importlib import import_module
+
+    tree = import_module("unbake.tree").capture(config)
+    return earlier_build.Index(earlier_build.compiled(config, tree), list(config.project.version))
 
 
 def interval(rom: bytes, span: list[int]) -> tuple[int, int]:
@@ -301,6 +322,16 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             return mipsstream.prove(rom, start, end, row["stream"])
         except (mipsstream.StreamError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"mips-stream: {error}") from error
+    if reader == "earlier-build":
+        key = ("compiled", getattr(config, "digest", id(config)))
+        index = _shared(key, lambda: _compiled(config))
+        try:
+            function = row["function"]
+            return earlier_build.prove(
+                rom, start, end, row["stream"], row["from_version"], function, row["word"], index
+            )
+        except (earlier_build.EarlierBuildError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"earlier-build: {error}") from error
     if reader == "rnc-repack":
         try:
             return rncrepack.prove(rom, start, end, row["stream"])

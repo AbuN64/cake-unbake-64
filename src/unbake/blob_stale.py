@@ -15,7 +15,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from unbake import blobs, mipsstream, objcode, rncrepack, snsym
+from unbake import blobs, earlier_build, mipsstream, objcode, rncrepack, snsym
 from unbake.contracts import Config, Json
 
 MIN_COPY = 32  # the fewest bytes of one copy: eight words of a table or routine that an older link left unchanged
@@ -213,8 +213,9 @@ def rnc_streams(rom: bytes, targets: Spans) -> list[Json]:
 
 
 def scan(config: Config) -> Json:
-    """`unbake blobs scan stale`: per version, the object-code regions, the code streams and the exact copies that
-    fill unknown bytes, as the rows `unbake blobs prove` takes (without an id or its evidence), and the bytes left."""
+    """`unbake blobs scan stale`: per version, the object-code regions, the code streams, the pieces the compiler
+    rebuilds from the current source (with their receipts) and the exact copies that fill unknown bytes, as the rows
+    `unbake blobs prove` takes (without an id or its evidence), the pieces it could not rebuild and the bytes left."""
     tree = import_module("unbake.tree").capture(config)
     parts = import_module("unbake.report").partitions(config, tree)
     roms = {v: (Path(config.project.root) / "roms" / f"baserom.{v}.z64").read_bytes() for v in parts}
@@ -223,6 +224,7 @@ def scan(config: Config) -> Json:
     text_sources = text_index(roms, spans)
     bodies = objcode.corpus(config, roms=roms)
     document = blobs.load(config)["blob"]
+    compiler = earlier_build.Index(earlier_build.compiled(config, tree), list(parts))
     out: dict[str, Any] = {}
     for v, p in parts.items():
         targets = unknown(p)
@@ -239,6 +241,10 @@ def scan(config: Config) -> Json:
         left_code = blobs.subtract(left_over, blobs.merge([tuple(r["rom"]) for r in code]))
         mips = [{**r, "version": v} for r in code_streams(roms[v], left_code)]
         left_mips = blobs.subtract(left_code, blobs.merge([tuple(r["region"]) for r in mips]))
+        holes = blobs.merge([*left_mips, *earlier_build.unowned(config, tree, v)])
+        rebuilt = earlier_build.scan(roms, {v: holes}, compiler)[v]
+        built = [{**r, "version": v, "reader": "earlier-build"} for r in rebuilt["rows"]]
+        left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in built]))
         packed = [{**r, "version": v} for r in rnc_streams(roms[v], left_mips)]
         rest = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in packed]))
         copies = find(roms, spans, windows, v, rest, list(parts))
@@ -254,6 +260,9 @@ def scan(config: Config) -> Json:
                 for r in code
             ],
             "code_streams": mips,
+            "earlier_build": built,
+            "earlier_refused": rebuilt["refused"],
+            "earlier_left": rebuilt["left"],
             "rnc_streams": packed,
             "copies": copies,
             "heads": cuts,
