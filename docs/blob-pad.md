@@ -9,8 +9,10 @@ reader: it records the zero runs between aligned objects as `fill` blobs, up to 
 Over each unknown gap (the bytes between two accounted objects that no class holds):
 
 - a gap that is one zero run is pad: the run lies between the two objects;
-- a gap that starts with zero bytes is pad up to its first nonzero byte, when that byte begins at a 4-byte boundary:
-  the run pads the previous object up to the alignment of the object that starts there;
+- a gap that starts with at least 16 zero bytes (`blobs.RUN_MIN`, the shortest run the automatic fill accepts inside a
+  longer gap) is pad up to its first nonzero byte, when that byte begins at a 4-byte boundary: the run pads the
+  previous object up to the alignment of the object that starts there. A shorter leading run is the tail of a word or
+  record as likely as padding: it stays unknown and is not listed;
 - a run longer than the **reader limit, 512 bytes** (`blob_pad.LIMIT`), is refused, however it lies: past that, a
   zero stretch is as likely to be a zeroed table as padding. The widest pad measured in RageWars is 343 bytes;
 - zeros inside a gap, or at its end behind other unknown bytes, are no pad and stay unknown, and so does every

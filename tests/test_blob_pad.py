@@ -43,6 +43,10 @@ def test_a_gap_that_is_one_zero_run_is_pad_whatever_its_alignment_and_a_gap_with
     assert blob_pad.runs(image(), [(0x15FCB1, 0x15FCB6), (STOP, STOP + 8)]) == ([(0x15FCB1, 0x15FCB6)], [])
 
 
+def test_a_short_leading_run_inside_a_longer_gap_is_no_pad_and_is_not_listed():
+    assert blob_pad.runs(image(), [(0x15FE03, END)]) == ([], [])  # one zero byte of the tail words
+
+
 def test_prove_rebuilds_the_zero_bytes_and_refuses_what_differs_or_exceeds_the_limit():
     proof = blob_pad.prove(image(), RUN, STOP, 512)
     assert proof["bytes"] == 343 and proof["limit"] == 512

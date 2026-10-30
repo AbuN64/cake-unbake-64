@@ -23,6 +23,7 @@ from unbake.contracts import Config, Json, sha256
 
 LIMIT = 512  # the longest zero run a pad row may record: the widest alignment pad measured is 343 bytes
 ALIGN = 4  # the boundary the first nonzero byte of a gap must start at, for a run that does not fill the gap
+MIN_RUN = blobs.RUN_MIN  # the shortest run that pads inside a gap of other bytes
 Spans = list[tuple[int, int]]
 
 
@@ -32,11 +33,13 @@ def runs(rom: bytes, gaps: Spans, limit: int = LIMIT) -> tuple[Spans, list[Json]
     refused: list[Json] = []
     for start, end in gaps:
         zeros = len(rom[start:end]) - len(rom[start:end].lstrip(b"\0"))
-        if not zeros:
-            continue
         stop = start + zeros
+        if not zeros or (stop != end and zeros < MIN_RUN):
+            continue
         if stop != end and stop % ALIGN:
-            refused.append({"rom": [start, stop], "reason": f"zero run ends at {stop:#x}, off the {ALIGN}-byte boundary"})
+            refused.append(
+                {"rom": [start, stop], "reason": f"zero run ends at {stop:#x}, off the {ALIGN}-byte boundary"}
+            )
         elif zeros > limit:
             refused.append({"rom": [start, stop], "reason": f"zero run of {zeros} bytes is over the limit {limit}"})
         else:
