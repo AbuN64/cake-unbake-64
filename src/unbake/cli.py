@@ -84,7 +84,8 @@ def _emit(name: str, code: int, result: Json | None, findings: Sequence[Finding]
         "ok": code == 0,
         "invocation": effort.invocation(),
         "result": result,
-        "findings": [asdict(f) for f in ordered],
+        "findings": [human.standard(f) for f in ordered],
+        "summary": human.tally(ordered),
         "stages": stages,
         "cache": effort.cache_total(stages),  # kept by --short too: the stage tree it drops is not where it is read
     }

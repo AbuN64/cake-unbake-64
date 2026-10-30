@@ -5,6 +5,7 @@ from __future__ import annotations
 import shlex
 import shutil
 from collections.abc import Sequence
+from dataclasses import asdict
 from typing import TextIO
 
 from unbake import config, effort
@@ -70,9 +71,47 @@ def _event(event: str, body: Json) -> None:
     _live = True
 
 
+def standard(f: Finding) -> Json:
+    """The one finding shape every answer carries: Code, Severity (Refuse|Warn), File, Line, Message, NextStep."""
+    detail = {
+        "Unit": f.unit,
+        "Versions": list(f.versions),
+        "Missing": list(f.missing),
+        "Origin": f.origin and asdict(f.origin),
+        "Symptoms": f.symptoms,
+    }
+    return {
+        "Code": f.key,
+        "Severity": f.severity,
+        "File": f.path,
+        "Line": f.line,
+        "Message": f.reason,
+        "NextStep": f.action or config.sentence(f.key),
+        **({"Detail": {k: v for k, v in detail.items() if v}} if any(detail.values()) else {}),
+    }
+
+
+def tally(findings: Sequence[Finding]) -> Json:
+    """Counts per Severity and per Code and Severity: the summary line of every answer."""
+    codes: dict[str, dict[str, int]] = {}
+    for f in findings:
+        row = codes.setdefault(f.key, {})
+        row[f.severity] = row.get(f.severity, 0) + 1
+    return {
+        "Refuse": sum(f.blocking for f in findings),
+        "Warn": sum(not f.blocking for f in findings),
+        "Codes": codes,
+    }
+
+
+def tally_line(counts: Json) -> str:
+    codes = ", ".join(f"{code} {n} {severity}" for code, row in counts["Codes"].items() for severity, n in row.items())
+    return f"summary: {counts['Refuse']} Refuse, {counts['Warn']} Warn" + (f" ({codes})" if codes else "")
+
+
 def finding(finding: Finding) -> str:
     f = finding
-    lines = [f"{'Refused' if f.blocking else 'Debt'}: {config.sentence(f.key)}."]
+    lines = [f"{f.severity}: {config.sentence(f.key)}."]
     if f.reason:
         lines.append(f"  because {f.reason}")
     if f.path:
@@ -234,6 +273,8 @@ def finish(command: str, result: Json | None, findings: Sequence[Finding]) -> No
     if _stream is None:
         return
     lines = [finding(f) for f in sorted(findings, key=lambda f: not f.blocking)]
+    if findings:
+        lines.append(tally_line(tally(findings)))
     lines.extend(_written(command, result))
     if command in ("score", "probe"):  # result fields belong to their command's contract (upgrade.source is a URL)
         lines.extend(_score(result or {}))

@@ -367,6 +367,27 @@
    },
    "additionalProperties": false,
    "description": "Optional: keys of repo.toml [cheat] this project replaces (source, asm_home, makefile_row, ...)."
+  },
+  "audit": {
+   "type": "object",
+   "properties": {
+    "hex": {
+     "type": "object"
+    },
+    "rawdata": {
+     "type": "object"
+    },
+    "placeholder": {
+     "type": "object"
+    },
+    "sdk": {
+     "type": "object"
+    },
+    "generated": {
+     "type": "object"
+    }
+   },
+   "additionalProperties": false
   }
  },
  "required": [

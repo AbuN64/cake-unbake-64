@@ -292,6 +292,11 @@ class Finding:
     action: str = ""  # exact next command or edit
     symptoms: Json = field(default_factory=dict)  # measured compare facts; absent facts are unknown, not zero
 
+    @property
+    def severity(self) -> str:
+        """Refuse: the work is refused. Warn: reported, never a refusal (a rule whose match is a judgment)."""
+        return "Refuse" if self.blocking else "Warn"
+
 
 class Refusal(Exception):
     def __init__(self, *findings: Finding) -> None:
@@ -385,6 +390,7 @@ class Project:
     module_map: str | None = None  # repo-relative module map (MODULES.tsv): the prefix authority
     layout: Mapping[str, Any] = field(default_factory=dict)  # config.toml [layout]: keys over repo.toml's [layout]
     cheat: Mapping[str, Any] = field(default_factory=dict)  # config.toml [cheat]: keys over repo.toml's [cheat]
+    audit: Mapping[str, Any] = field(default_factory=dict)  # config.toml [audit]: tables over rules.toml's [audit]
 
 
 def macro(version: str) -> str:

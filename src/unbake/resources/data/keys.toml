@@ -733,3 +733,55 @@ sentence = "a row the move removes is spelled by the source other than in its IN
 [key."narrow.unsafe"]
 owner = "build"
 sentence = "narrow --apply could not prove every includer of the changed headers safe in some version, so it signed and dropped nothing"
+
+[key."source.hex-value"]
+owner = "policy"
+sentence = "a hex literal is a value, not a mask or address; write it in decimal, or name the constant it stands for"
+
+[key."source.hex-review"]
+owner = "policy"
+sentence = "a hex literal is an address, struct offset, float bits, power of two or other value a person must read; name it or write it as what it is"
+
+[key."source.raw-data"]
+owner = "policy"
+sentence = "a word or byte array certainly holds another type (a long string, a table of symbol addresses, code); write what it is"
+
+[key."source.raw-data-review"]
+owner = "policy"
+sentence = "a word or byte array looks like another type (floats, short text, addresses, code); write what it is or say why it stays raw"
+
+[key."source.raw-offset-cast"]
+owner = "policy"
+sentence = "a byte offset is read through a cast or divided by its element size; use the record's field"
+
+[key."source.placeholder-name"]
+owner = "policy"
+sentence = "a symbol, file or folder is named by an address or a placeholder; name it for what it is"
+
+[key."source.stand-in"]
+owner = "policy"
+sentence = "an assembly or data stand-in stands for source that is not written; write the C"
+
+[key."source.non-matching"]
+owner = "policy"
+sentence = "a NON_MATCHING branch keeps source that does not match; make the one source match"
+
+[key."source.fakematch-note"]
+owner = "policy"
+sentence = "a FAKEMATCH note admits source that is not the original; write the original source"
+
+[key."source.guard-gap"]
+owner = "policy"
+sentence = "a function is C under one version guard and raw words under the other; compile the C in every version"
+
+[key."source.sdk-name"]
+owner = "policy"
+sentence = "a library root holds a name the SDK does not define, or a source file spells an SDK-reserved name"
+
+[key."source.generated-drift"]
+owner = "policy"
+sentence = "a generated file was changed by hand or left stale; run unbake sync and commit what it writes"
+
+[key."audit.drift_unchecked"]
+owner = "policy"
+sentence = "generated files changed but no host config was found to run unbake sync --check on them"

@@ -154,6 +154,12 @@ def layout_at(root: Path) -> Json:
     return {**load_resource("repo.toml")["layout"], **declared}
 
 
+def audit_settings(declared: Mapping[str, Any] | None) -> Json:
+    """The audit thresholds: rules.toml [audit], each table with the keys a project's config.toml [audit] spells over it."""
+    base = load_resource("rules.toml")["audit"]
+    return {table: {**values, **(declared or {}).get(table, {})} for table, values in base.items()}
+
+
 def library(project: Project, path: str) -> bool:
     """Whether the project-relative path is inside one of the configured library directories."""
     return any(Path(path).is_relative_to(folder) for folder in project.libraries)
@@ -586,6 +592,7 @@ def load_project(
         module_map=spelled_map,
         layout=document.get("layout", {}),
         cheat=document.get("cheat", {}),
+        audit=document.get("audit", {}),
     )
 
 

@@ -10,11 +10,14 @@ from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import asdict, replace
+from fnmatch import fnmatch
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from unbake import (
     config,
+    debtrules,
     delta,
     effort,
     fakematch,
@@ -842,6 +845,7 @@ def _hits(
     sdk_group: bool,
     snapshot: Snapshot | None,
     view: SourceView | None,
+    audit: Json,
 ) -> dict[int, str]:
     """{line: subject} of one rule, the subject being the text that identifies the finding across edits around it."""
     code = scopes["code"]
@@ -867,6 +871,16 @@ def _hits(
         return found_names
     if check in _DEBT:
         return dict(_DEBT[check](code))
+    if check in ("hex-value", "hex-review"):
+        return debtrules.hex_values(code, audit, "DEC" if check == "hex-value" else "REVIEW")
+    if check in ("raw-data", "raw-data-review"):
+        return debtrules.raw_data(code, audit, check == "raw-data")
+    if check == "placeholder-name":
+        return debtrules.placeholder_names(code, audit)
+    if check == "guard-gap":
+        return debtrules.guard_gaps(scopes["text"], code, audit)
+    if check == "sdk-name":
+        return debtrules.sdk_names(code, audit, sdk_group)
     if check == "stand-in-body":
         return _stand_in_body(code)
     if check == "offset-name":
@@ -935,15 +949,17 @@ def _findings(
     view: SourceView | None,
     sdk_group: bool,
     only: Collection[str] | None,
+    audit: Json | None = None,
 ) -> tuple[Finding, ...]:
     rules = config.load_resource("rules.toml")
+    settings = config.audit_settings(audit)
     scopes, lines, findings = {**_scopes(text), "text": text}, text.splitlines(), []
     for rule in rules["rule"]:
         if (only is not None and rule["id"] not in only) or (sdk_group and rule["id"] == "union-view"):
             continue
         if snapshot is None and rule.get("needs"):
             continue
-        hits = _hits(rule, path, scopes, rules, sdk_group, snapshot, view)
+        hits = _hits(rule, path, scopes, rules, sdk_group, snapshot, view, settings)
         comment_lines = scopes["comments"].splitlines()
         for n in sorted(hits):
             adjacent = "\n".join(comment_lines[max(0, n - 2) : n])
@@ -955,18 +971,25 @@ def _findings(
             if rule["id"] == "pad-view" and snapshot is not None:
                 action = lookalike.hint(snapshot.config.project.root, path, text, n)
             findings.append(
-                Finding(f"source.{rule['id']}", f"{rule['sentence']}: {subject}", path=path, line=n, action=action)
+                Finding(
+                    f"source.{rule['id']}",
+                    f"{rule['sentence']}: {subject}",
+                    path=path,
+                    line=n,
+                    blocking=rule["severity"] == "Refuse",
+                    action=action,
+                )
             )
     return tuple(findings)
 
 
-def text_findings(path: str, text: str, sdk_group: bool) -> tuple[Finding, ...]:
+def text_findings(path: str, text: str, sdk_group: bool, audit: Json | None = None) -> tuple[Finding, ...]:
     """The findings of every rule that reads the text alone, with no snapshot, ROM or host."""
     if config.is_assembly(path) and not sdk_group:
         return (
             Finding("source.library-asm", "assembly source must be inside a configured library directory", path=path),
         )
-    return _findings(None, path, text, None, sdk_group, None)
+    return _findings(None, path, text, None, sdk_group, None, audit)
 
 
 def evaluate(
@@ -982,7 +1005,7 @@ def evaluate(
             return ()  # vendored source idioms; compile and ROM proof are still mandatory
         if config.is_assembly(path):
             return text_findings(path, text, False)
-        found = _findings(snapshot, path, text, view, sdk_group, only)
+        found = _findings(snapshot, path, text, view, sdk_group, only, snapshot.config.project.audit)
         if only is not None and "symbol-name" not in only:
             return found
         names, debt = naming_baseline.split(
@@ -1024,11 +1047,17 @@ def _renames(
     return out
 
 
+def warn_keys() -> frozenset[str]:
+    """The finding keys of the rules whose certainty is a judgment: reported, never a refusal (docs/audit-rules.md)."""
+    return frozenset(f"source.{r['id']}" for r in config.load_resource("rules.toml")["rule"] if r["severity"] == "Warn")
+
+
 def scope(
     before: Sequence[Finding],
     after: Sequence[Finding],
     writes: Collection[str],
     renamed: Mapping[str, str] | None = None,
+    warned: list[Finding] | None = None,
 ) -> tuple[tuple[Finding, ...], tuple[Finding, ...]]:
     # A row is its rule and subject, wherever it is: moving text between files is free and a repeated row is new once
     # it outnumbers the old text's, so the repo-wide total of a rule never rises through any path. When a total does
@@ -1036,6 +1065,7 @@ def scope(
     # reported with its count before and after. A subject names symbols by identity, not spelling: an old row that
     # spells a renamed symbol (`renamed`: old -> new name) is read with its new name, so a rename is as free as a move.
     names = renamed or {}
+    warns = warn_keys()
 
     def spelled(reason: str) -> str:
         return _IDENT.sub(lambda m: names.get(m[0], m[0]), reason) if names else reason
@@ -1055,9 +1085,12 @@ def scope(
         row = (finding.key, finding.reason)
         at = (row, finding.path)
         seen[at] += 1
-        if finding.path in writes and total[row] > 0 and seen[at] > old[at]:
+        added = finding.path in writes and total[row] > 0 and seen[at] > old[at]
+        if added and finding.key not in warns:
             blocking.append(replace(finding, blocking=True))
         else:
+            if added and warned is not None:  # a Warn row the change adds: reported, never a refusal
+                warned.append(finding)
             debt.append(replace(finding, blocking=False))
     return tuple(blocking), tuple(debt)
 
@@ -1560,6 +1593,63 @@ def audit_command(params: Json) -> Json:
         return _audit(params)
 
 
+def _placeholder_paths(
+    names: Sequence[str], root: Path, against: str, run: Callable[..., bytes], settings: Json
+) -> list[Finding]:
+    """A file or folder this change adds that is named by address or placeholder; moving one the base already holds is
+    free (the base's count of each placeholder component is what the new tree may not exceed)."""
+    audit = config.audit_settings(settings)
+
+    def parts(listing: bytes) -> Counter[str]:
+        return Counter(
+            part
+            for path in listing.decode().split("\0")
+            if path
+            for part in [debtrules.placeholder_path(path, audit)]
+            if part
+        )
+
+    old = parts(run("ls-tree", "-r", "--name-only", "-z", against))
+    new = parts(run("ls-files", "-z", "--cached", "--others", "--exclude-standard"))
+    seen: Counter[str] = Counter()
+    found = []
+    for path in sorted(p for p in names if (root / p).is_file()):
+        part = debtrules.placeholder_path(path, audit)
+        if part:
+            seen[part] += 1
+            if new[part] > old[part] and seen[part] <= new[part] - old[part]:
+                found.append(Finding("source.placeholder-name", f"{path} is named by {part}", path=path, line=1))
+    return found
+
+
+def _generated_drift(root: Path, names: Sequence[str], settings: Json) -> tuple[list[Finding], list[Finding]]:
+    """(refusals, warnings) of generated files this change touches that `unbake sync --check` would write otherwise."""
+    audit = config.audit_settings(settings)
+    touched = [p for p in names if any(fnmatch(p, g) for g in audit["generated"]["paths"])]
+    if not touched:
+        return [], []
+    host = config.default_host()
+    if host is None:
+        note = Finding("audit.drift_unchecked", f"no host config to run unbake sync --check on {', '.join(touched)}")
+        return [], [replace(note, blocking=False)]
+    try:
+        import_module("unbake.repo").sync(config.load(root, host), {"check": True})
+    except Refusal as refusal:
+        stale = {m for f in refusal.findings if f.key == "sync.changed" for m in f.missing}
+        return [
+            Finding(
+                "source.generated-drift",
+                f"{path} is generated: it differs from what unbake sync writes",
+                path=path,
+                line=1,
+                action="run unbake sync and commit the result, never edit it by hand",
+            )
+            for path in touched
+            if path in stale
+        ], []
+    return [], []
+
+
 def _audit(params: Json) -> Json:
     """Refuse the source rule rows the working tree adds over a revision. Reads text and git only: no ROM, host or
     snapshot, so CI runs it with nothing but the checkout."""
@@ -1615,8 +1705,9 @@ def _audit(params: Json) -> Json:
     }
     baseline = naming_baseline.read(root)
     naming, naming_debt = naming_baseline.split(symbol_names.findings(source_files), baseline)
-    if naming:
-        raise Refusal(*naming)
+    refusals: list[Finding] = list(naming)
+    settings = document.get("audit", {})
+    touching = frozenset(f"source.{r['id']}" for r in config.load_resource("rules.toml")["rule"] if r.get("touching"))
     before: list[Finding] = []
     after: list[Finding] = []
     for path in paths:
@@ -1624,29 +1715,37 @@ def _audit(params: Json) -> Json:
             if data is not None:
                 found.extend(
                     f
-                    for f in text_findings(path, data.decode(errors="replace"), False)
-                    if f.key != "source.symbol-name"
-                )
-    blocking, _ = scope(before, after, paths, _renames(_placements(old_file), _placements(new_file)))
+                    for f in text_findings(path, data.decode(errors="replace"), False, settings)
+                    if f.key != "source.symbol-name" and not (found is before and f.key in touching)
+                )  # a touching rule counts the whole file once the change touches it
+    for path in sorted(p for p in changed if p not in paths and p.lower().endswith((".c", ".cpp", ".h"))):
+        for found, data in ((before, old_file(path)), (after, new_file(path))):  # a library root: the SDK's names only
+            if data is not None:
+                found.extend(_findings(None, path, data.decode(errors="replace"), None, True, {"sdk-name"}, settings))
+    added_warnings: list[Finding] = []
+    blocking, _ = scope(
+        before, after, [*paths, *changed], _renames(_placements(old_file), _placements(new_file)), added_warnings
+    )
     laid_before, laid_after = _offset_audit(root, against, git, tmp, paths, library)
-    laid, _ = scope(laid_before, laid_after, {f.path for f in laid_after})
+    laid, _ = scope(laid_before, laid_after, {f.path for f in laid_after}, None, added_warnings)
     blocking = (*blocking, *laid)
     before, after = [*before, *laid_before], [*after, *laid_after]
-    if blocking:
-        held, now = Counter((f.key, f.path) for f in before), Counter((f.key, f.path) for f in after)
-        raise Refusal(
-            *(
-                replace(f, reason=f"{f.reason} ({f.path}: {f.key.removeprefix('source.')} {held[at]} -> {now[at]})")
-                for f in blocking
-                for at in [(f.key, f.path)]
-            )
-        )
+    held, now = Counter((f.key, f.path) for f in before), Counter((f.key, f.path) for f in after)
+    refusals.extend(
+        replace(f, reason=f"{f.reason} ({f.path}: {f.key.removeprefix('source.')} {held[at]} -> {now[at]})")
+        for f in blocking
+        for at in [(f.key, f.path)]
+    )
+    everything = [p for p in run("diff", "--name-only", "-z", "--no-renames", against).decode().split("\0") if p]
+    refusals.extend(_placeholder_paths(everything, root, against, run, settings))
+    drift, unchecked = _generated_drift(root, everything, settings)
+    refusals.extend(drift)
     removed = _removed_functions(changed, root, against, git, tmp)
     dropped = _credit_drops(root, against, git, tmp)
     unexplained = {v: n for v, n in dropped.items() if n > removed}
     if unexplained:
         lost = ", ".join(f"{v}: -{n}" for v, n in sorted(unexplained.items()))
-        raise Refusal(
+        refusals.append(
             Finding(
                 "audit.credit_drop",
                 f"progress.json lost matched functions ({lost}) while the changed sources removed {removed}",
@@ -1655,12 +1754,15 @@ def _audit(params: Json) -> Json:
                 action="restore the C that earned the credit, or run make check and unbake sync",
             )
         )
+    if refusals:
+        raise Refusal(*refusals, *(replace(f, blocking=False) for f in added_warnings), *unchecked)
     naming_baseline.shrink(root, baseline, naming_debt)
     return {
         "against": against,
         "paths": paths,
         "counts_before": counts(before),
         "counts_after": counts(after),
-        "notes": [asdict(f) for f in naming_debt],
+        "notes": [asdict(replace(f, blocking=False)) for f in (*added_warnings, *naming_debt, *unchecked)],
+        "warnings": counts(added_warnings),
         "naming_debt": naming_baseline.by_file(naming_debt),
     }

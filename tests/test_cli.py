@@ -96,10 +96,10 @@ def test_refusal_exit_1_and_human_stderr(argv: list[str], monkeypatch: Patch, ca
     monkeypatch.setattr(repo, "setup", refuse)
     assert cli.main(argv) == 1
     captured = capsys.readouterr()
-    assert "Refused:" in captured.err
+    assert "Refuse:" in captured.err
     document = _envelope(captured.out)
     assert document["ok"] is False
-    assert document["findings"][0]["key"] == "config.missing"
+    assert document["findings"][0]["Code"] == "config.missing"
 
 
 def test_usage_exit_2(capsys: Capture) -> None:
@@ -116,7 +116,7 @@ def test_internal_exit_3(argv: list[str], monkeypatch: Patch, capsys: Capture) -
     captured = capsys.readouterr()
     assert "Traceback" in captured.err
     document = _envelope(captured.out)
-    assert document["findings"][0]["key"] == "internal.error"
+    assert document["findings"][0]["Code"] == "internal.error"
 
 
 def test_refused_landing_entries_fail_the_command_with_their_findings(
@@ -132,7 +132,7 @@ def test_refused_landing_entries_fail_the_command_with_their_findings(
     assert cli.main(argv) == 1
     document = _envelope(capsys.readouterr().out)
     assert document["ok"] is False
-    assert [(f["key"], f["unit"]) for f in document["findings"]] == [("land.not_exact", "f")]
+    assert [(f["Code"], f["Detail"]["Unit"]) for f in document["findings"]] == [("land.not_exact", "f")]
     assert document["result"]["drain"]["refused"]
 
 
@@ -151,7 +151,7 @@ def test_every_refused_bulk_row_fails_the_command_with_all_its_findings_at_once(
     monkeypatch.setattr(repo, "setup", lambda cfg, params: {"submissions": rows, "drain": None})
     assert cli.main(argv) == 1
     document = _envelope(capsys.readouterr().out)
-    assert [(f["unit"], f["key"]) for f in document["findings"]] == [
+    assert [(f["Detail"]["Unit"], f["Code"]) for f in document["findings"]] == [
         ("f", "source.shared-declarations"),
         ("f", "land.not_exact"),
         ("h", "land.rebase"),
@@ -168,7 +168,7 @@ def test_a_dry_or_grouped_submission_result_is_read_not_crashed_on(
     held = {"submissions": [bad], "drain": None} if nested else None
     monkeypatch.setattr(repo, "setup", lambda cfg, params: {"submissions": held, "drain": None})
     assert cli.main(argv) == (1 if nested else 0)
-    keys = [f["key"] for f in _envelope(capsys.readouterr().out)["findings"]]
+    keys = [f["Code"] for f in _envelope(capsys.readouterr().out)["findings"]]
     assert keys == (["land.not_exact"] if nested else [])
 
 
@@ -184,15 +184,15 @@ def test_a_failed_exit_without_findings_names_itself(capsys: Capture) -> None:
         assert cli._emit("submit", 1, None, []) == 1
     document = _envelope(capsys.readouterr().out)
     assert document["ok"] is False
-    assert [f["key"] for f in document["findings"]] == ["internal.no-cause"]
-    assert "submit exited 1" in document["findings"][0]["reason"]
+    assert [f["Code"] for f in document["findings"]] == ["internal.no-cause"]
+    assert "submit exited 1" in document["findings"][0]["Message"]
 
 
 def test_missing_host_refuses_config_missing(tmp_path: Path, monkeypatch: Patch, capsys: Capture) -> None:
     monkeypatch.delenv("UNBAKE_HOST", raising=False)
     assert cli.main(["setup", "--project", str(tmp_path)]) == 1
     document = _envelope(capsys.readouterr().out)
-    assert document["findings"][0]["key"] == "config.missing"
+    assert document["findings"][0]["Code"] == "config.missing"
 
 
 def test_global_host_and_project(argv: list[str], monkeypatch: Patch, capsys: Capture) -> None:
@@ -300,7 +300,7 @@ def test_a_refused_sync_check_names_the_files(argv: list[str], monkeypatch: Patc
 
     monkeypatch.setattr(repo, "sync", refuse)
     assert cli.main(["sync", "--check", *argv[1:]]) == 1
-    assert _envelope(capsys.readouterr().out)["findings"][0]["missing"] == ["Makefile", "game.ld"]
+    assert _envelope(capsys.readouterr().out)["findings"][0]["Detail"]["Missing"] == ["Makefile", "game.ld"]
 
 
 def test_short_score_keeps_missing(monkeypatch: Patch, capsys: Capture) -> None:

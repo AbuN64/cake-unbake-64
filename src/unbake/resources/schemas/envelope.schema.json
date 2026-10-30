@@ -21,95 +21,100 @@
    "items": {
     "type": "object",
     "properties": {
-     "key": {
+     "Code": {
       "type": "string",
       "minLength": 1
      },
-     "reason": {
-      "type": "string",
-      "minLength": 1
+     "Severity": {
+      "enum": [
+       "Refuse",
+       "Warn"
+      ]
      },
-     "path": {
+     "File": {
       "type": "string"
      },
-     "line": {
+     "Line": {
       "type": "integer",
       "minimum": 0
      },
-     "unit": {
-      "type": "string"
+     "Message": {
+      "type": "string",
+      "minLength": 1
      },
-     "versions": {
-      "type": "array",
-      "items": {
-       "type": "string",
-       "minLength": 1
-      }
+     "NextStep": {
+      "type": "string",
+      "minLength": 1
      },
-     "missing": {
-      "type": "array",
-      "items": {
-       "type": "string",
-       "minLength": 1
-      }
-     },
-     "origin": {
-      "oneOf": [
-       {
-        "type": "null"
-       },
-       {
-        "type": "object",
-        "properties": {
-         "key": {
-          "type": "string",
-          "minLength": 1
-         },
-         "file": {
-          "type": "string",
-          "minLength": 1
-         },
-         "sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-         },
-         "note": {
-          "type": "string"
-         }
-        },
-        "required": [
-         "key",
-         "file",
-         "sha256",
-         "note"
-        ],
-        "additionalProperties": false
-       }
-      ]
-     },
-     "blocking": {
-      "type": "boolean"
-     },
-     "action": {
-      "type": "string"
-     },
-     "symptoms": {
+     "Detail": {
       "type": "object",
-      "additionalProperties": {}
+      "properties": {
+       "Unit": {
+        "type": "string"
+       },
+       "Versions": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "Missing": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "Origin": {
+        "oneOf": [
+         {
+          "type": "null"
+         },
+         {
+          "type": "object",
+          "properties": {
+           "key": {
+            "type": "string",
+            "minLength": 1
+           },
+           "file": {
+            "type": "string",
+            "minLength": 1
+           },
+           "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+           },
+           "note": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "key",
+           "file",
+           "sha256",
+           "note"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       "Symptoms": {
+        "type": "object",
+        "additionalProperties": {}
+       }
+      },
+      "additionalProperties": false
      }
     },
     "required": [
-     "key",
-     "reason",
-     "path",
-     "line",
-     "unit",
-     "versions",
-     "missing",
-     "origin",
-     "blocking",
-     "action",
-     "symptoms"
+     "Code",
+     "Severity",
+     "File",
+     "Line",
+     "Message",
+     "NextStep"
     ],
     "additionalProperties": false
    }
@@ -155,6 +160,40 @@
     "kinds"
    ],
    "additionalProperties": false
+  },
+  "summary": {
+   "type": "object",
+   "properties": {
+    "Refuse": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "Warn": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "Codes": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "Refuse": {
+        "type": "integer"
+       },
+       "Warn": {
+        "type": "integer"
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "Refuse",
+    "Warn",
+    "Codes"
+   ],
+   "additionalProperties": false
   }
  },
  "required": [
@@ -162,6 +201,7 @@
   "invocation",
   "result",
   "findings",
+  "summary",
   "stages",
   "cache"
  ],

@@ -21,7 +21,7 @@ def _state(monkeypatch):
     monkeypatch.setattr(human.config, "sentence", lambda key: "plain sentence")
 
 
-@pytest.mark.parametrize("blocking,prefix", [(True, "Refused"), (False, "Debt")])
+@pytest.mark.parametrize("blocking,prefix", [(True, "Refuse"), (False, "Warn")])
 def test_finding_nested_english(blocking, prefix):
     finding = Finding(
         "effort.log",
@@ -43,8 +43,8 @@ def test_finding_nested_english(blocking, prefix):
 @pytest.mark.parametrize("line", [0, -1, 2])
 def test_finding_optional_fields(line):
     suffix = ":2" if line == 2 else ""
-    assert human.finding(Finding("effort.log", "", "file", line)) == f"Refused: plain sentence.\n  in file{suffix}"
-    assert human.finding(Finding("effort.log", "")) == "Refused: plain sentence."
+    assert human.finding(Finding("effort.log", "", "file", line)) == f"Refuse: plain sentence.\n  in file{suffix}"
+    assert human.finding(Finding("effort.log", "")) == "Refuse: plain sentence."
 
 
 @pytest.mark.parametrize("tty", [False, True])
@@ -134,7 +134,7 @@ def test_finish_clears_and_orders_findings(monkeypatch):
     human.finish("check", None, [Finding("effort.log", "debt", blocking=False), Finding("effort.log", "block")])
     text = stream.getvalue()
     assert text.startswith(
-        "\r\x1b[Kunits 1/2\r\x1b[KRefused: plain sentence.\n  because block\nDebt: plain sentence.\n  because debt\n"
+        "\r\x1b[Kunits 1/2\r\x1b[KRefuse: plain sentence.\n  because block\nWarn: plain sentence.\n  because debt\n"
     )
     assert "took 10.00s" in text
     assert not human._live
