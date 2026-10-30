@@ -665,6 +665,6 @@ def test_migrate_is_not_a_blobs_action(tmp_path, capsys, toolchains):
     assert cli.main(["blobs", "migrate", *args]) == 1
     output = json.loads(capsys.readouterr().out)
     assert not output["ok"]
-    assert "unknown migrate" in output["findings"][0]["reason"]
+    assert "unknown migrate" in output["findings"][0]["Message"]
     assert cli.main(["blobs", *args]) == 0
     assert json.loads(capsys.readouterr().out)["result"]["count"] == 0

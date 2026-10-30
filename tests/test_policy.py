@@ -19,9 +19,9 @@ PATH = "src/unit.c"
 _AUDIT_RULES = frozenset(
     f"source.{rule}"
     for rule in (
-        "hex-value hex-review raw-data raw-data-review raw-offset-cast placeholder-name stand-in non-matching "
-        "fakematch-note guard-gap sdk-name"
-    ).split()
+        *("hex-value", "hex-review", "raw-data", "raw-data-review", "raw-offset-cast", "placeholder-name"),
+        *("stand-in", "non-matching", "fakematch-note", "guard-gap", "sdk-name"),
+    )
 )
 
 
@@ -999,9 +999,7 @@ def test_struct_return_void_declaration(snapshot, monkeypatch):
     monkeypatch.setattr(policy, "_struct_returns", lambda snap: {"build": "src/a.c"})
     text = "extern void build(CQuatern *out, int x);\nextern CQuatern build(int x);\nvoid other(CQuatern *out);"
     found = [
-        (f.key, f.line)
-        for f in _evaluate(snapshot, PATH, text, None, False)
-        if f.key == "source.struct-return-void"
+        (f.key, f.line) for f in _evaluate(snapshot, PATH, text, None, False) if f.key == "source.struct-return-void"
     ]
     assert found == [("source.struct-return-void", 1)]
 

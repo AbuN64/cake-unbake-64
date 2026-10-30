@@ -102,7 +102,7 @@ def test_candidate_admission_and_fresh_share_reviewed_budget(tmp_path, monkeypat
     original = "int __private;\n"
     baseline(tmp_path, {"src/a.c": original})
     snapshot = SimpleNamespace(
-        config=SimpleNamespace(project=SimpleNamespace(root=tmp_path, libraries=())),
+        config=SimpleNamespace(project=SimpleNamespace(root=tmp_path, libraries=(), audit=None)),
         peek=lambda path: original.encode(),
     )
     monkeypatch.setattr(policy, "_module", lambda *a: None)

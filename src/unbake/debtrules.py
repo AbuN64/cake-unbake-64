@@ -23,12 +23,17 @@ _TOKEN = re.compile(
 _HEX = re.compile(r"0[xX][0-9A-Fa-f]+[uUlL]*$")
 _IDENT = re.compile(r"[A-Za-z_]\w*$")
 _KEYWORDS = frozenset(
-    "if while for switch return case sizeof else do goto default break continue typedef static extern const volatile "
-    "struct union enum register".split()
+    {
+        *("if", "while", "for", "switch", "return", "case", "sizeof", "else", "do", "goto", "default", "break"),
+        *("continue", "typedef", "static", "extern", "const", "volatile", "struct", "union", "enum", "register"),
+    }
 )
 _TYPES = frozenset(
-    "void char short int long float double signed unsigned u8 s8 u16 s16 u32 s32 u64 s64 f32 f64 vu8 vu16 vu32 vu64 "
-    "const volatile struct union enum".split()
+    {
+        *("void", "char", "short", "int", "long", "float", "double", "signed", "unsigned"),
+        *("u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64", "f32", "f64", "vu8", "vu16", "vu32", "vu64"),
+        *("const", "volatile", "struct", "union", "enum"),
+    }
 )
 _PRECEDENCE = {
     **dict.fromkeys(("*", "/", "%"), 12),
@@ -114,8 +119,8 @@ def _decround(value: int) -> bool:
 
 def _value_rule(value: int, ctx: str, detail: str, hexed: Json, flag: re.Pattern[str]) -> tuple[str, str]:
     """(class, verdict) of a literal whose meaning is its value (assignments, inits, arguments, compares, cases,
-    arithmetic): the decision table hexcensus pinned. KEEP is legitimate hex, DEC a mechanical rewrite to decimal, REVIEW
-    a class a person must read."""
+    arithmetic): the decision table hexcensus pinned. KEEP is legitimate hex, DEC a mechanical rewrite to decimal,
+    REVIEW a class a person must read."""
     if value <= hexed["small_max"]:
         return "small", "DEC"
     if value in hexed["sentinels"]:
@@ -134,7 +139,7 @@ def _value_rule(value: int, ctx: str, detail: str, hexed: Json, flag: re.Pattern
         if _hexround(value, hexed["round_step"]) or value >= 0x80000000:
             return "packed", "KEEP"
         return ("large-dec", "DEC") if _decround(value) else ("large", "REVIEW")
-    if (ctx in ("ASSIGN", "INIT") or ctx == "COMPARE" and detail[:2] in ("==", "!=")) and flag.search(detail):
+    if (ctx in ("ASSIGN", "INIT") or (ctx == "COMPARE" and detail[:2] in ("==", "!="))) and flag.search(detail):
         return "flag-named", "KEEP"
     if _pow2(value) and value >= hexed["pow2_min"]:
         return "pow2", "REVIEW"
@@ -427,7 +432,8 @@ def hex_values(code: str, settings: Json, verdict: str) -> dict[int, str]:
     hardware values are KEEP. Initializer data is raw-data's, enum values name their constant."""
     from bisect import bisect_right
 
-    hexed, found = settings["hex"], {}
+    hexed = settings["hex"]
+    found: dict[int, str] = {}
     flag = _flag(settings, "flag_names")
     scan = _Scan(code)
     for at, (text, offset) in enumerate(scan.t):
@@ -451,12 +457,36 @@ _ARRAY = re.compile(
 )
 _WIDTH = {"char": 1, "short": 2, "int": 4, "long": 4, "8": 1, "16": 2, "32": 4, "64": 8}
 _CODE_OPS = frozenset(
-    (0x09, 0x0F, 0x23, 0x2B, 0x0D, 0x0C, 0x03, 0x02, 0x04, 0x05, 0x24, 0x25, 0x28, 0x29, 0x31, 0x39, 0x0A, 0x0B, 0x08)
-    + (0x0E, 0x20, 0x21, 0x2A, 0x2E, 0x06, 0x07, 0x01, 0x10, 0x11, 0x14, 0x15, 0x16, 0x17, 0x1A, 0x1B, 0x35, 0x3D)
+    (
+        *(
+            0x09,
+            0x0F,
+            0x23,
+            0x2B,
+            0x0D,
+            0x0C,
+            0x03,
+            0x02,
+            0x04,
+            0x05,
+            0x24,
+            0x25,
+            0x28,
+            0x29,
+            0x31,
+            0x39,
+            0x0A,
+            0x0B,
+            0x08,
+        ),
+        *(0x0E, 0x20, 0x21, 0x2A, 0x2E, 0x06, 0x07, 0x01, 0x10, 0x11, 0x14, 0x15, 0x16, 0x17, 0x1A, 0x1B, 0x35, 0x3D),
+    )
 )
 _CODE_FUNCTS = frozenset(
-    (0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x2A, 0x2B, 0x00, 0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09)
-    + (0x10, 0x12, 0x18, 0x19, 0x1A, 0x1B)
+    (
+        *(0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x2A, 0x2B, 0x00, 0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09),
+        *(0x10, 0x12, 0x18, 0x19, 0x1A, 0x1B),
+    )
 )
 _SYMBOL_ELEMENT = re.compile(r"^\(\s*(?:u32|unsigned\s+int|void\s*\*)\s*\)\s*&?\s*[A-Za-z_]\w*$|^&\s*[A-Za-z_]\w*$")
 
@@ -494,7 +524,7 @@ def _raw_bytes(values: Sequence[int | None], width: int) -> bytes | None:
 
 
 def _flt(word: int) -> float:
-    return struct.unpack(">f", struct.pack(">I", word))[0]
+    return float(struct.unpack(">f", struct.pack(">I", word))[0])
 
 
 def _short_digits(word: int) -> int:
@@ -553,8 +583,8 @@ def _is_pointer_table(values: Sequence[int | None], raw: Json) -> bool:
 def raw_data(code: str, settings: Json, certain: bool) -> dict[int, str]:
     """{line: subject} of each word/byte array whose initializer is really another type: a string, a float table, a
     pointer table or MIPS code. `certain` picks the proven kinds (a long string, a table of symbol addresses, code with
-    its `jr ra`); the rest (short text, floats, bare addresses) are a reader's judgment. A proven pad class (a short array
-    named for its proven cause) stays allowed."""
+    its `jr ra`); the rest (short text, floats, bare addresses) are a reader's judgment. A proven pad class (a short
+    array named for its proven cause) stays allowed."""
     raw = settings["rawdata"]
     allowed = _compiled(raw["allowed_names"])
     found: dict[int, str] = {}
@@ -598,7 +628,7 @@ def placeholder_names(code: str, settings: Json) -> dict[int, str]:
     *_padding_<addr>, unk_*, sub_*, a numbered *Block17 / *Words1)."""
     names = settings["placeholder"]
     patterns = [_compiled(p) for p in names["patterns"]]
-    numbered = _compiled(r"\b\w*?(?:%s)\d+\b" % "|".join(names["numbered_suffixes"]))
+    numbered = _compiled(rf"\b\w*?(?:{'|'.join(names['numbered_suffixes'])})\d+\b")
     found: dict[int, str] = {}
     for m in re.finditer(r"\b[A-Za-z_]\w*\b", code):
         if any(p.fullmatch(m[0]) for p in patterns) or numbered.fullmatch(m[0]):
@@ -621,7 +651,9 @@ def placeholder_path(path: str, settings: Json) -> str | None:
 
 _COND = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$")
 _VERSION = re.compile(r"\bVERSION_\w+")
-_FUNCTION = re.compile(r"\b(?!(?:if|for|while|switch|return|sizeof)\b)[A-Za-z_]\w*\s*\([^;{}()]*(?:\([^()]*\)[^;{}()]*)*\)\s*\{")
+_FUNCTION = re.compile(
+    r"\b(?!(?:if|for|while|switch|return|sizeof)\b)[A-Za-z_]\w*\s*\([^;{}()]*(?:\([^()]*\)[^;{}()]*)*\)\s*\{"
+)
 
 
 def _branches(text: str) -> list[tuple[frozenset[str], bool, int, int]]:
@@ -691,7 +723,8 @@ def _close(body: str, start: int) -> int:
 # ---------------------------------------------------------------- sdk-name
 
 _DEFINITION = re.compile(
-    r"(?m)^(?!\s*(?:typedef|return|else|#))[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*(?:\([^;{}]*\)\s*\{|(?:\[[^\]\n]*\]\s*)*=)"
+    r"(?m)^(?!\s*(?:typedef|return|else|#))[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)"
+    r"\s*(?:\([^;{}]*\)\s*\{|(?:\[[^\]\n]*\]\s*)*=)"
 )
 
 

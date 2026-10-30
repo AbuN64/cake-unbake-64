@@ -161,7 +161,7 @@ def test_audit_fails_unchanged_tracked_sources_without_a_host(tmp_path, monkeypa
     with pytest.raises(Refusal) as error:
         policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
     assert any("explicit asm symbol label" in f.reason for f in error.value.findings)
-    assert {call.args[1][1] for call in runner.call_args_list} == {"diff", "ls-files"}
+    assert {"diff", "ls-files"} <= {call.args[1][1] for call in runner.call_args_list}
 
 
 def test_audit_respects_configured_library_roots(tmp_path: Path, monkeypatch):

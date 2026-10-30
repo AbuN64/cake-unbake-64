@@ -155,7 +155,7 @@ def layout_at(root: Path) -> Json:
 
 
 def audit_settings(declared: Mapping[str, Any] | None) -> Json:
-    """The audit thresholds: rules.toml [audit], each table with the keys a project's config.toml [audit] spells over it."""
+    """The audit thresholds: rules.toml [audit], each table with the keys a project's config.toml [audit] spells."""
     base = load_resource("rules.toml")["audit"]
     return {table: {**values, **(declared or {}).get(table, {})} for table, values in base.items()}
 

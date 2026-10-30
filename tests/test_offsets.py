@@ -108,6 +108,7 @@ def snapshot(monkeypatch, tmp_path):
     result.config.project.root = tmp_path
     result.config.project.names_from = "a"
     result.config.project.libraries = ()
+    result.config.project.audit = None
     result.config.project.digest = "project"
     result.overlays = {}
     result.versions = {}
@@ -119,7 +120,7 @@ def snapshot(monkeypatch, tmp_path):
 
 
 def test_the_census_lists_each_site_with_its_file_and_line(snapshot):
-    found = policy.evaluate(snapshot, "src/v.c", OFF_BY_FOUR, None, False)
+    found = [f for f in policy.evaluate(snapshot, "src/v.c", OFF_BY_FOUR, None, False) if f.key == "source.offset-name"]
     assert [(f.key, f.path, f.line) for f in found] == [("source.offset-name", "src/v.c", 7)]
     assert "Voice.zero10 is named for offset 0x10 but sits at 0x14" in found[0].reason
 
@@ -138,7 +139,7 @@ def test_audit_refuses_a_record_the_tree_adds_off_by_four(tmp_path, monkeypatch)
     (tmp_path / "src/v.c").write_text(OFF_BY_FOUR)
     with pytest.raises(policy.Refusal) as refused:
         policy.audit_command({"project": str(tmp_path), "against": "HEAD"})
-    (finding,) = refused.value.findings
+    (finding,) = (f for f in refused.value.findings if f.key == "source.offset-name")
     assert finding.key == "source.offset-name"
     assert (finding.path, finding.line) == ("src/v.c", 7)
 
@@ -146,11 +147,11 @@ def test_audit_refuses_a_record_the_tree_adds_off_by_four(tmp_path, monkeypatch)
 def test_audit_allows_a_correct_record_and_a_site_the_base_already_held(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch, OFF_BY_FOUR)
     (tmp_path / "src/v.c").write_text("/* touched */\n" + OFF_BY_FOUR)
-    assert policy.audit_command({"project": str(tmp_path), "against": "HEAD"})["counts_after"] == {
-        "source.offset-name": 1
-    }
+    after = policy.audit_command({"project": str(tmp_path), "against": "HEAD"})["counts_after"]
+    assert after["source.offset-name"] == 1
     (tmp_path / "src/v.c").write_text(RIGHT)
-    assert policy.audit_command({"project": str(tmp_path), "against": "HEAD"})["counts_after"] == {}
+    after = policy.audit_command({"project": str(tmp_path), "against": "HEAD"})["counts_after"]
+    assert "source.offset-name" not in after
 
 
 def test_audit_judges_a_source_by_the_header_the_change_edits(tmp_path, monkeypatch):

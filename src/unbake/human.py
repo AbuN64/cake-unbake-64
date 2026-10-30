@@ -97,11 +97,7 @@ def tally(findings: Sequence[Finding]) -> Json:
     for f in findings:
         row = codes.setdefault(f.key, {})
         row[f.severity] = row.get(f.severity, 0) + 1
-    return {
-        "Refuse": sum(f.blocking for f in findings),
-        "Warn": sum(not f.blocking for f in findings),
-        "Codes": codes,
-    }
+    return {"Refuse": sum(f.blocking for f in findings), "Warn": sum(not f.blocking for f in findings), "Codes": codes}
 
 
 def tally_line(counts: Json) -> str:
