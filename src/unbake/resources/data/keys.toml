@@ -385,6 +385,14 @@ sentence = "a name is owned by two files in one version"
 owner = "tree"
 sentence = "a literals_<function> fact names a function no file owns; name the first function the file owns"
 
+[key."tree.textpiece"]
+owner = "tree"
+sentence = "a textpiece<n>_<function> fact names a function no file owns; name the function the file owns whose code the ROM holds in several runs"
+
+[key."sync.textpiece"]
+owner = "build"
+sentence = "a function's later ROM runs are numbered from 1 without a gap and every run but the last has a size, which is where the build cuts the function's code; fix the textpiece<n>_<function> rows named"
+
 [key."sync.split"]
 owner = "repo"
 sentence = "a function's literals sit in the ROM after other files' data, apart from the rest of its file's read-only data; move the function into a file of its own"

@@ -205,6 +205,7 @@ def _recipe(id: str) -> str:
         if row.get("rdata_alloc"):
             parts.append(f"{_THEN} $(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@")
         parts.append(f"$(if $(UNRELOC),{_THEN} @py UNRELOC_PASS $@)")
+        parts.append(f"$(if $(TEXTCUT),{_THEN} @py TEXTCUT_PASS $@ $(TEXTCUT))")
         body = " ".join(parts)
     return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
 
@@ -569,7 +570,54 @@ def _apart_paths(config: Config, held: Tree, v: str) -> set[str]:
     for piece, *_ in versions.pieces(config, v):
         rows = _named(config, held, v, piece)
         found |= _scattered([row[:3] for row in rows]) | _merged(rows)
+        found |= {path for _, path, _, name in rows if tree.textpiece(name)}  # a cut function is its own section
     return found
+
+
+def _text_cuts(held: Tree, v: str) -> dict[str, str]:
+    """For each file whose function the ROM holds in several runs (`textpiece<n>_<function>` facts), the cuts its object
+    takes: `section:size:next` cuts `.text.<section>` after `size` bytes and the rest becomes `.text.<next>`, chained
+    run by run in the function's order. A run needs its size (all but the last)."""
+    table = held.symbols.get(v, {})
+    found: dict[str, list[str]] = {}
+    bad: list[Finding] = []
+    for module in held.modules:
+        runs: dict[str, dict[int, str]] = {}
+        for name in module.owns.get(v, ()):
+            piece = tree.textpiece(name)
+            if piece and name in table:
+                runs.setdefault(piece[1], {})[piece[0]] = name
+        for function, by_number in sorted(runs.items()):
+            if sorted(by_number) != list(range(1, len(by_number) + 1)):
+                bad.append(
+                    Finding(
+                        "sync.textpiece",
+                        f"{function} in {v} has text pieces {sorted(by_number)}, not 1..{len(by_number)}",
+                        path=module.path,
+                        unit=function,
+                        versions=(v,),
+                    )
+                )
+                continue
+            chain = [function, *(by_number[n] for n in sorted(by_number))]
+            for here, after in itertools.pairwise(chain):
+                size = table[here][2] if here in table else None
+                if not size:
+                    bad.append(
+                        Finding(
+                            "sync.textpiece",
+                            f"{here} in {v} has no size, which cuts {function} where its run ends",
+                            path=module.path,
+                            unit=here,
+                            versions=(v,),
+                            action=f"add `size:0x..` to the row of {here}",
+                        )
+                    )
+                    continue
+                found.setdefault(module.path, []).append(f"{here}:{size}:{after}")
+    if bad:
+        raise Refusal(*bad)
+    return {path: " ".join(cuts) for path, cuts in found.items()}
 
 
 def _functions(config: Config, held: Tree, v: str, paths: set[str]) -> dict[str, list[str]]:
@@ -608,6 +656,7 @@ def text_sizes(config: Config, held: Tree, v: str) -> bytes:
         rows += [f"build/{v}/{path}.o: NOALIGN := {m}" for path, m in _unaligned(config, held, v).items()]
         if "function_sections" in configuration.toolchain(config.project.toolchain):
             rows += [f"build/{v}/{path}.o: FSPLIT := fsplit" for path in sorted(_apart_paths(config, held, v))]
+        rows += [f"build/{v}/{path}.o: TEXTCUT := {cuts}" for path, cuts in sorted(_text_cuts(held, v).items())]
         return "\n".join([f"# {_GENERATED}", *rows, ""]).encode()
 
 

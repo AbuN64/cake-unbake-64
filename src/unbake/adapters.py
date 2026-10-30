@@ -308,6 +308,13 @@ def unreloc_script() -> str:
     return text.split("define UNRELOC_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
 
 
+def textcut_script() -> str:
+    """The python of the generated Makefile's TEXTCUT_PASS: the one text the build runs on an object whose function the
+    ROM holds in several runs."""
+    text = configuration.template("Makefile.in")
+    return text.split("define TEXTCUT_PASS\n", 1)[1].split("\nendef", 1)[0] + "\n"
+
+
 def fsplit_script() -> str:
     """The python of the generated Makefile's FSPLIT_PASS: the one text the build runs on an object whose functions the
     ROM places apart."""

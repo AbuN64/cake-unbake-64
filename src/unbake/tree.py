@@ -30,6 +30,7 @@ EXPANDED = "tree.expanded"  # a file's expansion in one version: the shas of its
 TEXT = "tree.text"  # one such text by its sha, kept once however many files and versions expand to it
 SCANNED = "tree.scan"  # the row of names scanned out of one expansion: versions that expand alike share it
 TREE = "tree.captured"  # a whole captured tree, keyed by its inputs
+TEXTPIECE = "textpiece"  # a fact `textpiece<n>_<function>` places the n-th later ROM run of that function's code
 LITERALS = "literals_"  # a fact `literals_<function>` places that function's file's compiler-emitted rodata
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".s")
 _INCLUDE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
@@ -1092,6 +1093,7 @@ def _build(
     _yield_to_source(tables, owned, sections)
     findings = _duplicates(owned, versions)
     findings += _literals(tables, owned, sections)
+    findings += _textpieces(tables, owned, sections)
     _absorbed(tables, owned, sections, stale)
     modules = tuple(
         _module(
@@ -1141,6 +1143,48 @@ def _literals(
             names = [*owned[path][version], name]
             owned[path][version] = sorted(names, key=lambda n, t=table: (_rom(t, n), n))  # type: ignore[misc]
             sections[path][version][name] = ".rodata"
+    return findings
+
+
+_TEXTPIECE = re.compile(rf"{TEXTPIECE}([1-9][0-9]*)_(.+)")
+
+
+def textpiece(name: str) -> tuple[int, str] | None:
+    """(n, function) of a fact `textpiece<n>_<function>`, else None."""
+    found = _TEXTPIECE.fullmatch(name)
+    return (int(found[1]), found[2]) if found else None
+
+
+def _textpieces(
+    tables: Mapping[str, Mapping[str, symbols.Symbol]],
+    owned: dict[str, dict[str, list[str]]],
+    sections: dict[str, dict[str, dict[str, str]]],
+) -> list[Finding]:
+    """A fact `textpiece<n>_<function>` places a later run of <function>'s code in the ROM, where other bytes (a
+    string, a static, a record) cut the function in two: the file that owns <function> owns it as `.text`, and the
+    build cuts the function's `.text` where the runs end. A row whose function no file owns is a finding."""
+    findings: list[Finding] = []
+    for version, table in tables.items():
+        owner = {n: path for path in owned for n in owned[path].get(version, ())}
+        for name in table:
+            piece = textpiece(name)
+            if piece is None:
+                continue
+            path = owner.get(piece[1])
+            if path is None:
+                findings.append(
+                    Finding(
+                        "tree.textpiece",
+                        f"{name} in {version} places code of {piece[1]}, which no file owns",
+                        path=symbols.path(version),
+                        unit=name,
+                        versions=(version,),
+                    )
+                )
+                continue
+            names = [*owned[path][version], name]
+            owned[path][version] = sorted(names, key=lambda n, t=table: (_rom(t, n), n))  # type: ignore[misc]
+            sections[path][version][name] = ".text"
     return findings
 
 

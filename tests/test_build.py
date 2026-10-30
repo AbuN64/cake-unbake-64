@@ -374,7 +374,7 @@ def line_count(tmp_path: Path, n: int) -> int:
 def test_makefile_has_no_per_file_rules(tmp_path):
     assert line_count(tmp_path, 3) == line_count(tmp_path, 300)
     text = build.makefile(make_config(tmp_path)).decode()
-    assert len(without_hdrkey(text).splitlines()) < 520
+    assert len(without_hdrkey(text).splitlines()) < 600
     assert "src/f1.c" not in text
 
 
@@ -1033,6 +1033,7 @@ def test_a_toolchain_row_biases_jump_tables_and_allocates_rdata():
     assert (
         lines[asm + 1] == "$(OBJCOPY) --set-section-flags .rdata=alloc,load,readonly,data,contents $@"
         " $(if $(UNRELOC),'&&' @py UNRELOC_PASS $@)"
+        " $(if $(TEXTCUT),'&&' @py TEXTCUT_PASS $@ $(TEXTCUT))"
     )
     assert "OBJCOPY" not in build._recipe("gcc-2.7.2-kmc") and "@jumptable" not in build._recipe("gcc-2.7.2-kmc")
 
