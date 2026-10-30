@@ -354,6 +354,7 @@ code_min_words = 8
 code_share = 0.85
 string_min_bytes = 4
 string_min_chars = 3
+string_certain_chars = 16
 pointer_min_words = 2
 address = [0x80000000, 0x807FFFFF]
 pad_max_bytes = 8

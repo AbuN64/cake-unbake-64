@@ -1052,6 +1052,27 @@ def warn_keys() -> frozenset[str]:
     return frozenset(f"source.{r['id']}" for r in config.load_resource("rules.toml")["rule"] if r["severity"] == "Warn")
 
 
+_HEX_KEYS = frozenset({"source.hex-value", "source.hex-review"})
+_HEX_LITERAL = re.compile(r"\b0[xX][0-9A-Fa-f]+\b")
+
+
+def _unadded_hex(old_code: str, found: Sequence[Finding]) -> list[Finding]:
+    """The findings of a path with the hex literals the base already spelled as often taken out: the table judges a
+    literal by its neighbours (a call of all-hex arguments is packed, one hex among decimals is a value), so rewriting a
+    neighbour to decimal can make a held literal a finding without the change adding it."""
+    held = Counter(m[0].lower() for m in _HEX_LITERAL.finditer(old_code))
+    spent: Counter[str] = Counter()
+    kept = []
+    for f in found:
+        literal = _HEX_LITERAL.findall(f.reason)[-1].lower() if f.key in _HEX_KEYS else ""
+        if literal:
+            spent[literal] += 1
+            if spent[literal] <= held[literal]:
+                continue
+        kept.append(f)
+    return kept
+
+
 def scope(
     before: Sequence[Finding],
     after: Sequence[Finding],
@@ -1711,13 +1732,16 @@ def _audit(params: Json) -> Json:
     before: list[Finding] = []
     after: list[Finding] = []
     for path in paths:
-        for found, data in ((before, old_file(path)), (after, new_file(path))):
+        old, new, start = old_file(path), new_file(path), len(after)
+        for found, data in ((before, old), (after, new)):
             if data is not None:
                 found.extend(
                     f
                     for f in text_findings(path, data.decode(errors="replace"), False, settings)
                     if f.key != "source.symbol-name" and not (found is before and f.key in touching)
                 )  # a touching rule counts the whole file once the change touches it
+        if old is not None:
+            after[start:] = _unadded_hex(scopes(old.decode(errors="replace"))["code"], after[start:])
     for path in sorted(p for p in changed if p not in paths and p.lower().endswith((".c", ".cpp", ".h"))):
         for found, data in ((before, old_file(path)), (after, new_file(path))):  # a library root: the SDK's names only
             if data is not None:

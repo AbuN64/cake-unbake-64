@@ -35,7 +35,7 @@ unbake score src/code_80200610.c --function NAME     # one version and the instr
 unbake submit src/code_80200610.c                    # put an exact source in the landing inbox
 unbake land                                          # land every inbox submission, one commit each
 unbake check                                         # census the source rules over the whole project
-unbake audit --against REV                           # refuse the rule rows a change adds over REV
+unbake audit --against REV                           # refuse (exact rules) or warn (fuzzy) the rows a change adds over REV: docs/audit-rules.md
 unbake cheat --against REV                           # refuse what a change adds over REV that could fake a match
 unbake symbols                                       # the symbol table of a version
 unbake map                                           # write the layout map to .unbake/map.json
