@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from unbake import typecensus, typeplan, typeunify
-from unbake.contracts import Refusal
+from unbake.contracts import Host, Refusal
 from unbake.typecensus import Norm
 from unbake.typeunify import Seams, Unit
 
@@ -58,8 +58,8 @@ class World:
 def tree(tmp_path: Path, fail: Sequence[str] = ()) -> World:
     files = {
         "include/h.H": "extern int g;\nextern int h;\n",
-        "src/a.CPP": "extern long g;\nint f(void) { return 1; }\n",
-        "src/b.CPP": "extern short h;\nint k(void) { return 2; }\n",
+        "src/a.CPP": "extern long g;\nint f(void) { return g; }\n",
+        "src/b.CPP": "extern short h;\nint k(void) { return h + g; }\n",
     }
     return World(tmp_path, files, ["src/a.CPP", "src/b.CPP"], fail)
 
@@ -71,7 +71,7 @@ def test_statements_are_typed_and_normalised() -> None:
         "extern u8 *p[4];\nextern u8 *p[];\nvoid f(Foo *x, int n);\nint g = 3;\nint (*cb)(int a, Foo *b);\n"
         "int body(int a) { return a; }\n"
     )
-    typedefs, stmts, files = typeunify.facts(text, "src/u.CPP", LIKE)
+    typedefs, stmts, files, _ = typeunify.facts(text, "src/u.CPP", LIKE)
     norm = Norm()
     for t in typedefs:
         norm.define(t)
@@ -144,7 +144,7 @@ def test_batches_group_disjoint_names() -> None:
 # ---------------------------------------------------------------- pick, rotation, refusal
 def test_pick_keeps_the_most_declared_type_and_batches_disjoint_names(tmp_path: Path) -> None:
     world = tree(tmp_path)
-    # g touches both units (the header it edits is in both); h likewise: the two share units, so two batches
+    # g is used by both units, h by b alone: the two share b, so two batches
     result = typeunify.run(tmp_path, world.seams)
     assert result["unified"]["g"]["type"] == "long" and result["unified"]["h"]["type"] == "short"
     assert result["unresolved"] == {} and result["batches"] == 2
@@ -155,7 +155,10 @@ def test_pick_keeps_the_most_declared_type_and_batches_disjoint_names(tmp_path: 
 def test_disjoint_names_share_one_build(tmp_path: Path) -> None:
     world = World(
         tmp_path,
-        {"src/a.CPP": "extern long g;\nextern short g;\n", "src/b.CPP": "extern long h;\nextern short h;\n"},
+        {
+            "src/a.CPP": "extern long g;\nextern short g;\nint f(void) { return g; }\n",
+            "src/b.CPP": "extern long h;\nextern short h;\nint k(void) { return h; }\n",
+        },
         ["src/a.CPP", "src/b.CPP"],
     )
     result = typeunify.run(tmp_path, world.seams)
@@ -227,3 +230,71 @@ def test_no_units_is_refused(tmp_path: Path) -> None:
     with pytest.raises(Refusal) as refused:
         typeunify.run(tmp_path, Seams(lambda: {"us": []}, lambda items: [], lambda targets: (0, "x")))
     assert refused.value.findings[0].key == "unify.units"
+
+
+# ---------------------------------------------------------------- the seams of the speedup
+def test_words_are_what_a_unit_defines_or_uses_never_what_it_only_declares() -> None:
+    text = (
+        '# 1 "include/h.H"\ntypedef int T;\nextern int only_declared;\nint proto(int);\nextern int used;\n'
+        "int (*pointer)(int);\nint defined = 3;\nint holder[] = { initialised };\n"
+        "int body(void) { return used + proto(1); }\n"
+    )
+    words = typeunify.facts(text, "src/u.CPP", LIKE)[3]
+    assert {"used", "proto", "pointer", "defined", "holder", "initialised", "body"} <= words
+    assert "only_declared" not in words
+
+
+def test_a_name_touches_the_units_that_define_or_use_it(tmp_path: Path) -> None:
+    world = tree(tmp_path)
+    census = typeunify.collect(world.found(), world.read)
+    src = typeplan.Sources(lambda p: (tmp_path / p).read_text())
+    plans = {n: typeplan.plan(n, typeplan.sites_of(census.per, n), 0, src, census.norm) for n in ("g", "h")}
+    g, h = plans["g"], plans["h"]
+    assert isinstance(g, typeplan.Plan) and isinstance(h, typeplan.Plan)
+    assert typeunify.reach(census, h) >= {("us", "src/a.CPP"), ("us", "src/b.CPP")}  # the header is in both
+    assert typeunify.touched(census, g) == {(v, u) for v in ("us", "de") for u in ("src/a.CPP", "src/b.CPP")}
+    assert typeunify.touched(census, h) == {("us", "src/b.CPP"), ("de", "src/b.CPP")}  # a only declares h
+
+
+def test_only_the_touched_objects_are_made_and_compared(tmp_path: Path) -> None:
+    world = tree(tmp_path)
+    result = typeunify.run(tmp_path, world.seams, ["h"])
+    assert result["unified"]["h"]["units"] == 2
+    built = [t for call in world.calls[1:-1] for t in call]
+    assert built == ["build/de/src/b.CPP.o", "build/us/src/b.CPP.o"]  # a does not use h
+
+
+def test_a_unit_the_finer_reading_missed_refuses_the_run_as_drift(tmp_path: Path) -> None:
+    world = tree(tmp_path)
+    base = world.make
+
+    def late(targets: Sequence[str]) -> tuple[int, str]:
+        code, log = base(targets)
+        broken = [t for t in targets if "src/a.CPP" in t and len(world.calls) > 1]  # a only declares h: not touched
+        for t in broken:
+            (tmp_path / t).unlink()
+            log += f"make: *** [Makefile:1: {t}] Error 1\n"
+        return (2 if broken else code), log
+
+    with pytest.raises(Refusal) as err:
+        typeunify.run(tmp_path, Seams(world.found, world.read, late), ["h"])
+    assert err.value.findings[0].key == "unify.drift"
+
+
+def test_differing_names_the_missing_and_the_changed_objects() -> None:
+    base = {("us", "a"): "1", ("us", "b"): "2", ("us", "c"): "3"}
+    made = {("us", "a"): "1", ("us", "b"): "9", ("us", "c"): None}
+    assert typeunify.differing(base, made, base) == [("us", "b"), ("us", "c")]
+    assert typeunify.differing([("us", "a")], made, base) == []
+
+
+def test_nothing_to_rebuild_runs_no_make(tmp_path: Path) -> None:
+    world = tree(tmp_path)
+    assert typeunify.rebuild(tmp_path, world.seams, []) == {} and world.calls == []
+
+
+@pytest.mark.parametrize(("slots", "jobs"), [(16, 16), (1, 1), (0, 1)])
+def test_a_build_step_asks_for_every_slot_of_the_host(slots: int, jobs: int) -> None:
+    host = Host.__new__(Host)
+    object.__setattr__(host, "slots", slots)
+    assert typeunify.jobs(host) == jobs

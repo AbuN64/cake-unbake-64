@@ -5,9 +5,12 @@ than one type being the clashes, in the CLASH.tsv shape (typecensus). `unify` ta
 (typeplan) that leaves every object of every version byte-identical to the baseline, rewrites the other declarations,
 and rotates to the next candidate when one fails. The baseline is the objects of a build of the tree as it is.
 
-A name touches the units whose preprocessed text holds a file it edits or copies its declaration from; only those
-objects are deleted and made again. Names whose units do not meet share one batch, so a unit that fails or differs
-belongs to exactly one name of its batch and the others are settled by the same build. A build that did not run is
+A name touches the units whose preprocessed text holds a file it edits or copies its declaration from and that
+define or use it (a body or an initializer that spells it, or a definition of it): only those objects are deleted,
+made again and compared. Names whose units do not meet share one batch, so a unit that fails or differs belongs to
+exactly one name of its batch and the others are settled by the same build. Once, after all rewrites, every unit
+that holds a file a kept rewrite touches is made again and compared with the baseline: a unit the finer reading
+missed is a drift and refuses the run. A build that did not run is
 refused, never reported as a pass: an empty log, a make exit with no unit named, or an object neither made nor named
 in a failure. A name no candidate satisfies is reported with the first failing unit of each candidate type."""
 
@@ -16,20 +19,22 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from unbake import build, pool, process, store, tree
 from unbake import config as configuration
-from unbake.contracts import Config, Finding, Json, Refusal
+from unbake.contracts import Config, Finding, Host, Json, Refusal
 from unbake.typecensus import Decl, Norm, Stmt, clashes, declarations, files_of, index, scan, table
 from unbake.typeplan import EXHAUSTED, Plan, Sources, plan, render, sites_of
 
 Unit = tuple[str, str]  # (version, source path)
-Facts = tuple[list[str], list[Stmt], frozenset[str]]  # (typedef statements, project statements, project files read)
+Facts = tuple[list[str], list[Stmt], frozenset[str], frozenset[str]]  # (typedefs, project statements, files, words)
 _FAILED = re.compile(r"\*\*\* \[(?:[^\]\s]+: )?([^\]\s]+\.o)\]")
+_WORD = re.compile(r"[A-Za-z_]\w*")
+_POINTER = re.compile(r"\(\s*\*")
 
 
 @dataclass(frozen=True)
@@ -45,7 +50,25 @@ class Seams:
 class Census:
     per: dict[str, dict[str, list[Decl]]] = field(default_factory=dict)
     closure: dict[Unit, frozenset[str]] = field(default_factory=dict)
+    words: dict[Unit, frozenset[str]] = field(default_factory=dict)  # per unit: what it defines or uses
     norm: Norm = field(default_factory=Norm)
+
+
+def _declares_only(stmt: Stmt) -> bool:
+    """Whether a statement only declares what it names (typedef, extern, prototype): its words are no use of them."""
+    text = stmt[2].lstrip()
+    if stmt[3] != "stmt" or "=" in text:
+        return False
+    return text.startswith(("typedef ", "extern ")) or ("(" in text and not _POINTER.search(text))
+
+
+def spelled(text: str, stmts: Sequence[Stmt]) -> frozenset[str]:
+    """The words a unit defines or uses: those of every statement that defines something, and those of the text outside
+    its depth-0 statements (function bodies and initializers). A word only a declaration spells is not in it."""
+    inside = Counter(w for s in stmts for w in _WORD.findall(s[2]))
+    total = Counter(_WORD.findall("\n".join(ln for ln in text.split("\n") if not ln.startswith("# "))))
+    defined = {w for s in stmts if not _declares_only(s) for w in _WORD.findall(s[2])}
+    return frozenset(defined | {w for w, n in total.items() if n > inside[w]})
 
 
 def facts(text: str, unit: str, keep: Callable[[str], bool]) -> Facts:
@@ -55,6 +78,7 @@ def facts(text: str, unit: str, keep: Callable[[str], bool]) -> Facts:
         [s[2] for s in stmts if s[2].lstrip().startswith("typedef ")],
         [s for s in stmts if keep(s[0]) and not s[2].lstrip().startswith("typedef ")],
         frozenset(f for f in files_of(text, unit) if keep(f)),
+        spelled(text, stmts),
     )
 
 
@@ -63,21 +87,27 @@ def collect(units: Mapping[str, Sequence[str]], read: Callable[[Sequence[Unit]],
     items = [(v, u) for v in sorted(units) for u in sorted(units[v])]
     held = read(items)
     out = Census()
-    for typedefs, _, _ in held:
+    for typedefs, _, _, _ in held:
         for stmt in typedefs:
             out.norm.define(stmt)
     seen: dict[str, dict[str, dict[str, Decl]]] = defaultdict(lambda: defaultdict(dict))
-    for (version, unit), (_, stmts, files) in zip(items, held, strict=True):
+    for (version, unit), (_, stmts, files, words) in zip(items, held, strict=True):
         out.closure[(version, unit)] = files
+        out.words[(version, unit)] = words
         for name, decl in declarations(stmts, out.norm, lambda _f: True):
             seen[name][version][f"{decl[0]}\t{decl[1]}\t{decl[2]}"] = decl
     out.per = {n: {v: sorted(d.values()) for v, d in vers.items()} for n, vers in seen.items()}
     return out
 
 
-def touched(census: Census, found: Plan) -> frozenset[Unit]:
+def reach(census: Census, found: Plan) -> frozenset[Unit]:
     """The units whose text holds a file the plan reads or writes."""
     return frozenset(unit for unit, files in census.closure.items() if files & found.files)
+
+
+def touched(census: Census, found: Plan) -> frozenset[Unit]:
+    """The units of its reach that define or use the name: the only objects the plan can change."""
+    return frozenset(u for u in reach(census, found) if found.name in census.words[u])
 
 
 def batches(units: Mapping[str, frozenset[Unit]]) -> list[list[str]]:
@@ -106,6 +136,8 @@ def rebuild(root: Path, seams: Seams, units: Iterable[Unit]) -> dict[Unit, str |
     """Delete the objects of `units`, make them, and answer unit -> object hash, None for a unit whose build failed.
     A build that did not run is a Refusal (empty log, exit naming no unit, object neither made nor named)."""
     wanted = {target(u): u for u in units}
+    if not wanted:
+        return {}
     for path in wanted:
         (root / path).unlink(missing_ok=True)
     code, log = seams.make(sorted(wanted))
@@ -118,6 +150,11 @@ def rebuild(root: Path, seams: Seams, units: Iterable[Unit]) -> dict[Unit, str |
     if absent:
         raise Refusal(Finding("unify.build", "make neither built nor failed these objects", missing=tuple(absent[:20])))
     return {u: None if p in named else _sha(root / p) for p, u in wanted.items()}
+
+
+def differing(units: Iterable[Unit], made: Mapping[Unit, str | None], base: Mapping[Unit, str]) -> list[Unit]:
+    """The units of `units`, in order, whose new object is missing (the build failed) or not the baseline's."""
+    return sorted(u for u in units if made[u] != base[u])
 
 
 def _write(root: Path, files: Iterable[str], held: Iterable[Plan], src: Sources) -> None:
@@ -152,7 +189,7 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
     failed: dict[str, dict[str, str]] = defaultdict(dict)
     spent: dict[str, float] = defaultdict(float)
     tried: set[Unit] = set()
-    pending, rounds, built = list(todo), 0, 0
+    pending, rounds, built, rebuilt = list(todo), 0, 0, 0
     while pending:
         rounds += 1
         plans: dict[str, Plan] = {}
@@ -170,9 +207,10 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
             _write(root, files, [*settled.values(), *(plans[n] for n in group)], src)
             span = set().union(*(units_of[n] for n in group))
             tried |= span
+            rebuilt += len(span)
             made = rebuild(root, seams, span)
             for name in group:
-                bad = sorted(u for u in units_of[name] if made[u] != base[u])
+                bad = differing(units_of[name], made, base)
                 spent[name] += (time.monotonic() - started) / len(group)
                 if bad:
                     why = "does not build" if made[bad[0]] is None else "object differs"
@@ -182,7 +220,8 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
                 else:
                     settled[name] = plans[name]
             _write(root, files, settled.values(), src)  # the names that failed go back to their original text
-    back = rebuild(root, seams, tried) if tried else {}
+    reached = set().union(tried, *(reach(census, p) for p in settled.values()))
+    back = rebuild(root, seams, reached)
     drift = sorted(target(u) for u, h in back.items() if h != base[u])
     if drift:
         raise Refusal(
@@ -201,6 +240,7 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
         "batches": built,
         "rounds": rounds,
         "verified": len(back),
+        "rebuilt": rebuilt,
         "files": sorted({f for p in settled.values() for f in p.files}),
     }
 
@@ -208,6 +248,12 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
 def _read_unit(item: tuple[Config, str, str]) -> Facts:
     cfg, version, unit = item
     return facts(tree.preprocess(cfg, unit, version, markers=True), unit, configuration.under_tree)
+
+
+def jobs(host: Host) -> int:
+    """The job count of a build step: every slot the host grants this command, whatever number of objects it names (the
+    steps of one object are many: preprocess, compile, stamps), so the step never starts below what the host can run."""
+    return max(1, host.slots)
 
 
 def seams(cfg: Config) -> Seams:
@@ -231,7 +277,7 @@ def seams(cfg: Config) -> Seams:
 
     def make(targets: Sequence[str]) -> tuple[int, str]:
         store.write(root / "local.mk", build.local_mk(cfg))
-        ran = process.make(cfg, list(targets), len(targets))
+        ran = process.make(cfg, list(targets), jobs(cfg.host))
         return (-1 if ran.exit is None else ran.exit), (ran.stdout + ran.stderr).decode(errors="replace")
 
     return Seams(units, read, make)
