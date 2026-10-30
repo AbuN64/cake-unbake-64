@@ -91,7 +91,7 @@ def test_a_long_nul_terminated_byte_array_is_a_string():
 
 
 def test_placeholder_names_are_found_by_address_or_numbered_suffix():
-    code = "void func_80012345(void);\nextern u8 D_80031234;\nint g_Block17;\nint unk_4;\nint ok;\n"
+    code = "void func_80012345(void) {}\nu8 D_80031234;\nint g_Block17;\nint unk_4;\nint ok;\n"
     assert _lines(code, "placeholder_names") == {1: "func_80012345", 2: "D_80031234", 3: "g_Block17", 4: "unk_4"}
 
 
@@ -150,7 +150,7 @@ def test_version_copies_of_one_record_are_one_identity():
         "#else\ntypedef struct {\n    u32 unk_4;\n} g_Block17;\n#endif\n"
     )
     assert _lines(code, "placeholder_names") == {3: "unk_4", 4: "g_Block17"}
-    copies = f"#if VERSION_US\nextern u32 {_BLOCK};\n#else\nextern u32 {_BLOCK};\n#endif\n"
+    copies = f"#if VERSION_US\nu32 {_BLOCK};\n#else\nu32 {_BLOCK};\n#endif\n"
     assert _lines(copies, "placeholder_names") == {2: _BLOCK}
 
 
@@ -161,5 +161,11 @@ def test_distinct_records_keep_distinct_placeholder_members():
 
 
 def test_a_new_placeholder_definition_and_a_reference_to_it_count_once_at_the_definition():
-    code = "void f(void) {\n    D_80031234 = 1;\n    g(D_80031234);\n}\nint D_80031234;\nint func_80012345(void);\n"
+    code = "void f(void) {\n    D_80031234 = 1;\n    g(D_80031234);\n}\nint D_80031234;\n"
+    code += "int func_80012345(void) { return 0; }\n"
     assert _lines(code, "placeholder_names") == {5: "D_80031234", 6: "func_80012345"}
+
+
+def test_an_extern_or_prototype_of_a_placeholder_name_is_a_reference_not_a_definition():
+    code = f"extern char {_BLOCK}[];\nextern u32 D_80031234;\nint func_80012345(void);\nextern u32 D_80031235 = 1;\n"
+    assert _lines(code, "placeholder_names") == {4: "D_80031235"}

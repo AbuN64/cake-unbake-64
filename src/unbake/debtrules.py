@@ -641,15 +641,15 @@ def _owner(code: str, binding: symbol_names.Binding) -> str:
 def placeholder_names(code: str, settings: Json) -> dict[int, str]:
     """{line: subject} of each identity declared with an address or placeholder name (func_8XXXXXXX, D_8XXXXXXX,
     *_padding_<addr>, unk_*, sub_*, a numbered *Block17 / *Words1). An identity counts once, at its first
-    declaration: a reference, a size assertion over it and a version-conditional copy of its record are the same name,
-    not a new one."""
+    definition: a reference, an extern or prototype declaration, a size assertion over it and a version-conditional copy
+    of its record are the same name, not a new one."""
     names = settings["placeholder"]
     patterns = [_compiled(p) for p in names["patterns"]]
     numbered = _compiled(rf"\b\w*?(?:{'|'.join(names['numbered_suffixes'])})\d+\b")
     found: dict[int, str] = {}
     seen: set[tuple[str, str, str]] = set()
     for b in symbol_names.bindings(code):
-        if not (any(p.fullmatch(b.name) for p in patterns) or numbered.fullmatch(b.name)):
+        if not b.definition or not (any(p.fullmatch(b.name) for p in patterns) or numbered.fullmatch(b.name)):
             continue
         identity = (b.name, b.kind, _owner(code, b))
         if identity not in seen:
