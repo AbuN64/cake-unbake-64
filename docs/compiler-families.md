@@ -67,7 +67,3 @@ Ordinary Make and tool preprocessing use the same portable semantic validator.
 Native keys include the driver/resolver/contracts and exact binary pins. Diagnostic
 captures are explicit, isolated, and accepted as observations only when their
 final linked bytes equal the ordinary build; they cannot become build options.
-
-## Rules
-- Compiler identification MUST rest on a structural property counted over the whole text (for example whether the stack release sits before `jr $ra` or in its delay slot), never on byte-exact matches of a few short leaf functions.
-- A toolchain pin MUST NOT be treated as proven by leaf-only matches; the discriminator SHOULD hold across the whole address range before the pin is accepted.

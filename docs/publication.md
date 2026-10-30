@@ -115,11 +115,3 @@ original inputs and an existing immutable event. That event is never recaptured
 or relabeled. Changed used inputs refuse with a named provenance cause. Resource
 storage and execution bindings stay separate; missing historical assembler input
 identity remains unavailable, even when an output happens to equal ROM.
-
-## Rules
-- Code, data and blobs MUST use exactly three stage names everywhere (reports, README bars, schema, briefs): unmatched, fuzzy, matched.
-- For code, unmatched MUST mean INCLUDE_ASM, fuzzy NON_MATCHING C, and matched exact C; for blobs, unmatched MUST mean span known with bytes included as-is, fuzzy decoded by a codec without proven rebuild, and matched extracted and rebuilt byte-exact by `make check`.
-- "observed", "identified", "decoded" and "stand-in" MUST NOT be used as stage names.
-- unbake MUST NOT push to git or hold remotes or credentials; cycles and lands MUST commit locally only, and pushing MUST be a separate step outside the tool.
-- Tool repos MUST release only from `v*` tags through each repo's `.github/workflows/release.yml`, and a published tag MUST NOT be moved.
-- The n64link binary MUST remain optional, needed only by toolchain rows that name `{n64link}`.

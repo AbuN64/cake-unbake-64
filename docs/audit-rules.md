@@ -39,7 +39,3 @@ literal into `hex-value`.
 
 Thresholds and roots live in `config.toml` `[audit.hex]`, `[audit.rawdata]`, `[audit.placeholder]`, `[audit.sdk]` and
 `[audit.generated]`; each key defaults to the value in `rules.toml` `[audit.*]`. The rule logic is generic.
-- SDK routines that were hand-written assembly in the original SDK (exception and interrupt handlers, TLB, cache, boot entry) MUST be vendored as library assembly under a project library root and count as matched code.
-- Assembly outside a configured library root MUST remain policy debt `source.asm-outside-library`, and no new tool kind MUST be built for library assembly.
-- A `volatile` qualifier MUST be refused outside SDK hardware access and SDK library units that declare it as the reference SDK does, and no FAKEMATCH marker MAY waive it.
-- SDK hardware access SHOULD use vu*/vs* volatile typedefs and IO_READ/IO_WRITE spelled as `*(vu32 *)PHYS_TO_K1(addr)`.
