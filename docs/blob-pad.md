@@ -30,8 +30,8 @@ type = "fill"
 format = "pad"
 state = "decoded"
 limit = 512
-stored_size = 347
-rom."us" = [[0xde30c, 0xde310], [0x15fca9, 0x15fe00]]
+stored_size = 343
+rom."us" = [[0x15fca9, 0x15fe00]]
 evidence = [{ artifact = "pad-receipt.json", sha256 = "...", pointer = "/us" }]
 ```
 

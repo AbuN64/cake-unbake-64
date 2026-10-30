@@ -35,7 +35,19 @@ CONTENT = (
     "text",
 )  # the types the published map carries; accounting rows are not content
 RUN_MIN = 16  # the shortest one-value run that proves padding inside a gap of other bytes
-_ORDER = ("name", "aliases", "type", "format", "codec", "state", "limit", "stored_size", "decoded_size", "parent", "decoded")
+_ORDER = (
+    "name",
+    "aliases",
+    "type",
+    "format",
+    "codec",
+    "state",
+    "limit",
+    "stored_size",
+    "decoded_size",
+    "parent",
+    "decoded",
+)
 
 
 def path_of(config: Config) -> str:
@@ -131,9 +143,16 @@ def check(config: Config, document: Json, file: str | None = None) -> tuple[Find
 def _pad_findings(name: str, row: Json, file: str) -> list[Finding]:
     """A pad row is a decoded fill with a `limit`, and no range of it is longer than that limit."""
     if row["type"] != "fill" or row.get("format") != "pad" or row["state"] != "decoded" or "limit" not in row:
-        return [Finding("blobs.schema", f"blob {name} needs type fill, format pad, state decoded and a limit", path=file)]
+        return [
+            Finding("blobs.schema", f"blob {name} needs type fill, format pad, state decoded and a limit", path=file)
+        ]
     return [
-        Finding("blobs.range", f"blob {name} range {a:#x}..{b:#x} is over its limit {row['limit']}", path=file, versions=(v,))
+        Finding(
+            "blobs.range",
+            f"blob {name} range {a:#x}..{b:#x} is over its limit {row['limit']}",
+            path=file,
+            versions=(v,),
+        )
         for v, spans in row.get("rom", {}).items()
         for a, b in spans
         if b - a > row["limit"]
@@ -600,13 +619,20 @@ def _pad_bytes_findings(config: Config, document: Json, file: str) -> list[Findi
         for v, spans in row.get("rom", {}).items():
             path = Path(config.project.root) / "roms" / f"baserom.{v}.z64"
             if not path.is_file():
-                found.append(Finding("blobs.pad", f"blob {name} cannot be proved: no ROM for {v}", path=file, versions=(v,)))
+                found.append(
+                    Finding("blobs.range", f"blob {name} cannot be proved: no ROM for {v}", path=file, versions=(v,))
+                )
                 continue
             rom = path.read_bytes()
             for a, b in spans:
                 if rom[a:b] != bytes(b - a):
                     found.append(
-                        Finding("blobs.pad", f"blob {name} range {a:#x}..{b:#x} is not zero in the {v} ROM", path=file, versions=(v,))
+                        Finding(
+                            "blobs.range",
+                            f"blob {name} range {a:#x}..{b:#x} is not zero in the {v} ROM",
+                            path=file,
+                            versions=(v,),
+                        )
                     )
     return found
 
