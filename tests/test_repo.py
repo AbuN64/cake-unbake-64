@@ -804,6 +804,70 @@ def test_sync_without_a_verdict_keeps_the_progress_files_and_says_to_check(world
     )
 
 
+def _stale_then_current(world, monkeypatch):
+    """A tree with no verdict until make_check records one (the build itself is mocked: no real make)."""
+    (world.root / "README.md").write_text("old progress")
+    recorded = []
+    monkeypatch.setattr(
+        repo.report,
+        "publish_hold",
+        lambda config, tree: None if recorded else held("sync.unchecked", "run make check, then unbake sync"),
+    )
+    monkeypatch.setattr(repo.build, "make_check", lambda config, tree=None: recorded.append(tree) or {"exit": 0})
+    monkeypatch.setattr(repo.report, "files", lambda config, tree: {"README.md": b"real", "docs/map-a.json": b"{}\n"})
+    return recorded
+
+
+def test_the_sync_command_checks_first_and_writes_the_outputs_from_the_fresh_verdict(world, monkeypatch):
+    recorded = _stale_then_current(world, monkeypatch)
+    result = repo.sync_command(world.cfg, {})
+    assert len(recorded) == 1 and "notes" not in result
+    assert (world.root / "README.md").read_text() == "real"
+    assert (world.root / "docs/map-a.json").read_text() == "{}\n"
+    assert {"README.md", "docs/map-a.json"} <= set(result["written"])
+
+
+def test_the_sync_command_refuses_when_the_check_it_runs_fails(world, monkeypatch):
+    _stale_then_current(world, monkeypatch)
+    failure = Refusal(Finding("setup.make", "make exit 2"))
+
+    def broken(config, tree=None):
+        raise failure
+
+    monkeypatch.setattr(repo.build, "make_check", broken)
+    with pytest.raises(Refusal) as refused:
+        repo.sync_command(world.cfg, {})
+    assert refused.value.findings[0].key == "setup.make"
+    assert (world.root / "README.md").read_text() == "old progress"
+    assert not (world.root / "docs/map-a.json").exists()
+
+
+def test_sync_check_and_a_caller_inside_another_command_never_build(world, monkeypatch):
+    recorded = _stale_then_current(world, monkeypatch)
+    repo.sync(world.cfg, {})  # the generated files are written, so --check has only the verdict to speak of
+    for call in (lambda: repo.sync_command(world.cfg, {"check": True}), lambda: repo.sync(world.cfg, {})):
+        result = call()
+        assert [n["key"] for n in result["notes"]] == ["sync.unchecked"]
+    assert recorded == [] and (world.root / "README.md").read_text() == "old progress"
+    assert not (world.root / "docs/map-a.json").exists()
+
+
+def test_the_sync_command_does_not_build_when_the_verdict_is_current(world, monkeypatch):
+    (world.root / "README.md").write_text("old progress")
+    monkeypatch.setattr(repo.report, "publish_hold", lambda config, tree: None)
+    monkeypatch.setattr(repo.build, "make_check", lambda *a: pytest.fail("a current verdict was rebuilt"))
+    monkeypatch.setattr(repo.report, "files", lambda config, tree: {"README.md": b"real"})
+    repo.sync_command(world.cfg, {})
+    assert (world.root / "README.md").read_text() == "real"
+
+
+def test_a_failed_build_verdict_is_not_rebuilt_by_sync(world, monkeypatch):
+    (world.root / "README.md").write_text("old progress")
+    monkeypatch.setattr(repo.report, "publish_hold", lambda config, tree: held("sync.build_failed", "fix the build"))
+    monkeypatch.setattr(repo.build, "make_check", lambda *a: pytest.fail("a failed build was rerun"))
+    assert [n["key"] for n in repo.sync_command(world.cfg, {})["notes"]] == ["sync.build_failed"]
+
+
 def test_sync_check_refuses_a_progress_file_that_differs_from_what_sync_writes(world, monkeypatch):
     (world.root / "README.md").write_text("zero percent")
     monkeypatch.setattr(repo.report, "publish_hold", lambda config, tree: None)

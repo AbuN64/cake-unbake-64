@@ -25,8 +25,8 @@ params = [
 ]
 
 [command.sync]
-help = "Write the generated Makefile, link script, split yamls and CI files, and a stand-in line for every symbol no source owns; --check writes nothing and refuses when a file would change."
-handler = "repo.sync"
+help = "Write the generated Makefile, link script, split yamls and CI files, and a stand-in line for every symbol no source owns; the check verdict the README block, progress.json and docs maps need is brought up to date first (make check); --check writes nothing and refuses when a file would change."
+handler = "repo.sync_command"
 params = [
   { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "write nothing; refuse naming the files that would change" },
   { name = "settle", kind = "flag", type = "str", required = false, multiple = false, help = "write, then refuse as --check would unless a second sync would write nothing (sync and sync --check in one run)" },

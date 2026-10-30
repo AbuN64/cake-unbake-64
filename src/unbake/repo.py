@@ -671,7 +671,7 @@ def jump_table_of(config: Config, version: str, rom: int) -> str | None:
     return _jump_target([int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data) - 3, 4)], code)
 
 
-def _sync_placing(config: Config, params: Json) -> Json:
+def _sync_placing(config: Config, params: Json, refresh: bool = False) -> Json:
     """`sync` after the rows that place the read-only data of the functions named by `place` are added to each
     version's aliases.txt (see place.py): the plan is refused whole before anything is written, and a sync that refuses
     afterwards puts the aliases back. With check: the rows it would add, nothing written."""
@@ -698,7 +698,7 @@ def _sync_placing(config: Config, params: Json) -> Json:
         try:
             for path, data in writes.items():
                 store.write(root / path, data)
-            result = sync(config, {k: v for k, v in params.items() if k != "place"})
+            result = sync(config, {k: v for k, v in params.items() if k != "place"}, refresh)
         except BaseException:
             store.undo(undone)
             raise
@@ -711,15 +711,23 @@ def _sync_placing(config: Config, params: Json) -> Json:
 _PASSES = 8  # most passes one sync makes before it stops at a state it keeps rewriting
 
 
-def sync(config: Config, params: Json) -> Json:
+def sync_command(config: Config, params: Json) -> Json:
+    """`unbake sync`: `sync` that brings the check verdict up to date before it writes what depends on it."""
+    return sync(config, params, refresh=True)
+
+
+def sync(config: Config, params: Json, refresh: bool = False) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
-    files that would change. The README block, its image and progress.json follow the check verdict: with none for
-    this tree they are left as they are and a note says to check first. With settle, write and then refuse as check
-    would unless a second sync would write nothing: when it wrote generated or stand-in files the check runs again in
+    files that would change. The README block, its image, progress.json and the docs maps follow the check verdict:
+    with none for this tree (or one older than its build inputs) they are left as they are and a note says to check
+    first, unless `refresh` (the `unbake sync` command; a caller inside another transaction does not build): then the
+    check runs here, on the tree the generated files just left, so the outputs are never written from a stale verdict
+    and are never skipped for want of one (a build that fails refuses `setup.make`). With settle, write and then
+    refuse as check would unless a second sync would write nothing: when it wrote generated or stand-in files the check runs again in
     this process on the tree it left; the README files it writes are not read by the capture, so their fixed point is
     the README block's own (one `sync --settle` stands for `sync` then `sync --check`)."""
     if params.get("place"):
-        return _sync_placing(config, params)
+        return _sync_placing(config, params, refresh)
     if params.get("makefile") and not params.get("check"):
         # the Makefile and local.mk are one contract (the recipe names the variables local.mk sets): regenerate both,
         # local.mk first so a tree whose content refuses the sync still has the machine half of the current tool
@@ -744,7 +752,12 @@ def sync(config: Config, params: Json) -> Json:
         _, current = _sync(config, {"check": True})
     if not (config.project.root / "README.md").is_file():
         return result
-    if hold := report.publish_hold(config, current):
+    hold = report.publish_hold(config, current)
+    if hold and hold.key == "sync.unchecked" and refresh and not params.get("check"):
+        with effort.stage("repo.sync.check"):
+            build.make_check(config, current)
+        hold = report.publish_hold(config, current)
+    if hold:
         return {**result, "notes": [asdict(hold)]}
     settle = bool(params.get("settle")) and not params.get("check")
     wanted = report.files(config, current, settle=True) if settle else report.files(config, current)

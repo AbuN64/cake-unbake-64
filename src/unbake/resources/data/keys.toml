@@ -355,7 +355,7 @@ sentence = "the generated files or stand-in lines differ from what unbake sync w
 
 [key."sync.unchecked"]
 owner = "repo"
-sentence = "no check verdict for this tree, so sync left the README progress block, overview and progress.json alone"
+sentence = "no check verdict for this tree, so a sync that does not build (sync --check, or one inside another command) left the README progress block, overview, progress.json and docs maps alone"
 
 [key."sync.build_failed"]
 owner = "repo"

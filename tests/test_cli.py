@@ -289,7 +289,9 @@ def test_the_command_set_is_the_C9_set() -> None:
 
 def test_sync_check_reaches_the_handler(argv: list[str], monkeypatch: Patch, capsys: Capture) -> None:
     seen: list[Any] = []
-    monkeypatch.setattr(repo, "sync", lambda cfg, params: seen.append(params) or {"written": [], "stand_ins": {}})
+    monkeypatch.setattr(
+        repo, "sync_command", lambda cfg, params: seen.append(params) or {"written": [], "stand_ins": {}}
+    )
     assert cli.main(["sync", "--check", *argv[1:]]) == 0
     assert seen[0]["check"] is True and _envelope(capsys.readouterr().out)["ok"]
 
@@ -298,7 +300,7 @@ def test_a_refused_sync_check_names_the_files(argv: list[str], monkeypatch: Patc
     def refuse(cfg: Any, params: Any) -> None:
         raise Refusal(Finding("sync.changed", "2 files differ", missing=("Makefile", "game.ld")))
 
-    monkeypatch.setattr(repo, "sync", refuse)
+    monkeypatch.setattr(repo, "sync_command", refuse)
     assert cli.main(["sync", "--check", *argv[1:]]) == 1
     assert _envelope(capsys.readouterr().out)["findings"][0]["Detail"]["Missing"] == ["Makefile", "game.ld"]
 
