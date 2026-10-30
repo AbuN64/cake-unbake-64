@@ -67,6 +67,13 @@ def test_the_audit_does_not_blame_a_hex_literal_the_base_already_held(tmp_path, 
     assert policy.audit_command({"project": str(tmp_path), "against": "HEAD"})["warnings"] == {}
 
 
+def test_a_hex_literal_with_a_suffix_is_held_like_any_other(tmp_path, monkeypatch):
+    # RageWars aab9c527cc: a suffixed literal (0x10u) has no word boundary after its digits; the audit crashed on it.
+    _repo(tmp_path, monkeypatch, {"src/a.c": "void f(void) {\n    g(0x2BCu, 0x11);\n}\n"})
+    (tmp_path / "src/a.c").write_text("void f(void) {\n    g(0x2BCu, 17);\n}\n")
+    assert policy.audit_command({"project": str(tmp_path), "against": "HEAD"})["warnings"] == {}
+
+
 def test_raw_words_that_are_mips_code_are_certain_and_a_pad_class_is_allowed():
     assert _lines(CODE_WORDS, "raw_data", True) == {1: "g_AssertSlotIndex is MIPS code"}
     assert _lines("u8 g_TrailingBytes[] = {1, 2};\nu8 g_pad[] = {0, 0, 0, 0};\n", "raw_data", True) == {}

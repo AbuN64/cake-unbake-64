@@ -1053,7 +1053,7 @@ def warn_keys() -> frozenset[str]:
 
 
 _HEX_KEYS = frozenset({"source.hex-value", "source.hex-review"})
-_HEX_LITERAL = re.compile(r"\b0[xX][0-9A-Fa-f]+\b")
+_HEX_LITERAL = re.compile(r"\b0[xX][0-9A-Fa-f]+")
 
 
 def _unadded_hex(old_code: str, found: Sequence[Finding]) -> list[Finding]:
@@ -1064,7 +1064,8 @@ def _unadded_hex(old_code: str, found: Sequence[Finding]) -> list[Finding]:
     spent: Counter[str] = Counter()
     kept = []
     for f in found:
-        literal = _HEX_LITERAL.findall(f.reason)[-1].lower() if f.key in _HEX_KEYS else ""
+        spelled = _HEX_LITERAL.findall(f.reason) if f.key in _HEX_KEYS else []
+        literal = spelled[-1].lower() if spelled else ""
         if literal:
             spent[literal] += 1
             if spent[literal] <= held[literal]:
