@@ -392,6 +392,7 @@ class Project:
     layout: Mapping[str, Any] = field(default_factory=dict)  # config.toml [layout]: keys over repo.toml's [layout]
     cheat: Mapping[str, Any] = field(default_factory=dict)  # config.toml [cheat]: keys over repo.toml's [cheat]
     audit: Mapping[str, Any] = field(default_factory=dict)  # config.toml [audit]: tables over rules.toml's [audit]
+    repo: Mapping[str, Any] = field(default_factory=dict)  # config.toml [repo]: generated globs and the regenerate command
 
 
 def macro(version: str) -> str:

@@ -413,6 +413,35 @@
    },
    "additionalProperties": false,
    "description": "Optional: keys of repo.toml [paths] this project replaces (platform, blobs, prose): where its input files are."
+  },
+  "repo": {
+   "type": "object",
+   "properties": {
+    "generated": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\s]+$"
+     },
+     "uniqueItems": true
+    },
+    "regenerate": {
+     "type": "string",
+     "minLength": 1,
+     "pattern": "^[^/.][^/]*(/[^/.][^/]*)*$"
+    }
+   },
+   "additionalProperties": false,
+   "dependentRequired": {
+    "generated": [
+     "regenerate"
+    ],
+    "regenerate": [
+     "generated"
+    ]
+   },
+   "description": "Optional: the paths git hosts regenerate instead of merging. `generated` globs and the one `regenerate` command (repo-relative, run from the tree root) are written to .gitattributes as `<glob> generated=<command>`; the command's path is the one path under an ignored folder that .gitignore keeps."
   }
  },
  "required": [

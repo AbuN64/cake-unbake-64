@@ -610,6 +610,17 @@ def test_config_toml_layout_and_cheat_rows_are_read_over_the_packaged_ones(tmp_p
     assert configuration.cheat(moved)["source"] == packaged["cheat"]["source"]
 
 
+def test_config_toml_repo_declares_the_generated_paths_and_their_one_command(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    declared = _load(tmp_path / "a", RW + '\n[repo]\ngenerated = ["README.md"]\nregenerate = "tools/regenerate"\n')
+    assert configuration.repo(declared) == {"generated": ["README.md"], "regenerate": "tools/regenerate"}
+    assert configuration.repo(_load(tmp_path / "b", RW)) == {}
+    for bad in ('generated = ["a"]', 'regenerate = "tools/x"', 'generated = ["a"]\nregenerate = "../x"', "extra = 1"):
+        with pytest.raises(Refusal):
+            _load(tmp_path, RW + "\n[repo]\n" + bad + "\n")
+
+
 def test_a_row_directory_must_sit_under_a_configured_source_root() -> None:
     assert configuration._folder("sdk/libx/") is False
     assert configuration._folder("sdk/libx/", True, ("src", "sdk")) is True

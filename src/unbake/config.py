@@ -149,6 +149,11 @@ def paths(project: Project) -> Json:
     return {**load_resource("repo.toml")["paths"], **getattr(project, "paths", {})}
 
 
+def repo(project: Project) -> Json:
+    """The project's generated paths: config.toml [repo] (`generated` globs, `regenerate` command), empty where it declares none."""
+    return dict(getattr(project, "repo", {}))
+
+
 def _declared_at(root: Path, table: str) -> Json:
     """The validated config.toml table of a root, empty where the root has no config.toml or no such table."""
     path = root / "config.toml"
@@ -626,6 +631,7 @@ def load_project(
         paths=document.get("paths", {}),
         cheat=document.get("cheat", {}),
         audit=document.get("audit", {}),
+        repo=document.get("repo", {}),
     )
 
 

@@ -397,6 +397,35 @@ def test_scaffold_is_the_shared_git_files_from_repo_toml() -> None:
     assert b"SHA-1" in Template(configuration.template("README.md.in")).safe_substitute().encode()
 
 
+def test_scaffold_renders_a_declared_regenerate_command() -> None:
+    declared = {"generated": ["README.md", "docs/map-*.json"], "regenerate": "tools/regenerate"}
+    files = repo.scaffold(declared)
+    assert files[".gitattributes"].endswith(
+        b"README.md generated=tools/regenerate\ndocs/map-*.json generated=tools/regenerate\n"
+    )
+    ignored = files[".gitignore"].decode().splitlines()
+    plain = repo.scaffold()[".gitignore"].decode().splitlines()
+    assert ignored == [("/tools/*" if row == "/tools/" else row) for row in plain] + ["!/tools/regenerate"]
+    nested = repo.scaffold({"generated": ["a"], "regenerate": "tools/bin/run"})[".gitignore"].decode().splitlines()
+    assert nested[4:5] == ["/tools/*"] and nested[-3:] == ["!/tools/bin/", "/tools/bin/*", "!/tools/bin/run"]
+    kept = repo.scaffold({"generated": ["a"], "regenerate": "scripts/regen"})  # no ignored folder above it
+    assert kept[".gitignore"] == repo.scaffold()[".gitignore"]
+    assert repo.scaffold({}) == repo.scaffold()
+
+
+def test_sync_writes_and_checks_the_declared_generated_lines(world):
+    declared = {"generated": ["README.md"], "regenerate": "tools/regenerate"}
+    world.cfg.project.repo = declared
+    repo.sync(world.cfg, {"check": False})
+    assert b"README.md generated=tools/regenerate\n" in (world.root / ".gitattributes").read_bytes()
+    assert b"!/tools/regenerate\n" in (world.root / ".gitignore").read_bytes()
+    assert repo.sync(world.cfg, {"check": True}) == {"written": [], "stand_ins": {}}
+    world.cfg.project.repo = {}
+    with pytest.raises(Refusal) as caught:
+        repo.sync(world.cfg, {"check": True})  # a tree whose declarations the project no longer makes is not in sync
+    assert ".gitattributes" in caught.value.findings[0].missing
+
+
 def test_sync_leaves_an_existing_makefile_alone_until_asked(world):
     repo.sync(world.cfg, {})
     generated = (world.root / "Makefile").read_bytes()

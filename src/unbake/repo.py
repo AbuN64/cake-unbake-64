@@ -596,14 +596,34 @@ def _lines(rows: Iterable[str]) -> bytes:
     return ("\n".join(rows) + "\n").encode()
 
 
-def scaffold() -> dict[str, bytes]:
+def _unignored(ignore: Sequence[str], command: str) -> list[str]:
+    """The ignore list with the one path `command` kept: an ignored folder above it lists its entries (`/tools/*`)
+    instead of itself, and each folder between is let through the same way, so git sees the command and nothing else."""
+    parts = command.split("/")
+    above = ["/" + "/".join(parts[:n]) + "/" for n in range(1, len(parts))]
+    first = next((n for n, folder in enumerate(above) if folder in ignore), None)
+    if first is None:
+        return list(ignore)  # no ignored folder above the command: nothing to let through
+    kept = [f"{row}*" if row == above[first] else row for row in ignore]
+    for folder in above[first + 1 :]:
+        kept += [f"!{folder}", f"{folder}*"]
+    return kept + [f"!/{command}"]
+
+
+def scaffold(declared: Mapping[str, Any] | None = None) -> dict[str, bytes]:
     """The repository files every game repository shares, from repo.toml: what git ignores and merges, the splat pins
-    `make extract` installs, and the licence text."""
-    rules = configuration.load_resource("repo.toml")
+    `make extract` installs, and the licence text. `declared` is the project's config.toml [repo]: each `generated` glob
+    is written `<glob> generated=<regenerate>` (the paths a host regenerates by that command, never merges), and the
+    command's own path stays out of the ignore list."""
+    rules, declared = configuration.load_resource("repo.toml"), declared or {}
     lines = [f"{glob} linguist-language=C" for glob in rules["linguist"]]
     lines += [f"{glob} merge=union" for glob in rules["union"]]
+    ignore = rules["ignore"]
+    if "regenerate" in declared:
+        lines += [f"{glob} generated={declared['regenerate']}" for glob in declared["generated"]]
+        ignore = _unignored(ignore, declared["regenerate"])
     return {
-        ".gitignore": _lines(rules["ignore"]),
+        ".gitignore": _lines(ignore),
         ".gitattributes": _lines(lines),
         "requirements.txt": _lines(rules["splat_pip"]),
         "LICENSE": configuration.template("LICENSE.in").encode(),
@@ -618,7 +638,7 @@ def _generated(config: Config, current: Any) -> dict[str, bytes]:
         **{f"versions/{v}/splat.yaml": build.splat_yaml(config, v, current) for v in project.versions},
         **{f"versions/{v}/text_sizes.mk": build.text_sizes(config, current, v) for v in project.versions},
         **ci.files(),
-        **scaffold(),
+        **scaffold(configuration.repo(project)),
     }
     if not (project.root / HEADER).is_file():
         wanted[HEADER] = configuration.template("include_asm.h.in").encode()
