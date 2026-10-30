@@ -263,7 +263,7 @@ def _member(tokens: Sequence[str], n: int) -> bool:
 
 
 BUILD_TOPS = frozenset({"src", "include", "asm", "tools", "roms"})
-BUILD_FILES = frozenset({"Makefile", "config.toml", "rom.toml", "local.mk"})
+BUILD_FILES = frozenset({"Makefile", "config.toml", "config/platform.toml", "local.mk"})
 
 
 def _unread(path: str, makefile: str) -> bool:

@@ -30,7 +30,7 @@ def document():
 
 def test_platform_is_boot_plus_exact_hash_rsp_and_has_no_boot_output(tmp_path):
     config = _config(tmp_path)
-    (tmp_path / "rom.toml").write_text(tomlkit.dumps(document()))
+    (tmp_path / "config" / "platform.toml").write_text(tomlkit.dumps(document()))
     assert platform.ranges(config, "v") == [(0, 4096), (0x8000, 0x8100)]
     p = report.partition(config, "v", {"f": (0x80001000, 0x1000, 16, "func")}, 0x10000)
     assert p["platform"] == 4352 and p["code"] == 16
@@ -41,7 +41,7 @@ def test_platform_is_boot_plus_exact_hash_rsp_and_has_no_boot_output(tmp_path):
 def test_platform_and_blobs_files_are_read_from_the_configured_paths(tmp_path):
     config = _config(tmp_path)
     config.project.paths = {"platform": "config/platform.toml", "blobs": "config/blobs.toml"}
-    (tmp_path / "config").mkdir()
+    (tmp_path / "config").mkdir(exist_ok=True)
     (tmp_path / "config" / "platform.toml").write_text(tomlkit.dumps(document()))
     (tmp_path / "rom.toml").write_text("not the platform file")  # the default name is no longer read
     assert platform.ranges(config, "v") == [(0, 4096), (0x8000, 0x8100)]
@@ -62,7 +62,7 @@ def test_unverified_or_out_of_range_platform_claim_refuses(tmp_path, change, key
     config = _config(tmp_path)
     data = document()
     change(data)
-    (tmp_path / "rom.toml").write_text(tomlkit.dumps(data))
+    (tmp_path / "config" / "platform.toml").write_text(tomlkit.dumps(data))
     with pytest.raises(Refusal) as error:
         platform.load(config)
     assert error.value.findings[0].key == key
@@ -70,7 +70,7 @@ def test_unverified_or_out_of_range_platform_claim_refuses(tmp_path, change, key
 
 def test_changed_rom_invalidates_partition_before_claiming_platform(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    (tmp_path / "rom.toml").write_text(tomlkit.dumps(document()))
+    (tmp_path / "config" / "platform.toml").write_text(tomlkit.dumps(document()))
     _credits(monkeypatch, f=(0x1000, 16, "func"))
     tree = _tree("platform-change")
     assert report.partitions(config, tree)["v"]["platform"] == 4352
@@ -102,7 +102,7 @@ def test_sha_ignores_rom_mtime_and_follows_content_at_same_size_and_mtime(tmp_pa
 
 def test_valid_document_is_read_from_the_rom_once_and_ranges_is_pure(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    (tmp_path / "rom.toml").write_text(tomlkit.dumps(document()))
+    (tmp_path / "config" / "platform.toml").write_text(tomlkit.dumps(document()))
     reads = []
     real = platform.read
     monkeypatch.setattr(platform, "read", lambda *args: reads.append(args) or real(*args))

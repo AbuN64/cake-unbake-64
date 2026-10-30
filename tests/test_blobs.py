@@ -20,6 +20,7 @@ def image(size: int) -> bytes:
 
 
 def _config(root: Path, versions=("v",), rom=ROM, segments=None) -> N:
+    (root / "config").mkdir(exist_ok=True)
     rows = segments or [
         ("retained", 0, "bin"),
         ("span_1000", 0x1000, "code"),
@@ -236,7 +237,7 @@ def test_credit_never_exceeds_the_non_bin_bytes(tmp_path):
 
 def test_partition_of_a_version_sums_to_the_rom(tmp_path):
     config = _config(tmp_path)
-    (tmp_path / "blobs.toml").write_bytes(
+    (tmp_path / "config" / "blobs.toml").write_bytes(
         blobs.emit(
             {"schema": 1, "blob": {"b": {"type": "world", "state": "decoded", "rom": {"v": [[0x9000, 0xA000]]}}}}
         )
@@ -287,7 +288,7 @@ def test_scan_proves_catalogued_streams_and_lists_streams_in_unknown_bytes(tmp_p
             "short": {**row, "decoded_size": 8, "rom": {"v": [[0x3000, 0x3000 + len(stream)]]}},
         },
     }
-    (tmp_path / "blobs.toml").write_bytes(blobs.emit(document))
+    (tmp_path / "config" / "blobs.toml").write_bytes(blobs.emit(document))
     _credits(monkeypatch)
     monkeypatch.setattr(tree, "capture", lambda config: _tree("scan"))
     out = blobs.scan(config)["v"]
@@ -356,9 +357,11 @@ def _packet(config, **row):
 def test_import_plan_merges_a_pinned_packet_and_applies_it(tmp_path):
     config = _config(tmp_path)
     plan = blobs.import_plan(config, _packet(config))
-    assert not plan.blocking and set(plan.writes) == {"blobs.toml"} and plan.message == "Add 1 blobs to blobs.toml"
+    assert (
+        not plan.blocking and set(plan.writes) == {"config/blobs.toml"} and plan.message == "Add 1 blobs to blobs.toml"
+    )
     done = blobs.apply_import(config, plan)
-    assert done["add"] == "git add blobs.toml" and "git commit -m" in done["commit"]
+    assert done["add"] == "git add config/blobs.toml" and "git commit -m" in done["commit"]
     assert [r["id"] for r in blobs.rows(config)] == ["level.0"]
     assert blobs.import_plan(config, _packet(config)).writes == plan.writes  # idempotent
 
@@ -382,7 +385,7 @@ def test_import_checks_the_merged_file(tmp_path):
 
 def test_shadowed_blobs_are_non_blocking_findings(tmp_path):
     config = _config(tmp_path)
-    (tmp_path / "blobs.toml").write_bytes(blobs.emit(DOC))
+    (tmp_path / "config" / "blobs.toml").write_bytes(blobs.emit(DOC))
     (found,) = blobs.shadows(config, "v", [(0x2800, 0x2900)])
     assert found.key == "blobs.shadowed" and not found.blocking and "256 bytes" in found.reason
 
@@ -400,7 +403,7 @@ def test_land_imports_a_packet_and_reports_the_credit_it_gains(tmp_path, monkeyp
     config = _config(tmp_path)
     _clean_project(config, monkeypatch, tmp_path)
     out = blobs.land(config, _packet(config))
-    assert (out["added"], out["unchanged"], out["files"]) == (1, 0, ["blobs.toml"])
+    assert (out["added"], out["unchanged"], out["files"]) == (1, 0, ["config/blobs.toml"])
     assert out["message"] == "Add 1 blobs to blobs.toml" and "landed" not in out
     assert out["delta"]["v"] == {"blobs_decoded": 0x1000, "blobs_identified": 0, "unknown": -0x1000}
     assert [r["id"] for r in blobs.rows(config)] == ["level.0"]
@@ -415,8 +418,8 @@ def test_land_puts_the_old_file_back_when_a_check_after_the_write_fails(tmp_path
 
     config = _config(tmp_path)
     _clean_project(config, monkeypatch, tmp_path)
-    (tmp_path / "blobs.toml").write_bytes(blobs.emit(DOC))
-    kept = (tmp_path / "blobs.toml").read_bytes()
+    (tmp_path / "config" / "blobs.toml").write_bytes(blobs.emit(DOC))
+    kept = (tmp_path / "config" / "blobs.toml").read_bytes()
 
     def refuse(params):
         raise Refusal(blobs.Finding("audit.credit_drop", "lost"))
@@ -424,7 +427,7 @@ def test_land_puts_the_old_file_back_when_a_check_after_the_write_fails(tmp_path
     monkeypatch.setattr(policy, "audit_command", refuse)
     with pytest.raises(Refusal):
         blobs.land(config, _packet(config))
-    assert (tmp_path / "blobs.toml").read_bytes() == kept
+    assert (tmp_path / "config" / "blobs.toml").read_bytes() == kept
 
 
 def test_land_refuses_a_packet_the_import_refuses_and_writes_nothing(tmp_path, monkeypatch):
@@ -434,7 +437,7 @@ def test_land_refuses_a_packet_the_import_refuses_and_writes_nothing(tmp_path, m
     packet["rom_sha256"]["v"] = "00" * 32
     with pytest.raises(Refusal):
         blobs.land(config, packet)
-    assert not (tmp_path / "blobs.toml").exists()
+    assert not (tmp_path / "config" / "blobs.toml").exists()
 
 
 def test_blobs_toml_is_no_build_or_score_input():
@@ -456,7 +459,9 @@ def test_blobs_toml_is_no_build_or_score_input():
 # ---------------------------------------------------------------- supersedes
 def _observed(config, spans=((0x2400, 0x2800),), state="observed"):
     row = {"type": "sn-debug", "state": state, "format": "accounting", "rom": {"v": [list(s) for s in spans]}}
-    (config.project.root / "blobs.toml").write_bytes(blobs.emit({"schema": 1, "blob": {"accounting.sn-debug.v": row}}))
+    (config.project.root / "config" / "blobs.toml").write_bytes(
+        blobs.emit({"schema": 1, "blob": {"accounting.sn-debug.v": row}})
+    )
 
 
 def test_a_packet_supersedes_the_observed_rows_its_decoded_rows_cover(tmp_path):
@@ -516,7 +521,7 @@ def test_the_land_command_returns_the_land_record_not_nested(tmp_path, monkeypat
     packet = tmp_path / "packet.json"
     packet.write_text(json.dumps(_packet(config)))
     out = blobs.run(config, {"action": ["land", str(packet)]})
-    assert out["files"] == ["blobs.toml"] and out["message"] and "landed" not in out
+    assert out["files"] == ["config/blobs.toml"] and out["message"] and "landed" not in out
     assert human._written("blobs", out)[0] == "Written, not committed. To commit:"
 
 
@@ -529,7 +534,7 @@ def _good():
 def _verify(tmp_path, monkeypatch, document, partition=None, text=None):
     """blobs.verify on a written blobs.toml, the tree and the partition mocked."""
     config = _config(tmp_path)
-    (tmp_path / "blobs.toml").write_bytes(text if text is not None else blobs.emit(document))
+    (tmp_path / "config" / "blobs.toml").write_bytes(text if text is not None else blobs.emit(document))
     monkeypatch.setattr("unbake.tree.capture", lambda cfg, *a, **k: None)
     sums = {
         "rom_size": ROM,
@@ -586,7 +591,7 @@ def test_verify_refuses_a_partition_that_does_not_sum_or_overlaps(tmp_path, monk
 def test_land_refuses_new_duplicate_claims_before_capture_or_write(tmp_path, monkeypatch):
     config = _config(tmp_path)
     initial = blobs.emit(_good())
-    path = tmp_path / "blobs.toml"
+    path = tmp_path / "config" / "blobs.toml"
     path.write_bytes(initial)
     packet = _packet(config)
     packet["blob"]["duplicate"] = packet["blob"].pop("level.0")
@@ -602,7 +607,7 @@ def test_import_preserves_existing_duplicate_pairs_but_refuses_a_new_claim(tmp_p
     config = _config(tmp_path)
     document = _good()
     document["blob"]["prior"] = json.loads(json.dumps(document["blob"]["level.0"]))
-    (tmp_path / "blobs.toml").write_bytes(blobs.emit(document))
+    (tmp_path / "config" / "blobs.toml").write_bytes(blobs.emit(document))
     packet = _packet(config)
     assert not blobs.import_plan(config, packet).blocking
     packet["blob"]["new"] = packet["blob"].pop("level.0")

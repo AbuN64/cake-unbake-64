@@ -17,9 +17,9 @@ splat_pip = ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"]
 # Project input files that are not at the root, repo-relative. A project names its own under config.toml [paths].
 # `prose` lists the text files outside src/ and include/ that name symbols in sentences: they are renamed with them.
 [paths]
-platform = "rom.toml"
-blobs = "blobs.toml"
-prose = ["docs/sweep.toml"]
+platform = "config/platform.toml"
+blobs = "config/blobs.toml"
+prose = ["config/sweep.toml"]
 
 # splat options init writes into each versions/<version>/<name>.yaml (placeholders {version} {name} {rom}).
 [splat.options]

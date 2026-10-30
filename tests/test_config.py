@@ -573,21 +573,29 @@ def test_segment_address_space_rejects_ambiguous_or_unsafe_facts(tmp_path, repla
 
 
 FILES_DEFAULT = {  # the packaged file lists with `${platform}` and `${blobs}` spelled as the default [paths]
-    "infra": ["local.mk", "include/include_asm.h", "rom.toml", "roms", "tools", "ci", "asm"],
-    "facts": ["config.toml", "versions", "blobs.toml"],
-    "blobs": ["blobs.toml"],
+    "infra": ["local.mk", "include/include_asm.h", "config/platform.toml", "roms", "tools", "ci", "asm"],
+    "facts": ["config.toml", "versions", "config/blobs.toml"],
+    "blobs": ["config/blobs.toml"],
 }
 
 
-def test_paths_move_the_input_files_and_the_cheat_file_lists_follow(tmp_path: Path) -> None:
-    moved = _load(tmp_path, RW + '\n[paths]\nplatform = "config/platform.toml"\nblobs = "config/blobs.toml"\n')
-    assert configuration.paths(moved) == {
+def test_the_default_input_paths_are_the_standard_layout(tmp_path: Path) -> None:
+    assert configuration.paths(_load(tmp_path, RW)) == {
         "platform": "config/platform.toml",
         "blobs": "config/blobs.toml",
-        "prose": ["docs/sweep.toml"],
+        "prose": ["config/sweep.toml"],
+    }
+
+
+def test_paths_move_the_input_files_and_the_cheat_file_lists_follow(tmp_path: Path) -> None:
+    moved = _load(tmp_path, RW + '\n[paths]\nplatform = "inputs/platform.toml"\nblobs = "inputs/blobs.toml"\n')
+    assert configuration.paths(moved) == {
+        "platform": "inputs/platform.toml",
+        "blobs": "inputs/blobs.toml",
+        "prose": ["config/sweep.toml"],
     }
     rules = configuration.cheat(moved)
-    assert "config/platform.toml" in rules["infra"] and rules["blobs"] == ["config/blobs.toml"]
+    assert "inputs/platform.toml" in rules["infra"] and rules["blobs"] == ["inputs/blobs.toml"]
     assert configuration.paths_at(tmp_path) == configuration.paths(moved)
     assert configuration.module_map_at(tmp_path) is None
     with pytest.raises(Refusal):

@@ -72,7 +72,7 @@ def _refused(repo: SimpleNamespace, **files: str | None) -> set[str]:
     return {f.key for f in refused.value.findings}
 
 
-PATHS = {"blobs_toml": "blobs.toml", "src__a_c": "src/a.c", "src__x_s": "src/x.s", "local_mk": "local.mk"}
+PATHS = {"blobs_toml": "config/blobs.toml", "src__a_c": "src/a.c", "src__x_s": "src/x.s", "local_mk": "local.mk"}
 A = '#include "include_asm.h"\nint f(void) { return 1; }\nINCLUDE_ASM("seg", func_80000000);\n'
 
 
@@ -305,7 +305,7 @@ def test_blobs_toml_is_a_fact_not_infrastructure_and_is_verified_when_it_changes
     _git(repo.root, "add", "-A")
     _git(repo.root, "commit", "-qm", "c only")
     cheat.cheat_command(repo.config, {"against": base})
-    assert seen == [1]  # blobs.toml did not differ: no verification
+    assert seen == [1]  # config/blobs.toml did not differ: no verification
 
 
 def test_a_blobs_toml_that_fails_verification_is_refused(

@@ -8,7 +8,7 @@ asflags = ["-march=vr4300", "-mabi=32", "-EB", "--no-pad-sections", "-mips3"]
 as_cppflags = ["-D_LANGUAGE_ASSEMBLY", "-Dmips", "-D_MIPS_SIM_ABI32=1", "-D_MIPS_SIM=1"]
 text_mask = 0x1FFFFFFF
 
-# The cartridge header and IPL3 boot code. A project rom.toml records exact-hash RSP spans beside this range.
+# The cartridge header and IPL3 boot code. A project platform file (config/platform.toml) records exact-hash RSP spans beside this range.
 [platform]
 boot = [[0x0, 0x1000]]
 

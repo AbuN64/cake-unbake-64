@@ -1,4 +1,4 @@
-"""Platform ROM content: the fixed boot range and exact-hash RSP binaries declared in project rom.toml."""
+"""Platform ROM content: the fixed boot range and exact-hash RSP binaries declared in the project platform file."""
 
 from __future__ import annotations
 

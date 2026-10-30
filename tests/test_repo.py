@@ -349,9 +349,9 @@ def test_only_the_extract_recipe_of_the_makefile_keys_the_extraction(world):
     assert repo._extract_key(world.cfg, "a") != key
 
 
-def test_blobs_toml_does_not_key_the_extraction(world):
+def test_the_blobs_file_does_not_key_the_extraction(world):
     key = repo._extract_key(world.cfg, "a")
-    _write(world.root, "blobs.toml", 'schema = 1\n\n[blob."x"]\ntype = "world"\n')
+    _write(world.root, "config/blobs.toml", 'schema = 1\n\n[blob."x"]\ntype = "world"\n')
     assert repo._extract_key(world.cfg, "a") == key
 
 
