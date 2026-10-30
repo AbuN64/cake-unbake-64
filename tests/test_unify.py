@@ -300,9 +300,7 @@ def test_a_build_step_asks_for_every_slot_of_the_host(slots: int, jobs: int) -> 
     assert typeunify.jobs(host) == jobs
 
 
-def test_a_statement_every_unit_repeats_is_parsed_once_per_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_statement_every_unit_repeats_is_parsed_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     world = tree(tmp_path)
     parsed: list[str] = []
     original = Norm.statement
@@ -314,5 +312,91 @@ def test_a_statement_every_unit_repeats_is_parsed_once_per_version(
     monkeypatch.setattr(Norm, "statement", count)
     census = typeunify.collect(world.found(), world.read)
     header = [t for t in parsed if "extern int g" in t]
-    assert len(header) == 2  # the header's statement once per version, not once per unit
+    assert len(header) == 1  # the header's statement once, not once per unit nor per version
     assert set(typecensus.clashes(census.per)) == {"g", "h"}
+
+
+# ---------------------------------------------------------------- the real slices of TYPE-CLASH-2
+def test_hex_array_bounds_are_written_decimal(tmp_path: Path) -> None:
+    """g_videoManagerThreadStack[0x200]: `unbake audit` (source.hex-value) refuses a small hex bound."""
+    assert typecensus.decimal_bounds("char g_videoManagerThreadStack[0x200]") == "char g_videoManagerThreadStack[512]"
+    assert typecensus.decimal_bounds("u8 m[0x10U][0XfL] = {0x10}") == "u8 m[16][15] = {0x10}"  # only the bounds
+    assert typecensus.tkey("char[512]") == typecensus.tkey("char[0x200]") == "char[]"
+    files = {
+        "include/h.H": "extern unsigned char m[2][0x20];\n",
+        "src/a.CPP": "extern char m[2][0x20];\nint f(void) { return m[0][0]; }\n",
+        "src/b.CPP": "int k(void) { return m[0][1]; }\n",
+    }
+    world = World(tmp_path, files, ["src/a.CPP", "src/b.CPP"])
+    result = typeunify.run(tmp_path, world.seams, ["m"], say=lambda _text: None)
+    assert "m" in result["unified"]
+    rewritten = (
+        tmp_path / "src/a.CPP"
+    ).read_text()  # the declaration unify wrote: the one in h.H is the pick as it was
+    assert "m[][32]" in rewritten and "0x" not in rewritten
+
+
+def test_the_real_fold_only_shapes_read_as_their_types() -> None:
+    """The three shapes the census was blind to (TRIPLE.H, RESULTS_TEXT.H, a two-prototype statement)."""
+    norm = Norm()
+
+    def types(text: str) -> dict[str, str]:
+        return {n: d[2] for n, d in typecensus.declarations(typeunify.scan(f'# 1 "include/x.H"\n{text}'), norm, LIKE)}
+
+    assert types("extern *g_resultsGoalOneFormat;") == {"g_resultsGoalOneFormat": "int*"}  # implicit int
+    assert types("extern char *g_resultsGoalOneFormatLocalized[];") == {"g_resultsGoalOneFormatLocalized": "char*[]"}
+    assert types("extern char g_pickupHealthDefinitions;") == {"g_pickupHealthDefinitions": "char"}
+    assert types("extern struct { int a; } g_anon;")["g_anon"] != types("extern char g_other;")["g_other"]
+    both = types("void a(int x), *b(char c);")
+    assert both == {"a": "void(int)", "b": "void*(char)"}
+
+
+FOLD_TREE = {
+    "include/TRIPLE.H": "extern *g_resultsGoalOneFormat;\nextern char g_pickupHealthDefinitions;\n",
+    "include/RESULTS_TEXT.H": "extern char *g_resultsGoalOneFormat;\nextern int g_unrelated;\n",
+    "include/h.H": "extern int g;\n",
+    "src/a.CPP": "int f(void) { return g; }\n",
+}
+
+
+def fold_world(tmp_path: Path, include: dict[str, str]) -> World:
+    world = World(tmp_path, FOLD_TREE, ["src/a.CPP", "src/b.CPP"])
+    world.read = lambda items: [  # type: ignore[method-assign]
+        typeunify.facts(
+            "".join(f'# 1 "{h}"\n{FOLD_TREE[h]}' for h in include[u]) + f'# 1 "{u}"\n{FOLD_TREE.get(u, "")}', u, LIKE
+        )
+        for _, u in items
+    ]
+    return world
+
+
+def test_the_fold_check_names_what_clashes_in_a_unit_once_headers_are_one(tmp_path: Path) -> None:
+    """The 42 fold-only names: TRIPLE.H spells `extern *x;` (implicit int), RESULTS_TEXT.H `extern char *x;`. No unit
+    reads both until they fold, so only the fold makes the conflict one a compiler sees."""
+    include = {"src/a.CPP": ["include/TRIPLE.H"], "src/b.CPP": ["include/RESULTS_TEXT.H"]}
+    world = fold_world(tmp_path, include)
+    both = frozenset({"include/TRIPLE.H", "include/RESULTS_TEXT.H"})
+    census = typeunify.collect(world.found(), world.read, both)
+    assert set(typecensus.clashes(census.per)) == {"g_resultsGoalOneFormat"}  # the parser reads `extern *x;` now
+    folds = tmp_path / "fold.tsv"
+    folds.write_text("header\ttarget\trule\tevidence\ninclude/TRIPLE.H\tinclude/RESULTS_TEXT.H\tr\te\n")
+    found = typeunify.folded(census, typeunify.fold_groups(typeunify.folds_of(folds)))
+    assert sorted(found) == ["g_resultsGoalOneFormat"]  # int* against char*; g_unrelated and the others agree
+    unrelated = typeunify.folded(census, [frozenset({"include/TRIPLE.H", "include/h.H"})])
+    assert unrelated == {}  # RESULTS_TEXT.H is not in the group: no unit reads both types
+    rows = typecensus.table(found, {}, {n: "fold-only" for n in found}).splitlines()
+    assert rows[1].split("\t")[0] == "g_resultsGoalOneFormat" and rows[1].endswith("fold-only")
+
+
+def test_fold_groups_join_the_folds_that_share_a_file() -> None:
+    groups = typeunify.fold_groups([("a.H", "b.H"), ("c.H", "d.H"), ("b.H", "e.H")])
+    assert sorted(sorted(g) for g in groups) == [["a.H", "b.H", "e.H"], ["c.H", "d.H"]]
+
+
+def test_one_line_per_name_says_the_pick_the_candidates_and_the_failing_unit(tmp_path: Path) -> None:
+    world = tree(tmp_path, fail=["extern long g;\nextern"])
+    said: list[str] = []
+    typeunify.run(tmp_path, world.seams, ["g", "h"], say=said.append)
+    assert len(said) == 2 and all(re.fullmatch(r"unify (g|h): .*; \d+\.\ds", s) for s in said)
+    g = next(s for s in said if s.startswith("unify g:"))
+    assert "unified as int" in g and "2 candidate(s) tried" in g and "failing long" in g and "src/" in g

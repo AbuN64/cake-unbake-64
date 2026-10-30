@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from unbake.typecensus import Norm, split_top, tkey, ws
+from unbake.typecensus import Norm, decimal_bounds, split_top, tkey, ws
 
 EXHAUSTED = "no further candidate type"  # the plan of a rank past the last candidate
 Site = tuple[str, str, int]  # (kind, type key, declarators) of one declaration by its loc "file:line"
@@ -121,7 +121,8 @@ def _decl_text(stmt: str, name: str) -> str | None:
 
 
 def _spell(text: str, norm: Norm) -> str:
-    """A tag typedef written as its tag (`Foo` as `struct Foo`) outside a tag position, the first bound opened."""
+    """A tag typedef written as its tag (`Foo` as `struct Foo`) outside a tag position, the first bound opened and every
+    other bound in decimal."""
     out, prev = [], ""
     for t in re.split(r"(\b\w+\b)", text):
         full = norm.typedefs.get(t, "")
@@ -133,8 +134,8 @@ def _spell(text: str, norm: Norm) -> str:
             else t
         )
         prev = t.strip() or prev
-    spelled = "".join(out)
-    return re.sub(r"\[\d+\]", "[]", spelled, count=1) if "(" not in spelled else spelled
+    spelled = decimal_bounds("".join(out))  # a bound copied from another declaration is decimal, as the audit demands
+    return re.sub(r"\[[^\]]+\]", "[]", spelled, count=1) if "(" not in spelled else spelled
 
 
 def plan(name: str, sites: Mapping[str, Site], rank: int, src: Sources, norm: Norm) -> Plan | str:

@@ -150,7 +150,10 @@ build/%/objs.mk: $(NAME).ld
 ifeq ($(CHECK),rom)
 -include $(VERSIONS:%=build/%/objs.mk)
 endif
--include $(foreach v,$(VERSIONS),$(OBJS_$(v):.o=.d))
+# Reading the header list of every object costs seconds of one core in each make; a make that names objects needs only
+# their own lists, whatever else the tree holds.
+GOAL_OBJS := $(filter build/%.o,$(MAKECMDGOALS))
+-include $(if $(GOAL_OBJS),$(GOAL_OBJS:.o=.d),$(foreach v,$(VERSIONS),$(OBJS_$(v):.o=.d)))
 
 # ---------------------------------------------------------------- objects
 # An object follows the text its source preprocesses to, not the time its headers were written: the .i is replaced only
@@ -243,7 +246,7 @@ endif
 .PHONY: nm
 nm: $(VERSIONS:%=build/nm/%/$(NAME).z64)
 $(foreach v,$(VERSIONS),$(eval OBJS_nm_$(v) := $(patsubst build/$(v)/%,build/nm/$(v)/%,$(OBJS_$(v)))))
--include $(foreach v,$(VERSIONS),$(patsubst build/$(v)/%,build/nmraw/$(v)/%,$(OBJS_$(v):.o=.d)))
+-include $(foreach v,$(VERSIONS),$(patsubst build/$(v)/%,build/nmraw/$(v)/%,$(if $(GOAL_OBJS),$(filter build/$(v)/%,$(GOAL_OBJS:.o=.d)),$(OBJS_$(v):.o=.d))))
 # A raw object follows the extracted files its matching twin names, and takes the same text sizes.
 ifeq ($(CHECK),rom)
 $(shell sed -E 's@^build/@build/nmraw/@' build/asm.deps > build/asm-nmraw.deps.$$$$ && mv build/asm-nmraw.deps.$$$$ build/asm-nmraw.deps)

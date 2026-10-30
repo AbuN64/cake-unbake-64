@@ -10,7 +10,8 @@ define or use it (a body or an initializer that spells it, or a definition of it
 made again and compared. Names whose units do not meet share one batch, so a unit that fails or differs belongs to
 exactly one name of its batch and the others are settled by the same build. Once, after all rewrites, every unit
 that holds a file a kept rewrite touches is made again and compared with the baseline: a unit the finer reading
-missed is a drift and refuses the run. A build that did not run is
+missed is a drift and refuses the run. One line per name goes to the person watching (picked type,
+candidates tried, the failing unit of each, seconds). A build that did not run is
 refused, never reported as a pass: an empty log, a make exit with no unit named, or an object neither made nor named
 in a failure. A name no candidate satisfies is reported with the first failing unit of each candidate type."""
 
@@ -24,10 +25,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from unbake import build, pool, process, store, tree
+from unbake import build, effort, pool, process, store, tree
 from unbake import config as configuration
 from unbake.contracts import Config, Finding, Host, Json, Refusal
-from unbake.typecensus import Decl, Norm, Stmt, clashes, declarations, files_of, index, scan, table
+from unbake.typecensus import Decl, Norm, Stmt, clashes, declarations, files_of, index, scan, table, tkey
 from unbake.typeplan import EXHAUSTED, Plan, Sources, plan, render, sites_of
 
 Unit = tuple[str, str]  # (version, source path)
@@ -52,6 +53,9 @@ class Census:
     closure: dict[Unit, frozenset[str]] = field(default_factory=dict)
     words: dict[Unit, frozenset[str]] = field(default_factory=dict)  # per unit: what it defines or uses
     norm: Norm = field(default_factory=Norm)
+    held: dict[Unit, list[Stmt]] = field(default_factory=dict)  # the statements of the units that read a `watch` file
+    by_file: dict[str, dict[str, set[Stmt]]] = field(default_factory=dict)  # version -> watched file -> statements
+    named: dict[Stmt, list[tuple[str, Decl]]] = field(default_factory=dict)  # what each statement declares, read once
 
 
 def _declares_only(stmt: Stmt) -> bool:
@@ -82,17 +86,22 @@ def facts(text: str, unit: str, keep: Callable[[str], bool]) -> Facts:
     )
 
 
-def collect(units: Mapping[str, Sequence[str]], read: Callable[[Sequence[Unit]], list[Facts]]) -> Census:
-    """The declarations of every name per version, and the files each unit reads."""
+def collect(
+    units: Mapping[str, Sequence[str]],
+    read: Callable[[Sequence[Unit]], list[Facts]],
+    watch: frozenset[str] = frozenset(),
+) -> Census:
+    """The declarations of every name per version, and the files each unit reads. The statements of the units that
+    read a `watch` file are kept (the fold-check composes them)."""
     items = [(v, u) for v in sorted(units) for u in sorted(units[v])]
     held = read(items)
     out = Census()
     spelled_out: set[str] = set()  # a typedef or a statement of a shared header is in every unit: read it once
     for typedefs, _, _, _ in held:
-        for stmt in typedefs:
-            if stmt not in spelled_out:
-                spelled_out.add(stmt)
-                out.norm.define(stmt)
+        for typedef in typedefs:
+            if typedef not in spelled_out:
+                spelled_out.add(typedef)
+                out.norm.define(typedef)
     seen: dict[str, dict[str, dict[str, Decl]]] = defaultdict(lambda: defaultdict(dict))
     parsed: dict[str, set[Stmt]] = defaultdict(set)
     for (version, unit), (_, stmts, files, words) in zip(items, held, strict=True):
@@ -100,10 +109,60 @@ def collect(units: Mapping[str, Sequence[str]], read: Callable[[Sequence[Unit]],
         out.words[(version, unit)] = words
         fresh = [s for s in stmts if s not in parsed[version]]
         parsed[version].update(fresh)
-        for name, decl in declarations(fresh, out.norm, lambda _f: True):
-            seen[name][version][f"{decl[0]}\t{decl[1]}\t{decl[2]}"] = decl
+        for stmt in fresh:
+            if stmt not in out.named:  # a statement of a shared header reads the same in every version
+                out.named[stmt] = declarations([stmt], out.norm, lambda _f: True)
+            for name, decl in out.named[stmt]:
+                seen[name][version][f"{decl[0]}\t{decl[1]}\t{decl[2]}"] = decl
+        if files & watch:
+            out.held[(version, unit)] = stmts
+            of_version = out.by_file.setdefault(version, {})
+            for stmt in stmts:
+                if stmt[0] in watch:
+                    of_version.setdefault(stmt[0], set()).add(stmt)
     out.per = {n: {v: sorted(d.values()) for v, d in vers.items()} for n, vers in seen.items()}
     return out
+
+
+Fold = tuple[str, str]  # (header folded away, target header it folds into)
+
+
+def folds_of(path: Path) -> list[Fold]:
+    """The (header, target) rows of a fold list: the first two columns of each line (a header row is skipped)."""
+    rows = [line.split("\t") for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [(r[0].strip(), r[1].strip()) for r in rows if len(r) > 1 and r[0] != "header"]
+
+
+def fold_groups(folds: Iterable[Fold]) -> list[frozenset[str]]:
+    """The files that become one header: folds that share a file are one group."""
+    groups: list[set[str]] = []
+    for pair in folds:
+        joined = [g for g in groups if g.intersection(pair)]
+        merged = set(pair).union(*joined)
+        groups = [g for g in groups if g not in joined] + [merged]
+    return [frozenset(g) for g in groups]
+
+
+def folded(census: Census, groups: Sequence[frozenset[str]]) -> dict[str, dict[str, list[Decl]]]:
+    """The declarations of every name that two types meet in one unit once `groups` are one header each: a unit that
+    reads a file of a group reads the statements of the whole group. name -> version -> declarations. A unit of the
+    built tree has no such name, so each is a conflict the fold makes."""
+    found: dict[str, dict[str, dict[str, Decl]]] = defaultdict(lambda: defaultdict(dict))
+    for (version, unit), stmts in census.held.items():
+        files = census.closure[(version, unit)]
+        seen = set(stmts)
+        for group in groups:
+            if files & group:
+                for file in group:
+                    seen |= census.by_file.get(version, {}).get(file, set())
+        local: dict[str, dict[str, Decl]] = defaultdict(dict)
+        for stmt in seen:
+            for name, decl in census.named.get(stmt, ()):
+                local[name][f"{decl[0]}\t{decl[1]}\t{decl[2]}"] = decl
+        for name, decls in local.items():
+            if len({tkey(d[2]) for d in decls.values()}) > 1:
+                found[name][version].update(decls)
+    return {n: {v: sorted(d.values()) for v, d in vers.items()} for n, vers in found.items()}
 
 
 def reach(census: Census, found: Plan) -> frozenset[Unit]:
@@ -180,8 +239,21 @@ def baseline(root: Path, seams: Seams, units: Mapping[str, Sequence[str]]) -> di
     return {u: h for u, h in made.items() if h is not None}
 
 
-def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
-    """Settle one type for each clashing name (or each of `names`); the tree keeps the rewrites that held."""
+def line(name: str, got: Plan | None, failed: Mapping[str, str], seconds: float) -> str:
+    """The progress line of a name that is done: the type picked (or none), how many candidates were tried, the failing
+    unit of each that failed, the seconds its builds took."""
+    tried = sum(1 for canon in failed if canon) + (got is not None)
+    why = "; ".join(f"{canon or 'no plan'} => {reason}" for canon, reason in failed.items())
+    return (
+        f"unify {name}: {'unified as ' + got.canon if got else 'unresolved'}; {tried} candidate(s) tried"
+        + (f"; failing {why}" if why else "")
+        + f"; {seconds:.1f}s"
+    )
+
+
+def run(root: Path, seams: Seams, names: Sequence[str] | None = None, say: Callable[[str], None] = effort.say) -> Json:
+    """Settle one type for each clashing name (or each of `names`); the tree keeps the rewrites that held. `say` takes
+    one line per name as soon as it is settled or out of candidates."""
     units = seams.units()
     if not any(units.values()):
         raise Refusal(Finding("unify.units", "no compiled unit found: build the tree first (unbake setup)"))
@@ -203,8 +275,10 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
             got = plan(name, sites_of(census.per, name), rank[name], src, census.norm)
             if isinstance(got, Plan):
                 plans[name] = got
-            elif rank[name] == 0 or got != EXHAUSTED:  # running out of candidates is how a rotation ends
-                failed[name][""] = got
+            else:
+                if rank[name] == 0 or got != EXHAUSTED:  # running out of candidates is how a rotation ends
+                    failed[name][""] = got
+                say(line(name, None, failed[name], spent[name]))
         pending = []
         units_of = {n: touched(census, p) for n, p in plans.items()}
         for group in batches(units_of):
@@ -225,6 +299,7 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
                     pending.append(name)
                 else:
                     settled[name] = plans[name]
+                    say(line(name, plans[name], failed[name], spent[name]))
             _write(root, files, settled.values(), src)  # the names that failed go back to their original text
     reached = set().union(tried, *(reach(census, p) for p in settled.values()))
     back = rebuild(root, seams, reached)
@@ -251,9 +326,27 @@ def run(root: Path, seams: Seams, names: Sequence[str] | None = None) -> Json:
     }
 
 
-def _read_unit(item: tuple[Config, str, str]) -> Facts:
-    cfg, version, unit = item
-    return facts(tree.preprocess(cfg, unit, version, markers=True), unit, configuration.under_tree)
+READ_CHUNK = 16  # units one worker reads per job: the statements of their shared headers travel once
+
+
+def _read_chunk(items: list[tuple[Config, str, str]]) -> list[Facts]:
+    """The facts of several units, equal statements and words being one object: pickled once, held once in the parent
+    (every unit of a version repeats the statements of the headers it shares)."""
+    same: dict[object, object] = {}
+    out: list[Facts] = []
+    for cfg, version, unit in items:
+        typedefs, stmts, files, words = facts(
+            tree.preprocess(cfg, unit, version, markers=True), unit, configuration.under_tree
+        )
+        out.append(
+            (
+                [same.setdefault(t, t) for t in typedefs],  # type: ignore[misc]
+                [same.setdefault(t, t) for t in stmts],  # type: ignore[misc]
+                frozenset(same.setdefault(f, f) for f in files),  # type: ignore[misc]
+                frozenset(same.setdefault(w, w) for w in words),  # type: ignore[misc]
+            )
+        )
+    return out
 
 
 def jobs(host: Host) -> int:
@@ -279,7 +372,8 @@ def seams(cfg: Config) -> Seams:
         return found
 
     def read(items: Sequence[Unit]) -> list[Facts]:
-        return list(pool.map(cfg, "unify.read", _read_unit, [(cfg, v, u) for v, u in items]))
+        chunks = [[(cfg, v, u) for v, u in items[at : at + READ_CHUNK]] for at in range(0, len(items), READ_CHUNK)]
+        return [got for chunk in pool.map(cfg, "unify.read", _read_chunk, chunks) for got in chunk]
 
     def make(targets: Sequence[str]) -> tuple[int, str]:
         store.write(root / "local.mk", build.local_mk(cfg))
@@ -298,12 +392,17 @@ def _names(path: Path | None) -> list[str] | None:
 
 
 def census_command(cfg: Config, params: Json) -> Json:
-    """`unbake census`: the clashes of the tree in the CLASH.tsv shape, to --out or to the count only."""
+    """`unbake census`: the clashes of the tree in the CLASH.tsv shape, to --out or to the count only. With --folds
+    (a fold list: header and target per line) the table is the fold-check instead: the names two types meet at in a
+    unit once each group of folded headers is one header, `fold-only` where the tree as it is has no clash of the name;
+    nothing is written but --out."""
     real = seams(cfg)
     units = real.units()
     if not any(units.values()):
         raise Refusal(Finding("unify.units", "no compiled unit found: build the tree first (unbake setup)"))
-    census = collect(units, real.read)
+    folds = folds_of(Path(params["folds"])) if params.get("folds") else []
+    groups = fold_groups(folds)
+    census = collect(units, real.read, frozenset().union(*groups))
     root = cfg.project.root
     texts = {
         p: (root / p).read_bytes().decode("latin-1")
@@ -311,17 +410,28 @@ def census_command(cfg: Config, params: Json) -> Json:
         for p in sorted(x.relative_to(root).as_posix() for x in (root / r).rglob("*") if x.is_file())
         if configuration.is_text(p)
     }
-    rows = table(census.per, index(texts))
+    users = index(texts)
+    found = clashes(census.per)
+    made = folded(census, groups) if folds else {}
     out = params.get("out")
     if out:
+        rows = (
+            table(made, users, {n: "open" if n in found else "fold-only" for n in made})
+            if folds
+            else table(census.per, users)
+        )
         store.write(Path(out), rows.encode())
-    found = clashes(census.per)
     return {
         "units": sum(len(v) for v in units.values()),
         "names": len(census.per),
         "clashing": len(found),
         "declarations": sum(len(d) for vers in census.per.values() for d in vers.values()),
         "written": str(out) if out else "",
+        **(
+            {"folds": len(folds), "folded": len(made), "fold_only": sorted(n for n in made if n not in found)}
+            if folds
+            else {}
+        ),
     }
 
 

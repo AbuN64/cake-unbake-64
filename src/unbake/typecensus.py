@@ -22,6 +22,9 @@ _KW = frozenset(
     | {"float", "double", "register"}
 )
 _TAGS = ("struct", "union", "enum")
+_ANONYMOUS = re.compile(r"\b(struct|union|enum)\s*(\w*)\s*\{ \}\s*(?=[\w*])")
+_FUNCTION = re.compile(r"^([\w\s\*]+?)\b(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)$")
+_MORE = re.compile(r"^(\**)\s*(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)$")
 _MARK = re.compile(r'# (\d+) "([^"]*)"')
 
 
@@ -42,9 +45,19 @@ def split_top(text: str) -> list[str]:
     return [*out, cur]
 
 
+_BOUND = re.compile(r"\[[^\]]*\]")
+_HEX = re.compile(r"\b0[xX][0-9a-fA-F]+[uUlL]*\b")
+
+
+def decimal_bounds(text: str) -> str:
+    """`text` with every hex literal inside an array bound written in decimal: the one spelling `unbake audit` accepts
+    (`source.hex-value`), so a bound copied from one declaration into another never carries a hex literal."""
+    return _BOUND.sub(lambda b: _HEX.sub(lambda h: str(int(h[0].rstrip("uUlL"), 16)), b[0]), text)
+
+
 def tkey(typ: str) -> str:
-    """The type of an extern: the bound of its first dimension is not part of it."""
-    return re.sub(r"\[\d*\]", "[]", typ, count=1) if "(" not in typ else typ
+    """The type of an extern: the bound of its first dimension is not part of it, however it is spelled."""
+    return _BOUND.sub("[]", typ, count=1) if "(" not in typ else typ
 
 
 def files_of(text: str, unit: str) -> frozenset[str]:
@@ -53,6 +66,10 @@ def files_of(text: str, unit: str) -> frozenset[str]:
     for m in _MARK.finditer(text):
         found.add(unit if m[2] == "<stdin>" else m[2])
     return frozenset(found)
+
+
+_SPECIAL = re.compile(r"[{};]")
+_BODY = re.compile(r"\)\s*(\w+\s+[\w\s\*,\[\]]+;\s*)*\{\s*\}\s*$")
 
 
 def scan(text: str) -> list[Stmt]:
@@ -66,7 +83,14 @@ def scan(text: str) -> list[Stmt]:
             continue
         if ln.startswith("# "):
             continue
-        for c in ln:
+        at = 0
+        for m in _SPECIAL.finditer(ln):  # the text between braces and semicolons is read whole, not per character
+            if depth == 0 and m.start() > at:
+                if start is None and not ln[at : m.start()].isspace():
+                    start = (cur, line)
+                buf += ln[at : m.start()]
+            at = m.end()
+            c = m[0]
             if c == "{":
                 depth += 1
                 if depth == 1:
@@ -76,22 +100,18 @@ def scan(text: str) -> list[Stmt]:
                 if depth == 0:
                     buf += " } "
                     # a function body ends the statement; aggregates continue until ';'
-                    closes = re.search(
-                        r"\)\s*(\w+\s+[\w\s\*,\[\]]+;\s*)*\{\s*\}\s*$", buf
-                    )  # `{ }`: the body is skipped
-                    if closes and not re.match(r"^\s*(typedef|struct|union|enum)\b", buf) and "=" not in buf:
+                    # `{ }`: the body is skipped
+                    if _BODY.search(buf) and not re.match(r"^\s*(typedef|struct|union|enum)\b", buf) and "=" not in buf:
                         res.append((start[0], start[1], buf, "body") if start else (cur, line, buf, "body"))
                         buf, start = "", None
-            elif depth > 0:
-                continue
-            elif c == ";":
+            elif depth == 0:
                 if start:
                     res.append((start[0], start[1], buf, "stmt"))
                 buf, start = "", None
-            else:
-                if start is None and not c.isspace():
-                    start = (cur, line)
-                buf += c
+        if depth == 0 and at < len(ln):
+            if start is None and not ln[at:].isspace():
+                start = (cur, line)
+            buf += ln[at:]
         buf += " "
         line += 1
     return res
@@ -148,6 +168,26 @@ class Norm:
             toks = toks[:-1]
         return self.prim(" ".join(toks) + ("*" if arr else ""))
 
+    def prototypes(self, head: str, kind: str) -> list[tuple[str, str, str, int]]:
+        """The functions of `T f(..), *g(..)`: one declaration list sharing the first one's base type; empty for a head
+        that is not one."""
+        parts = split_top(head)
+        first = _FUNCTION.match(parts[0].strip())
+        if len(parts) < 2 or not first or not first[1].strip():
+            return []
+        base = first[1].rstrip(" *")
+        out = [(first[2], kind, self.prim(first[1]) + "(" + self.args(first[3]) + ")", len(parts))]
+        for part in parts[1:]:
+            more = _MORE.match(part.strip())
+            if not more:
+                return []
+            out.append((more[2], kind, self.prim(base + more[1]) + "(" + self.args(more[3]) + ")", len(parts)))
+        return out
+
+    def args(self, text: str) -> str:
+        args = ",".join(self.param(a) for a in split_top(text))
+        return "" if args == "void" else args
+
     def statement(self, buf: str, hint: str) -> list[tuple[str, str, str, int]]:
         """(name, kind, type, declarators) of every name one statement declares."""
         s = ws(buf)
@@ -157,6 +197,9 @@ class Norm:
         s2 = s[7:] if ext else s
         if re.match(r"^(struct|union|enum)\s*\w*\s*(\{ \})?$", s2):
             return []
+        s2 = _ANONYMOUS.sub(
+            lambda a: f"{a[1]} {a[2] or '__anonymous'} ", s2
+        )  # `struct { } name[8] = ..`: a variable of it
         body = s2.endswith("}") and hint == "body"
         init = False
         head = s2
@@ -169,26 +212,42 @@ class Norm:
         m = re.match(r"^([\w\s\*]+?)\(\s*\*\s*(\w+)\s*\)\s*\(((?:[^()]|\([^()]*\))*)\)$", head)
         if m:  # function pointer variable: T (*name)(args)
             return [(m[2], kind, self.prim(m[1]) + "(*)(" + ",".join(self.param(a) for a in split_top(m[3])) + ")", 1)]
+        if not init and (listed := self.prototypes(head, "fdef" if body else "proto")):
+            return listed
         m = re.match(r"^([\w\s\*]+?)\b(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)$", head)
         if m and m[1].strip() and m[2] not in ("if", "for", "while", "switch", "return", "sizeof") and not init:
             args = ",".join(self.param(a) for a in split_top(m[3]))
             return [
                 (m[2], "fdef" if body else "proto", self.prim(m[1]) + "(" + ("" if args == "void" else args) + ")", 1)
             ]
-        if body or not re.match(r"^[A-Za-z_]", head):
+        if body or not re.match(r"^[A-Za-z_*]", head):
             return []
         parts = split_top(head)
         m = re.match(r"^((?:\w+\s+|\w+\s*\*+\s*)*?)(\*{0,}\s*)(\w+)\s*((?:\[[^\]]*\]\s*)*)$", parts[0].strip())
         base = m[1].strip() if m else ""
+        if m and not base and (ext or m[2]):  # `extern *p;`: no type word is `int`
+            base = "int"
         words = re.findall(r"[A-Za-z_]\w*", base)
         if not m or not base or all(t in ("extern", "const", "volatile") for t in words):
             return []
-        out = [(m[3], kind, self.prim(base) + m[2].replace(" ", "") + ws(m[4]).replace(" ", ""), len(parts))]
+        out = [
+            (
+                m[3],
+                kind,
+                self.prim(base) + m[2].replace(" ", "") + decimal_bounds(ws(m[4]).replace(" ", "")),
+                len(parts),
+            )
+        ]
         for p in parts[1:]:
             m2 = re.match(r"^\s*(\*{0,}\s*)(\w+)\s*((?:\[[^\]]*\]\s*)*)$", p)
             if m2:
                 out.append(
-                    (m2[2], kind, self.prim(base) + m2[1].replace(" ", "") + ws(m2[3]).replace(" ", ""), len(parts))
+                    (
+                        m2[2],
+                        kind,
+                        self.prim(base) + m2[1].replace(" ", "") + decimal_bounds(ws(m2[3]).replace(" ", "")),
+                        len(parts),
+                    )
                 )
         return out
 
@@ -209,9 +268,12 @@ def clashes(per: Mapping[str, Mapping[str, Sequence[Decl]]]) -> dict[str, Mappin
 
 
 def table(
-    per: Mapping[str, Mapping[str, Sequence[Decl]]], users: Mapping[str, Sequence[str]], status: str = "open"
+    per: Mapping[str, Mapping[str, Sequence[Decl]]],
+    users: Mapping[str, Sequence[str]],
+    status: str | Mapping[str, str] = "open",
 ) -> str:
-    """The clashes in the CLASH.tsv shape: one row per name with its types, where each is declared and its users."""
+    """The clashes in the CLASH.tsv shape: one row per name with its types, where each is declared and its users. The
+    status is one word for every row, or per name (a name the mapping lacks is `open`)."""
     lines = [HEADER]
     for name, vers in sorted(clashes(per).items()):
         groups: OrderedDict[str, dict[str, set[str]]] = OrderedDict()
@@ -223,7 +285,8 @@ def table(
             for t, locs in groups.items()
         )
         held = sorted(users.get(name, ()))
-        lines.append(f"{name}\t{len(groups)}\t{decl}\t{len(held)}: {' '.join(held)}\t{status}\n")
+        word = status if isinstance(status, str) else status.get(name, "open")
+        lines.append(f"{name}\t{len(groups)}\t{decl}\t{len(held)}: {' '.join(held)}\t{word}\n")
     return "".join(lines)
 
 

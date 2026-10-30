@@ -325,6 +325,7 @@ help = "List every declaration of every name read from the preprocessed units of
 handler = "typeunify.census_command"
 params = [
   { name = "out", kind = "option", type = "path", required = false, multiple = false, help = "write the clash table (CLASH.tsv shape) here" },
+  { name = "folds", kind = "option", type = "path", required = false, multiple = false, help = "fold-check: a fold list (header and target per line, tab separated); the table --out gets is the names that clash in a unit once each group of folded headers is one header (status fold-only when the tree as it is does not clash on the name); no fold is written" },
 ]
 
 [command.unify]
