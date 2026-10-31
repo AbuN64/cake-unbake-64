@@ -3,36 +3,10 @@
 from unittest.mock import Mock
 
 import pytest
+from merge_prepared import prepared
 
 from unbake import folders, mergecheck
-from unbake.contracts import Config, FileFacts, Refusal
-
-
-def prepared(cfg: Config, monkeypatch, count=2):
-    root = cfg.project.root
-    cfg.project.module_map = None
-    rows = []
-    for i in range(count):
-        for j in range(2):
-            path = f"src/group{i}/part{j}.c"
-            (root / path).parent.mkdir(parents=True, exist_ok=True)
-            (root / path).write_text(f"int function_{i}_{j}(void) {{ return {j}; }}\n")
-            rows.append((path, f"src/group{i}.c"))
-    map_file = root / "modules.tsv"
-    map_file.write_text("unit\tmodule\n" + "".join(f"{u}\t{m}\n" for u, m in rows))
-    verdicts = [{"module": f"src/group{i}.c", "hard": [], "soft": [], "verdict": "merge"} for i in range(count)]
-    scan = Mock(return_value=(verdicts, rows, {}))
-    monkeypatch.setattr(folders, "_verdicts", scan)
-    tracked = Mock(side_effect=lambda _: [str(p.relative_to(root)) for p in root.rglob("*.c")])
-    monkeypatch.setattr(folders, "_tracked", tracked)
-    stage = Mock()
-    monkeypatch.setattr(folders, "_git", stage)
-    monkeypatch.setattr(folders.configuration, "load_project", Mock(return_value=cfg.project))
-    sync = Mock(return_value={"written": ["Makefile"]})
-    monkeypatch.setattr(folders.repo, "sync", sync)
-    prove = Mock(return_value={"checked": True})
-    monkeypatch.setattr(folders, "prove", prove)
-    return map_file, scan, stage, sync, prove
+from unbake.contracts import FileFacts, Refusal
 
 
 def test_full_map_scans_stages_syncs_and_proves_once(cfg, monkeypatch):

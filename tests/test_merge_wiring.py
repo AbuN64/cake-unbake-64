@@ -6,8 +6,8 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import pytest
+from merge_prepared import prepared
 
-from tests.test_folders_merge import prepared
 from unbake import classwise, folders, linkfill, merge, mergecheck
 from unbake import merge as unitmerge
 from unbake.contracts import Refusal
