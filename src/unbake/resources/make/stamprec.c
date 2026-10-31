@@ -483,6 +483,11 @@ static int step(Object *x, char **w) {
     }
     if (!strcmp(w[0], "@jumptable") && n == 3) return jump_table(w[1], w[2]);
     if (!strcmp(w[0], "@settle") && n == 3) return settle(x, w[1], w[2]);
+    if (!strcmp(w[0], "@probe") && n >= 2) {  /* the object cache's get: 0 = the object is in place, 3 = go on */
+        int code = spawn(w + 1, 0);
+        x->stop = !code;
+        return code == 3 ? 0 : code;
+    }
     if (!strcmp(w[0], "@compile") && n >= 2) return compile(w + 1);
     if (!strcmp(w[0], "@out") && n >= 3) return spawn(w + 2, w[1]);
     if (w[0][0] == '@') { fprintf(stderr, "stamprec: no step %s\n", w[0]); return 64; }

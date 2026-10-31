@@ -18,6 +18,13 @@ def cache(host: Host) -> Path | None:
     return None if content is None else content.with_name(f"{content.name}.cc")
 
 
+def objects(host: Host) -> Path | None:
+    """The directory of the object cache (cc_cache.py `--objget`/`--objput`: whole objects under a key of toolchain,
+    flags row and `.i` bytes), beside the host content cache every tree on the host shares; None without one."""
+    content = getattr(host, "cache_dir", None)
+    return None if content is None else content.with_name(f"{content.name}.obj")
+
+
 def build[Result](start: Callable[[str | None, bool], Result], root: Path, store: Path | None, workers: int) -> Result:
     """Run the make that `start(record, preprocess)` starts, in `root`, with the compile commands answered first.
     `start` runs it once; with a `record` file name it sets ABU_CC_COLLECT to it and keeps going past failed units

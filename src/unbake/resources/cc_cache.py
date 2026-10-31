@@ -604,6 +604,69 @@ def compile_step(words: list[str]) -> int:
     return subprocess.call(words)
 
 
+OBJECT_MISS = 3  # `--objget` exit code: no object of this key is stored (the program runs); 0 is a hit
+
+
+def object_entry(
+    cache: str, out: str, compiler: str, flags: str, textsize: str, program: str, extracted: list[str]
+) -> str:
+    """The cache file of the object `out` the program would make: the compiler's identity (toolchain), the flags row
+    of the file (`flags`: toolchain id, compiler command, flags, defines), the text size the object is cut to, the
+    program's own text (the assembler, the passes and their per-file switches, as make expands them), the sum of the
+    extracted files it assembles and the sha256 of the exact bytes of its `.i`. Nothing else decides its bytes."""
+    digest = sha256(identity(compiler))
+    for part in (flags, textsize, program):
+        digest.update(b"\0" + part.encode(errors="surrogateescape"))
+    sums = sha256()
+    for name in extracted:
+        with contextlib.suppress(OSError):
+            sums.update(read(name))
+    digest.update(b"\0" + sums.digest() + b"\0" + sha256(read(out[: -len(".o")] + ".i")).digest())
+    name = digest.hexdigest()
+    return os.path.join(cache, name[:2], name[2:])
+
+
+def object_get(
+    cache: str, out: str, compiler: str, flags: str, textsize: str, program: str, extracted: list[str]
+) -> int:
+    """A hit puts the stored object in place of `out` (0); a miss, or a cache that cannot be read, is OBJECT_MISS."""
+    try:
+        entry = object_entry(cache, out, compiler, flags, textsize, program, extracted)
+        made = read(entry)
+        # the assembly the object was made from (a tool beside the build reads it) comes back with it
+        for path, data in (
+            (out[: -len(".o")] + ".s", read(entry + ".s") if is_file(entry + ".s") else None),
+            (out, made),
+        ):
+            if data is not None:
+                part = f"{path}.{os.getpid()}.part"  # a copy, never a link: the trim that follows rewrites it in place
+                write(part, data)
+                os.replace(part, path)
+        os.utime(entry)  # a hit keeps it alive
+        with contextlib.suppress(OSError):
+            os.utime(entry + ".s")
+    except OSError:
+        return OBJECT_MISS
+    return 0
+
+
+def object_put(
+    cache: str, out: str, compiler: str, flags: str, textsize: str, program: str, extracted: list[str]
+) -> int:
+    """Store the object the program made under its key; a full or unreadable cache costs only the saving."""
+    with contextlib.suppress(OSError):
+        entry = object_entry(cache, out, compiler, flags, textsize, program, extracted)
+        part = f"{entry}.{os.getpid()}.part"
+        os.makedirs(os.path.dirname(entry), exist_ok=True)
+        assembly = out[: -len(".o")] + ".s"
+        if is_file(assembly):
+            write(entry + ".s", read(assembly))
+        write(part, read(out))
+        os.replace(part, entry)
+        maybe_prune(cache)
+    return 0
+
+
 def object_step(words: list[str], state: dict[str, object]) -> int:
     """One step of an object's program: a command to start, or a file operation the chain used to start a process for.
 
@@ -612,7 +675,9 @@ def object_step(words: list[str], state: dict[str, object]) -> int:
     has not compiled.  `@jumptable S HEX`: jump_table.
     `@out FILE COMMAND...`: the command's output goes to FILE.  `@settle S KEPT`: the object stands
     as it was when only its .i moved, its size is the wanted one and S is KEPT byte for byte (the rest of the program
-    is skipped, `.same` tells the rule its trim is held); KEPT goes either way."""
+    is skipped, `.same` tells the rule its trim is held); KEPT goes either way.
+    `@probe COMMAND...`: the object cache's `--objget`: exit 0 says the object is in place (the rest of the program is
+    skipped, the trim follows), OBJECT_MISS that the program runs."""
     import subprocess
 
     head, rest = words[0], words[1:]
@@ -626,6 +691,10 @@ def object_step(words: list[str], state: dict[str, object]) -> int:
         return 0 if os.path.exists(rest[0]) and os.path.getsize(rest[0]) > 0 else 1
     if head == "@jumptable" and len(rest) == 2:
         return jump_table(*rest)
+    if head == "@probe" and rest:
+        code = subprocess.call(rest)
+        state["stop"] = code == 0
+        return 0 if code in (0, OBJECT_MISS) else code
     if head == "@compile" and rest:
         return compile_step(rest)
     if head == "@out" and len(rest) >= 2:
@@ -810,6 +879,10 @@ def main(argv: list[str]) -> int:
     if len(argv) >= 10 and argv[1] == "--object":
         # --object OUT VERSION FACTS CHANGED TEXTSIZE FLAGS STAMPREC [EXTRACTED...] -- PROGRAM...
         return object_file(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9:])
+    if len(argv) >= 8 and argv[1] in ("--objget", "--objput"):
+        # --objget|--objput CACHE_DIR OUT COMPILER FLAGS TEXTSIZE PROGRAM [EXTRACTED...]
+        action = object_get if argv[1] == "--objget" else object_put
+        return action(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8:])
     if len(argv) == 4 and argv[1] == "--trim":
         trim_text(argv[2], argv[3])
         return 0

@@ -149,6 +149,9 @@ def _flags(row: Json, config: Config, added: Sequence[str] = (), omit: Sequence[
     return [f for f in (*row["cflags"], *config.project.cflags) if f not in omit] + list(added)
 
 
+_OBJ_INPUTS = "$(filter-out %/.extracted,$(filter asm/%,$^))"  # the extracted files an object assembles (OBJECT_ARGS)
+
+
 def _recipe(id: str) -> str:
     """The commands that turn one source into an object with a toolchain, spelled in make variables: PREPROCESS_<id>
     makes the stamp `.i.ok` whole, the text beside it in `.i` (kept when its compile key is the same), and
@@ -209,7 +212,18 @@ def _recipe(id: str) -> str:
         parts.append(f"$(if $(UNRELOC),{_THEN} $(PASS)unreloc_pass.py $@)")
         parts.append(f"$(if $(TEXTCUT),{_THEN} $(PASS)textcut_pass.py $@ $(TEXTCUT))")
         body = " ".join(parts)
-    return f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nCOMPILE_{key} = {body}"
+    # The object cache (OBJCACHE, local.mk; empty on a host without one): a stored object of the same key is put in place
+    # and the program skipped (`@probe`, then the trim), else the program runs and its object is stored.
+    cached = (
+        f"@probe $(CCPY) --objget $(OBJCACHE) $@ $(call shq,$(lastword $(CC_{key}))) $(call shq,$(CC_FLAGS)) "
+        f"$(call shq,$(TEXTSIZE)) $(call shq,$(PROGRAM_{key})) {_OBJ_INPUTS} {_THEN} $(PROGRAM_{key}) {_THEN} "
+        f"$(CCPY) --objput $(OBJCACHE) $@ $(call shq,$(lastword $(CC_{key}))) $(call shq,$(CC_FLAGS)) "
+        f"$(call shq,$(TEXTSIZE)) $(call shq,$(PROGRAM_{key})) {_OBJ_INPUTS}"
+    )
+    return (
+        f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nPROGRAM_{key} = {body}\n"
+        f"COMPILE_{key} = $(if $(OBJCACHE),{cached},$(PROGRAM_{key}))"
+    )
 
 
 def _file_rows(config: Config) -> list[str]:
@@ -1036,6 +1050,7 @@ def local_mk(config: Config) -> bytes:
             f"JOBS := {config.host.workers}",
             f"PPUNIT := {_preprocess_unit(config)}",
             f"CCPY := {_cc_cache()}",
+            f"OBJCACHE := {front.objects(config.host) or ''}",
             f"MKTOOLS := {_stable(Path(__file__).parent / 'resources' / 'make')}",
             *(
                 f"{var} := {_stable(config.host.tools[row['host']]) if row['host'] in config.host.tools else ''}"
