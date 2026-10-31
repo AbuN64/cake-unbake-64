@@ -386,3 +386,32 @@ def test_make_front_batch_uses_every_host_slot_not_the_makes_first_grant(process
     monkeypatch.setattr(front, "build", lambda start, root, store, workers: seen.append(workers))
     process.make(config, ["x"])
     assert seen == [8]
+
+
+def test_the_runs_of_one_make_are_stages_of_their_own(process_config, monkeypatch):
+    """The front runs make to find stale stamps, to find stale compiles and to build: one stage each, so effort never
+    reports the same stage closed twice in a command for what is three different phases."""
+    from contextlib import contextmanager
+
+    from unbake import front, pool
+
+    @contextmanager
+    def grant(host, work=0):
+        yield 2, {}, ()
+
+    def three_runs(start, root, store, workers):
+        start("record", True)
+        start("record", False)
+        start(None, False)
+
+    monkeypatch.setattr(pool, "jobserver", grant)
+    monkeypatch.setattr(process, "tool", lambda *a, **k: Path("make"))
+    monkeypatch.setattr(process, "run", lambda *a, **k: "ok")
+    monkeypatch.setattr(front, "build", three_runs)
+    with effort.capture() as closed:
+        process.make(process_config, ["x"])
+    assert [r.path[-1] for r in closed if r.path[-2:-1] == ("make",) and r.path[-1] != "(own)"] == [
+        "make.preprocess",
+        "make.record",
+        "make.build",
+    ]

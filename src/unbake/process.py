@@ -274,7 +274,11 @@ def make(config: Config, targets: Sequence[str], jobs: int = 0) -> NativeResult:
             extra: dict[str, str] = {"ABU_CC_COLLECT": record} if record else {}
             if record and preprocess:
                 extra["ABU_PP_COLLECT"] = record + ".pp"
-            return run("make", argv, root, tmp=scratch(root), env={**env, **extra}, pass_fds=fds)
+            # the runs of one make are different work (find stale stamps, find stale compiles, build): each its own
+            # stage, so effort reports a repeat only when the same phase really ran twice
+            phase = "make.build" if record is None else "make.preprocess" if preprocess else "make.record"
+            with effort.stage(phase):
+                return run("make", argv, root, tmp=scratch(root), env={**env, **extra}, pass_fds=fds)
 
         # the batch is plain CPU work between the two makes: it takes every host slot, not the share make started with
         return front.build(start, root, front.cache(config.host), max(granted, config.host.slots))

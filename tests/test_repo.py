@@ -13,9 +13,11 @@ from unittest.mock import Mock
 import fixture
 import pytest
 
-from unbake import adapters, repo
+from unbake import adapters, effort, repo
 from unbake import config as configuration
 from unbake.contracts import Finding, NativeResult, Refusal, sha1
+
+STAGE = effort.stage  # the world fixture replaces it with a no-op
 
 pytestmark = pytest.mark.usefixtures("plain_roms")
 
@@ -894,6 +896,23 @@ def test_the_sync_command_checks_first_and_writes_the_outputs_from_the_fresh_ver
     assert (world.root / "README.md").read_text() == "real"
     assert (world.root / "docs/map-a.json").read_text() == "{}\n"
     assert {"README.md", "docs/map-a.json"} <= set(result["written"])
+
+
+def test_one_sync_records_make_check_once_in_the_effort_stages(world, monkeypatch):
+    """`unbake sync` on a tree with no verdict builds once: one build.make_check stage, one run of the make seam."""
+    # the real build.make_check runs; only the make seam (world's process.make) and the verdict record are mocked
+    (world.root / "README.md").write_text("old progress")
+    verdicts = []
+    monkeypatch.setattr(repo.report, "publish_hold", lambda c, t: None if verdicts else held("sync.unchecked", "check"))
+    monkeypatch.setattr(repo.report, "record", lambda *a, **k: verdicts.append(k))
+    monkeypatch.setattr(repo.report, "files", lambda config, tree: {"README.md": b"real"})
+    monkeypatch.setattr(repo.build, "inputs", lambda config: "inputs")
+    monkeypatch.setattr(effort, "stage", STAGE)
+    with effort.capture() as closed:
+        repo.sync_command(world.cfg, {})
+    names = [r.path[-1] for r in closed]
+    assert names.count("build.make_check") == 1 and len(verdicts) == 1
+    assert world.makes == [(("check",), 4)]
 
 
 def test_the_sync_command_refuses_when_the_check_it_runs_fails(world, monkeypatch):
