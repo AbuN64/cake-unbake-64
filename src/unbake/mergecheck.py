@@ -184,29 +184,38 @@ def _up(position: int, align: int) -> int:
 
 def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int]]:
     """Per output section holding entries of `units`: (section, bytes the linked entries span, bytes one merged object
-    spans). The linked span walks the section from the module's first entry to its last (other units' pieces and ALIGN
-    directives included); the merged span packs the module's pieces of each class again, class after class."""
+    spans). The linked span walks the section from the module's first entry to its last (the module's pieces aligned as
+    linked, ALIGN directives and `MAX(., offset)` pins between them); the bytes of other modules between two entries
+    are the `gap` finding's, so they are not walked and the pins after them are not read. The merged span packs the
+    module's pieces of each class again, class after class, each as aligned in the link."""
     out: list[tuple[str, int, int]] = []
     for section in dict.fromkeys(e["o"] for e in seq if e["k"] == "entry" and e["u"] in units):
         rows = [(i, e) for i, e in enumerate(seq) if e["o"] == section]
         mine = [i for i, e in rows if e["k"] == "entry" and e["u"] in units]
-        position, start, classes = 0, 0, defaultdict(list)
+        position, start, foreign, classes = 0, 0, False, defaultdict(list)
         for i, row in rows:
             if i > mine[-1]:
                 break
             if i == mine[0]:
                 start = position
+            if row["k"] == "entry" and row["u"] not in units:
+                foreign = foreign or i > mine[0] and any(row.get("parts", {}).values())
+                if i < mine[0]:
+                    for cls in row.get("parts", {}):
+                        for size, align in row["parts"][cls]:
+                            position = _up(position, row.get("subalign") or align) + size
+                continue
             if row["k"] == "align":
                 position = _up(position, row["a"])
                 continue
             if row["k"] == "minimum":
-                position = max(position, row["offset"])
+                position = position if foreign else max(position, row["offset"])
                 continue
             for cls in row.get("parts", {}):
                 for size, align in row["parts"][cls]:
                     position = _up(position, row.get("subalign") or align) + size
-                    if i >= mine[0] and row["u"] in units:
-                        classes[cls].append((size, align))
+                    if i >= mine[0]:
+                        classes[cls].append((size, row.get("subalign") or align))
         merged = 0
         for pieces in classes.values():
             merged = _up(merged, max(a for _, a in pieces))
