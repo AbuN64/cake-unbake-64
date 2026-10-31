@@ -24,7 +24,7 @@ def run(rows, seq, statics=None, identity=lambda unit: "cc"):
 def test_adjacent_units_in_map_order_merge() -> None:
     rows = [("a", "M"), ("b", "M"), ("c", "N")]
     seq = [entry("a", "text", 8), entry("b", "text", 8), entry("c", "text", 8)]
-    assert run(rows, seq) == {"M": {"module": "M", "units": 2, "verdict": "merge", "hard": [], "soft": []}}
+    assert run(rows, seq) == {"M": {"module": "M", "units": 2, "verdict": "merge", "hard": [], "soft": [], "parts": {}}}
 
 
 def test_another_modules_bytes_between_two_units_keep_them_separate() -> None:
@@ -51,7 +51,10 @@ def test_units_linked_in_another_order_than_the_map_merge_class_wise_but_other_f
 def test_a_class_in_two_output_sections_stays_separate() -> None:
     rows = [("a", "M"), ("b", "M")]
     seq = [entry("a", "text", 8, ".text"), entry("b", "text", 8, ".boot")]
-    assert run(rows, seq)["M"]["hard"] == ["sections: us text sits in several output sections"]
+    assert run(rows, seq)["M"]["hard"] == [
+        "sections: text parts: 2: .text [a]; .boot [b]",
+        "sections: us text sits in several output sections",
+    ]
 
 
 def test_padding_statics_and_literals_are_soft_findings() -> None:
@@ -160,7 +163,10 @@ def test_a_version_that_splits_a_class_over_sections_still_reports_its_order() -
         "eu": [entry("b", "text", 8), entry("a", "text", 8, ".other")],
     }
     out = verdict_of(rows, seqs)
-    assert out["hard"] == ["sections: eu text sits in several output sections"]
+    assert out["hard"] == [
+        "sections: eu text sits in several output sections",
+        "sections: text parts: 2: us .text, eu .other [a]; .text [b]",
+    ]
     assert out["soft"] == ["order: eu text links b elsewhere than the other versions"]
 
 

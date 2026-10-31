@@ -332,7 +332,7 @@ def object_classes(path: Path) -> dict[str, str]:
     return out
 
 
-def section_parts(placed: Mapping[str, Mapping[str, str]], order: Sequence[str]) -> list[Row]:
+def _section_parts(placed: Mapping[str, Mapping[str, str]], order: Sequence[str]) -> list[Row]:
     """The parts of one class of a module: units that share their output section in every version where both are
     placed (and are placed together in one), joined through such pairs. `placed` is version -> unit -> section; each
     part is {"sections": {version: section}, "units": [...]}, units in `order`, parts in the order of their first unit."""
@@ -436,7 +436,7 @@ def verdicts(
     parts: dict[str, dict[str, list[Row]]] = defaultdict(dict)
     for module, cls in sorted(split):
         base = classwise.base_order(layout[module, cls].values())
-        parts[module][cls] = found = section_parts(placed_in[module, cls], base)
+        parts[module][cls] = found = _section_parts(placed_in[module, cls], base)
         shown = "; ".join(f"{_part_label(p['sections'])} [{', '.join(p['units'])}]" for p in found)
         hard[module].append(f"sections: {cls} parts: {len(found)}: {shown}")
     for (module, cls), per in layout.items():
