@@ -151,7 +151,7 @@ def test_every_recipe_probes_the_cache_then_stores_what_its_program_made():
         assert f"COMPILE_{key} = $(if $(OBJCACHE),@probe $(CCPY) --objget " in text
         assert text.count("--objget") == text.count("--objput") == 1
         assert f"'&&' $(PROGRAM_{key}) '&&' $(CCPY) --objput" in text
-        assert text.endswith(f",$(PROGRAM_{key}))")
+        assert f",$(PROGRAM_{key}))\nPROGRAM_{key} = " in text
 
 
 def test_the_object_rule_program_skips_to_the_trim_on_a_hit(tmp_path, monkeypatch):

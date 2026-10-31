@@ -221,8 +221,8 @@ def _recipe(id: str) -> str:
         f"$(call shq,$(TEXTSIZE)) $(call shq,$(PROGRAM_{key})) {_OBJ_INPUTS}"
     )
     return (
-        f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\nPROGRAM_{key} = {body}\n"
-        f"COMPILE_{key} = $(if $(OBJCACHE),{cached},$(PROGRAM_{key}))"
+        f"define PREPROCESS_{key}\n$(Q){preprocess}\nendef\n"
+        f"COMPILE_{key} = $(if $(OBJCACHE),{cached},$(PROGRAM_{key}))\nPROGRAM_{key} = {body}"
     )
 
 
