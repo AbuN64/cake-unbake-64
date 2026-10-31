@@ -375,7 +375,7 @@ def command(cfg: Config, params: Json) -> Json:
         run, row, got = matched[i]
         rows.append({k: v for k, v in row.items() if k != "delta_old"} | {"symbols": len(got)})
         for name, addr in got.items():
-            added.setdefault(owner_of[i], {})[name] = (addr, f"{row['version']}:{row['table']}@{row['table_at']}")
+            added.setdefault(owner_of[i], {})[name] = (addr, f"from {row['version']} {row['table']}@{row['table_at']}")
     if not params.get("check"):
         for v, syms in added.items():
             path = root / windows.symbols_path(v)

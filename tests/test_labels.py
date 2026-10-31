@@ -168,7 +168,9 @@ def test_the_command_writes_the_symbols_of_a_matched_run_once_with_the_table_as_
     assert got["labels"] == 6 and got["symbols"] == {"eu": 6} and got["tables"][0]["table"] == "d_one"
     assert [u["why"] for u in got["unfit"]] == ["fewer than 4 entries identify no table"]
     text = (tmp_path / "versions/eu/earlier_build_symbols.txt").read_text()
-    assert "g_earlier_f_a_10 = 0x80001410; // eu:d_one@0x80002100" in text
+    assert "g_earlier_f_a_10 = 0x80001410; // from eu d_one@0x80002100" in text
+    # a key:value word in a comment is a splat attribute, so provenance carries none
+    assert not [c for c in (ln.partition("//")[2] for ln in text.splitlines()) if ":" in c]
     labels.command(cfg, params)
     assert (tmp_path / "versions/eu/earlier_build_symbols.txt").read_text() == text
 

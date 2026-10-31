@@ -43,7 +43,7 @@ from evidence. The current build (`build/<v>/<project>.elf`) holds the same swit
 older ROM has the same entry count, the same zero entries and one difference between each older word and the current
 word (the older build's delta of that array). Each label is then `<owner>` plus offset of the current symbol or function
 holding the current word; a function owner also gets its start (`owner.start + delta`). Rows are appended to
-`versions/<v>/earlier_build_symbols.txt` as `g_earlier_<owner>[_<offset>] = 0x<addr>; // <version>:<table>@<address>`,
+`versions/<v>/earlier_build_symbols.txt` as `g_earlier_<owner>[_<offset>] = 0x<addr>; // from <version> <table>@<address>` (no `key:value` word: the extractor reads those as attributes),
 so `type-pointers` closes the run on the next call.
 
 - Only current tables of at least four entries are matched; a shorter run fits any table and is listed unmatched.
