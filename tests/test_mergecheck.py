@@ -436,7 +436,7 @@ def test_sections_parts_real_rows_pakinterfacescreen_us_text_has_108_units_in_th
     assert out["parts"]["text"][1]["units"] == resident
 
 
-def test_sections_parts_real_rows_io_hostmemory_data_keeps_the_code_table_apart_from_libsn_data_in_every_version() -> None:
+def test_sections_parts_real_rows_io_hostmemory_data_keeps_the_code_table_apart_from_libsn_data() -> None:
     rows = [("K_MAINCODEENCODEDWORDS", "M"), ("libsn_data", "M")]
     seqs = {
         v: [entry("K_MAINCODEENCODEDWORDS", "data", 64, ".game_code"), entry("libsn_data", "data", 16, ".game_data")]
@@ -484,8 +484,12 @@ def test_sections_parts_real_rows_menu_menu_text_sits_in_three_sections_in_link_
 def test_sections_parts_real_rows_scene_text_parts_agree_across_five_versions_and_a_whole_module_has_none() -> None:
     rows = [("s0", "M"), ("s1", "M"), ("t0", "N"), ("t1", "N")]
     seqs = {
-        v: [entry("s0", "text", 8, ".game_data"), entry("s1", "text", 8, ".ovl_frontendMenu")]
-        + [entry("t0", "text", 8, ".game_data"), entry("t1", "text", 8, ".game_data")]
+        v: [
+            entry("s0", "text", 8, ".game_data"),
+            entry("s1", "text", 8, ".ovl_frontendMenu"),
+            entry("t0", "text", 8, ".game_data"),
+            entry("t1", "text", 8, ".game_data"),
+        ]
         for v in ("de", "eu", "eu-x", "us", "us-rev1")
     }
     out = {v["module"]: v for v in mergecheck.verdicts(rows, seqs, {}, lambda unit: "cc")}

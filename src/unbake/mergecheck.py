@@ -334,8 +334,8 @@ def object_classes(path: Path) -> dict[str, str]:
 
 def section_parts(placed: Mapping[str, Mapping[str, str]], order: Sequence[str]) -> list[Row]:
     """The parts of one class of a module: units that share their output section in every version where both are
-    placed (and are placed together in one), joined through such pairs. `placed` is version -> unit -> section; each part
-    is {"sections": {version: section}, "units": [...]} with units in `order`, the parts in the order of their first unit."""
+    placed (and are placed together in one), joined through such pairs. `placed` is version -> unit -> section; each
+    part is {"sections": {version: section}, "units": [...]}, units in `order`, parts in the order of their first unit."""
     units = [u for u in order if any(u in per for per in placed.values())]
     parent = {u: u for u in units}
 
@@ -354,10 +354,7 @@ def section_parts(placed: Mapping[str, Mapping[str, str]], order: Sequence[str])
     for u in units:
         groups.setdefault(find(u), []).append(u)
     return [
-        {
-            "sections": {v: per[members[0]] for v, per in placed.items() if members[0] in per},
-            "units": members,
-        }
+        {"sections": {v: per[members[0]] for v, per in placed.items() if members[0] in per}, "units": members}
         for members in groups.values()
     ]
 
