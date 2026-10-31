@@ -4,7 +4,8 @@ A module of several units can become one source file only when one object can ta
 without moving a byte. `verdicts` is the pure rule over plain facts; `facts_of` reads them from the link script and the
 objects of each version. The hard findings (the module must stay separate files):
   flags       the units do not share one toolchain and flag set (a translation-unit boundary)
-  sections    one class of the module sits in several output sections
+  sections    one class of the module sits in several output sections; the parts (units that share the section in every
+              version where both are placed) are printed, each with its section per version, so a map row can name one
   gap         two entries of one class are not adjacent in the link order (another module's bytes sit between)
   lma         one merged object would be larger than the span the units fill in an output section (their pieces, each
               aligned as linked, packed again): it would overlap the next piece
@@ -331,6 +332,43 @@ def object_classes(path: Path) -> dict[str, str]:
     return out
 
 
+def section_parts(placed: Mapping[str, Mapping[str, str]], order: Sequence[str]) -> list[Row]:
+    """The parts of one class of a module: units that share their output section in every version where both are
+    placed (and are placed together in one), joined through such pairs. `placed` is version -> unit -> section; each part
+    is {"sections": {version: section}, "units": [...]} with units in `order`, the parts in the order of their first unit."""
+    units = [u for u in order if any(u in per for per in placed.values())]
+    parent = {u: u for u in units}
+
+    def find(u: str) -> str:
+        while parent[u] != u:
+            parent[u] = parent[parent[u]]
+            u = parent[u]
+        return u
+
+    for i, one in enumerate(units):
+        for two in units[i + 1 :]:
+            common = [per for per in placed.values() if one in per and two in per]
+            if common and all(per[one] == per[two] for per in common):
+                parent[find(two)] = find(one)
+    groups: dict[str, list[str]] = {}
+    for u in units:
+        groups.setdefault(find(u), []).append(u)
+    return [
+        {
+            "sections": {v: per[members[0]] for v, per in placed.items() if members[0] in per},
+            "units": members,
+        }
+        for members in groups.values()
+    ]
+
+
+def _part_label(sections: Mapping[str, str]) -> str:
+    """`.text` when every version links the part in that section, else `us .text, eu .boot`."""
+    if len(set(sections.values())) == 1:
+        return next(iter(sections.values()))
+    return ", ".join(f"{v} {s}" for v, s in sections.items())
+
+
 def verdicts(
     rows: Sequence[tuple[str, str]],
     seqs: Mapping[str, Sequence[Row]],
@@ -359,6 +397,8 @@ def verdicts(
                     soft[module].append(f"statics: {name} is local to {names[name]} and {unit}")
                 names.setdefault(name, unit)
     layout: dict[tuple[str, str], dict[str, list[str]]] = defaultdict(dict)
+    placed_in: dict[tuple[str, str], dict[str, dict[str, str]]] = defaultdict(lambda: defaultdict(dict))
+    split: set[tuple[str, str]] = set()
     for version, seq in seqs.items():
         for row in seq:
             if row.get("missing") and (missing_owner := owner.get(row["u"])):
@@ -372,7 +412,10 @@ def verdicts(
                 for part in seq[i]["cls"].split("+"):
                     where[(home, part)].append((i, seq[i]["o"], seq[i]["u"]))
         for (module, cls), hits in where.items():
+            for _, o, u in hits:
+                placed_in[module, cls][version][u] = o
             if len({o for _, o, _ in hits}) > 1:
+                split.add((module, cls))
                 hard[module].append(f"sections: {version} {cls} sits in several output sections")
             layout[module, cls][version] = list(dict.fromkeys(u for _, _, u in hits))
             for (i, _, one), (j, _, two) in pairwise(hits):
@@ -393,6 +436,12 @@ def verdicts(
             held = [u for u in units if u in rodata]
             if len(held) > 1:
                 soft[module].append(f"literals: {version} rodata in {len(held)} units")
+    parts: dict[str, dict[str, list[Row]]] = defaultdict(dict)
+    for module, cls in sorted(split):
+        base = classwise.base_order(layout[module, cls].values())
+        parts[module][cls] = found = section_parts(placed_in[module, cls], base)
+        shown = "; ".join(f"{_part_label(p['sections'])} [{', '.join(p['units'])}]" for p in found)
+        hard[module].append(f"sections: {cls} parts: {len(found)}: {shown}")
     for (module, cls), per in layout.items():
         base = classwise.base_order(per.values())
         for version, seen in per.items():
@@ -405,6 +454,7 @@ def verdicts(
             "verdict": "separate" if hard[m] else "merge",
             "hard": sorted(set(hard[m])),
             "soft": sorted(set(soft[m])),
+            "parts": parts.get(m, {}),
         }
         for m, us in multi.items()
     ]

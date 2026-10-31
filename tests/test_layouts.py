@@ -399,3 +399,22 @@ def test_order_of_a_module_linked_in_two_orders_by_two_link_layouts_names_the_mo
     assert [r for r in found[0]["soft"] if r.startswith("order")] == [
         "order: us-rev1 rodata links u1 elsewhere than the other versions"
     ]
+
+
+def test_sections_parts_real_rows_pakinterfacescreen_data_of_one_version_in_the_extra_game_data_section() -> None:
+    from unbake import mergecheck
+
+    names = [f"d{i}" for i in range(11)]
+
+    def seq(extra: str) -> list[dict]:
+        return [
+            {"o": extra if u == "d10" else ".game_data", "k": "entry", "u": u, "cls": "data", "n": 4} for u in names
+        ]
+
+    found = mergecheck.verdicts(
+        [(u, "M") for u in names], {"us": seq(".game_data"), "us-rev1": seq(".game_data_E1720")}, {}, lambda unit: "cc"
+    )[0]
+    assert found["verdict"] == "separate"
+    assert [p["units"] for p in found["parts"]["data"]] == [names[:10], ["d10"]]
+    assert found["parts"]["data"][1]["sections"] == {"us": ".game_data", "us-rev1": ".game_data_E1720"}
+    assert any(h.startswith("sections: data parts: 2: .game_data [d0, d1") for h in found["hard"])

@@ -413,3 +413,82 @@ def test_order_real_rows_a_unit_only_the_later_version_places_follows_its_neighb
     de = [f"u{i}" for i in range(43)]
     us = [*de[:27], "extra1", "extra2", *de[27:]]
     assert mergecheck.code_order([*us], {"de": _linked(de, "rodata"), "us-rev1": _linked(us, "rodata")}, "rodata") == us
+
+
+def _parts(rows, seqs, cls, module="M"):
+    return verdict_of(rows, seqs, module)["parts"][cls]
+
+
+def test_sections_parts_real_rows_pakinterfacescreen_us_text_has_108_units_in_the_overlay_and_43_resident() -> None:
+    overlay = [f"ovl{i:03}" for i in range(108)]
+    resident = [f"res{i:02}" for i in range(43)]
+    rows = [(u, "M") for u in overlay + resident]
+    seq = [entry(u, "text", 8, ".ovl_frontendMenu") for u in overlay] + [
+        entry(u, "text", 8, ".game_data") for u in resident
+    ]
+    out = verdict_of(rows, {"us": seq})
+    assert out["verdict"] == "separate"
+    assert "sections: text parts: 2: .ovl_frontendMenu [ovl000, ovl001" in out["hard"][0] + out["hard"][1]
+    assert [(p["sections"], len(p["units"])) for p in out["parts"]["text"]] == [
+        ({"us": ".ovl_frontendMenu"}, 108),
+        ({"us": ".game_data"}, 43),
+    ]
+    assert out["parts"]["text"][1]["units"] == resident
+
+
+def test_sections_parts_real_rows_io_hostmemory_data_keeps_the_code_table_apart_from_libsn_data_in_every_version() -> None:
+    rows = [("K_MAINCODEENCODEDWORDS", "M"), ("libsn_data", "M")]
+    seqs = {
+        v: [entry("K_MAINCODEENCODEDWORDS", "data", 64, ".game_code"), entry("libsn_data", "data", 16, ".game_data")]
+        for v in ("de", "eu", "eu-x", "us", "us-rev1")
+    }
+    found = _parts(rows, seqs, "data")
+    assert [p["units"] for p in found] == [["K_MAINCODEENCODEDWORDS"], ["libsn_data"]]
+    assert found[0]["sections"] == dict.fromkeys(seqs, ".game_code")
+    assert found[1]["sections"] == dict.fromkeys(seqs, ".game_data")
+    line = next(h for h in verdict_of(rows, seqs)["hard"] if "parts" in h)
+    assert line == "sections: data parts: 2: .game_code [K_MAINCODEENCODEDWORDS]; .game_data [libsn_data]"
+
+
+def test_sections_parts_a_unit_one_version_places_apart_forms_its_own_part_with_each_versions_section() -> None:
+    rows = [(u, "M") for u in "abcd"]
+    seqs = {
+        "us": [entry(u, "text", 8, ".game_data") for u in "abcd"],
+        "us-rev1": [entry("a", "text", 8, ".game_data"), entry("b", "text", 8, ".game_data_E1720")]
+        + [entry(u, "text", 8, ".game_data") for u in "cd"],
+    }
+    found = _parts(rows, seqs, "text")
+    assert [p["units"] for p in found] == [["a", "c", "d"], ["b"]]
+    assert found[1]["sections"] == {"us": ".game_data", "us-rev1": ".game_data_E1720"}
+    line = next(h for h in verdict_of(rows, seqs)["hard"] if "parts" in h)
+    assert line == "sections: text parts: 2: .game_data [a, c, d]; us .game_data, us-rev1 .game_data_E1720 [b]"
+
+
+def test_sections_parts_real_rows_menu_menu_text_sits_in_three_sections_in_link_order() -> None:
+    rows = [(u, "M") for u in ("m0", "m1", "m2", "m3", "m4")]
+    seq = [
+        entry("m0", "text", 8, ".game_data"),
+        entry("m1", "text", 8, ".ovl_frontendMenu"),
+        entry("m2", "text", 8, ".game_data"),
+        entry("m3", "text", 8, ".ovl_frontendMenu"),
+        entry("m4", "text", 8, ".boot"),
+    ]
+    found = _parts(rows, {"us": seq}, "text")
+    assert [(p["sections"]["us"], p["units"]) for p in found] == [
+        (".game_data", ["m0", "m2"]),
+        (".ovl_frontendMenu", ["m1", "m3"]),
+        (".boot", ["m4"]),
+    ]
+
+
+def test_sections_parts_real_rows_scene_text_parts_agree_across_five_versions_and_a_whole_module_has_none() -> None:
+    rows = [("s0", "M"), ("s1", "M"), ("t0", "N"), ("t1", "N")]
+    seqs = {
+        v: [entry("s0", "text", 8, ".game_data"), entry("s1", "text", 8, ".ovl_frontendMenu")]
+        + [entry("t0", "text", 8, ".game_data"), entry("t1", "text", 8, ".game_data")]
+        for v in ("de", "eu", "eu-x", "us", "us-rev1")
+    }
+    out = {v["module"]: v for v in mergecheck.verdicts(rows, seqs, {}, lambda unit: "cc")}
+    assert [p["units"] for p in out["M"]["parts"]["text"]] == [["s0"], ["s1"]]
+    assert out["N"]["parts"] == {}
+    assert out["N"]["verdict"] == "merge"
