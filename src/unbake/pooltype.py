@@ -8,7 +8,15 @@ integer is a double, a word within -0x8000..0xFFFF is an integer, and zero follo
 (pointer-looking words, packed bytes, high-bit text, a string whose padding is not NUL) is refused with its span and
 reason, never guessed. A file path string (`C:/.../name.cpp`, the assertion macro's __FILE__) names a source file:
 the items after the last string before that path belong to it, because the older compiler wrote each function's
-floats before its strings. Each run of accepted items inside one file is a window and one source file."""
+floats before its strings. Each run of accepted items inside one file is a window and one source file.
+
+The older link also left the words of its data between those files: an offset into the older ROM (a 4-aligned word
+from 0x100000 up to the ROM size) and a pointer into the older image (a 4-aligned word in 0x80000400..0x807FFFFF).
+Either is typed only as part of a record: two or more words with an offset among them, or one beside a typed
+non-pointer word, never one bare word in packed bytes; a run of pointers alone is a pointer table, refused here. An offset is an unsigned integer; a pointer is a `void *` initialised with the address constant of
+its target, so no pointer is an integer and no extra symbol is defined. With
+`unknown` the reader types only the words of the ROM spans no class holds (widened to word boundaries), which is how
+the data an earlier pass left over is closed."""
 
 from __future__ import annotations
 
@@ -16,6 +24,7 @@ import re
 import struct
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from importlib import import_module
 
 from unbake import config, windows
 from unbake.contracts import Config, Finding, Json, Refusal
@@ -23,16 +32,18 @@ from unbake.contracts import Config, Finding, Json, Refusal
 FLOAT_LOW, FLOAT_HIGH = 0x60, 0xA0  # biased exponents (2^-31..2^33) a float constant of game code has
 FLT_MAX = 0x7F7FFFFF
 SMALL = range(-0x8000, 0x100001)
+OFFSET_LOW = 0x100000  # the least ROM offset a word is typed as (below it a word is a small integer)
+IMAGE = range(0x80000400, 0x80800000)  # the older image's addresses a pointer word may hold
 JOIN = 8  # most words of an odd run that join the integer run beside it
 PRINTABLE = frozenset(range(0x20, 0x7F)) | {9, 10, 13}
 PATH = re.compile(r"[A-Za-z]:[/\\](?:[^/\\]+[/\\])*([^/\\]+)\.(?:cpp|c|h)$", re.IGNORECASE)
 ESCAPES = {9: "\\t", 10: "\\n", 13: "\\r", 34: '\\"', 92: "\\\\"}
-KINDS = {"str": "Str", "float": "Floats", "double": "Doubles", "int": "Ints", "uint": "Words"}
+KINDS = {"str": "Str", "float": "Floats", "double": "Doubles", "int": "Ints", "uint": "Words", "ptr": "Pointers"}
 
 
 @dataclass(frozen=True)
 class Item:
-    kind: str  # str, float, double, int (signed words), uint (unsigned words)
+    kind: str  # str, float, double, int (signed words), uint (unsigned words), ptr (older-image addresses)
     at: int  # ROM offset
     size: int
     value: str | tuple[int, ...]  # a string's text, else the raw words (a double is one value of two words)
@@ -100,12 +111,52 @@ def itemize(data: bytes, low: int, high: int, shift: int = 0) -> tuple[list[Item
         elif _small(word):
             items.append(Item("int" if word >> 31 else "uint", at, 4, (word,)))
             at += 4
+        elif word % 4 == 0 and word in IMAGE:
+            items.append(Item("ptr", at, 4, (word,)))
+            at += 4
+        elif word % 4 == 0 and OFFSET_LOW <= word < len(data):
+            items.append(Item("offset", at, 4, (word,)))
+            at += 4
         else:
             items.append(Item("odd", at, 4, (word,)))
             at += 4
     if at < high:
         refuse(at, high, "unaligned tail")
-    return _settle(_join(items, refuse)), refused
+    return _settle(_join(_vet(items, refuse), refuse)), refused
+
+
+def _vet(items: Sequence[Item], refuse: Callable[[int, int, str], None]) -> list[Item]:
+    """The items with each run of offset and pointer words kept when it is a record's words: two or more words with an
+    offset among them, or a word beside a typed non-pointer word; an offset is typed as an unsigned integer. A run of
+    pointers alone is a pointer table, refused (the address-table reader types it); a bare word is left to `_join`."""
+    typed = {"float", "double", "int", "uint", "offset", "zero"}
+    out: list[Item] = []
+    i = 0
+    while i < len(items):
+        if items[i].kind not in {"ptr", "offset"}:
+            out.append(items[i])
+            i += 1
+            continue
+        j = i
+        while j < len(items) and items[j].kind in {"ptr", "offset"} and items[j].at == items[i].at + 4 * (j - i):
+            j += 1
+        run = items[i:j]
+        beside = (i and items[i - 1].kind in typed and items[i - 1].at + items[i - 1].size == items[i].at) or (
+            j < len(items) and items[j].kind in typed and items[j].at == items[j - 1].at + 4
+        )
+        offsets = any(w.kind == "offset" for w in run)
+        if offsets and (len(run) >= 2 or beside) or beside:
+            out.extend(Item("uint", w.at, 4, w.value) if w.kind == "offset" else w for w in run)
+        elif not offsets and len(run) >= 2:
+            refuse(run[0].at, run[-1].at + 4, "pointer table (typed by the address-table reader)")
+        else:  # a bare offset is an odd word (`_join` may type it); a bare pointer is refused
+            for w in run:
+                if w.kind == "ptr":
+                    refuse(w.at, w.at + 4, "pointer outside a record of typed words")
+                else:
+                    out.append(Item("odd", w.at, 4, w.value))
+        i = j
+    return out
 
 
 def _texty(word: int) -> bool:
@@ -149,7 +200,7 @@ def _join(items: Sequence[Item], refuse: Callable[[int, int, str], None]) -> lis
 def _settle(items: Sequence[Item]) -> list[Item]:
     """The items with each zero word joined to the numeric run before it, else the run after it, else unsigned."""
     out = list(items)
-    numeric = {"float", "int", "uint"}
+    numeric = {"float", "int", "uint", "ptr"}
     for i, item in enumerate(out):
         if item.kind == "zero":
             before = out[i - 1] if i and out[i - 1].at + out[i - 1].size == item.at else None
@@ -230,6 +281,9 @@ def render(obj: Item, name: str) -> list[str]:
         return [f"char {name}[{obj.size}] = {_literal(str(obj.value))};"]
     count = obj.size // (8 if obj.kind == "double" else 4)
     values = obj.value
+    if obj.kind == "ptr":
+        cells = [f"(void *)0x{w:08X}" if w else "0" for w in values]  # type: ignore[union-attr]
+        return [f"void *{name}[{count}] = {{ {', '.join(cells)} }};"]
     if obj.kind == "float":
         cells = [_float(w) for w in values]  # type: ignore[union-attr]
         kind = "float"
@@ -282,8 +336,45 @@ def body(unit: Unit, delta: int) -> tuple[list[str], list[Json]]:
     return lines, symbols
 
 
+def unknown_ranges(cfg: Config) -> dict[str, tuple[list[tuple[int, int]], list[tuple[int, int]]]]:
+    """Per version (the ROM spans no class holds, the spans of code, data and platform): a window may widen an unknown
+    span over a blob's bytes, never over those."""
+    report = import_module("unbake.report")
+    tree = import_module("unbake.tree").capture(cfg)
+    held = report.partitions(cfg, tree)
+    found = report.unknown_spans(cfg, tree)
+    return {
+        v: (
+            [(a, b) for a, b, *_ in row["spans"]],
+            [tuple(s) for k in ("platform", "code", "data") for s in held[v]["spans"].get(k, ())],  # type: ignore[misc]
+        )
+        for v, row in found.items()
+    }
+
+
+def words_of(
+    spans: Sequence[tuple[int, int]], hard: Sequence[tuple[int, int]], low: int, high: int
+) -> list[tuple[int, int]]:
+    """The spans inside [low, high), each widened outward to word boundaries (a span may start inside the last word of
+    the blob before it) but never into `hard` bytes or past the range, and merged where the widening makes two touch:
+    a word is read once. A span that no whole word fits is dropped."""
+    out: list[tuple[int, int]] = []
+    for a, b in spans:
+        a, b = max(a, low), min(b, high)
+        lo = max([e for _, e in hard if e <= a] + [low])
+        hi = min([s for s, _ in hard if s >= b] + [high])
+        a, b = max(a // 4 * 4, -(-lo // 4) * 4), min((b + 3) // 4 * 4, hi // 4 * 4)
+        if b - a < 4:
+            continue
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(b, out[-1][1]))
+        else:
+            out.append((a, b))
+    return out
+
+
 def command(cfg: Config, params: Json) -> Json:
-    """`type-pool --spec V:LOW:HIGH:DELTA ...`: write a source per unit and its symbol rows (not with --check) and
+    """`type-pool --spec V:LOW:HIGH:DELTA ... [--unknown]`: write a source per unit and its symbol rows (not with --check) and
     report the windows (`rom`, `end`, `delta` per version) and every refused span."""
     specs = []
     for text in params.get("spec") or ():
@@ -295,9 +386,14 @@ def command(cfg: Config, params: Json) -> Json:
     rows: list[Json] = []
     refused: list[Json] = []
     symbols: dict[str, list[Json]] = {}
+    held = unknown_ranges(cfg) if params.get("unknown") else None
     for v, low, high, delta in specs:
-        items, gaps = itemize(config.rom(cfg.project, v).read_bytes(), low, high, delta)
-        refused += [{"version": v, **g} for g in gaps]
+        data = config.rom(cfg.project, v).read_bytes()
+        items: list[Item] = []
+        for a, b in [(low, high)] if held is None else words_of(*held[v], low, high):
+            found_items, gaps = itemize(data, a, b, delta)
+            items += found_items
+            refused += [{"version": v, **g} for g in gaps]
         for unit in units(items):
             lines, syms = body(unit, delta)
             first = unit.items[0].at
@@ -328,11 +424,12 @@ def command(cfg: Config, params: Json) -> Json:
             path = cfg.project.root / windows.symbols_path(v)
             have = path.read_text().splitlines() if path.exists() else []
             known = {line.split(" =")[0] for line in have}
-            add = [
-                f"{s['name']} = 0x{s['vram']:08X}; // rom:0x{s['rom']:X} size:0x{s['size']:X}"
-                for s in syms
-                if s["name"] not in known
-            ]
+            add = []
+            for s in syms:
+                if s["name"] in known:
+                    continue
+                known.add(s["name"])
+                add.append(f"{s['name']} = 0x{s['vram']:08X}; // rom:0x{s['rom']:X} size:0x{s['size']:X}")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("\n".join([*have, *add]) + "\n")
     return {"windows": rows, "unfit": refused, "written": written, "bytes": sum(r["end"] - r["rom"] for r in rows)}

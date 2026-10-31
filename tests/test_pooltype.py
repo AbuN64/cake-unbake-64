@@ -62,3 +62,53 @@ def test_render_floats_exactly_and_strings_padded():
     assert pt.render(pt.Item("str", 0, 8, 'a"b'), "s") == ['char s[8] = "a\\"b";']
     assert pt.render(pt.Item("uint", 0, 8, (0x18, 5)), "w") == ["unsigned int w[2] = { 0x18, 5 };"]
     assert pt.render(pt.Item("int", 0, 4, (0xFFFFFFFF,)), "n") == ["int n[1] = { -1 };"]
+
+
+def rom_of(*w: int) -> bytes:
+    """A ROM image big enough that 0x22xxxx is an offset inside it."""
+    body = words(*w)
+    return body + b"\0" * (0x300000 - len(body))
+
+
+def kinds(*w: int) -> tuple[list[str], list[dict]]:
+    items, refused = pt.itemize(rom_of(*w), 0, 4 * len(w), 0)
+    return [i.kind for i in items], refused
+
+
+def test_offset_words_are_typed_in_a_run_or_beside_a_typed_word():
+    assert kinds(0x00223260, 0x00223270, 0x18)[0] == ["uint", "uint", "uint"]  # two offsets in a row
+    assert kinds(0x3F800000, 0x3F000000, 0x0026FCB4)[0] == ["float", "float", "uint"]  # one beside a float
+    assert kinds(0x00223260, 0x084B0E0C, 0x084B0E0D)[0] == []  # a bare offset beside packed bytes
+    assert kinds(0x00223261, 0x00223271)[0] == []  # not word aligned: no offset
+    assert pt.itemize(words(0x00223260, 0x00223270), 0, 8, 0)[0] == []  # beyond this image's size: no offset
+
+
+def test_pointer_words_are_typed_inside_a_record_never_alone():
+    assert kinds(0x801708C4, 0x0022E004, 0x0, 0x801708D4)[0] == ["ptr", "uint", "uint", "ptr"]  # the zero joins the integers before it
+    assert kinds(0x801708C4, 0x00000064)[0] == ["ptr", "uint"]  # a pointer beside a small integer
+    got, refused = kinds(0x801547B4, 0x801547B0, 0x801547A0)
+    assert got == []  # a table of pointers alone is the address-table reader's
+    assert refused == [{"rom": 0, "end": 12, "why": "pointer table (typed by the address-table reader)"}]
+    assert kinds(0x80000100, 0x0022E004)[0] == []  # below the image: no pointer, and a bare offset is no record
+
+
+def test_a_pointer_run_is_a_void_pointer_array_of_address_constants():
+    items, _ = pt.itemize(rom_of(0x801708C4, 0x0022E004, 0, 0x801708D4), 0, 16, 0)
+    unit = pt.Unit("", 0x8000, items)
+    lines, symbols = pt.body(unit, 0x80100000)
+    assert lines == [
+        "void *g_earlierPoolPointers_80100000[1] = { (void *)0x801708C4 };",
+        "unsigned int g_earlierPoolWords_80100004[2] = { 0x22E004, 0 };",
+        "void *g_earlierPoolPointers_8010000C[1] = { (void *)0x801708D4 };",
+    ]
+    assert all(s["name"].startswith("g_earlier") and "rom" in s for s in symbols)
+
+
+def test_words_of_widens_to_words_without_entering_code_data_or_other_windows():
+    unknown = [(0x101, 0x103), (0x10A, 0x10D), (0x200, 0x202), (0x300, 0x303)]
+    hard = [(0x0, 0x100), (0x204, 0x300)]
+    got = pt.words_of(unknown, hard, 0, 0x400)
+    assert got == [(0x100, 0x104), (0x108, 0x110), (0x200, 0x204), (0x300, 0x304)]
+    assert pt.words_of([(0x101, 0x103)], [(0, 0x101)], 0, 0x400) == []  # no whole word is free
+    assert pt.words_of([(0x101, 0x107)], [], 0x100, 0x106) == [(0x100, 0x104)]  # never past the range
+    assert pt.words_of([(0x100, 0x104), (0x104, 0x108)], [], 0, 0x400) == [(0x100, 0x108)]  # touching spans merge

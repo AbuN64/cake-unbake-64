@@ -344,6 +344,7 @@ params = [
   { name = "spec", kind = "option", type = "str", required = true, multiple = true, help = "VERSION:LOW:HIGH:DELTA (hex ok): the ROM range of a version and the older build's vram - rom" },
   { name = "dest", kind = "option", type = "path", required = false, multiple = false, help = "folder of the sources, default src/DATA/EARLIER_BUILD" },
   { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "report the windows and refusals, write nothing" },
+  { name = "unknown", kind = "flag", type = "str", required = false, multiple = false, help = "type only the words of the ROM spans no class holds (widened to word boundaries), inside each --spec range" },
 ]
 
 [command.type-pointers]
