@@ -93,17 +93,13 @@ def test_same_vram_in_two_versions_shares_one_source_and_a_refused_span_writes_n
     cfg = _project(tmp_path, monkeypatch, {"eu": b"\0" * 4 + table, "eu-x": b"\0" * 8 + table + bad})
     out = pt.command(cfg, {"spec": ["eu:4:12:0x307000", "eu-x:8:16:0x306FFC", "eu-x:16:24:0x306FFC"]})
     assert out["written"] == ["EARLIER_ADDRTABLE_307004.CPP"]
-    assert (
-        (tmp_path / "src/DATA/EARLIER_BUILD/EARLIER_ADDRTABLE_307004.CPP")
-        .read_text()
-        .count("#if defined(VERSION_EU) || defined(VERSION_EU_X)\n")
-        == 1
-    )
+    text = (tmp_path / "src/DATA/EARLIER_BUILD/EARLIER_ADDRTABLE_307004.CPP").read_text()
+    assert text.count("#if defined(VERSION_EU) || defined(VERSION_EU_X)\n") == 1
     assert len(out["unfit"]) == 1 and out["unfit"][0]["word_rom"] == 20 and out["unfit"][0]["word"] == "0x801547B0"
 
 
 def test_bodies_that_differ_by_version_share_one_source_guarded_apart(tmp_path, monkeypatch):
-    eu, eux = words(0x80158C08, 0x800E2AC8), words(0x80158C08, 0x800E2ACC)
+    eu, eux = words(0x80158C08, 0x800E2AC8), words(0x80158C08, 0x8045B380)
     cfg = _project(tmp_path, monkeypatch, {"eu": b"\0" * 4 + eu, "eu-x": b"\0" * 4 + eux})
     out = pt.command(cfg, {"spec": ["eu:4:12:0x307000", "eu-x:4:12:0x307000"]})
     assert out["unfit"] == [] and out["written"] == ["EARLIER_ADDRTABLE_307004.CPP"]
