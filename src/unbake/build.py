@@ -9,7 +9,9 @@ import re
 import shlex
 import tarfile
 import urllib.request
+from collections import deque
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
 from string import Template
@@ -394,16 +396,8 @@ def _piece(config: Config, v: str, piece: str) -> tuple[int, int, int]:
 def _named(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str, str, str]]:
     """(rom, path, section, name) of every name a file owns in one version's piece (its ROM range: pieces may share a
     segment name), in ROM order."""
-    rows: list[tuple[int, str, str, str]] = []
-    table = held.symbols.get(v, {})
     start, end, _ = _piece(config, v, piece)
-    for module in held.modules:
-        for name in module.owns.get(v, ()):
-            fact = table.get(name)
-            if fact is None or fact[1] is None or not start <= fact[1] < end:
-                continue
-            rows.append((fact[1], module.path, module.sections.get(v, {}).get(name, ".text"), name))
-    return sorted(rows)
+    return held.placed(v, start, end)
 
 
 def _rows(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str, str]]:
@@ -414,11 +408,17 @@ def _rows(config: Config, held: Tree, v: str, piece: str) -> list[tuple[int, str
 def _scattered(rows: Sequence[tuple[int, str, str]]) -> set[str]:
     """The files whose code or compiled read-only data lies in more than one run of a piece: other files' bytes sit
     between them in the ROM, so one `.text` and one `.rodata` of the object cannot be placed."""
-    runs: list[tuple[str, str]] = []
+    last: tuple[str, str] | None = None
+    seen: set[tuple[str, str]] = set()
+    found: set[str] = set()
     for _, path, section in rows:
-        if section in (".text", ".rodata") and (not runs or runs[-1] != (path, section)):
-            runs.append((path, section))
-    return {key[0] for i, key in enumerate(runs) if key in runs[:i]}
+        key = (path, section)
+        if section in (".text", ".rodata") and last != key:
+            if key in seen:
+                found.add(path)
+            seen.add(key)
+            last = key
+    return found
 
 
 def _merged(rows: Sequence[tuple[int, str, str, str]]) -> set[str]:
@@ -569,33 +569,31 @@ def _phased(config: Config, held: Tree, v: str) -> dict[str, str]:
     return {path: " ".join(keys) for path, keys in found.items()}
 
 
-def _doubled(config: Config, held: Tree, v: str, piece: str) -> set[str]:
+def _doubled(table: Mapping[str, symbols.Symbol], named_rows: Sequence[tuple[int, str, str, str]]) -> set[str]:
     """The files whose compiled read-only data (a `literals_` row) starts on an 8-byte boundary: the ROM keeps the
     alignment the compiler gave the section, which `SUBALIGN(1)` drops, so the link script asks for it where the
     file's data starts (a no-op where the data before it already ends there)."""
-    table = held.symbols.get(v, {})
-    start, end, _ = _piece(config, v, piece)
     first: dict[str, tuple[int, str]] = {}
-    for module in held.modules:
-        for name in module.owns.get(v, ()):
-            fact = table.get(name)
-            if fact is None or fact[1] is None or not start <= fact[1] < end:
-                continue
-            if module.sections.get(v, {}).get(name, ".text") == ".rodata":
-                first[module.path] = min(first.get(module.path, (fact[1], name)), (fact[1], name))
+    for rom, path, section, name in named_rows:
+        if section == ".rodata":
+            first[path] = min(first.get(path, (rom, name)), (rom, name))
     return {p for p, (_, name) in first.items() if name.startswith(tree.LITERALS) and table[name][0] % 8 == 0}
 
 
-def _apart(held: Tree, v: str, rows: Sequence[tuple[int, str, str]], config: Config) -> None:
-    """A file's object has one read-only section, listed where its first byte is: literals of a function that lie
-    later, after other files' data, would be left out of the ROM. Refuse, naming the function."""
+def _literals(held: Tree, v: str) -> dict[tuple[int | None, str], str]:
+    """The `literals_` names of a version by (ROM address, file)."""
     table = held.symbols.get(v, {})
-    literal = {
+    return {
         (table[n][1], m.path): n
         for m in held.modules
         for n in m.owns.get(v, ())
         if n.startswith(tree.LITERALS) and n in table
     }
+
+
+def _apart(literal: Mapping[tuple[int | None, str], str], v: str, rows: Sequence[tuple[int, str, str]]) -> None:
+    """A file's object has one read-only section, listed where its first byte is: literals of a function that lie
+    later, after other files' data, would be left out of the ROM. Refuse, naming the function."""
     seen: set[tuple[str, str]] = set()
     last: tuple[str, str] | None = None
     bad: list[Finding] = []
@@ -619,18 +617,49 @@ def _apart(held: Tree, v: str, rows: Sequence[tuple[int, str, str]], config: Con
         raise Refusal(*bad)
 
 
-def _covered(functions: Sequence[str], rows: set[str], name: str) -> str:
+def _covered(functions: Sequence[str], where: Mapping[str, int], rows: set[str], name: str) -> str:
     """The read-only input sections a ROM row holds: its own, and for a function's `literals_` the pools of the
     functions after it that have no `literals_` row of their own (the ROM keeps one original file's pools in one run)."""
     own = f".rodata.{name}"
-    if not name.startswith(tree.LITERALS) or name[len(tree.LITERALS) :] not in functions:
+    if not name.startswith(tree.LITERALS) or name[len(tree.LITERALS) :] not in where:
         return own
-    after = functions[functions.index(name[len(tree.LITERALS) :]) + 1 :]
+    after = itertools.islice(functions, where[name[len(tree.LITERALS) :]] + 1, None)
     held = itertools.takewhile(lambda f: tree.LITERALS + f not in rows, after)
     return " ".join([own, *(f".rodata.{tree.LITERALS}{f}" for f in held)])
 
 
-def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> list[str]:
+@dataclass(frozen=True)
+class _Version:
+    """What `_items` reads of one version in every piece, collected once: the files built with a section per function,
+    their functions in ROM order (and each one's place in it), the files packed off a word, the link fills and the
+    `literals_` names by address."""
+
+    apart: set[str]
+    code: dict[str, list[str]]
+    where: dict[str, dict[str, int]]
+    unaligned: dict[str, int]
+    fills: list[linkfill.Fill]
+    literal: dict[tuple[int | None, str], str]
+
+
+def _version(config: Config, held: Tree, v: str) -> _Version:
+    apart = (
+        _apart_paths(config, held, v)
+        if "function_sections" in configuration.toolchain(config.project.toolchain)
+        else set()
+    )
+    code = _functions(config, held, v, apart)
+    return _Version(
+        apart,
+        code,
+        {path: {name: i for i, name in enumerate(names)} for path, names in code.items()},
+        _unaligned(config, held, v),
+        linkfill.read(config.project.root, v),
+        _literals(held, v),
+    )
+
+
+def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool, version: _Version) -> list[str]:
     """The input sections of one version's segment in the order their bytes lie in the ROM: for each name a file owns
     in the segment, its section of that file's object (`.text` for code, the source's own section for data), the
     first of each in address order. A file's compiled read-only data sits where its `literals_` fact says; else a
@@ -641,17 +670,12 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
     named_rows = _named(config, held, v, piece)
     rows = [row[:3] for row in named_rows]
     named = {(path, section) for _, path, section in rows}
-    doubled = _doubled(config, held, v, piece)
-    apart = (
-        _apart_paths(config, held, v)
-        if "function_sections" in configuration.toolchain(config.project.toolchain)
-        else set()
-    )
+    doubled = _doubled(held.symbols.get(v, {}), named_rows)
+    apart, code, unaligned = version.apart, version.code, version.unaligned
     items: list[
         tuple[str, str, int | None, bool]
     ] = []  # (path, section, offset, whether the section is one function's)
     start, end, _ = _piece(config, v, piece)
-    code = _functions(config, held, v, apart)
     pools = {name for _, path, section, name in named_rows if path in apart and section == ".rodata"}
     seen: set[tuple[str, str]] = set()
     for rom, path, section, name in named_rows:
@@ -660,20 +684,19 @@ def _items(config: Config, held: Tree, v: str, piece: str, per_object: bool) -> 
             items.append((path, f".text.{name}", rom - start, True))
         elif path in apart and section == ".rodata":
             items.append(
-                (path, _covered(code.get(path, ()), pools, name), rom - start, True)
+                (path, _covered(code.get(path, ()), version.where.get(path, {}), pools, name), rom - start, True)
             )  # each block where its row lies
         elif (path, section) not in seen:
             seen.add((path, section))
             items.append((path, section, rom - start if rom > start else None, False))
             if per_object and section == ".text" and (path, ".rodata") not in named:
                 items.append((path, ".rodata", None, False))
-    _apart(held, v, [row for row in rows if row[1] not in apart], config)
-    unaligned = _unaligned(config, held, v)
+    _apart(version.literal, v, [row for row in rows if row[1] not in apart])
     out: list[str] = []
-    fills = [f for f in linkfill.read(config.project.root, v) if start <= f.rom < end]
+    fills = deque(f for f in version.fills if start <= f.rom < end)
     for path, section, offset, apart_section in items:
         while fills and offset is not None and fills[0].rom - start < offset:
-            out.append(linkfill.statement(fills.pop(0), start))  # the stale bytes between this object and the last
+            out.append(linkfill.statement(fills.popleft(), start))  # the stale bytes between this object and the last
         if offset is not None:
             # an output section's `.` is relative to its start: never back, so a block that runs past the next row's
             # address (one block holding several rows) is followed on, and the ROM compare stops any real shift
@@ -753,6 +776,7 @@ def linker(config: Config, held: Tree) -> bytes:
         project = config.project
         per_object = configuration.toolchain(project.toolchain).get("link_sections", "per-section") == "per-object"
         found: dict[str, dict[str, Segment]] = {}
+        facts = {v: _version(config, held, v) for v in project.versions}
         for v in project.versions:
             for segment, (piece, *_) in zip(project.version[v].segments, versions.pieces(config, v), strict=True):
                 found.setdefault(piece, {})[v] = segment
@@ -763,7 +787,7 @@ def linker(config: Config, held: Tree) -> bytes:
             names = [v for v in project.versions if v in by]
             whole = _guard(names, project.versions)
             binary = all(s.kind == "bin" for s in by.values())
-            orders = {v: [] if binary else _items(config, held, v, name, per_object) for v in names}
+            orders = {v: [] if binary else _items(config, held, v, name, per_object, facts[v]) for v in names}
             blocks = (
                 [(tuple(names), [f"assets/{name}.bin.o(.data)"])] if binary else _blocks({v: orders[v] for v in names})
             )

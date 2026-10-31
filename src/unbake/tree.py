@@ -13,6 +13,7 @@ import json
 import pickle
 import re
 import warnings
+from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import nullcontext
@@ -66,6 +67,9 @@ class Tree:
     symbols: Mapping[str, Mapping[str, symbols.Symbol]] = field(default_factory=dict, compare=False, repr=False)
     _owners: Mapping[tuple[str, str], str] = field(default_factory=dict, init=False, compare=False, repr=False)
     _addresses: dict[str, dict[int, str]] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _placed: dict[str, tuple[list[int], list[tuple[int, str, str, str]]]] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         owners = {(v, n): m.path for m in self.modules for v, names in m.owns.items() for n in names}
@@ -94,6 +98,23 @@ class Tree:
                     found.setdefault(table[n][0], path)
             self._addresses[version] = found
         return self._addresses[version]
+
+    def placed(self, version: str, start: int, end: int) -> list[tuple[int, str, str, str]]:
+        """(rom, path, section, name) of every name a file owns in the version whose fact has a ROM address in
+        [start, end), in ROM order: the version's rows are collected and sorted once, each range is a bisect slice."""
+        if version not in self._placed:
+            table = self.symbols.get(version, {})
+            rows: list[tuple[int, str, str, str]] = []
+            for module in self.modules:
+                sections = module.sections.get(version, {})
+                for name in module.owns.get(version, ()):
+                    fact = table.get(name)
+                    if fact is not None and fact[1] is not None:
+                        rows.append((fact[1], module.path, sections.get(name, ".text"), name))
+            rows.sort()
+            self._placed[version] = ([row[0] for row in rows], rows)
+        roms, rows = self._placed[version]
+        return rows[bisect_left(roms, start) : bisect_left(roms, end)]
 
     def order(self, version: str, segment: str) -> tuple[str, ...]:
         """The module paths of a segment by the first address they own in the version."""

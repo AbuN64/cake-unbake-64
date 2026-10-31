@@ -1,0 +1,3973 @@
+{
+"cuts": [
+22612,
+54708,
+88564
+],
+"end": 174640,
+"facts": {
+"Action_ActivateActorAndClearMotion": [
+2149600392,
+22664,
+null,
+"func"
+],
+"Action_DeactivateBreakable": [
+2149600588,
+22860,
+null,
+"func"
+],
+"Action_DisableTriggerActor": [
+2149600872,
+23144,
+null,
+"func"
+],
+"Action_EnableTriggerActor": [
+2149600796,
+23068,
+null,
+"func"
+],
+"Action_InvokeOwnerCallback": [
+2149600340,
+22612,
+null,
+"func"
+],
+"Action_IsActorStateActive": [
+2149600920,
+23192,
+null,
+"func"
+],
+"Action_NotifyActorActivated": [
+2149600968,
+23240,
+null,
+"func"
+],
+"Action_NotifyActorDeactivated": [
+2149601072,
+23344,
+null,
+"func"
+],
+"Action_RaiseMotionSpeed": [
+2149601176,
+23448,
+null,
+"func"
+],
+"Action_RequestActiveState": [
+2149600844,
+23116,
+null,
+"func"
+],
+"Action_RequestInactiveState": [
+2149600768,
+23040,
+null,
+"func"
+],
+"Action_TestScaledTriggerRange": [
+2149601252,
+23524,
+null,
+"func"
+],
+"Actor_ApplyActorDefinition": [
+2149660944,
+83216,
+null,
+"func"
+],
+"Actor_ApplySupportingPlatformMotion": [
+2149661976,
+84248,
+null,
+"func"
+],
+"Actor_InitSpawnedActor": [
+2149661388,
+83660,
+null,
+"func"
+],
+"Actor_RequestActorState": [
+2149663128,
+85400,
+null,
+"func"
+],
+"Actor_UpdateActorStateAnimation": [
+2149662452,
+84724,
+null,
+"func"
+],
+"Attack_SelectWeightedAttackBehavior": [
+2149637248,
+59520,
+null,
+"func"
+],
+"Barrel_AddActorYaw": [
+2149675156,
+97428,
+null,
+"func"
+],
+"Barrel_ApplyClampedTurn": [
+2149673000,
+95272,
+null,
+"func"
+],
+"Barrel_ClearTargetInfo": [
+2149676292,
+98564,
+null,
+"func"
+],
+"Barrel_ComputeTargetOffset": [
+2149672472,
+94744,
+null,
+"func"
+],
+"Barrel_FillAnchorTargetInfo": [
+2149667888,
+90160,
+null,
+"func"
+],
+"Barrel_FillDamagePacket": [
+2149672104,
+94376,
+null,
+"func"
+],
+"Barrel_FillWordPair": [
+2149675484,
+97756,
+null,
+"func"
+],
+"Barrel_FindClearAimAngle": [
+2149669000,
+91272,
+null,
+"func"
+],
+"Barrel_FindOffsetApproachPosition": [
+2149676076,
+98348,
+null,
+"func"
+],
+"Barrel_GetEyeDistanceSquared": [
+2149675588,
+97860,
+null,
+"func"
+],
+"Barrel_GetFacingSide": [
+2149669808,
+92080,
+null,
+"func"
+],
+"Barrel_GetFlatDistanceSquared": [
+2149675696,
+97968,
+null,
+"func"
+],
+"Barrel_GetImpactSlot": [
+2149671208,
+93480,
+null,
+"func"
+],
+"Barrel_GetSignedAngleToPoint": [
+2149674852,
+97124,
+null,
+"func"
+],
+"Barrel_IgnoreEffectCallback": [
+2149675748,
+98020,
+null,
+"func"
+],
+"Barrel_ReadLoopingSequenceValue": [
+2149675496,
+97768,
+null,
+"func"
+],
+"Barrel_RunDamageHook": [
+2149675548,
+97820,
+null,
+"func"
+],
+"Barrel_SetLoopingSound": [
+2149675760,
+98032,
+null,
+"func"
+],
+"Barrel_SpawnActorEffect": [
+2149671592,
+93864,
+null,
+"func"
+],
+"Barrel_SpawnEffectsFromMask": [
+2149676468,
+98740,
+null,
+"func"
+],
+"Barrel_SpawnFlaggedEffects": [
+2149675200,
+97472,
+null,
+"func"
+],
+"Barrel_StopActorLoopingSound": [
+2149675944,
+98216,
+null,
+"func"
+],
+"Barrel_UpdateActorController": [
+2149672136,
+94408,
+null,
+"func"
+],
+"Barrel_UpdateTrackGoals": [
+2149674332,
+96604,
+null,
+"func"
+],
+"CTeamSelect_ComputeDirectedAngleStep": [
+2149680352,
+102624,
+null,
+"func"
+],
+"Cbarrel_ClassifyTrackTarget": [
+2149673420,
+95692,
+null,
+"func"
+],
+"Cbarrel_IsTargetInViewCone": [
+2149663536,
+85808,
+null,
+"func"
+],
+"Cbarrel_LockTrackerTarget": [
+2149674320,
+96592,
+null,
+"func"
+],
+"Cbarrel_ResolveTrackGoal": [
+2149666292,
+88564,
+null,
+"func"
+],
+"Cbarrel_SelectCombatTarget": [
+2149665248,
+87520,
+null,
+"func"
+],
+"Cbarrel_SelectWeightedAnimation": [
+2149672724,
+94996,
+null,
+"func"
+],
+"Cbarrel_TestFlaggedAimObstruction": [
+2149673612,
+95884,
+null,
+"func"
+],
+"Cbarrel_TestTargetEyeObstruction": [
+2149674004,
+96276,
+null,
+"func"
+],
+"Cbarrel_TurnTowardClearAim": [
+2149673176,
+95448,
+null,
+"func"
+],
+"Cbarrel_UpdateTrackerAim": [
+2149664324,
+86596,
+null,
+"func"
+],
+"Cteamselect_DrawTeamIcons": [
+2149680624,
+102896,
+null,
+"func"
+],
+"Cteamselect_DrawTeamWheel": [
+2149683180,
+105452,
+null,
+"func"
+],
+"Cteamselect_GetFourWayStickSlot": [
+2149681576,
+103848,
+null,
+"func"
+],
+"Cteamselect_InitTeamChoices": [
+2149683572,
+105844,
+null,
+"func"
+],
+"Cteamselect_TryConfirmTeamChoice": [
+2149683660,
+105932,
+null,
+"func"
+],
+"Cteamselect_UpdateTeamChoiceInput": [
+2149683720,
+105992,
+null,
+"func"
+],
+"Cteamselect_UpdateTeamWheel": [
+2149682084,
+104356,
+null,
+"func"
+],
+"DamageAI_ActivateActor": [
+2149602116,
+24388,
+null,
+"func"
+],
+"DamageAI_ApplyHitEuropean": [
+2149601472,
+23744,
+null,
+"func"
+],
+"DamageAI_ClearCollisionFlagsOnHit": [
+2149602484,
+24756,
+null,
+"func"
+],
+"DamageAI_GetActivationMode": [
+2149602100,
+24372,
+null,
+"func"
+],
+"DamageAI_GetActivationSound": [
+2149602072,
+24344,
+null,
+"func"
+],
+"DamageAI_GetDefinitionValue": [
+2149602544,
+24816,
+null,
+"func"
+],
+"DamageAI_InitializeDispatch": [
+2149601836,
+24108,
+null,
+"func"
+],
+"DamageAI_InvokeOwnerCallback": [
+2149602020,
+24292,
+null,
+"func"
+],
+"DamageAI_RequestCurrentActorState": [
+2149601900,
+24172,
+null,
+"func"
+],
+"Device_BuildPlayerMatrix": [
+2149611824,
+34096,
+null,
+"func"
+],
+"Device_ClearCollisionFlagsOnHit": [
+2149602828,
+25100,
+null,
+"func"
+],
+"Device_DrawSpawnedModel": [
+2149602888,
+25160,
+null,
+"func"
+],
+"Device_EnableTriggerActor": [
+2149603056,
+25328,
+null,
+"func"
+],
+"Device_GetHitStateBit": [
+2149603104,
+25376,
+null,
+"func"
+],
+"Device_IsHitStateBitClear": [
+2149603116,
+25388,
+null,
+"func"
+],
+"Device_RequestAndSetActiveState": [
+2149602996,
+25268,
+null,
+"func"
+],
+"Device_RespondToActivation": [
+2149602560,
+24832,
+null,
+"func"
+],
+"MovingAI_CanSpawnActorKind": [
+2149606780,
+29052,
+null,
+"func"
+],
+"MovingAI_ChooseTriggerDelay": [
+2149605536,
+27808,
+null,
+"func"
+],
+"MovingAI_ClearActorStateActive": [
+2149606056,
+28328,
+null,
+"func"
+],
+"MovingAI_DeviceHealthNoOp": [
+2149607300,
+29572,
+null,
+"func"
+],
+"MovingAI_DisableTriggerActor": [
+2149606096,
+28368,
+null,
+"func"
+],
+"MovingAI_EnableTriggerActor": [
+2149606008,
+28280,
+null,
+"func"
+],
+"MovingAI_GetDeviceHealth": [
+2149607288,
+29560,
+null,
+"func"
+],
+"MovingAI_InitializeDeviceHealth": [
+2149607108,
+29380,
+null,
+"func"
+],
+"MovingAI_InitializeMotionDispatch": [
+2149606948,
+29220,
+null,
+"func"
+],
+"MovingAI_InvokeOwnerCallback": [
+2149607236,
+29508,
+null,
+"func"
+],
+"MovingAI_IsActorStateActive": [
+2149605920,
+28192,
+null,
+"func"
+],
+"MovingAI_RequestInactiveOnEvent": [
+2149605880,
+28152,
+null,
+"func"
+],
+"MovingAI_RequestMotionAnimation": [
+2149606880,
+29152,
+null,
+"func"
+],
+"MovingAI_SetActorStateActive": [
+2149605968,
+28240,
+null,
+"func"
+],
+"MovingAI_SpawnConfiguredModelEffect": [
+2149606144,
+28416,
+null,
+"func"
+],
+"MovingAI_SpawnConfiguredSceneEffect": [
+2149606412,
+28684,
+null,
+"func"
+],
+"MovingAI_SpawnSceneEffectAtPosition": [
+2149606592,
+28864,
+null,
+"func"
+],
+"MovingAI_UpdateTriggerDelay": [
+2149605708,
+27980,
+null,
+"func"
+],
+"Nav_AccumulateNodeTickCosts": [
+2149641840,
+64112,
+null,
+"func"
+],
+"Nav_AddGoalNode": [
+2149634624,
+56896,
+null,
+"func"
+],
+"Nav_AddInactiveObjectGoals": [
+2149643828,
+66100,
+null,
+"func"
+],
+"Nav_AddPickupCategoryCosts": [
+2149641924,
+64196,
+null,
+"func"
+],
+"Nav_AddPickupGoalsByObjectIds": [
+2149642608,
+64880,
+null,
+"func"
+],
+"Nav_AdvancePickupRouteSelection": [
+2149634960,
+57232,
+null,
+"func"
+],
+"Nav_AppendDirectionalRouteStage": [
+2149635276,
+57548,
+null,
+"func"
+],
+"Nav_ApproachCombatTargetAlongRoute": [
+2149656648,
+78920,
+null,
+"func"
+],
+"Nav_CheckCloseAttackRoute": [
+2149646752,
+69024,
+null,
+"func"
+],
+"Nav_ChooseNewRoamingGoal": [
+2149660720,
+82992,
+null,
+"func"
+],
+"Nav_ClearSearchNodeStatus": [
+2149634940,
+57212,
+null,
+"func"
+],
+"Nav_CloseSearchNode": [
+2149634844,
+57116,
+null,
+"func"
+],
+"Nav_CollectEnemyTargets": [
+2149646928,
+69200,
+null,
+"func"
+],
+"Nav_ComputeScaledPointCentroid": [
+2149636576,
+58848,
+null,
+"func"
+],
+"Nav_EvaluateAttackTarget": [
+2149647228,
+69500,
+null,
+"func"
+],
+"Nav_EvaluateCaptureFlagMarkerSearch": [
+2149640916,
+63188,
+null,
+"func"
+],
+"Nav_FindSpecialLinkedCandidate": [
+2149636916,
+59188,
+null,
+"func"
+],
+"Nav_FollowMarkerCarrierRoute": [
+2149657828,
+80100,
+null,
+"func"
+],
+"Nav_GetWeaponPickupGoalClass": [
+2149643716,
+65988,
+null,
+"func"
+],
+"Nav_HasOpenSearchNodes": [
+2149634888,
+57160,
+null,
+"func"
+],
+"Nav_InitCarrierRoute": [
+2149657776,
+80048,
+null,
+"func"
+],
+"Nav_InitCloseCombat": [
+2149655876,
+78148,
+null,
+"func"
+],
+"Nav_InitCombatTargetApproach": [
+2149656596,
+78868,
+null,
+"func"
+],
+"Nav_InitNearbyUnrestrictedGoal": [
+2149657184,
+79456,
+null,
+"func"
+],
+"Nav_InitPursuitStrafe": [
+2149655548,
+77820,
+null,
+"func"
+],
+"Nav_InitRangedCombat": [
+2149655664,
+77936,
+null,
+"func"
+],
+"Nav_InitRetreatMovement": [
+2149656876,
+79148,
+null,
+"func"
+],
+"Nav_InitRoamingWithJumps": [
+2149660428,
+82700,
+null,
+"func"
+],
+"Nav_InitTimedJumpRoute": [
+2149659136,
+81408,
+null,
+"func"
+],
+"Nav_InitUnclaimedMarkerSearch": [
+2149657584,
+79856,
+null,
+"func"
+],
+"Nav_InitVisiblePursuit": [
+2149656080,
+78352,
+null,
+"func"
+],
+"Nav_InsertPickupRouteNode": [
+2149635844,
+58116,
+null,
+"func"
+],
+"Nav_IsBallisticArcObstructed": [
+2149639828,
+62100,
+null,
+"func"
+],
+"Nav_IsPickupObjectInPairCategory": [
+2149643644,
+65916,
+null,
+"func"
+],
+"Nav_IsPickupObjectInSixEntryCategory": [
+2149643676,
+65948,
+null,
+"func"
+],
+"Nav_IsSearchNodeClosed": [
+2149634872,
+57144,
+null,
+"func"
+],
+"Nav_IsSearchNodeOpen": [
+2149634856,
+57128,
+null,
+"func"
+],
+"Nav_OpenSearchNode": [
+2149634720,
+56992,
+null,
+"func"
+],
+"Nav_PickupGoalReturnZero": [
+2149643708,
+65980,
+null,
+"func"
+],
+"Nav_RebuildRequestedGoalRoute": [
+2149640960,
+63232,
+null,
+"func"
+],
+"Nav_RefineBallisticAim": [
+2149637632,
+59904,
+null,
+"func"
+],
+"Nav_RequestRandomArmedWeapon": [
+2149646592,
+68864,
+null,
+"func"
+],
+"Nav_ResetObjectArrivalChase": [
+2149659084,
+81356,
+null,
+"func"
+],
+"Nav_ResetPatrolRouteSelection": [
+2149658588,
+80860,
+null,
+"func"
+],
+"Nav_ResetPlayerState": [
+2149613600,
+35872,
+null,
+"func"
+],
+"Nav_ResetTargetFollowStateEu": [
+2149657984,
+80256,
+null,
+"func"
+],
+"Nav_ResetWheelProbeState": [
+2149650660,
+72932,
+null,
+"func"
+],
+"Nav_RunBehaviorHandler": [
+2149650496,
+72768,
+null,
+"func"
+],
+"Nav_SeekNearbyUnrestrictedGoal": [
+2149657244,
+79516,
+null,
+"func"
+],
+"Nav_SeekUnclaimedMarker": [
+2149657636,
+79908,
+null,
+"func"
+],
+"Nav_SelectAvailableWeapon": [
+2149645776,
+68048,
+null,
+"func"
+],
+"Nav_SelectChaseObjectGoal": [
+2149643176,
+65448,
+null,
+"func"
+],
+"Nav_SelectCloseAttackPickupGoal": [
+2149642952,
+65224,
+null,
+"func"
+],
+"Nav_SelectFarthestReachableNeighbor": [
+2149656208,
+78480,
+null,
+"func"
+],
+"Nav_SelectFlaggedRoamingGoal": [
+2149659488,
+81760,
+null,
+"func"
+],
+"Nav_SelectPickupGoalEu": [
+2149642112,
+64384,
+null,
+"func"
+],
+"Nav_SelectPlayerState": [
+2149644848,
+67120,
+null,
+"func"
+],
+"Nav_SelectSecondAmmoGroupVariantOne": [
+2149646512,
+68784,
+null,
+"func"
+],
+"Nav_SelectSecondAmmoGroupVariantTwo": [
+2149646552,
+68824,
+null,
+"func"
+],
+"Nav_SelectStationaryObjectGoal": [
+2149643364,
+65636,
+null,
+"func"
+],
+"Nav_SelectWeaponFromFirstAmmoGroup": [
+2149646392,
+68664,
+null,
+"func"
+],
+"Nav_SelectWeaponFromSecondAmmoGroup": [
+2149646432,
+68704,
+null,
+"func"
+],
+"Nav_SelectWeaponFromThirdAmmoGroup": [
+2149646472,
+68744,
+null,
+"func"
+],
+"Nav_SetLinkedActorNodeCosts": [
+2149641708,
+63980,
+null,
+"func"
+],
+"Nav_SetPickupGoalWeights": [
+2149641268,
+63540,
+null,
+"func"
+],
+"Nav_ShouldSeekUnclaimedTeamMarker": [
+2149640752,
+63024,
+null,
+"func"
+],
+"Nav_SteerAlongRoute": [
+2149614640,
+36912,
+null,
+"func"
+],
+"Nav_SteerTowardPoint": [
+2149618472,
+40744,
+null,
+"func"
+],
+"Nav_TakeLowestCostOpenNode": [
+2149634732,
+57004,
+null,
+"func"
+],
+"Nav_UpdateCloseCombat": [
+2149653148,
+75420,
+null,
+"func"
+],
+"Nav_UpdateComputerPlayerStatus": [
+2149613944,
+36216,
+null,
+"func"
+],
+"Nav_UpdateObjectArrivalChase": [
+2149658624,
+80896,
+null,
+"func"
+],
+"Nav_UpdatePatrolRoute": [
+2149658160,
+80432,
+null,
+"func"
+],
+"Nav_UpdatePlayerSteering": [
+2149616332,
+38604,
+null,
+"func"
+],
+"Nav_UpdatePursuitStrafe": [
+2149650752,
+73024,
+null,
+"func"
+],
+"Nav_UpdateRangedCombat": [
+2149651600,
+73872,
+null,
+"func"
+],
+"Nav_UpdateRetreatMovement": [
+2149656936,
+79208,
+null,
+"func"
+],
+"Nav_UpdateRoamingWithJumps": [
+2149659936,
+82208,
+null,
+"func"
+],
+"Nav_UpdateRouteIntermediateGoal": [
+2149641584,
+63856,
+null,
+"func"
+],
+"Nav_UpdateTargetRouteFollowEu": [
+2149658036,
+80308,
+null,
+"func"
+],
+"Nav_UpdateTargetSteering": [
+2149617360,
+39632,
+null,
+"func"
+],
+"Nav_UpdateTransientJumpRoute": [
+2149659196,
+81468,
+null,
+"func"
+],
+"Nav_UpdateVisiblePursuit": [
+2149654696,
+76968,
+null,
+"func"
+],
+"PlayerMatrix_ActivateMotion": [
+2149613260,
+35532,
+null,
+"func"
+],
+"PlayerMatrix_AdvanceClosing": [
+2149612976,
+35248,
+null,
+"func"
+],
+"PlayerMatrix_AdvanceOpening": [
+2149612504,
+34776,
+null,
+"func"
+],
+"PlayerMatrix_ClearCollisionBit": [
+2149613572,
+35844,
+null,
+"func"
+],
+"PlayerMatrix_ClearUnsupportedCloseFlag": [
+2149612680,
+34952,
+null,
+"func"
+],
+"PlayerMatrix_ClearUnsupportedOpenFlag": [
+2149612208,
+34480,
+null,
+"func"
+],
+"PlayerMatrix_DeactivateMotion": [
+2149613372,
+35644,
+null,
+"func"
+],
+"PlayerMatrix_DisableEventActor": [
+2149613440,
+35712,
+null,
+"func"
+],
+"PlayerMatrix_DispatchCloseLinks": [
+2149612884,
+35156,
+null,
+"func"
+],
+"PlayerMatrix_DispatchOpenLinks": [
+2149612412,
+34684,
+null,
+"func"
+],
+"PlayerMatrix_EnableCollisionFlags": [
+2149613488,
+35760,
+null,
+"func"
+],
+"PlayerMatrix_EnableEventActor": [
+2149613324,
+35596,
+null,
+"func"
+],
+"PlayerMatrix_MarkCloseRequested": [
+2149613540,
+35812,
+null,
+"func"
+],
+"PlayerMatrix_MarkOpenAndResetTimer": [
+2149613504,
+35776,
+null,
+"func"
+],
+"PlayerMatrix_RequestClose": [
+2149613204,
+35476,
+null,
+"func"
+],
+"PlayerMatrix_RequestOpen": [
+2149613148,
+35420,
+null,
+"func"
+],
+"PlayerMatrix_UpdateClosingDelay": [
+2149612724,
+34996,
+null,
+"func"
+],
+"PlayerMatrix_UpdateOpeningDelay": [
+2149612252,
+34524,
+null,
+"func"
+],
+"PlayerMatrix_UpdateTriggeredMotion": [
+2149611984,
+34256,
+null,
+"func"
+],
+"Player_AddAmmo": [
+2149723268,
+145540,
+null,
+"func"
+],
+"Player_AllocPlayerList": [
+2149738988,
+161260,
+null,
+"func"
+],
+"Player_ApplyPlayerDamage": [
+2149695600,
+117872,
+null,
+"func"
+],
+"Player_BuildAimMarkerMatrices": [
+2149700772,
+123044,
+null,
+"func"
+],
+"Player_BuildPlayerOrientation": [
+2149739772,
+162044,
+null,
+"func"
+],
+"Player_BuildPlayerViewTransform": [
+2149740140,
+162412,
+null,
+"func"
+],
+"Player_CheckScoreLimit": [
+2149744908,
+167180,
+null,
+"func"
+],
+"Player_CheckTeamPointWin": [
+2149745544,
+167816,
+null,
+"func"
+],
+"Player_CheckTotalScoreWin": [
+2149745292,
+167564,
+null,
+"func"
+],
+"Player_DrawHeadsUpDisplay": [
+2149707672,
+129944,
+null,
+"func"
+],
+"Player_DrawHeldWeapon": [
+2149698668,
+120940,
+null,
+"func"
+],
+"Player_DrawMatchCountdown": [
+2149747600,
+169872,
+null,
+"func"
+],
+"Player_DrawPlayerBodyAndWeapon": [
+2149688172,
+110444,
+null,
+"func"
+],
+"Player_DrawPlayerModel": [
+2149698164,
+120436,
+null,
+"func"
+],
+"Player_DrawRedMarkerPrism": [
+2149697332,
+119604,
+null,
+"func"
+],
+"Player_DrawTintedPlayer": [
+2149749204,
+171476,
+null,
+"func"
+],
+"Player_EaseOwnerHeightEffect": [
+2149728488,
+150760,
+null,
+"func"
+],
+"Player_GiveAmmoWithMessage": [
+2149750640,
+172912,
+null,
+"func"
+],
+"Player_HasAmmoForMode": [
+2149722944,
+145216,
+null,
+"func"
+],
+"Player_IsAmmoPickupBelowCapacity": [
+2149723648,
+145920,
+null,
+"func"
+],
+"Player_PlacePlayerAtSpawnPoint": [
+2149692028,
+114300,
+null,
+"func"
+],
+"Player_PostKillMessages": [
+2149684952,
+107224,
+null,
+"func"
+],
+"Player_ReleaseWaitingPlayer": [
+2149744424,
+166696,
+null,
+"func"
+],
+"Player_ResetPlayerWeapons": [
+2149691396,
+113668,
+null,
+"func"
+],
+"Player_SetPlayerState": [
+2149722256,
+144528,
+null,
+"func"
+],
+"Player_TransferRandomInventoryItems": [
+2149750404,
+172676,
+null,
+"func"
+],
+"Player_TryEnterHitReactionState": [
+2149723968,
+146240,
+null,
+"func"
+],
+"Player_TryThrowSelectedActor": [
+2149724284,
+146556,
+null,
+"func"
+],
+"Player_UpdateBodyMovementAndActions": [
+2149715824,
+138096,
+null,
+"func"
+],
+"Player_UpdateFloatingState": [
+2149732344,
+154616,
+null,
+"func"
+],
+"Player_UpdateFlyMode": [
+2149728568,
+150840,
+null,
+"func"
+],
+"Player_UpdateFlyingThrustAndBoost": [
+2149726588,
+148860,
+null,
+"func"
+],
+"Player_UpdateFragTagSelection": [
+2149740756,
+163028,
+null,
+"func"
+],
+"Player_UpdateGroundThrustAndBoost": [
+2149725324,
+147596,
+null,
+"func"
+],
+"Player_UpdateHealthRegeneration": [
+2149715424,
+137696,
+null,
+"func"
+],
+"Player_UpdateMovementSpeedFactor": [
+2149722532,
+144804,
+null,
+"func"
+],
+"Player_UpdatePlayerCamera": [
+2149714716,
+136988,
+null,
+"func"
+],
+"Player_UpdatePlayerEffectLights": [
+2149705364,
+127636,
+null,
+"func"
+],
+"Player_UpdateStandingState": [
+2149729444,
+151716,
+null,
+"func"
+],
+"Player_UpdateSwimmingState": [
+2149732984,
+155256,
+null,
+"func"
+],
+"Player_UpdateViewAngles": [
+2149724784,
+147056,
+null,
+"func"
+],
+"Player_UpdateWadingState": [
+2149731560,
+153832,
+null,
+"func"
+],
+"Player_UpdateWeaponSwayAndBob": [
+2149727952,
+150224,
+null,
+"func"
+],
+"Player_UpdateWorldPlayers": [
+2149739216,
+161488,
+null,
+"func"
+],
+"Playerai_AdvanceRouteCursor": [
+2149683984,
+106256,
+null,
+"func"
+],
+"Playerai_ApplyDamagePacket": [
+2149685976,
+108248,
+null,
+"func"
+],
+"Playerai_ApplyPlayerForces": [
+2149748704,
+170976,
+null,
+"func"
+],
+"Playerai_ApplyProjectileStatus": [
+2149696768,
+119040,
+null,
+"func"
+],
+"Playerai_ApplyStun": [
+2149751344,
+173616,
+null,
+"func"
+],
+"Playerai_CanLockTarget": [
+2149699120,
+121392,
+null,
+"func"
+],
+"Playerai_ComputeAimRotation": [
+2149699524,
+121796,
+null,
+"func"
+],
+"Playerai_DispatchWeaponFireEffect": [
+2149689916,
+112188,
+null,
+"func"
+],
+"Playerai_DrawAimHud": [
+2149704508,
+126780,
+null,
+"func"
+],
+"Playerai_DrawAmmoCounters": [
+2149706480,
+128752,
+null,
+"func"
+],
+"Playerai_DrawAnimatedSprite": [
+2149684448,
+106720,
+null,
+"func"
+],
+"Playerai_DrawPlayerModelsForView": [
+2149747188,
+169460,
+null,
+"func"
+],
+"Playerai_DrawProjectedAimIcon": [
+2149703976,
+126248,
+null,
+"func"
+],
+"Playerai_EmptyWeaponEffectHook": [
+2149684432,
+106704,
+null,
+"func"
+],
+"Playerai_FindHighestScoringPlayerIndex": [
+2149751956,
+174228,
+null,
+"func"
+],
+"Playerai_GetRouteCursorNextPoint": [
+2149684356,
+106628,
+null,
+"func"
+],
+"Playerai_GetRouteCursorPoint": [
+2149684312,
+106584,
+null,
+"func"
+],
+"Playerai_HandlePlayerDeath": [
+2149692672,
+114944,
+null,
+"func"
+],
+"Playerai_InitializeCompactAnimationState": [
+2149684400,
+106672,
+null,
+"func"
+],
+"Playerai_InitializeMovementAndAim": [
+2149689380,
+111652,
+null,
+"func"
+],
+"Playerai_InitializePlayerHealth": [
+2149738404,
+160676,
+null,
+"func"
+],
+"Playerai_InitializeRouteCursor": [
+2149684248,
+106520,
+null,
+"func"
+],
+"Playerai_ResetPlayerAfterDeath": [
+2149734876,
+157148,
+null,
+"func"
+],
+"Playerai_SelectCharacterSound": [
+2149752352,
+174624,
+null,
+"func"
+],
+"Playerai_StopInactivePlayerSounds": [
+2149746308,
+168580,
+null,
+"func"
+],
+"Playerai_ToggleForceMarkerEuropean": [
+2149748320,
+170592,
+null,
+"func"
+],
+"Playerai_TryStartPlayerSequence": [
+2149735476,
+157748,
+null,
+"func"
+],
+"Playerai_UpdateAimAndLockMarker": [
+2149701648,
+123920,
+null,
+"func"
+],
+"Playerai_UpdateDamageTimers": [
+2149749972,
+172244,
+null,
+"func"
+],
+"Playerai_UpdateHazardDamage": [
+2149737436,
+159708,
+null,
+"func"
+],
+"Playerai_UpdateMountedMovement": [
+2149736416,
+158688,
+null,
+"func"
+],
+"Playerai_UpdateRoundLimits": [
+2149745748,
+168020,
+null,
+"func"
+],
+"Playerai_UpdateTargetFacing": [
+2149737956,
+160228,
+null,
+"func"
+],
+"Playerai_UpdateTravelSequence": [
+2149735888,
+158160,
+null,
+"func"
+],
+"Playerai_UpdateViewModelBounds": [
+2149746740,
+169012,
+null,
+"func"
+],
+"Playerai_UpdateWalkingMovement": [
+2149730216,
+152488,
+null,
+"func"
+],
+"Portal_AssignPlatformEndpoints": [
+2149624848,
+47120,
+null,
+"func"
+],
+"Portal_CollectDirectedNeighbors": [
+2149628284,
+50556,
+null,
+"func"
+],
+"Portal_CollectIncidentLinks": [
+2149633288,
+55560,
+null,
+"func"
+],
+"Portal_DispatchActorBehavior": [
+2149621408,
+43680,
+null,
+"func"
+],
+"Portal_EstimateGoalDistance": [
+2149630728,
+53000,
+null,
+"func"
+],
+"Portal_FindLinkIndex": [
+2149633068,
+55340,
+null,
+"func"
+],
+"Portal_FindNearestPointIndex": [
+2149632860,
+55132,
+null,
+"func"
+],
+"Portal_FindPortalRoute": [
+2149629596,
+51868,
+null,
+"func"
+],
+"Portal_FindSearchNode": [
+2149634048,
+56320,
+null,
+"func"
+],
+"Portal_GetEngagementDistance": [
+2149624364,
+46636,
+null,
+"func"
+],
+"Portal_GetGraphPoint": [
+2149632436,
+54708,
+null,
+"func"
+],
+"Portal_GetStridedTableEntry": [
+2149632464,
+54736,
+null,
+"func"
+],
+"Portal_InitSearchNode": [
+2149632560,
+54832,
+null,
+"func"
+],
+"Portal_InitializeRandomActionSettings": [
+2149624188,
+46460,
+null,
+"func"
+],
+"Portal_IsNodeMovementBlocked": [
+2149633428,
+55700,
+null,
+"func"
+],
+"Portal_IsReversibleLink": [
+2149632492,
+54764,
+null,
+"func"
+],
+"Portal_LinkNavigationObjects": [
+2149624416,
+46688,
+null,
+"func"
+],
+"Portal_LoadCollisionTable": [
+2149623332,
+45604,
+null,
+"func"
+],
+"Portal_ResetSearchState": [
+2149634100,
+56372,
+null,
+"func"
+],
+"Portal_SearchPath": [
+2149631424,
+53696,
+null,
+"func"
+],
+"Portal_SearchPortalRoute": [
+2149630104,
+52376,
+null,
+"func"
+],
+"Portal_SearchRelatedGoalPath": [
+2149629040,
+51312,
+null,
+"func"
+],
+"Portal_UpdateActorCurrentNode": [
+2149625788,
+48060,
+null,
+"func"
+],
+"Portal_UpdateAlternatingActionBursts": [
+2149621832,
+44104,
+null,
+"func"
+],
+"Portal_UpdateCountedEffectAction": [
+2149622516,
+44788,
+null,
+"func"
+],
+"Portal_UpdateHeldActionBurst": [
+2149623760,
+46032,
+null,
+"func"
+],
+"Portal_UpdateMeterGatedActionBurst": [
+2149622904,
+45176,
+null,
+"func"
+],
+"Portal_UpdateRandomActionPulse": [
+2149623972,
+46244,
+null,
+"func"
+],
+"Portal_UpdateTimedActionBurst": [
+2149623544,
+45816,
+null,
+"func"
+],
+"ReselectCloseAttack": [
+2149637312,
+59584,
+null,
+"func"
+],
+"Reselect_ChooseWeightedAttackBehavior": [
+2149637412,
+59684,
+null,
+"func"
+],
+"Route_ClearGoalList": [
+2149634588,
+56860,
+null,
+"func"
+],
+"Route_GetRouteRelation": [
+2149634540,
+56812,
+null,
+"func"
+],
+"Route_ReconstructSearchPath": [
+2149634356,
+56628,
+null,
+"func"
+],
+"Route_SearchPathByKey": [
+2149634284,
+56556,
+null,
+"func"
+],
+"Route_SearchSingleGoalPath": [
+2149634192,
+56464,
+null,
+"func"
+],
+"Scaled_AdvanceNodeQueue": [
+2149619784,
+42056,
+null,
+"func"
+],
+"Scaled_ClearAuxiliaryBehaviorState": [
+2149620156,
+42428,
+null,
+"func"
+],
+"Scaled_ClearNodeQueue": [
+2149619748,
+42020,
+null,
+"func"
+],
+"Scaled_DistanceToNode": [
+2149620072,
+42344,
+null,
+"func"
+],
+"Scaled_GetControllerPosition": [
+2149620060,
+42332,
+null,
+"func"
+],
+"Scaled_GetDifficultyEngagementAdjustment": [
+2149620488,
+42760,
+null,
+"func"
+],
+"Scaled_GetScaledAggression": [
+2149620612,
+42884,
+null,
+"func"
+],
+"Scaled_GetScaledAttackRange": [
+2149620860,
+43132,
+null,
+"func"
+],
+"Scaled_HandlePlayerTimeout": [
+2149620984,
+43256,
+null,
+"func"
+],
+"Scaled_HasLineOfSight": [
+2149620180,
+42452,
+null,
+"func"
+],
+"Scaled_InitPlayerState": [
+2149619720,
+41992,
+null,
+"func"
+],
+"Scaled_IsBehaviorStateEight": [
+2149620472,
+42744,
+null,
+"func"
+],
+"Scaled_MatchesBehaviorStateFilter": [
+2149620404,
+42676,
+null,
+"func"
+],
+"Scaled_ResetBehaviorState": [
+2149620136,
+42408,
+null,
+"func"
+],
+"Scaled_ScaleCharacterSettingByDifficulty": [
+2149620736,
+43008,
+null,
+"func"
+],
+"Scaled_SetBehaviorTable": [
+2149619852,
+42124,
+null,
+"func"
+],
+"Scaled_SetBehaviourState": [
+2149619860,
+42132,
+null,
+"func"
+],
+"Scaled_SetPitchFromAngle": [
+2149620016,
+42288,
+null,
+"func"
+],
+"Scaled_UpdateDifficultyAimJitter": [
+2149621196,
+43468,
+null,
+"func"
+],
+"Scaled_UpdateTargetPitch": [
+2149619224,
+41496,
+null,
+"func"
+],
+"SpawnAI_DispatchSpawnChoice": [
+2149603136,
+25408,
+null,
+"func"
+],
+"SpawnAI_InitializeActionDelay": [
+2149605176,
+27448,
+null,
+"func"
+],
+"SpawnAI_InitializeActorDispatch": [
+2149605092,
+27364,
+null,
+"func"
+],
+"SpawnAI_InvokeActiveActorCallback": [
+2149605432,
+27704,
+null,
+"func"
+],
+"Target_CountAcceptedTargets": [
+2149644636,
+66908,
+null,
+"func"
+],
+"Target_FindNearestFlaggedTarget": [
+2149644708,
+66980,
+null,
+"func"
+],
+"Target_IsPreferredTargetAccepted": [
+2149644560,
+66832,
+null,
+"func"
+],
+"Target_UpdateTargetSelection": [
+2149644000,
+66272,
+null,
+"func"
+],
+"TeamSelect_CloseTeamWheel": [
+2149683156,
+105428,
+null,
+"func"
+],
+"TeamSelect_DrawTeamWheelSprites": [
+2149683032,
+105304,
+null,
+"func"
+],
+"TeamSelect_DrawWeaponIcons": [
+2149676624,
+98896,
+null,
+"func"
+],
+"TeamSelect_DrawWeaponWheel": [
+2149677384,
+99656,
+null,
+"func"
+],
+"TeamSelect_DrawWeaponWheelSprites": [
+2149680136,
+102408,
+null,
+"func"
+],
+"TeamSelect_EmptyWeaponWheelHook": [
+2149680260,
+102532,
+null,
+"func"
+],
+"TeamSelect_GetEightWayStickSlot": [
+2149677916,
+100188,
+null,
+"func"
+],
+"TeamSelect_InitWeaponChoices": [
+2149679644,
+101916,
+null,
+"func"
+],
+"TeamSelect_ResetTeamWheel": [
+2149682920,
+105192,
+null,
+"func"
+],
+"TeamSelect_ResetWeaponWheel": [
+2149680012,
+102284,
+null,
+"func"
+],
+"TeamSelect_TryCloseWeaponWheel": [
+2149680268,
+102540,
+null,
+"func"
+],
+"TeamSelect_UpdateDraftPanel": [
+2149678956,
+101228,
+null,
+"func"
+],
+"TeamSelect_UpdateWeaponWheelInput": [
+2149678484,
+100756,
+null,
+"func"
+],
+"Triggered_AdvancePathMotion": [
+2149609712,
+31984,
+null,
+"func"
+],
+"Triggered_ClearCollisionAndActivate": [
+2149607388,
+29660,
+null,
+"func"
+],
+"Triggered_DeactivateForSequence": [
+2149607500,
+29772,
+null,
+"func"
+],
+"Triggered_DisableTriggeredActorState": [
+2149607608,
+29880,
+null,
+"func"
+],
+"Triggered_DrawAnimatedVariants": [
+2149607788,
+30060,
+null,
+"func"
+],
+"Triggered_EnableTriggeredActorState": [
+2149607452,
+29724,
+null,
+"func"
+],
+"Triggered_InitializeMotionState": [
+2149611540,
+33812,
+null,
+"func"
+],
+"Triggered_PathMotionNoOp": [
+2149611344,
+33616,
+null,
+"func"
+],
+"Triggered_PositionPlatformRider": [
+2149608948,
+31220,
+null,
+"func"
+],
+"Triggered_RequestTrackAndDeactivate": [
+2149607656,
+29928,
+null,
+"func"
+],
+"Triggered_RequestTrackById": [
+2149607728,
+30000,
+null,
+"func"
+],
+"Triggered_ResetMotionState": [
+2149611696,
+33968,
+null,
+"func"
+],
+"Triggered_SelectMotionSound": [
+2149611352,
+33624,
+null,
+"func"
+],
+"Triggered_SetPairedDefinitionBytes": [
+2149607760,
+30032,
+null,
+"func"
+],
+"Triggered_StartTriggerAnimation": [
+2149607308,
+29580,
+null,
+"func"
+],
+"Triggered_TestActorStateCallback": [
+2149611500,
+33772,
+null,
+"func"
+],
+"Triggered_UpdateTriggeredMotion": [
+2149608000,
+30272,
+null,
+"func"
+],
+"UpdateCloseAttack": [
+2149637168,
+59440,
+null,
+"func"
+],
+"Wheel_AdvanceWheelProbe": [
+2149650088,
+72360,
+null,
+"func"
+],
+"Wheel_GetDirectionSector": [
+2149650204,
+72476,
+null,
+"func"
+],
+"Wheel_MeasureWheelClearance": [
+2149648772,
+71044,
+null,
+"func"
+],
+"Wheel_MeasureWheelReach": [
+2149648128,
+70400,
+null,
+"func"
+],
+"Wheel_NextDirectionSector": [
+2149650440,
+72712,
+null,
+"func"
+],
+"Wheel_PrepareProbeSegments": [
+2149649460,
+71732,
+null,
+"func"
+],
+"Wheel_PreviousDirectionSector": [
+2149650464,
+72736,
+null,
+"func"
+],
+"func_8020D364_de_padding_DF84": [
+2149634948,
+57220,
+null,
+"data"
+],
+"func_8020DDF4_eu_padding_E9F4": [
+2149637620,
+59892,
+null,
+"data"
+],
+"func_8020EF74_eu_padding_FB74": [
+2149642100,
+64372,
+null,
+"data"
+],
+"func_8021113C_eu_padding_11D3C": [
+2149650748,
+73020,
+null,
+"data"
+],
+"func_80212D78_eu_padding_13978": [
+2149657976,
+80248,
+null,
+"data"
+],
+"func_80212FBC_de_padding_13BF4": [
+2149658612,
+80884,
+null,
+"data"
+],
+"func_802131D8_de_padding_13DF8": [
+2149659128,
+81400,
+null,
+"data"
+],
+"g_CteamselectTrailingBytes": [
+2149676620,
+98892,
+null,
+"data"
+],
+"g_DeviceBuildplayermatrixTrailingBytesBlock1": [
+2149637156,
+59428,
+null,
+"data"
+],
+"g_LevelUpdatebreakablehitPaddingTrailingBytesBlock1": [
+2149613592,
+35864,
+null,
+"data"
+],
+"g_MaincodeBlock1LinkerAlignmentFill581": [
+2149648124,
+70396,
+null,
+"data"
+],
+"g_NavCheckcloseattackrouteTrailingBytes": [
+2149646920,
+69192,
+null,
+"data"
+],
+"g_NavEncodedWordsBlock7": [
+2149658148,
+80420,
+null,
+"data"
+],
+"g_NavFollowmarkercarrierrouteTrailingBytesBlock1": [
+2149683972,
+106244,
+null,
+"data"
+],
+"g_NavInitTrailingBytes": [
+2149650484,
+72756,
+null,
+"data"
+],
+"g_NavTrailingBytes": [
+2149646744,
+69016,
+null,
+"data"
+],
+"g_NavTrailingBytesBlock10": [
+2149659484,
+81756,
+null,
+"data"
+],
+"g_NavTrailingBytesBlock12": [
+2149660936,
+83208,
+null,
+"data"
+],
+"g_NavTrailingBytesBlock3": [
+2149640740,
+63012,
+null,
+"data"
+],
+"g_NavTrailingBytesBlock4": [
+2149643992,
+66264,
+null,
+"data"
+],
+"g_NavTrailingBytesBlock8": [
+2149656196,
+78468,
+null,
+"data"
+]
+},
+"fills": "",
+"modules": [
+{
+"owns": [
+"Barrel_ApplyClampedTurn"
+],
+"path": "src/AI/CBARREL/BARREL_APPLYCLAMPEDTURN.CPP",
+"sections": {
+"Barrel_ApplyClampedTurn": ".text"
+}
+},
+{
+"owns": [
+"Barrel_FillAnchorTargetInfo",
+"Barrel_FindClearAimAngle",
+"Barrel_GetFacingSide"
+],
+"path": "src/AI/CBARREL/BARREL_GETFACINGSIDE.CPP",
+"sections": {
+"Barrel_FillAnchorTargetInfo": ".text",
+"Barrel_FindClearAimAngle": ".text",
+"Barrel_GetFacingSide": ".text"
+}
+},
+{
+"owns": [
+"Barrel_GetImpactSlot"
+],
+"path": "src/AI/CBARREL/BARREL_GETIMPACTSLOT.CPP",
+"sections": {
+"Barrel_GetImpactSlot": ".text"
+}
+},
+{
+"owns": [
+"Barrel_GetSignedAngleToPoint"
+],
+"path": "src/AI/CBARREL/BARREL_GETSIGNEDANGLETOPOINT.CPP",
+"sections": {
+"Barrel_GetSignedAngleToPoint": ".text"
+}
+},
+{
+"owns": [
+"Barrel_SpawnActorEffect",
+"Barrel_FillDamagePacket",
+"Barrel_UpdateActorController",
+"Barrel_ComputeTargetOffset"
+],
+"path": "src/AI/CBARREL/BARREL_SPAWNACTOREFFECT.CPP",
+"sections": {
+"Barrel_ComputeTargetOffset": ".text",
+"Barrel_FillDamagePacket": ".text",
+"Barrel_SpawnActorEffect": ".text",
+"Barrel_UpdateActorController": ".text"
+}
+},
+{
+"owns": [
+"Barrel_AddActorYaw",
+"Barrel_SpawnFlaggedEffects",
+"Barrel_FillWordPair",
+"Barrel_ReadLoopingSequenceValue",
+"Barrel_RunDamageHook",
+"Barrel_GetEyeDistanceSquared",
+"Barrel_GetFlatDistanceSquared",
+"Barrel_IgnoreEffectCallback",
+"Barrel_SetLoopingSound",
+"Barrel_StopActorLoopingSound",
+"Barrel_FindOffsetApproachPosition",
+"Barrel_ClearTargetInfo",
+"Barrel_SpawnEffectsFromMask"
+],
+"path": "src/AI/CBARREL/BARREL_SPAWNFLAGGEDEFFECTS.CPP",
+"sections": {
+"Barrel_AddActorYaw": ".text",
+"Barrel_ClearTargetInfo": ".text",
+"Barrel_FillWordPair": ".text",
+"Barrel_FindOffsetApproachPosition": ".text",
+"Barrel_GetEyeDistanceSquared": ".text",
+"Barrel_GetFlatDistanceSquared": ".text",
+"Barrel_IgnoreEffectCallback": ".text",
+"Barrel_ReadLoopingSequenceValue": ".text",
+"Barrel_RunDamageHook": ".text",
+"Barrel_SetLoopingSound": ".text",
+"Barrel_SpawnEffectsFromMask": ".text",
+"Barrel_SpawnFlaggedEffects": ".text",
+"Barrel_StopActorLoopingSound": ".text"
+}
+},
+{
+"owns": [
+"Barrel_UpdateTrackGoals"
+],
+"path": "src/AI/CBARREL/BARREL_UPDATETRACKGOALS.CPP",
+"sections": {
+"Barrel_UpdateTrackGoals": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_ClassifyTrackTarget"
+],
+"path": "src/AI/CBARREL/CBARREL_CLASSIFYTRACKTARGET.CPP",
+"sections": {
+"Cbarrel_ClassifyTrackTarget": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_LockTrackerTarget"
+],
+"path": "src/AI/CBARREL/CBARREL_LOCKTRACKERTARGET.CPP",
+"sections": {
+"Cbarrel_LockTrackerTarget": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_ResolveTrackGoal"
+],
+"path": "src/AI/CBARREL/CBARREL_RESOLVETRACKGOAL.CPP",
+"sections": {
+"Cbarrel_ResolveTrackGoal": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_IsTargetInViewCone",
+"Cbarrel_UpdateTrackerAim",
+"Cbarrel_SelectCombatTarget"
+],
+"path": "src/AI/CBARREL/CBARREL_SELECTCOMBATTARGET.CPP",
+"sections": {
+"Cbarrel_IsTargetInViewCone": ".text",
+"Cbarrel_SelectCombatTarget": ".text",
+"Cbarrel_UpdateTrackerAim": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_SelectWeightedAnimation"
+],
+"path": "src/AI/CBARREL/CBARREL_SELECTWEIGHTEDANIMATION.CPP",
+"sections": {
+"Cbarrel_SelectWeightedAnimation": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_TestFlaggedAimObstruction"
+],
+"path": "src/AI/CBARREL/CBARREL_TESTFLAGGEDAIMOBSTRUCTION.CPP",
+"sections": {
+"Cbarrel_TestFlaggedAimObstruction": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_TestTargetEyeObstruction"
+],
+"path": "src/AI/CBARREL/CBARREL_TESTTARGETEYEOBSTRUCTION.CPP",
+"sections": {
+"Cbarrel_TestTargetEyeObstruction": ".text"
+}
+},
+{
+"owns": [
+"Cbarrel_TurnTowardClearAim"
+],
+"path": "src/AI/CBARREL/CBARREL_TURNTOWARDCLEARAIM.CPP",
+"sections": {
+"Cbarrel_TurnTowardClearAim": ".text"
+}
+},
+{
+"owns": [
+"TeamSelect_DrawWeaponIcons",
+"TeamSelect_DrawWeaponWheel",
+"TeamSelect_GetEightWayStickSlot",
+"TeamSelect_UpdateWeaponWheelInput",
+"TeamSelect_UpdateDraftPanel",
+"TeamSelect_InitWeaponChoices",
+"TeamSelect_ResetWeaponWheel",
+"TeamSelect_DrawWeaponWheelSprites",
+"TeamSelect_EmptyWeaponWheelHook",
+"TeamSelect_TryCloseWeaponWheel",
+"CTeamSelect_ComputeDirectedAngleStep"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT.CPP",
+"sections": {
+"CTeamSelect_ComputeDirectedAngleStep": ".text",
+"TeamSelect_DrawWeaponIcons": ".text",
+"TeamSelect_DrawWeaponWheel": ".text",
+"TeamSelect_DrawWeaponWheelSprites": ".text",
+"TeamSelect_EmptyWeaponWheelHook": ".text",
+"TeamSelect_GetEightWayStickSlot": ".text",
+"TeamSelect_InitWeaponChoices": ".text",
+"TeamSelect_ResetWeaponWheel": ".text",
+"TeamSelect_TryCloseWeaponWheel": ".text",
+"TeamSelect_UpdateDraftPanel": ".text",
+"TeamSelect_UpdateWeaponWheelInput": ".text"
+}
+},
+{
+"owns": [
+"g_CteamselectTrailingBytes"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT/CTEAMSELECT.CPP",
+"sections": {
+"g_CteamselectTrailingBytes": ".data"
+}
+},
+{
+"owns": [
+"Cteamselect_DrawTeamIcons",
+"Cteamselect_GetFourWayStickSlot"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT_DRAWTEAMICONS.CPP",
+"sections": {
+"Cteamselect_DrawTeamIcons": ".text",
+"Cteamselect_GetFourWayStickSlot": ".text"
+}
+},
+{
+"owns": [
+"Cteamselect_DrawTeamWheel"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT_DRAWTEAMWHEEL.CPP",
+"sections": {
+"Cteamselect_DrawTeamWheel": ".text"
+}
+},
+{
+"owns": [
+"Cteamselect_InitTeamChoices"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT_INITTEAMCHOICES.CPP",
+"sections": {
+"Cteamselect_InitTeamChoices": ".text"
+}
+},
+{
+"owns": [
+"Cteamselect_TryConfirmTeamChoice",
+"Cteamselect_UpdateTeamChoiceInput"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT_UPDATETEAMCHOICEINPUT.CPP",
+"sections": {
+"Cteamselect_TryConfirmTeamChoice": ".text",
+"Cteamselect_UpdateTeamChoiceInput": ".text"
+}
+},
+{
+"owns": [
+"Cteamselect_UpdateTeamWheel"
+],
+"path": "src/AI/CTEAMSELECT/CTEAMSELECT_UPDATETEAMWHEEL.CPP",
+"sections": {
+"Cteamselect_UpdateTeamWheel": ".text"
+}
+},
+{
+"owns": [
+"TeamSelect_ResetTeamWheel",
+"TeamSelect_DrawTeamWheelSprites",
+"TeamSelect_CloseTeamWheel"
+],
+"path": "src/AI/CTEAMSELECT/PLAYER_RESETPLAYERFORROUND_DATA.CPP",
+"sections": {
+"TeamSelect_CloseTeamWheel": ".text",
+"TeamSelect_DrawTeamWheelSprites": ".text",
+"TeamSelect_ResetTeamWheel": ".text"
+}
+},
+{
+"owns": [
+"func_8020D364_de_padding_DF84"
+],
+"path": "src/AI/DEVICES/ACTIONAI/ACTION_LINK_GAP_FRAGMENTS.CPP",
+"sections": {
+"func_8020D364_de_padding_DF84": ".data"
+}
+},
+{
+"owns": [
+"g_LevelUpdatebreakablehitPaddingTrailingBytesBlock1"
+],
+"path": "src/AI/DEVICES/ACTIONAI/LEVEL_UPDATEBREAKABLEHIT_PADDING.CPP",
+"sections": {
+"g_LevelUpdatebreakablehitPaddingTrailingBytesBlock1": ".data"
+}
+},
+{
+"owns": [
+"Action_InvokeOwnerCallback",
+"Action_ActivateActorAndClearMotion",
+"Action_DeactivateBreakable",
+"Action_RequestInactiveState",
+"Action_EnableTriggerActor",
+"Action_RequestActiveState",
+"Action_DisableTriggerActor",
+"Action_IsActorStateActive",
+"Action_NotifyActorActivated",
+"Action_NotifyActorDeactivated",
+"Action_RaiseMotionSpeed",
+"Action_TestScaledTriggerRange"
+],
+"path": "src/AI/DEVICES/ACTIONHIT/ACTIONHIT.CPP",
+"sections": {
+"Action_ActivateActorAndClearMotion": ".text",
+"Action_DeactivateBreakable": ".text",
+"Action_DisableTriggerActor": ".text",
+"Action_EnableTriggerActor": ".text",
+"Action_InvokeOwnerCallback": ".text",
+"Action_IsActorStateActive": ".text",
+"Action_NotifyActorActivated": ".text",
+"Action_NotifyActorDeactivated": ".text",
+"Action_RaiseMotionSpeed": ".text",
+"Action_RequestActiveState": ".text",
+"Action_RequestInactiveState": ".text",
+"Action_TestScaledTriggerRange": ".text"
+}
+},
+{
+"owns": [
+"DamageAI_ApplyHitEuropean",
+"DamageAI_InitializeDispatch",
+"DamageAI_RequestCurrentActorState",
+"DamageAI_InvokeOwnerCallback",
+"DamageAI_GetActivationSound",
+"DamageAI_GetActivationMode",
+"DamageAI_ActivateActor",
+"DamageAI_ClearCollisionFlagsOnHit",
+"DamageAI_GetDefinitionValue"
+],
+"path": "src/AI/DEVICES/DAMAGEAI/DAMAGEAI.CPP",
+"sections": {
+"DamageAI_ActivateActor": ".text",
+"DamageAI_ApplyHitEuropean": ".text",
+"DamageAI_ClearCollisionFlagsOnHit": ".text",
+"DamageAI_GetActivationMode": ".text",
+"DamageAI_GetActivationSound": ".text",
+"DamageAI_GetDefinitionValue": ".text",
+"DamageAI_InitializeDispatch": ".text",
+"DamageAI_InvokeOwnerCallback": ".text",
+"DamageAI_RequestCurrentActorState": ".text"
+}
+},
+{
+"owns": [
+"Device_RespondToActivation",
+"Device_ClearCollisionFlagsOnHit",
+"Device_DrawSpawnedModel",
+"Device_RequestAndSetActiveState",
+"Device_EnableTriggerActor",
+"Device_GetHitStateBit",
+"Device_IsHitStateBitClear"
+],
+"path": "src/AI/DEVICES/DEVICECALLBACK/DEVICECALLBACK.CPP",
+"sections": {
+"Device_ClearCollisionFlagsOnHit": ".text",
+"Device_DrawSpawnedModel": ".text",
+"Device_EnableTriggerActor": ".text",
+"Device_GetHitStateBit": ".text",
+"Device_IsHitStateBitClear": ".text",
+"Device_RequestAndSetActiveState": ".text",
+"Device_RespondToActivation": ".text"
+}
+},
+{
+"owns": [
+"MovingAI_ChooseTriggerDelay",
+"MovingAI_UpdateTriggerDelay",
+"MovingAI_RequestInactiveOnEvent",
+"MovingAI_IsActorStateActive",
+"MovingAI_SetActorStateActive",
+"MovingAI_EnableTriggerActor",
+"MovingAI_ClearActorStateActive",
+"MovingAI_DisableTriggerActor",
+"MovingAI_SpawnConfiguredModelEffect",
+"MovingAI_SpawnConfiguredSceneEffect",
+"MovingAI_SpawnSceneEffectAtPosition",
+"MovingAI_CanSpawnActorKind",
+"MovingAI_RequestMotionAnimation",
+"MovingAI_InitializeMotionDispatch",
+"MovingAI_InitializeDeviceHealth",
+"MovingAI_InvokeOwnerCallback",
+"MovingAI_GetDeviceHealth",
+"MovingAI_DeviceHealthNoOp"
+],
+"path": "src/AI/DEVICES/MOVINGAI/MOVINGAI.CPP",
+"sections": {
+"MovingAI_CanSpawnActorKind": ".text",
+"MovingAI_ChooseTriggerDelay": ".text",
+"MovingAI_ClearActorStateActive": ".text",
+"MovingAI_DeviceHealthNoOp": ".text",
+"MovingAI_DisableTriggerActor": ".text",
+"MovingAI_EnableTriggerActor": ".text",
+"MovingAI_GetDeviceHealth": ".text",
+"MovingAI_InitializeDeviceHealth": ".text",
+"MovingAI_InitializeMotionDispatch": ".text",
+"MovingAI_InvokeOwnerCallback": ".text",
+"MovingAI_IsActorStateActive": ".text",
+"MovingAI_RequestInactiveOnEvent": ".text",
+"MovingAI_RequestMotionAnimation": ".text",
+"MovingAI_SetActorStateActive": ".text",
+"MovingAI_SpawnConfiguredModelEffect": ".text",
+"MovingAI_SpawnConfiguredSceneEffect": ".text",
+"MovingAI_SpawnSceneEffectAtPosition": ".text",
+"MovingAI_UpdateTriggerDelay": ".text"
+}
+},
+{
+"owns": [
+"Triggered_StartTriggerAnimation",
+"Triggered_ClearCollisionAndActivate",
+"Triggered_EnableTriggeredActorState",
+"Triggered_DeactivateForSequence",
+"Triggered_DisableTriggeredActorState",
+"Triggered_RequestTrackAndDeactivate",
+"Triggered_RequestTrackById",
+"Triggered_SetPairedDefinitionBytes",
+"Triggered_DrawAnimatedVariants",
+"Triggered_UpdateTriggeredMotion",
+"Triggered_PositionPlatformRider",
+"Triggered_AdvancePathMotion",
+"Triggered_PathMotionNoOp",
+"Triggered_SelectMotionSound",
+"Triggered_TestActorStateCallback",
+"Triggered_InitializeMotionState",
+"Triggered_ResetMotionState"
+],
+"path": "src/AI/DEVICES/MOVINGAI/TRIGGERED_UPDATETRIGGEREDMOTION.CPP",
+"sections": {
+"Triggered_AdvancePathMotion": ".text",
+"Triggered_ClearCollisionAndActivate": ".text",
+"Triggered_DeactivateForSequence": ".text",
+"Triggered_DisableTriggeredActorState": ".text",
+"Triggered_DrawAnimatedVariants": ".text",
+"Triggered_EnableTriggeredActorState": ".text",
+"Triggered_InitializeMotionState": ".text",
+"Triggered_PathMotionNoOp": ".text",
+"Triggered_PositionPlatformRider": ".text",
+"Triggered_RequestTrackAndDeactivate": ".text",
+"Triggered_RequestTrackById": ".text",
+"Triggered_ResetMotionState": ".text",
+"Triggered_SelectMotionSound": ".text",
+"Triggered_SetPairedDefinitionBytes": ".text",
+"Triggered_StartTriggerAnimation": ".text",
+"Triggered_TestActorStateCallback": ".text",
+"Triggered_UpdateTriggeredMotion": ".text"
+}
+},
+{
+"owns": [
+"g_DeviceBuildplayermatrixTrailingBytesBlock1"
+],
+"path": "src/AI/DEVICES/PLAYER/DEVICE_BUILDPLAYERMATRIX/DEVICE_BUILDPLAYERMATRIX.CPP",
+"sections": {
+"g_DeviceBuildplayermatrixTrailingBytesBlock1": ".data"
+}
+},
+{
+"owns": [
+"Device_BuildPlayerMatrix",
+"PlayerMatrix_UpdateTriggeredMotion",
+"PlayerMatrix_ClearUnsupportedOpenFlag",
+"PlayerMatrix_UpdateOpeningDelay",
+"PlayerMatrix_DispatchOpenLinks",
+"PlayerMatrix_AdvanceOpening",
+"PlayerMatrix_ClearUnsupportedCloseFlag",
+"PlayerMatrix_UpdateClosingDelay",
+"PlayerMatrix_DispatchCloseLinks",
+"PlayerMatrix_AdvanceClosing",
+"PlayerMatrix_RequestOpen",
+"PlayerMatrix_RequestClose",
+"PlayerMatrix_ActivateMotion",
+"PlayerMatrix_EnableEventActor",
+"PlayerMatrix_DeactivateMotion",
+"PlayerMatrix_DisableEventActor",
+"PlayerMatrix_EnableCollisionFlags",
+"PlayerMatrix_MarkOpenAndResetTimer",
+"PlayerMatrix_MarkCloseRequested",
+"PlayerMatrix_ClearCollisionBit"
+],
+"path": "src/AI/DEVICES/PLAYERMATRIX/PLAYERMATRIX.CPP",
+"sections": {
+"Device_BuildPlayerMatrix": ".text",
+"PlayerMatrix_ActivateMotion": ".text",
+"PlayerMatrix_AdvanceClosing": ".text",
+"PlayerMatrix_AdvanceOpening": ".text",
+"PlayerMatrix_ClearCollisionBit": ".text",
+"PlayerMatrix_ClearUnsupportedCloseFlag": ".text",
+"PlayerMatrix_ClearUnsupportedOpenFlag": ".text",
+"PlayerMatrix_DeactivateMotion": ".text",
+"PlayerMatrix_DisableEventActor": ".text",
+"PlayerMatrix_DispatchCloseLinks": ".text",
+"PlayerMatrix_DispatchOpenLinks": ".text",
+"PlayerMatrix_EnableCollisionFlags": ".text",
+"PlayerMatrix_EnableEventActor": ".text",
+"PlayerMatrix_MarkCloseRequested": ".text",
+"PlayerMatrix_MarkOpenAndResetTimer": ".text",
+"PlayerMatrix_RequestClose": ".text",
+"PlayerMatrix_RequestOpen": ".text",
+"PlayerMatrix_UpdateClosingDelay": ".text",
+"PlayerMatrix_UpdateOpeningDelay": ".text",
+"PlayerMatrix_UpdateTriggeredMotion": ".text"
+}
+},
+{
+"owns": [
+"SpawnAI_DispatchSpawnChoice",
+"SpawnAI_InitializeActorDispatch",
+"SpawnAI_InitializeActionDelay",
+"SpawnAI_InvokeActiveActorCallback"
+],
+"path": "src/AI/DEVICES/SPAWNAI/SPAWNAI.CPP",
+"sections": {
+"SpawnAI_DispatchSpawnChoice": ".text",
+"SpawnAI_InitializeActionDelay": ".text",
+"SpawnAI_InitializeActorDispatch": ".text",
+"SpawnAI_InvokeActiveActorCallback": ".text"
+}
+},
+{
+"owns": [
+"Actor_ApplyActorDefinition",
+"Actor_InitSpawnedActor"
+],
+"path": "src/AI/NAV/ACTOR/ACTOR.CPP",
+"sections": {
+"Actor_ApplyActorDefinition": ".text",
+"Actor_InitSpawnedActor": ".text"
+}
+},
+{
+"owns": [
+"Actor_UpdateActorStateAnimation",
+"Actor_RequestActorState"
+],
+"path": "src/AI/NAV/ACTOR/ACTOR_UPDATEACTORSTATEANIMATION.CPP",
+"sections": {
+"Actor_RequestActorState": ".text",
+"Actor_UpdateActorStateAnimation": ".text"
+}
+},
+{
+"owns": [
+"Actor_ApplySupportingPlatformMotion"
+],
+"path": "src/AI/NAV/ACTOR/NAV_APPLYSUPPORTINGPLATFORMMOTION.CPP",
+"sections": {
+"Actor_ApplySupportingPlatformMotion": ".text"
+}
+},
+{
+"owns": [
+"UpdateCloseAttack",
+"Attack_SelectWeightedAttackBehavior"
+],
+"path": "src/AI/NAV/ATTACK/ATTACK.CPP",
+"sections": {
+"Attack_SelectWeightedAttackBehavior": ".text",
+"UpdateCloseAttack": ".text"
+}
+},
+{
+"owns": [
+"Nav_CollectEnemyTargets",
+"Nav_EvaluateAttackTarget"
+],
+"path": "src/AI/NAV/ATTACKTARGET/ATTACKTARGET.CPP",
+"sections": {
+"Nav_CollectEnemyTargets": ".text",
+"Nav_EvaluateAttackTarget": ".text"
+}
+},
+{
+"owns": [
+"g_NavTrailingBytesBlock8"
+],
+"path": "src/AI/NAV/ATTACK_TARGET/NAV/G_NAVTRAILINGBYTESBLOCK8.CPP",
+"sections": {
+"g_NavTrailingBytesBlock8": ".data"
+}
+},
+{
+"owns": [
+"Nav_RefineBallisticAim",
+"Nav_IsBallisticArcObstructed"
+],
+"path": "src/AI/NAV/BALLISTIC/BALLISTIC.CPP",
+"sections": {
+"Nav_IsBallisticArcObstructed": ".text",
+"Nav_RefineBallisticAim": ".text"
+}
+},
+{
+"owns": [
+"Nav_RunBehaviorHandler",
+"Nav_ResetWheelProbeState",
+"func_8021113C_eu_padding_11D3C"
+],
+"path": "src/AI/NAV/BEHAVIOUR/BEHAVIOUR.CPP",
+"sections": {
+"Nav_ResetWheelProbeState": ".text",
+"Nav_RunBehaviorHandler": ".text",
+"func_8021113C_eu_padding_11D3C": ".data"
+}
+},
+{
+"owns": [
+"Nav_InitCarrierRoute",
+"Nav_FollowMarkerCarrierRoute",
+"func_80212D78_eu_padding_13978"
+],
+"path": "src/AI/NAV/CARRIER/CARRIER.CPP",
+"sections": {
+"Nav_FollowMarkerCarrierRoute": ".text",
+"Nav_InitCarrierRoute": ".text",
+"func_80212D78_eu_padding_13978": ".data"
+}
+},
+{
+"owns": [
+"Nav_CheckCloseAttackRoute"
+],
+"path": "src/AI/NAV/CLOSEATTACK/CLOSEATTACK.CPP",
+"sections": {
+"Nav_CheckCloseAttackRoute": ".text"
+}
+},
+{
+"owns": [
+"Nav_UpdateRangedCombat",
+"Nav_UpdateCloseCombat",
+"Nav_UpdateVisiblePursuit",
+"Nav_InitPursuitStrafe"
+],
+"path": "src/AI/NAV/COMBAT/COMBAT.CPP",
+"sections": {
+"Nav_InitPursuitStrafe": ".text",
+"Nav_UpdateCloseCombat": ".text",
+"Nav_UpdateRangedCombat": ".text",
+"Nav_UpdateVisiblePursuit": ".text"
+}
+},
+{
+"owns": [
+"Nav_InitRangedCombat",
+"Nav_InitCloseCombat",
+"Nav_InitVisiblePursuit"
+],
+"path": "src/AI/NAV/COMBATINIT/COMBATINIT.CPP",
+"sections": {
+"Nav_InitCloseCombat": ".text",
+"Nav_InitRangedCombat": ".text",
+"Nav_InitVisiblePursuit": ".text"
+}
+},
+{
+"owns": [
+"Nav_SelectFarthestReachableNeighbor",
+"Nav_InitCombatTargetApproach",
+"Nav_ApproachCombatTargetAlongRoute",
+"Nav_InitRetreatMovement",
+"Nav_UpdateRetreatMovement",
+"Nav_InitNearbyUnrestrictedGoal",
+"Nav_SeekNearbyUnrestrictedGoal",
+"Nav_InitUnclaimedMarkerSearch",
+"Nav_SeekUnclaimedMarker"
+],
+"path": "src/AI/NAV/FARTHEST/FARTHEST.CPP",
+"sections": {
+"Nav_ApproachCombatTargetAlongRoute": ".text",
+"Nav_InitCombatTargetApproach": ".text",
+"Nav_InitNearbyUnrestrictedGoal": ".text",
+"Nav_InitRetreatMovement": ".text",
+"Nav_InitUnclaimedMarkerSearch": ".text",
+"Nav_SeekNearbyUnrestrictedGoal": ".text",
+"Nav_SeekUnclaimedMarker": ".text",
+"Nav_SelectFarthestReachableNeighbor": ".text",
+"Nav_UpdateRetreatMovement": ".text"
+}
+},
+{
+"owns": [
+"Nav_InitTimedJumpRoute",
+"Nav_UpdateTransientJumpRoute"
+],
+"path": "src/AI/NAV/JUMPROUTE/JUMPROUTE.CPP",
+"sections": {
+"Nav_InitTimedJumpRoute": ".text",
+"Nav_UpdateTransientJumpRoute": ".text"
+}
+},
+{
+"owns": [
+"g_NavTrailingBytes"
+],
+"path": "src/AI/NAV/NAV.CPP",
+"sections": {
+"g_NavTrailingBytes": ".data"
+}
+},
+{
+"owns": [
+"g_NavTrailingBytesBlock3"
+],
+"path": "src/AI/NAV/NAV/G_NAVTRAILINGBYTESBLOCK1.CPP",
+"sections": {
+"g_NavTrailingBytesBlock3": ".data"
+}
+},
+{
+"owns": [
+"g_NavEncodedWordsBlock7"
+],
+"path": "src/AI/NAV/NAV/NAV_ENCODED_WORDS_EU.CPP",
+"sections": {
+"g_NavEncodedWordsBlock7": ".data"
+}
+},
+{
+"owns": [
+"g_NavTrailingBytesBlock4"
+],
+"path": "src/AI/NAV/NAV/NAV_TRAILING_BYTES_EU_EU_X_US_US_REV1.CPP",
+"sections": {
+"g_NavTrailingBytesBlock4": ".data"
+}
+},
+{
+"owns": [
+"g_NavTrailingBytesBlock12"
+],
+"path": "src/AI/NAV/NAV/NAV_UPDATETRANSIENTJUMPROUTE_TRAILINGBYTES.CPP",
+"sections": {
+"g_NavTrailingBytesBlock12": ".data"
+}
+},
+{
+"owns": [
+"g_NavCheckcloseattackrouteTrailingBytes"
+],
+"path": "src/AI/NAV/NAV_CHECKCLOSEATTACKROUTE/G_NAVCHECKCLOSEATTACKROUTETRAILINGBYTESBLOCK1.CPP",
+"sections": {
+"g_NavCheckcloseattackrouteTrailingBytes": ".data"
+}
+},
+{
+"owns": [
+"g_NavFollowmarkercarrierrouteTrailingBytesBlock1"
+],
+"path": "src/AI/NAV/NAV_FOLLOWMARKERCARRIERROUTE/NAV_FOLLOWMARKERCARRIERROUTE.CPP",
+"sections": {
+"g_NavFollowmarkercarrierrouteTrailingBytesBlock1": ".data"
+}
+},
+{
+"owns": [
+"g_NavInitTrailingBytes"
+],
+"path": "src/AI/NAV/NAV_INIT/NAV_INIT.CPP",
+"sections": {
+"g_NavInitTrailingBytes": ".data"
+}
+},
+{
+"owns": [
+"Nav_UpdateObjectArrivalChase",
+"Nav_ResetObjectArrivalChase",
+"func_802131D8_de_padding_13DF8"
+],
+"path": "src/AI/NAV/OBJECTCHASE/NAV_UPDATEOBJECTARRIVALCHASE.CPP",
+"sections": {
+"Nav_ResetObjectArrivalChase": ".text",
+"Nav_UpdateObjectArrivalChase": ".text",
+"func_802131D8_de_padding_13DF8": ".data"
+}
+},
+{
+"owns": [
+"Nav_UpdatePatrolRoute",
+"Nav_ResetPatrolRouteSelection",
+"func_80212FBC_de_padding_13BF4"
+],
+"path": "src/AI/NAV/PATROL/PATROL.CPP",
+"sections": {
+"Nav_ResetPatrolRouteSelection": ".text",
+"Nav_UpdatePatrolRoute": ".text",
+"func_80212FBC_de_padding_13BF4": ".data"
+}
+},
+{
+"owns": [
+"Nav_AdvancePickupRouteSelection",
+"Nav_AppendDirectionalRouteStage",
+"Nav_InsertPickupRouteNode"
+],
+"path": "src/AI/NAV/PICKUP.CPP",
+"sections": {
+"Nav_AdvancePickupRouteSelection": ".text",
+"Nav_AppendDirectionalRouteStage": ".text",
+"Nav_InsertPickupRouteNode": ".text"
+}
+},
+{
+"owns": [
+"Nav_RebuildRequestedGoalRoute",
+"Nav_SetPickupGoalWeights"
+],
+"path": "src/AI/NAV/PICKUPGOAL/PICKUPGOAL.CPP",
+"sections": {
+"Nav_RebuildRequestedGoalRoute": ".text",
+"Nav_SetPickupGoalWeights": ".text"
+}
+},
+{
+"owns": [
+"Nav_SelectPickupGoalEu"
+],
+"path": "src/AI/NAV/PICKUPSELECT/PICKUPSELECT.CPP",
+"sections": {
+"Nav_SelectPickupGoalEu": ".text"
+}
+},
+{
+"owns": [
+"Nav_AddPickupGoalsByObjectIds",
+"Nav_SelectCloseAttackPickupGoal",
+"Nav_SelectChaseObjectGoal",
+"Nav_SelectStationaryObjectGoal",
+"Nav_IsPickupObjectInPairCategory",
+"Nav_IsPickupObjectInSixEntryCategory",
+"Nav_PickupGoalReturnZero",
+"Nav_GetWeaponPickupGoalClass",
+"Nav_AddInactiveObjectGoals"
+],
+"path": "src/AI/NAV/PICKUPTARGET/PICKUPTARGET.CPP",
+"sections": {
+"Nav_AddInactiveObjectGoals": ".text",
+"Nav_AddPickupGoalsByObjectIds": ".text",
+"Nav_GetWeaponPickupGoalClass": ".text",
+"Nav_IsPickupObjectInPairCategory": ".text",
+"Nav_IsPickupObjectInSixEntryCategory": ".text",
+"Nav_PickupGoalReturnZero": ".text",
+"Nav_SelectChaseObjectGoal": ".text",
+"Nav_SelectCloseAttackPickupGoal": ".text",
+"Nav_SelectStationaryObjectGoal": ".text"
+}
+},
+{
+"owns": [
+"Nav_ResetPlayerState",
+"Nav_UpdateComputerPlayerStatus",
+"Nav_SteerAlongRoute",
+"Nav_UpdatePlayerSteering",
+"Nav_UpdateTargetSteering",
+"Nav_SteerTowardPoint"
+],
+"path": "src/AI/NAV/PLAYER/PLAYER.CPP",
+"sections": {
+"Nav_ResetPlayerState": ".text",
+"Nav_SteerAlongRoute": ".text",
+"Nav_SteerTowardPoint": ".text",
+"Nav_UpdateComputerPlayerStatus": ".text",
+"Nav_UpdatePlayerSteering": ".text",
+"Nav_UpdateTargetSteering": ".text"
+}
+},
+{
+"owns": [
+"Scaled_UpdateTargetPitch",
+"Scaled_InitPlayerState",
+"Scaled_ClearNodeQueue",
+"Scaled_AdvanceNodeQueue",
+"Scaled_SetBehaviorTable",
+"Scaled_SetBehaviourState",
+"Scaled_SetPitchFromAngle",
+"Scaled_GetControllerPosition",
+"Scaled_DistanceToNode",
+"Scaled_ResetBehaviorState",
+"Scaled_ClearAuxiliaryBehaviorState",
+"Scaled_HasLineOfSight",
+"Scaled_MatchesBehaviorStateFilter",
+"Scaled_IsBehaviorStateEight",
+"Scaled_GetDifficultyEngagementAdjustment",
+"Scaled_GetScaledAggression",
+"Scaled_ScaleCharacterSettingByDifficulty",
+"Scaled_GetScaledAttackRange",
+"Scaled_HandlePlayerTimeout",
+"Scaled_UpdateDifficultyAimJitter"
+],
+"path": "src/AI/NAV/PLAYER/SCALED_UPDATETARGETPITCH.CPP",
+"sections": {
+"Scaled_AdvanceNodeQueue": ".text",
+"Scaled_ClearAuxiliaryBehaviorState": ".text",
+"Scaled_ClearNodeQueue": ".text",
+"Scaled_DistanceToNode": ".text",
+"Scaled_GetControllerPosition": ".text",
+"Scaled_GetDifficultyEngagementAdjustment": ".text",
+"Scaled_GetScaledAggression": ".text",
+"Scaled_GetScaledAttackRange": ".text",
+"Scaled_HandlePlayerTimeout": ".text",
+"Scaled_HasLineOfSight": ".text",
+"Scaled_InitPlayerState": ".text",
+"Scaled_IsBehaviorStateEight": ".text",
+"Scaled_MatchesBehaviorStateFilter": ".text",
+"Scaled_ResetBehaviorState": ".text",
+"Scaled_ScaleCharacterSettingByDifficulty": ".text",
+"Scaled_SetBehaviorTable": ".text",
+"Scaled_SetBehaviourState": ".text",
+"Scaled_SetPitchFromAngle": ".text",
+"Scaled_UpdateDifficultyAimJitter": ".text",
+"Scaled_UpdateTargetPitch": ".text"
+}
+},
+{
+"owns": [
+"Nav_SelectPlayerState"
+],
+"path": "src/AI/NAV/PLAYERSTATE/PLAYERSTATE.CPP",
+"sections": {
+"Nav_SelectPlayerState": ".text"
+}
+},
+{
+"owns": [
+"Nav_ComputeScaledPointCentroid",
+"Nav_FindSpecialLinkedCandidate"
+],
+"path": "src/AI/NAV/POINTS/POINTS.CPP",
+"sections": {
+"Nav_ComputeScaledPointCentroid": ".text",
+"Nav_FindSpecialLinkedCandidate": ".text"
+}
+},
+{
+"owns": [
+"Portal_GetEngagementDistance",
+"Portal_LinkNavigationObjects",
+"Portal_AssignPlatformEndpoints",
+"Portal_UpdateActorCurrentNode"
+],
+"path": "src/AI/NAV/PORTAL/PORTAL.CPP",
+"sections": {
+"Portal_AssignPlatformEndpoints": ".text",
+"Portal_GetEngagementDistance": ".text",
+"Portal_LinkNavigationObjects": ".text",
+"Portal_UpdateActorCurrentNode": ".text"
+}
+},
+{
+"owns": [
+"Portal_GetGraphPoint",
+"Portal_GetStridedTableEntry",
+"Portal_IsReversibleLink",
+"Portal_InitSearchNode",
+"Portal_FindNearestPointIndex",
+"Portal_FindLinkIndex",
+"Portal_CollectIncidentLinks",
+"Portal_IsNodeMovementBlocked",
+"Portal_FindSearchNode",
+"Portal_ResetSearchState"
+],
+"path": "src/AI/NAV/PORTAL/PORTAL_ISNODEMOVEMENTBLOCKED.CPP",
+"sections": {
+"Portal_CollectIncidentLinks": ".text",
+"Portal_FindLinkIndex": ".text",
+"Portal_FindNearestPointIndex": ".text",
+"Portal_FindSearchNode": ".text",
+"Portal_GetGraphPoint": ".text",
+"Portal_GetStridedTableEntry": ".text",
+"Portal_InitSearchNode": ".text",
+"Portal_IsNodeMovementBlocked": ".text",
+"Portal_IsReversibleLink": ".text",
+"Portal_ResetSearchState": ".text"
+}
+},
+{
+"owns": [
+"Portal_CollectDirectedNeighbors",
+"Portal_SearchRelatedGoalPath",
+"Portal_FindPortalRoute",
+"Portal_SearchPortalRoute",
+"Portal_EstimateGoalDistance",
+"Portal_SearchPath"
+],
+"path": "src/AI/NAV/PORTAL/PORTAL_SEARCHPATH.CPP",
+"sections": {
+"Portal_CollectDirectedNeighbors": ".text",
+"Portal_EstimateGoalDistance": ".text",
+"Portal_FindPortalRoute": ".text",
+"Portal_SearchPath": ".text",
+"Portal_SearchPortalRoute": ".text",
+"Portal_SearchRelatedGoalPath": ".text"
+}
+},
+{
+"owns": [
+"Portal_DispatchActorBehavior",
+"Portal_UpdateAlternatingActionBursts",
+"Portal_UpdateCountedEffectAction",
+"Portal_UpdateMeterGatedActionBurst",
+"Portal_LoadCollisionTable",
+"Portal_UpdateTimedActionBurst",
+"Portal_UpdateHeldActionBurst",
+"Portal_UpdateRandomActionPulse",
+"Portal_InitializeRandomActionSettings"
+],
+"path": "src/AI/NAV/PORTAL/PORTAL_UPDATEALTERNATINGACTIONBURSTS.CPP",
+"sections": {
+"Portal_DispatchActorBehavior": ".text",
+"Portal_InitializeRandomActionSettings": ".text",
+"Portal_LoadCollisionTable": ".text",
+"Portal_UpdateAlternatingActionBursts": ".text",
+"Portal_UpdateCountedEffectAction": ".text",
+"Portal_UpdateHeldActionBurst": ".text",
+"Portal_UpdateMeterGatedActionBurst": ".text",
+"Portal_UpdateRandomActionPulse": ".text",
+"Portal_UpdateTimedActionBurst": ".text"
+}
+},
+{
+"owns": [
+"Nav_RequestRandomArmedWeapon"
+],
+"path": "src/AI/NAV/RANDOMWEAPON/RANDOMWEAPON.CPP",
+"sections": {
+"Nav_RequestRandomArmedWeapon": ".text"
+}
+},
+{
+"owns": [
+"ReselectCloseAttack",
+"Reselect_ChooseWeightedAttackBehavior",
+"func_8020DDF4_eu_padding_E9F4"
+],
+"path": "src/AI/NAV/RESELECT/RESELECT.CPP",
+"sections": {
+"ReselectCloseAttack": ".text",
+"Reselect_ChooseWeightedAttackBehavior": ".text",
+"func_8020DDF4_eu_padding_E9F4": ".data"
+}
+},
+{
+"owns": [
+"Nav_UpdateRoamingWithJumps",
+"Nav_InitRoamingWithJumps",
+"Nav_ChooseNewRoamingGoal"
+],
+"path": "src/AI/NAV/ROAM/ROAM.CPP",
+"sections": {
+"Nav_ChooseNewRoamingGoal": ".text",
+"Nav_InitRoamingWithJumps": ".text",
+"Nav_UpdateRoamingWithJumps": ".text"
+}
+},
+{
+"owns": [
+"Nav_SelectFlaggedRoamingGoal"
+],
+"path": "src/AI/NAV/ROAMGOAL/ROAMGOAL.CPP",
+"sections": {
+"Nav_SelectFlaggedRoamingGoal": ".text"
+}
+},
+{
+"owns": [
+"Route_SearchSingleGoalPath",
+"Route_SearchPathByKey",
+"Route_ReconstructSearchPath",
+"Route_GetRouteRelation",
+"Route_ClearGoalList"
+],
+"path": "src/AI/NAV/ROUTE/ROUTE.CPP",
+"sections": {
+"Route_ClearGoalList": ".text",
+"Route_GetRouteRelation": ".text",
+"Route_ReconstructSearchPath": ".text",
+"Route_SearchPathByKey": ".text",
+"Route_SearchSingleGoalPath": ".text"
+}
+},
+{
+"owns": [
+"Nav_IsSearchNodeOpen",
+"Nav_UpdateRouteIntermediateGoal",
+"Nav_SetLinkedActorNodeCosts",
+"Nav_AccumulateNodeTickCosts",
+"Nav_AddPickupCategoryCosts",
+"func_8020EF74_eu_padding_FB74"
+],
+"path": "src/AI/NAV/ROUTECOST/ROUTECOST.CPP",
+"sections": {
+"Nav_AccumulateNodeTickCosts": ".text",
+"Nav_AddPickupCategoryCosts": ".text",
+"Nav_IsSearchNodeOpen": ".text",
+"Nav_SetLinkedActorNodeCosts": ".text",
+"Nav_UpdateRouteIntermediateGoal": ".text",
+"func_8020EF74_eu_padding_FB74": ".data"
+}
+},
+{
+"owns": [
+"Nav_AddGoalNode",
+"Nav_OpenSearchNode",
+"Nav_TakeLowestCostOpenNode",
+"Nav_CloseSearchNode",
+"Nav_IsSearchNodeClosed",
+"Nav_HasOpenSearchNodes",
+"Nav_ClearSearchNodeStatus"
+],
+"path": "src/AI/NAV/SEARCHNODE/SEARCHNODE.CPP",
+"sections": {
+"Nav_AddGoalNode": ".text",
+"Nav_ClearSearchNodeStatus": ".text",
+"Nav_CloseSearchNode": ".text",
+"Nav_HasOpenSearchNodes": ".text",
+"Nav_IsSearchNodeClosed": ".text",
+"Nav_OpenSearchNode": ".text",
+"Nav_TakeLowestCostOpenNode": ".text"
+}
+},
+{
+"owns": [
+"Nav_UpdatePursuitStrafe"
+],
+"path": "src/AI/NAV/STRAFE/STRAFE.CPP",
+"sections": {
+"Nav_UpdatePursuitStrafe": ".text"
+}
+},
+{
+"owns": [
+"Target_UpdateTargetSelection",
+"Target_IsPreferredTargetAccepted",
+"Target_CountAcceptedTargets",
+"Target_FindNearestFlaggedTarget"
+],
+"path": "src/AI/NAV/TARGET/TARGET.CPP",
+"sections": {
+"Target_CountAcceptedTargets": ".text",
+"Target_FindNearestFlaggedTarget": ".text",
+"Target_IsPreferredTargetAccepted": ".text",
+"Target_UpdateTargetSelection": ".text"
+}
+},
+{
+"owns": [
+"Nav_ResetTargetFollowStateEu",
+"Nav_UpdateTargetRouteFollowEu"
+],
+"path": "src/AI/NAV/TARGETFOLLOW/TARGETFOLLOW.CPP",
+"sections": {
+"Nav_ResetTargetFollowStateEu": ".text",
+"Nav_UpdateTargetRouteFollowEu": ".text"
+}
+},
+{
+"owns": [
+"Nav_ShouldSeekUnclaimedTeamMarker",
+"Nav_EvaluateCaptureFlagMarkerSearch"
+],
+"path": "src/AI/NAV/TEAMMARKER/TEAMMARKER.CPP",
+"sections": {
+"Nav_EvaluateCaptureFlagMarkerSearch": ".text",
+"Nav_ShouldSeekUnclaimedTeamMarker": ".text"
+}
+},
+{
+"owns": [
+"Nav_SelectAvailableWeapon",
+"Nav_SelectWeaponFromFirstAmmoGroup",
+"Nav_SelectWeaponFromSecondAmmoGroup",
+"Nav_SelectWeaponFromThirdAmmoGroup",
+"Nav_SelectSecondAmmoGroupVariantOne",
+"Nav_SelectSecondAmmoGroupVariantTwo"
+],
+"path": "src/AI/NAV/WEAPONSELECT/WEAPONSELECT.CPP",
+"sections": {
+"Nav_SelectAvailableWeapon": ".text",
+"Nav_SelectSecondAmmoGroupVariantOne": ".text",
+"Nav_SelectSecondAmmoGroupVariantTwo": ".text",
+"Nav_SelectWeaponFromFirstAmmoGroup": ".text",
+"Nav_SelectWeaponFromSecondAmmoGroup": ".text",
+"Nav_SelectWeaponFromThirdAmmoGroup": ".text"
+}
+},
+{
+"owns": [
+"g_NavTrailingBytesBlock10"
+],
+"path": "src/AI/NAV/WHEEL/NAV/WHEEL_TRAILING_BYTES_EU_EU_X_US_US_REV1.CPP",
+"sections": {
+"g_NavTrailingBytesBlock10": ".data"
+}
+},
+{
+"owns": [
+"Wheel_MeasureWheelReach",
+"Wheel_MeasureWheelClearance",
+"Wheel_PrepareProbeSegments",
+"Wheel_AdvanceWheelProbe",
+"Wheel_GetDirectionSector",
+"Wheel_NextDirectionSector",
+"Wheel_PreviousDirectionSector"
+],
+"path": "src/AI/NAV/WHEEL/WHEEL.CPP",
+"sections": {
+"Wheel_AdvanceWheelProbe": ".text",
+"Wheel_GetDirectionSector": ".text",
+"Wheel_MeasureWheelClearance": ".text",
+"Wheel_MeasureWheelReach": ".text",
+"Wheel_NextDirectionSector": ".text",
+"Wheel_PrepareProbeSegments": ".text",
+"Wheel_PreviousDirectionSector": ".text"
+}
+},
+{
+"owns": [
+"Playerai_ApplyStun"
+],
+"path": "src/AI/PLAYER/PLAYERAI_APPLYSTUN.CPP",
+"sections": {
+"Playerai_ApplyStun": ".text"
+}
+},
+{
+"owns": [
+"Playerai_CanLockTarget",
+"Playerai_ComputeAimRotation"
+],
+"path": "src/AI/PLAYER/PLAYERAI_COMPUTEAIMROTATION.CPP",
+"sections": {
+"Playerai_CanLockTarget": ".text",
+"Playerai_ComputeAimRotation": ".text"
+}
+},
+{
+"owns": [
+"Playerai_DrawAmmoCounters"
+],
+"path": "src/AI/PLAYER/PLAYERAI_DRAWAMMOCOUNTERS.CPP",
+"sections": {
+"Playerai_DrawAmmoCounters": ".text"
+}
+},
+{
+"owns": [
+"Playerai_UpdateTravelSequence",
+"Playerai_UpdateMountedMovement"
+],
+"path": "src/AI/PLAYER/PLAYERAI_ENTERMOVINGSEQUENCESTATE_DATA.CPP",
+"sections": {
+"Playerai_UpdateMountedMovement": ".text",
+"Playerai_UpdateTravelSequence": ".text"
+}
+},
+{
+"owns": [
+"Playerai_FindHighestScoringPlayerIndex",
+"Playerai_SelectCharacterSound"
+],
+"path": "src/AI/PLAYER/PLAYERAI_FINDTRANSIENTPLAYER.CPP",
+"sections": {
+"Playerai_FindHighestScoringPlayerIndex": ".text",
+"Playerai_SelectCharacterSound": ".text"
+}
+},
+{
+"owns": [
+"Playerai_UpdateHazardDamage",
+"Playerai_UpdateTargetFacing",
+"Playerai_InitializePlayerHealth"
+],
+"path": "src/AI/PLAYER/PLAYERAI_INITIALIZEPLAYERHEALTH.CPP",
+"sections": {
+"Playerai_InitializePlayerHealth": ".text",
+"Playerai_UpdateHazardDamage": ".text",
+"Playerai_UpdateTargetFacing": ".text"
+}
+},
+{
+"owns": [
+"Playerai_ResetPlayerAfterDeath",
+"Playerai_TryStartPlayerSequence"
+],
+"path": "src/AI/PLAYER/PLAYERAI_RESETPLAYERAFTERDEATH.CPP",
+"sections": {
+"Playerai_ResetPlayerAfterDeath": ".text",
+"Playerai_TryStartPlayerSequence": ".text"
+}
+},
+{
+"owns": [
+"Playerai_UpdateAimAndLockMarker"
+],
+"path": "src/AI/PLAYER/PLAYERAI_UPDATEAIMANDLOCKMARKER.CPP",
+"sections": {
+"Playerai_UpdateAimAndLockMarker": ".text"
+}
+},
+{
+"owns": [
+"Playerai_UpdateWalkingMovement"
+],
+"path": "src/AI/PLAYER/PLAYERAI_UPDATEWALKINGMOVEMENT.CPP",
+"sections": {
+"Playerai_UpdateWalkingMovement": ".text"
+}
+},
+{
+"owns": [
+"Player_BuildAimMarkerMatrices"
+],
+"path": "src/AI/PLAYER/PLAYER_AIM_MARKER_MATRICES.CPP",
+"sections": {
+"Player_BuildAimMarkerMatrices": ".text"
+}
+},
+{
+"owns": [
+"Player_AllocPlayerList",
+"Player_UpdateWorldPlayers",
+"Player_BuildPlayerOrientation",
+"Player_BuildPlayerViewTransform"
+],
+"path": "src/AI/PLAYER/PLAYER_BUILDPLAYERVIEWTRANSFORM.CPP",
+"sections": {
+"Player_AllocPlayerList": ".text",
+"Player_BuildPlayerOrientation": ".text",
+"Player_BuildPlayerViewTransform": ".text",
+"Player_UpdateWorldPlayers": ".text"
+}
+},
+{
+"owns": [
+"Playerai_HandlePlayerDeath",
+"Player_ApplyPlayerDamage",
+"Playerai_ApplyProjectileStatus"
+],
+"path": "src/AI/PLAYER/PLAYER_DEATH.CPP",
+"sections": {
+"Player_ApplyPlayerDamage": ".text",
+"Playerai_ApplyProjectileStatus": ".text",
+"Playerai_HandlePlayerDeath": ".text"
+}
+},
+{
+"owns": [
+"Player_DrawRedMarkerPrism"
+],
+"path": "src/AI/PLAYER/PLAYER_DRAWREDMARKERPRISM.CPP",
+"sections": {
+"Player_DrawRedMarkerPrism": ".text"
+}
+},
+{
+"owns": [
+"Player_UpdateFlyMode",
+"Player_UpdateStandingState"
+],
+"path": "src/AI/PLAYER/PLAYER_FLY_AND_STANDING_STATES.CPP",
+"sections": {
+"Player_UpdateFlyMode": ".text",
+"Player_UpdateStandingState": ".text"
+}
+},
+{
+"owns": [
+"Player_DrawPlayerModel",
+"Player_DrawHeldWeapon"
+],
+"path": "src/AI/PLAYER/PLAYER_MODEL_AND_HELD_WEAPON_RENDERING.CPP",
+"sections": {
+"Player_DrawHeldWeapon": ".text",
+"Player_DrawPlayerModel": ".text"
+}
+},
+{
+"owns": [
+"Player_UpdateFloatingState"
+],
+"path": "src/AI/PLAYER/PLAYER_UPDATEFLOATINGSTATE.CPP",
+"sections": {
+"Player_UpdateFloatingState": ".text"
+}
+},
+{
+"owns": [
+"Playerai_DrawAimHud",
+"Player_UpdatePlayerEffectLights"
+],
+"path": "src/AI/PLAYER/PLAYER_UPDATEPLAYEREFFECTLIGHTS.CPP",
+"sections": {
+"Player_UpdatePlayerEffectLights": ".text",
+"Playerai_DrawAimHud": ".text"
+}
+},
+{
+"owns": [
+"Playerai_DrawProjectedAimIcon"
+],
+"path": "src/AI/PLAYER/PLAYER_UPDATEPLAYEREFFECTLIGHTS_DATA.CPP",
+"sections": {
+"Playerai_DrawProjectedAimIcon": ".text"
+}
+},
+{
+"owns": [
+"Player_UpdateSwimmingState"
+],
+"path": "src/AI/PLAYER/PLAYER_UPDATESWIMMINGSTATE.CPP",
+"sections": {
+"Player_UpdateSwimmingState": ".text"
+}
+},
+{
+"owns": [
+"Player_UpdateWadingState"
+],
+"path": "src/AI/PLAYER/PLAYER_WADING_STATE.CPP",
+"sections": {
+"Player_UpdateWadingState": ".text"
+}
+},
+{
+"owns": [
+"Playerai_AdvanceRouteCursor",
+"Playerai_InitializeRouteCursor",
+"Playerai_GetRouteCursorPoint",
+"Playerai_GetRouteCursorNextPoint",
+"Playerai_InitializeCompactAnimationState",
+"Playerai_EmptyWeaponEffectHook",
+"Playerai_DrawAnimatedSprite",
+"Player_PostKillMessages",
+"Playerai_ApplyDamagePacket",
+"Player_DrawPlayerBodyAndWeapon",
+"Playerai_InitializeMovementAndAim",
+"Playerai_DispatchWeaponFireEffect",
+"Player_ResetPlayerWeapons",
+"Player_PlacePlayerAtSpawnPoint"
+],
+"path": "src/AI/PLAYERAI/PLAYERAI.CPP",
+"sections": {
+"Player_DrawPlayerBodyAndWeapon": ".text",
+"Player_PlacePlayerAtSpawnPoint": ".text",
+"Player_PostKillMessages": ".text",
+"Player_ResetPlayerWeapons": ".text",
+"Playerai_AdvanceRouteCursor": ".text",
+"Playerai_ApplyDamagePacket": ".text",
+"Playerai_DispatchWeaponFireEffect": ".text",
+"Playerai_DrawAnimatedSprite": ".text",
+"Playerai_EmptyWeaponEffectHook": ".text",
+"Playerai_GetRouteCursorNextPoint": ".text",
+"Playerai_GetRouteCursorPoint": ".text",
+"Playerai_InitializeCompactAnimationState": ".text",
+"Playerai_InitializeMovementAndAim": ".text",
+"Playerai_InitializeRouteCursor": ".text"
+}
+},
+{
+"owns": [
+"Player_DrawTintedPlayer",
+"Playerai_UpdateDamageTimers",
+"Player_TransferRandomInventoryItems",
+"Player_GiveAmmoWithMessage"
+],
+"path": "src/AI/PLAYERAI/PLAYER_DRAWTINTEDPLAYER.CPP",
+"sections": {
+"Player_DrawTintedPlayer": ".text",
+"Player_GiveAmmoWithMessage": ".text",
+"Player_TransferRandomInventoryItems": ".text",
+"Playerai_UpdateDamageTimers": ".text"
+}
+},
+{
+"owns": [
+"Player_UpdateFragTagSelection",
+"Player_ReleaseWaitingPlayer",
+"Player_CheckScoreLimit",
+"Player_CheckTotalScoreWin",
+"Player_CheckTeamPointWin",
+"Playerai_UpdateRoundLimits",
+"Playerai_StopInactivePlayerSounds",
+"Playerai_UpdateViewModelBounds",
+"Playerai_DrawPlayerModelsForView",
+"Player_DrawMatchCountdown",
+"Playerai_ToggleForceMarkerEuropean",
+"Playerai_ApplyPlayerForces"
+],
+"path": "src/AI/PLAYERAI/PLAYER_UPDATEFRAGTAGSELECTION.CPP",
+"sections": {
+"Player_CheckScoreLimit": ".text",
+"Player_CheckTeamPointWin": ".text",
+"Player_CheckTotalScoreWin": ".text",
+"Player_DrawMatchCountdown": ".text",
+"Player_ReleaseWaitingPlayer": ".text",
+"Player_UpdateFragTagSelection": ".text",
+"Playerai_ApplyPlayerForces": ".text",
+"Playerai_DrawPlayerModelsForView": ".text",
+"Playerai_StopInactivePlayerSounds": ".text",
+"Playerai_ToggleForceMarkerEuropean": ".text",
+"Playerai_UpdateRoundLimits": ".text",
+"Playerai_UpdateViewModelBounds": ".text"
+}
+},
+{
+"owns": [
+"Player_DrawHeadsUpDisplay",
+"Player_UpdatePlayerCamera",
+"Player_UpdateHealthRegeneration",
+"Player_UpdateBodyMovementAndActions",
+"Player_SetPlayerState",
+"Player_UpdateMovementSpeedFactor",
+"Player_HasAmmoForMode",
+"Player_AddAmmo",
+"Player_IsAmmoPickupBelowCapacity",
+"Player_TryEnterHitReactionState",
+"Player_TryThrowSelectedActor",
+"Player_UpdateViewAngles",
+"Player_UpdateGroundThrustAndBoost",
+"Player_UpdateFlyingThrustAndBoost",
+"Player_UpdateWeaponSwayAndBob",
+"Player_EaseOwnerHeightEffect"
+],
+"path": "src/AI/PLAYER_UPDATEPLAYERCAMERA/PLAYER_UPDATEPLAYERCAMERA.CPP",
+"sections": {
+"Player_AddAmmo": ".text",
+"Player_DrawHeadsUpDisplay": ".text",
+"Player_EaseOwnerHeightEffect": ".text",
+"Player_HasAmmoForMode": ".text",
+"Player_IsAmmoPickupBelowCapacity": ".text",
+"Player_SetPlayerState": ".text",
+"Player_TryEnterHitReactionState": ".text",
+"Player_TryThrowSelectedActor": ".text",
+"Player_UpdateBodyMovementAndActions": ".text",
+"Player_UpdateFlyingThrustAndBoost": ".text",
+"Player_UpdateGroundThrustAndBoost": ".text",
+"Player_UpdateHealthRegeneration": ".text",
+"Player_UpdateMovementSpeedFactor": ".text",
+"Player_UpdatePlayerCamera": ".text",
+"Player_UpdateViewAngles": ".text",
+"Player_UpdateWeaponSwayAndBob": ".text"
+}
+},
+{
+"owns": [
+"g_MaincodeBlock1LinkerAlignmentFill581"
+],
+"path": "src/DATA/MAINCODE/MAINCODE.CPP",
+"sections": {
+"g_MaincodeBlock1LinkerAlignmentFill581": ".data"
+}
+}
+],
+"segment": "game_code",
+"toolchain": "gcc-2.8.1-sn64",
+"version": "eu",
+"vram": 2149581824
+}

@@ -1929,14 +1929,15 @@ def test_every_object_is_placed_at_the_offset_of_its_first_row_so_a_dropped_gap_
 
 def test_a_function_with_no_pool_row_of_its_own_has_its_pool_kept_with_the_function_before(tmp_path):
     functions, rows = ["f_1", "f_2", "f_3"], {"literals_f_1", "literals_f_3"}
-    assert build._covered(functions, rows, "literals_f_1") == ".rodata.literals_f_1 .rodata.literals_f_2"
-    assert build._covered(functions, rows, "literals_f_3") == ".rodata.literals_f_3"
+    where = {f: i for i, f in enumerate(functions)}
+    assert build._covered(functions, where, rows, "literals_f_1") == ".rodata.literals_f_1 .rodata.literals_f_2"
+    assert build._covered(functions, where, rows, "literals_f_3") == ".rodata.literals_f_3"
     rows = {"literals_f_1"}
     assert (
-        build._covered(functions, rows, "literals_f_1")
+        build._covered(functions, where, rows, "literals_f_1")
         == ".rodata.literals_f_1 .rodata.literals_f_2 .rodata.literals_f_3"
     )
-    assert build._covered(functions, rows, "d_9") == ".rodata.d_9"  # not a pool: its own section
+    assert build._covered(functions, where, rows, "d_9") == ".rodata.d_9"  # not a pool: its own section
 
 
 def _fsplit(tmp_path, text: str, *phases: str) -> list[str]:
