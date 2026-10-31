@@ -286,6 +286,8 @@ def test_the_command_set_is_the_C9_set() -> None:
         "census",
         "unify",
         "type-pool",
+        "type-pointers",
+        "reconstruct-labels",
     }
     assert [p["name"] for p in COMMANDS["sync"]["params"]] == ["check", "settle", "makefile", "place"]
 

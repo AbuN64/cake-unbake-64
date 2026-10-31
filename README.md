@@ -27,6 +27,7 @@ unbake unify                    # one type per name, every object byte-identical
 ```
 
 `unbake --help` lists the rest. Config, project layout and CI are in [docs/usage.md](docs/usage.md).
+Older-build address tables: [docs/address-tables.md](docs/address-tables.md).
 
 ## Development
 

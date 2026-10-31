@@ -1,0 +1,13 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.reconstruct-labels",
+ "type": "object",
+ "properties": {
+  "tables": {"type": "array", "items": {"type": "object"}},
+  "unfit": {"type": "array", "items": {"type": "object"}},
+  "symbols": {"type": "object"},
+  "labels": {"type": "integer"}
+ },
+ "required": ["tables", "unfit", "symbols", "labels"],
+ "additionalProperties": false
+}

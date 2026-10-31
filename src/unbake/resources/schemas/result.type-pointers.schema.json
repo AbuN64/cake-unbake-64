@@ -1,0 +1,13 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "unbake:result.type-pointers",
+ "type": "object",
+ "properties": {
+  "tables": {"type": "array", "items": {"type": "object"}},
+  "unfit": {"type": "array", "items": {"type": "object"}},
+  "written": {"type": "array", "items": {"type": "string"}},
+  "bytes": {"type": "integer"}
+ },
+ "required": ["tables", "unfit", "written", "bytes"],
+ "additionalProperties": false
+}

@@ -497,6 +497,18 @@ sentence = "a blob's bytes lie under a credited symbol and stay counted as code 
 owner = "pooltype"
 sentence = "type-pool was given no --spec VERSION:LOW:HIGH:DELTA"
 
+[key."type-pointers.spec"]
+owner = "pointertype"
+sentence = "type-pointers was given no --spec VERSION:LOW:HIGH:DELTA"
+
+[key."reconstruct-labels.spec"]
+owner = "labels"
+sentence = "reconstruct-labels was given no --spec VERSION:LOW:HIGH:DELTA"
+
+[key."reconstruct-labels.image"]
+owner = "labels"
+sentence = "reconstruct-labels found no linked image of any version to read the current tables from"
+
 [key."blobs.evidence"]
 owner = "blobs"
 sentence = "a packet's ROM or evidence sha256 does not match what the project holds"

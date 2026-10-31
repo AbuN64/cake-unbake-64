@@ -345,3 +345,20 @@ params = [
   { name = "dest", kind = "option", type = "path", required = false, multiple = false, help = "folder of the sources, default src/DATA/EARLIER_BUILD" },
   { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "report the windows and refusals, write nothing" },
 ]
+
+[command.type-pointers]
+help = "Type an older build's address tables: each ROM span whose every word is zero or the address of a symbol of the older build's layout becomes a typed pointer array (one source per table) with its symbol row; a span with a word that does not resolve is refused, naming the span and the word."
+handler = "pointertype.command"
+params = [
+  { name = "spec", kind = "option", type = "str", required = true, multiple = true, help = "VERSION:LOW:HIGH:DELTA (hex ok): the ROM span of a version and the older build's vram - rom" },
+  { name = "dest", kind = "option", type = "path", required = false, multiple = false, help = "folder of the sources, default src/DATA/EARLIER_BUILD" },
+  { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "report the tables and refusals, write nothing" },
+]
+
+[command.reconstruct-labels]
+help = "Reconstruct an older build's labels from its address tables: each run of addresses in the given ROM spans is matched to the current build's table with the same entries and one delta; every label becomes an older-build symbol (the owner's start and its offset), a run that fits no table with one delta is refused with the closest table's measured disagreement."
+handler = "labels.command"
+params = [
+  { name = "spec", kind = "option", type = "str", required = true, multiple = true, help = "VERSION:LOW:HIGH:DELTA (hex ok): the ROM span of a version and the older build's vram - rom" },
+  { name = "check", kind = "flag", type = "str", required = false, multiple = false, help = "report the tables and refusals, write nothing" },
+]

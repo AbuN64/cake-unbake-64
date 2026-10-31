@@ -14,7 +14,13 @@ from typing import Any
 from unbake.contracts import Segment
 
 SPACE = "earlier_build"  # the distinct image every window of a version is linked in
+INFIX = "_earlier_"  # between the bin segment name and the ROM offset in the default name of a window
 MASK = 0xFFFFFFFF
+
+
+def is_window(name: str) -> bool:
+    """Whether a section is a window of an older build by its default name."""
+    return INFIX in name
 
 
 def symbols_path(version: str) -> str:
@@ -61,7 +67,7 @@ def expand(vid: str, rows: Sequence[Mapping[str, Any]], size: int) -> tuple[tupl
             if w["rom"] % 4 or w["end"] % 4 or vram_of(w) % 4:
                 problems.append(f"{label}: rom, end and vram must be word aligned")
                 continue
-            name = w.get("name", f"{base.name}_earlier_{w['rom']:X}")
+            name = w.get("name", f"{base.name}{INFIX}{w['rom']:X}")
             if name in names or name == base.name or any(r["name"] == name for r in rows):
                 problems.append(f"{label}: the name {name} is taken")
             names.add(name)
