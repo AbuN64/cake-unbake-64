@@ -2,7 +2,9 @@
 
 The pool is the read-only data the older link put between its source files: NUL-terminated strings padded with NULs
 to a word, runs of floats, doubles on 8-byte boundaries and small integer words. A word is typed only when its bits
-say what it is: a printable NUL-terminated run (3+ characters) padded with NULs is a string, a word whose exponent
+say what it is: a printable NUL-terminated run (3+ characters) padded with NULs is a string (a Latin-1 accented
+letter, 0xA0..0xFF, belongs to the run when an ASCII letter comes before it and printable text, another accent or the
+NUL after it, and is written as a three-digit octal escape; any other high byte is no text), a word whose exponent
 is a plausible float exponent is a float, a pair on an 8-byte boundary whose low word is no float and no small
 integer is a double, a word within -0x8000..0xFFFF is an integer, and zero follows its previous run. Anything else
 (pointer-looking words, packed bytes, high-bit text, a string whose padding is not NUL) is refused with its span and
@@ -13,10 +15,10 @@ floats before its strings. Each run of accepted items inside one file is a windo
 The older link also left the words of its data between those files: an offset into the older ROM (a 4-aligned word
 from 0x100000 up to the ROM size) and a pointer into the older image (a 4-aligned word in 0x80000400..0x807FFFFF).
 Either is typed only as part of a record: two or more words with an offset among them, or one beside a typed
-non-pointer word, never one bare word in packed bytes; a run of pointers alone is a pointer table, refused here. An offset is an unsigned integer; a pointer is a `void *` initialised with the address constant of
-its target, so no pointer is an integer and no extra symbol is defined. With
-`unknown` the reader types only the words of the ROM spans no class holds (widened to word boundaries), which is how
-the data an earlier pass left over is closed."""
+non-pointer word, never one bare word in packed bytes; a run of pointers alone is a pointer table, refused here. An
+offset is an unsigned integer; a pointer is a `void *` initialised with the address constant of its target, so no
+pointer is an integer and no extra symbol is defined. With `unknown` the reader types only the words of the ROM spans
+no class holds (widened to word boundaries), which is how the data an earlier pass left over is closed."""
 
 from __future__ import annotations
 
@@ -36,6 +38,8 @@ OFFSET_LOW = 0x100000  # the least ROM offset a word is typed as (below it a wor
 IMAGE = range(0x80000400, 0x80800000)  # the older image's addresses a pointer word may hold
 JOIN = 8  # most words of an odd run that join the integer run beside it
 PRINTABLE = frozenset(range(0x20, 0x7F)) | {9, 10, 13}
+LETTERS = frozenset(range(0x41, 0x5B)) | frozenset(range(0x61, 0x7B))
+ACCENTED = range(0xA0, 0x100)  # Latin-1 letters and signs: a string's byte in it needs an ASCII letter before it
 PATH = re.compile(r"[A-Za-z]:[/\\](?:[^/\\]+[/\\])*([^/\\]+)\.(?:cpp|c|h)$", re.IGNORECASE)
 ESCAPES = {9: "\\t", 10: "\\n", 13: "\\r", 34: '\\"', 92: "\\\\"}
 KINDS = {"str": "Str", "float": "Floats", "double": "Doubles", "int": "Ints", "uint": "Words", "ptr": "Pointers"}
@@ -57,10 +61,24 @@ def _small(w: int) -> bool:
     return (w - (1 << 32 if w >> 31 else 0)) in SMALL
 
 
+def _accent(data: bytes, at: int, end: int, high: int) -> bool:
+    """Whether the Latin-1 byte at `end` is an accented letter inside the string that began at `at`: an ASCII letter
+    comes before it, and printable text, another accented letter or the string's NUL after it (a word like
+    "publi\\351"); any other high byte is no text."""
+    return (
+        data[end] in ACCENTED
+        and end > at
+        and end + 1 < high
+        and data[end - 1] in LETTERS
+        and (data[end + 1] in PRINTABLE or data[end + 1] in ACCENTED or data[end + 1] == 0)
+    )
+
+
 def _string(data: bytes, at: int, high: int) -> tuple[str, int] | None:
-    """(text, padded size) of the string at `at`: 3+ printable characters, a NUL, NULs up to the next word."""
+    """(text, padded size) of the string at `at`: 3+ printable characters (Latin-1 accented letters between ASCII
+    letters count), a NUL, NULs up to the next word. The text holds the Latin-1 characters."""
     end = at
-    while end < high and data[end] in PRINTABLE:
+    while end < high and (data[end] in PRINTABLE or _accent(data, at, end, high)):
         end += 1
     if end - at < 3 or end >= high or data[end] != 0:
         return None
@@ -69,7 +87,7 @@ def _string(data: bytes, at: int, high: int) -> tuple[str, int] | None:
         if stop >= high or data[stop]:
             return None
         stop += 1
-    return data[at:end].decode("ascii"), stop - at
+    return data[at:end].decode("latin-1"), stop - at
 
 
 def _double(hi: int, lo: int) -> bool:
@@ -145,7 +163,7 @@ def _vet(items: Sequence[Item], refuse: Callable[[int, int, str], None]) -> list
             j < len(items) and items[j].kind in typed and items[j].at == items[j - 1].at + 4
         )
         offsets = any(w.kind == "offset" for w in run)
-        if offsets and (len(run) >= 2 or beside) or beside:
+        if (offsets and (len(run) >= 2 or beside)) or beside:
             out.extend(Item("uint", w.at, 4, w.value) if w.kind == "offset" else w for w in run)
         elif not offsets and len(run) >= 2:
             refuse(run[0].at, run[-1].at + 4, "pointer table (typed by the address-table reader)")
@@ -256,7 +274,7 @@ def _int(w: int, signed: bool) -> str:
 
 
 def _literal(text: str) -> str:
-    return '"' + "".join(ESCAPES.get(ord(c), c) for c in text) + '"'
+    return '"' + "".join(ESCAPES.get(ord(c)) or (f"\\{ord(c):03o}" if ord(c) > 0x7E else c) for c in text) + '"'
 
 
 def objects(items: Sequence[Item]) -> list[Item]:
@@ -374,8 +392,8 @@ def words_of(
 
 
 def command(cfg: Config, params: Json) -> Json:
-    """`type-pool --spec V:LOW:HIGH:DELTA ... [--unknown]`: write a source per unit and its symbol rows (not with --check) and
-    report the windows (`rom`, `end`, `delta` per version) and every refused span."""
+    """`type-pool --spec V:LOW:HIGH:DELTA ... [--unknown]`: write a source per unit and its symbol rows (not with
+    --check) and report the windows (`rom`, `end`, `delta` per version) and every refused span."""
     specs = []
     for text in params.get("spec") or ():
         v, low, high, delta = text.split(":")

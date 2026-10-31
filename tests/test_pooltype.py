@@ -84,7 +84,12 @@ def test_offset_words_are_typed_in_a_run_or_beside_a_typed_word():
 
 
 def test_pointer_words_are_typed_inside_a_record_never_alone():
-    assert kinds(0x801708C4, 0x0022E004, 0x0, 0x801708D4)[0] == ["ptr", "uint", "uint", "ptr"]  # the zero joins the integers before it
+    assert kinds(0x801708C4, 0x0022E004, 0x0, 0x801708D4)[0] == [
+        "ptr",
+        "uint",
+        "uint",
+        "ptr",
+    ]  # zero joins the integers
     assert kinds(0x801708C4, 0x00000064)[0] == ["ptr", "uint"]  # a pointer beside a small integer
     got, refused = kinds(0x801547B4, 0x801547B0, 0x801547A0)
     assert got == []  # a table of pointers alone is the address-table reader's
@@ -112,3 +117,16 @@ def test_words_of_widens_to_words_without_entering_code_data_or_other_windows():
     assert pt.words_of([(0x101, 0x103)], [(0, 0x101)], 0, 0x400) == []  # no whole word is free
     assert pt.words_of([(0x101, 0x107)], [], 0x100, 0x106) == [(0x100, 0x104)]  # never past the range
     assert pt.words_of([(0x100, 0x104), (0x104, 0x108)], [], 0, 0x400) == [(0x100, 0x108)]  # touching spans merge
+
+
+def test_latin1_accents_count_as_text_after_an_ascii_letter():
+    items, _ = pt.itemize(b"publi\xe9\0\0d\xe9velopp\xe9 par\0\0\0", 0, 24)
+    assert [(i.kind, i.value, i.size) for i in items] == [("str", "publi\xe9", 8), ("str", "d\xe9velopp\xe9 par", 16)]
+    assert pt.objects(items)[0].value == "publi\xe9"
+    assert pt._literal("publi\xe9 \xe9s") == '"publi\\351 \\351s"'
+
+
+def test_a_high_byte_without_a_letter_before_it_is_no_text():
+    for raw in (b"\xe9bc\0", b"ab \xe9c\0", b"abc\xe9\xe9\x01\0"):
+        padded = raw.ljust(8, b"\0")
+        assert [i.kind for i in pt.itemize(padded, 0, 8)[0]][:1] != ["str"]
