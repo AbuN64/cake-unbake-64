@@ -461,6 +461,31 @@ def test_land_puts_the_old_file_back_when_a_check_after_the_write_fails(tmp_path
     assert (tmp_path / "config" / "blobs.toml").read_bytes() == kept
 
 
+def test_land_hands_the_object_plan_to_the_audit(tmp_path, monkeypatch):
+    from unbake import policy
+
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(policy, "audit_command", lambda params: seen.append(params) or {"paths": []})
+    blobs.land(config, _packet(config), "plan/FILES.tsv")
+    assert seen == [{"project": str(tmp_path), "against": "HEAD", "plan": "plan/FILES.tsv"}]
+
+
+def test_the_land_command_passes_its_plan_option_to_the_audit(tmp_path, monkeypatch):
+    from unbake import policy
+
+    config = _config(tmp_path)
+    _clean_project(config, monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(policy, "audit_command", lambda params: seen.append(params) or {"paths": []})
+    packet = tmp_path / "packet.json"
+    packet.write_text(json.dumps(_packet(config)))
+    blobs.run(config, {"action": ["land", str(packet)], "plan": "plan/FILES.tsv"})
+    blobs.run(config, {"action": ["land", str(packet)]})
+    assert [p["plan"] for p in seen] == ["plan/FILES.tsv", None]
+
+
 def test_land_refuses_a_packet_the_import_refuses_and_writes_nothing(tmp_path, monkeypatch):
     config = _config(tmp_path)
     _clean_project(config, monkeypatch, tmp_path)

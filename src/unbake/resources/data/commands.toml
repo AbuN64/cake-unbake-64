@@ -257,6 +257,7 @@ help = "The blobs of blobs.toml (non-code ROM content), their census and the byt
 handler = "blobs.run"
 params = [
   { name = "action", kind = "argument", type = "str", required = false, multiple = true, help = "prove REQUEST RECEIPT, import PACKET, land PACKET, scan [stale], or nothing to list" },
+  { name = "plan", kind = "option", type = "path", required = false, multiple = false, help = "land: the FILES.tsv of the object plan (OBJECTS.tsv and ASSIGN.tsv beside it) the audit checks the linker fill records against; required once a version holds records" },
   { name = "json", kind = "flag", type = "str", required = false, multiple = false, help = "also return every blob as a row" },
 ]
 

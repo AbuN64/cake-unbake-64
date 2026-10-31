@@ -112,6 +112,7 @@ no class above (platform, code, data, blobs) holds it, so a fill byte is never c
   there.
 
 A version that holds records with no `--plan` is refused too (`fill.plan`): records cannot be judged without it.
+`unbake blobs land PACKET --plan FILES.tsv` passes the plan to the audit it runs.
 
 ## Compilers
 

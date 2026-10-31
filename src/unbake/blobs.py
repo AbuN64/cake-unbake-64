@@ -572,11 +572,13 @@ def _counts(have: Json, packet: Json) -> Json:
     }
 
 
-def land(config: Config, packet: Json) -> Json:
+def land(config: Config, packet: Json, plan_files: str | None = None) -> Json:
     """Land a facts-only packet on the current tree: import it, read the file back, audit the source rules against
     HEAD and check the partition of every version, no ROM build (blobs.toml is no build input: the build key reads
     src, include, symbols and the extract recipe). A failed check puts the old file back and refuses, so a landing is
-    all or nothing. Returns the git commands, the counts and the per-version credit delta."""
+    all or nothing. `plan_files` is the FILES.tsv of the object plan the audit judges the linker fill records by (the
+    audit refuses a version that holds records without it). Returns the git commands, the counts and the per-version
+    credit delta."""
     file = path_of(config)
     with effort.stage("blobs.land"):
         old = _read(config)
@@ -610,7 +612,7 @@ def land(config: Config, packet: Json) -> Json:
                     raise Refusal(Finding("blobs.land", f"superseded rows read back: {', '.join(gone[:5])}", path=file))
             with effort.stage("blobs.land.audit"):
                 audit = import_module("unbake.policy").audit_command(
-                    {"project": str(config.project.root), "against": "HEAD"}
+                    {"project": str(config.project.root), "against": "HEAD", "plan": plan_files}
                 )
             with effort.stage("blobs.land.partition"):
                 after = _partitions(config)
@@ -764,7 +766,7 @@ def _packet(path: str) -> Json:
 
 def run(config: Config, params: Json) -> Json:
     """`unbake blobs`: list the blobs and the partition of every version; `import PACKET` merges an evidence packet;
-    `land PACKET` imports it as a checked, all-or-nothing facts-only landing."""
+    `land PACKET [--plan FILES.tsv]` imports it as a checked, all-or-nothing facts-only landing."""
     with effort.stage("blobs.run"):
         action = list(params.get("action") or ())
         if action[:1] == ["prove"]:
@@ -795,7 +797,7 @@ def run(config: Config, params: Json) -> Json:
         if action[:1] == ["land"]:
             if len(action) != 2:
                 raise Refusal(Finding("blobs.packet", "land takes exactly one packet file"))
-            return _result(config, land(config, _packet(action[1])), bool(params.get("json")))
+            return _result(config, land(config, _packet(action[1]), params.get("plan")), bool(params.get("json")))
         if action:
             raise Refusal(
                 Finding(
