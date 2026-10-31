@@ -51,9 +51,26 @@ def read_modules(text: str) -> list[tuple[str, str]]:
     return [(r[unit], r[module]) for r in rows[1:] if r and not r[0].startswith("#") and len(r) > max(unit, module)]
 
 
-def merged_path(module: str) -> str:
-    """Where a module's merged file sits: in the folder named by the module, under the module file name, the way every
-    unit sits in the folder of its module."""
+def read_targets(text: str) -> dict[str, str]:
+    """module -> the path of its merged file, from the optional `target` column of a module map; a module without one
+    sits at `merged_path`."""
+    rows = list(csv.reader(text.splitlines(), delimiter="\t"))
+    if not rows or "target" not in rows[0] or "module" not in rows[0]:
+        return {}
+    module, target = rows[0].index("module"), rows[0].index("target")
+    found: dict[str, str] = {}
+    for r in rows[1:]:
+        if r and not r[0].startswith("#") and len(r) > max(module, target) and r[target]:
+            if found.setdefault(r[module], r[target]) != r[target]:
+                raise ValueError(f"module {r[module]} names two targets: {found[r[module]]} and {r[target]}")
+    return found
+
+
+def merged_path(module: str, target: str | None = None) -> str:
+    """Where a module's merged file sits: the `target` the module map names, else in the folder named by the module,
+    under the module file name, the way every unit sits in the folder of its module."""
+    if target:
+        return target
     path = PurePosixPath(module)
     return (path.with_suffix("") / path.name).as_posix()
 
@@ -235,15 +252,44 @@ def facts_of(
     return seqs, statics
 
 
-def code_order(units: Sequence[str], seqs: Mapping[str, Sequence[Row]]) -> list[str]:
-    """The units in the order their code is linked (the first version to place a unit decides); a unit without code
-    follows the code units, each group in the order given."""
+def code_order(units: Sequence[str], seqs: Mapping[str, Sequence[Row]], cls: str = "text") -> list[str]:
+    """The units in the order a class is linked (the first version to place a unit decides); a unit without that class
+    follows the others, each group in the order given."""
     first: dict[str, int] = {}
     for seq in seqs.values():
         for at, row in enumerate(seq):
-            if row["k"] == "entry" and row.get("n", 0) > 0 and "text" in row["cls"].split("+"):
+            if row["k"] == "entry" and row.get("n", 0) > 0 and cls in row["cls"].split("+"):
                 first.setdefault(row["u"], at)
     return sorted(units, key=lambda u: (u not in first, first.get(u, 0), units.index(u)))
+
+
+def class_orders(units: Sequence[str], seqs: Mapping[str, Sequence[Row]]) -> dict[str, list[str]]:
+    """Per section class the units that hold bytes of it, in the order that class is linked."""
+    out: dict[str, list[str]] = {}
+    for cls in ("text", "data", "rodata", "bss"):
+        held = {
+            row["u"]
+            for seq in seqs.values()
+            for row in seq
+            if row["k"] == "entry" and row.get("n", 0) > 0 and cls in row["cls"].split("+")
+        }
+        if held:
+            out[cls] = [u for u in code_order(units, seqs, cls) if u in held]
+    return out
+
+
+def object_classes(path: Path) -> dict[str, str]:
+    """symbol -> section class of every symbol an object defines in a section of a known class."""
+    out: dict[str, str] = {}
+    with path.open("rb") as handle:
+        elf = ELFFile(handle)
+        table = elf.get_section_by_name(".symtab")
+        if isinstance(table, SymbolTableSection):
+            for symbol in table.iter_symbols():
+                index = symbol["st_shndx"]
+                if symbol.name and isinstance(index, int) and (cls := _section_class(elf.get_section(index).name)):
+                    out[symbol.name] = cls
+    return out
 
 
 def verdicts(
@@ -275,6 +321,7 @@ def verdicts(
                 if name in names and names[name] != unit:
                     soft[module].append(f"statics: {name} is local to {names[name]} and {unit}")
                 names.setdefault(name, unit)
+    firsts: dict[tuple[str, str], tuple[str, list[str]]] = {}
     for version, seq in seqs.items():
         for row in seq:
             if row.get("missing") and (missing_owner := owner.get(row["u"])):
@@ -285,19 +332,21 @@ def verdicts(
         where: dict[tuple[str, str], list[tuple[int, str, str]]] = defaultdict(list)
         for i in live:
             home = owner.get(seq[i]["u"])
-            if home:
-                where[(home, seq[i]["cls"])].append((i, seq[i]["o"], seq[i]["u"]))
+            for part in seq[i]["cls"].split("+") if home else ():
+                where[(home, part)].append((i, seq[i]["o"], seq[i]["u"]))
         for (module, cls), hits in where.items():
             if len({o for _, o, _ in hits}) > 1:
                 hard[module].append(f"sections: {version} {cls} sits in several output sections")
                 continue
+            linked = list(dict.fromkeys(u for _, _, u in hits))
+            first = firsts.setdefault((module, cls), (version, linked))
+            if [u for u in first[1] if u in linked] != [u for u in linked if u in first[1]]:
+                hard[module].append(f"order: {version} {cls} is linked in another order than {first[0]}")
             for (i, _, one), (j, _, two) in pairwise(hits):
                 if following.get(i) != j:
                     between = [seq[k]["u"] for k in live if i < k < j and owner.get(seq[k]["u"]) != module]
                     if between:
                         hard[module].append(f"gap: {version} {cls} {one} .. {two} has {', '.join(between[:3])} between")
-                if order[one] > order[two]:
-                    hard[module].append(f"order: {version} {cls} {one} is linked before {two}")
                 for k in range(i + 1, j):
                     if seq[k]["k"] == "align":
                         soft[module].append(f"align: {version} {cls} ALIGN({seq[k]['a']}) before {two}")

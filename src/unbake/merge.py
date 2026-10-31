@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from unbake import classwise
 
 Row = dict[str, Any]
 PAD_LIMIT = 8
@@ -416,6 +418,11 @@ def reconcile(
     return {unit: [d for d in group if d.drop and not d.joint] for unit, group in parts}, conflicts, retyped
 
 
+def _differs(orders: Mapping[str, Sequence[str]], units: Sequence[str]) -> bool:
+    """Whether some class is linked in another order than `units`."""
+    return any([u for u in order if u in units] != [u for u in units if u in order] for order in orders.values())
+
+
 def _span(names: Sequence[str]) -> str:
     return names[0] if len(names) == 1 else f"{names[0]}..{names[-1]} ({len(names)} names)"
 
@@ -429,10 +436,18 @@ def _grouped(conflicts: Sequence[Row]) -> list[Row]:
     return [{"kind": kind, "name": _span(names), "detail": detail} for (kind, detail), names in groups.items()]
 
 
-def merge(units: Sequence[tuple[str, str]], droppable: Droppable, header: Header = lambda name: None) -> Row:
+def merge(
+    units: Sequence[tuple[str, str]],
+    droppable: Droppable,
+    header: Header = lambda name: None,
+    orders: Mapping[str, Sequence[str]] | None = None,
+    classes: Mapping[str, Mapping[str, str]] | None = None,
+) -> Row:
     """The merged text of `units` ((name, text) in link order) and the report:
     {"text", "includes", "pads": [names], "dropped": n, "conflicts": [{kind, name, detail}], "retyped": [text]}:
-    `retyped` lists the prototypes dropped for a differing earlier definition, whose callers may need a cast."""
+    `retyped` lists the prototypes dropped for a differing earlier definition, whose callers may need a cast.
+    `orders` (class -> units in that class's linked order) with `classes` (unit -> symbol -> class, read from the
+    built objects) emits each class in its own order when the classes are not linked in the order of `units`."""
     seen: list[str] = []
     bodies: list[tuple[str, str]] = []
     pads: list[str] = []
@@ -458,10 +473,18 @@ def merge(units: Sequence[tuple[str, str]], droppable: Droppable, header: Header
     marked, conflicts, retyped = reconcile(parts, inherited, names)
     out = []
     removed = 0
+    cut: list[tuple[str, str]] = []
     for name, body in bodies:
         spans = [(d.start, d.end) for d in marked[name]]
         removed += len(spans)
-        out.append(f"/* {name.rsplit('/', 1)[-1]} */\n" + _cut(body, spans).strip("\n"))
+        cut.append((name, _cut(body, spans).strip("\n")))
+    if orders and _differs(orders, [name for name, _ in cut]):
+        arranged, more = classwise.arrange(
+            [(name, body, mask(body), decls(body, name)) for name, body in cut], orders, classes or {}
+        )
+        out, conflicts = [arranged], [*conflicts, *more]
+    else:
+        out = [f"/* {name.rsplit('/', 1)[-1]} */\n" + body for name, body in cut]
     text = "\n".join(seen) + "\n\n" + "\n\n".join(out) + "\n"
     return {
         "text": re.sub(r"\n{3,}", "\n\n", text),
