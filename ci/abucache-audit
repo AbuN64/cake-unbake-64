@@ -1,0 +1,33 @@
+#!/bin/sh
+# One owner per cache, slot, pool, executor and timing path: AbuCache64 (abucache.compile, store, slots, pool, stages).
+# A file outside OWNED that starts one is refused. OWNED is the CACHE-CONSOLIDATE census: each file moves to its
+# abucache owner and leaves the list; nothing joins it.
+set -eu
+cd "$(dirname "$0")/.."
+OWNED='src/unbake/blob_proof.py
+src/unbake/cachegc.py
+src/unbake/compilers.py
+src/unbake/config.py
+src/unbake/contracts.py
+src/unbake/debtrules.py
+src/unbake/effort.py
+src/unbake/non_matching.py
+src/unbake/permute.py
+src/unbake/pool.py
+src/unbake/process.py
+src/unbake/repo.py
+src/unbake/rescore.py
+src/unbake/resources/cc_cache.py
+src/unbake/store.py
+src/unbake/symbol_names.py
+src/unbake/tree.py
+src/unbake/treelock.py
+src/unbake/typeunify.py'
+new="$(grep -rlEi --include='*.py' --include='*.sh' --include='*.mk' --include=Makefile --exclude='test_*.py' \
+    --exclude-dir=tests --exclude-dir=.git --exclude-dir=build --exclude-dir=.venv \
+    -e 'ProcessPoolExecutor|ThreadPoolExecutor|multiprocessing\.Pool|\bccache\b|functools\.(lru_)?cache\b|@(lru_)?cache\b' \
+    -e 'fcntl\.flock|\bflock\b|os\.cpu_count|sched_getaffinity|time\.perf_counter|time\.monotonic' . \
+    | sed 's#^\./##' | grep -vxF "$OWNED" || true)"
+[ -z "$new" ] && exit 0
+echo "$new" | sed 's/$/: a cache, slot, pool, executor or timing path outside AbuCache64: use its owner abucache (compile, store, slots, pool, stages)/' >&2
+exit 1

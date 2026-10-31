@@ -36,3 +36,9 @@ Run `bin/dev-setup` once, then `bin/test`, `bin/lint` and `bin/hygiene`.
 ## License
 
 Released under [GNU GPL version 3 or later](LICENSE).
+
+## One owner per cache
+
+AbuCache64 owns every cache, content store, worker slot, pool, executor and timing path (abucache.compile, store,
+slots, pool, stages). `ci/abucache-audit`, run by the check entry point, refuses a new one here naming that owner; the
+files it still lists move to abucache and leave the list, nothing joins it.

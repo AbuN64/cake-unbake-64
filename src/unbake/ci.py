@@ -10,6 +10,7 @@ from string import Template
 from unbake import config as configuration
 
 RUN = "ci/run"
+AUDIT = "ci/abucache-audit"
 
 
 def _render(name: str, **values: object) -> bytes:
@@ -17,9 +18,10 @@ def _render(name: str, **values: object) -> bytes:
 
 
 def files() -> dict[str, bytes]:
-    """ci/run and one wrapper per forge row of repo.toml, by project path."""
+    """ci/run, the AbuCache64 ownership audit it runs, and one wrapper per forge row of repo.toml, by project path."""
     rules = configuration.load_resource("repo.toml")
     return {
         RUN: _render("run.in"),
+        AUDIT: _render("abucache-audit.in"),
         **{row["path"]: _render(row["template"], **row["values"]) for row in rules["forge"]},
     }

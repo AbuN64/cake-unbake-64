@@ -1,0 +1,15 @@
+#!/bin/sh
+# One owner per cache, slot, pool, executor and timing path: AbuCache64 (abucache.compile, store, slots, pool, stages).
+# A file outside OWNED that starts one is refused. OWNED is the CACHE-CONSOLIDATE census: each file moves to its
+# abucache owner and leaves the list; nothing joins it.
+set -eu
+cd "$$(dirname "$$0")/.."
+OWNED='Makefile'
+new="$$(grep -rlEi --include='*.py' --include='*.sh' --include='*.mk' --include=Makefile --exclude='test_*.py' \
+    --exclude-dir=tests --exclude-dir=.git --exclude-dir=build --exclude-dir=.venv \
+    -e 'ProcessPoolExecutor|ThreadPoolExecutor|multiprocessing\.Pool|\bccache\b|functools\.(lru_)?cache\b|@(lru_)?cache\b' \
+    -e 'fcntl\.flock|\bflock\b|os\.cpu_count|sched_getaffinity|time\.perf_counter|time\.monotonic' . \
+    | sed 's#^\./##' | grep -vxF "$$OWNED" || true)"
+[ -z "$$new" ] && exit 0
+echo "$$new" | sed 's/$$/: a cache, slot, pool, executor or timing path outside AbuCache64: use its owner abucache (compile, store, slots, pool, stages)/' >&2
+exit 1

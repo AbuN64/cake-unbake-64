@@ -1,6 +1,7 @@
 """The generated CI: one forge-neutral entry point (the standalone check only) and thin wrappers that only call it."""
 
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -22,7 +23,7 @@ def test_rendering_is_a_pure_function_of_the_rules_and_never_names_a_release():
 
 def test_one_wrapper_per_forge_row_and_the_entry_point():
     rows = configuration.load_resource("repo.toml")["forge"]
-    assert set(_files()) == {ci.RUN, *(row["path"] for row in rows)}
+    assert set(_files()) == {ci.RUN, ci.AUDIT, *(row["path"] for row in rows)}
 
 
 def test_every_wrapper_only_calls_the_one_entry_point():
@@ -40,7 +41,7 @@ def test_the_entry_point_has_only_the_standalone_check_stage():
     run = _files()[ci.RUN]
     assert re.findall(r"^(\w+)\)$", run, re.M) == ["check"]
     check = re.search(r"^check\)\n(.*?)\n    ;;", run, re.M | re.S).group(1)
-    assert check.splitlines() == ["    make check CHECK=tree"]
+    assert check.splitlines() == ["    sh ci/abucache-audit", "    make check CHECK=tree"]
     assert "set -eu" in run
 
 
@@ -74,3 +75,17 @@ def test_no_forge_name_in_the_python_and_no_game_names():
     assert not [w for w in ("github", "gitlab") if w in code.replace("forge-neutral", "")]
     text = "".join(_files().values()).lower()
     assert not [word for word in ("ragewars", "battletanx", "turok") if word in text]
+
+
+def test_the_audit_refuses_a_new_pool_naming_its_owner(tmp_path):
+    """A game repository runs only make: a helper that starts its own executor is refused with AbuCache64 named."""
+    (tmp_path / "ci").mkdir()
+    (tmp_path / ci.AUDIT).write_bytes(_files()[ci.AUDIT].encode())
+    (tmp_path / "Makefile").write_text("x:\n\tflock build/.lock true\n")
+    run = ["sh", ci.AUDIT]
+    assert subprocess.run(run, cwd=tmp_path, capture_output=True, text=True).returncode == 0
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "fast.py").write_text("from concurrent.futures import ThreadPoolExecutor\n")
+    done = subprocess.run(run, cwd=tmp_path, capture_output=True, text=True)
+    assert done.returncode == 1
+    assert done.stderr.startswith("tools/fast.py: ") and "outside AbuCache64" in done.stderr

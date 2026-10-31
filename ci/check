@@ -2,6 +2,7 @@
 # The repository CI gates, with formatting checked locally as well.
 set -eu
 cd "$(dirname "$0")/.."
+ci/abucache-audit
 .venv/bin/python -m ruff check src tests
 .venv/bin/python -m ruff format --check src tests
 exec bin/test "$@"
