@@ -124,14 +124,16 @@ def command(cfg: Config, params: Json) -> Json:
         )
     written = []
     for vram, bodies in sorted(found.items()):
-        for body, vs in bodies.items():
-            guard = " || ".join("defined(VERSION_" + v.upper().replace("-", "_") + ")" for v in vs)
-            name = f"EARLIER_ADDRTABLE_{vram & KEY:06X}.CPP" + ("" if len(bodies) == 1 else "." + "_".join(vs))
-            written.append(name)
-            if not params.get("check"):
-                target = cfg.project.root / (params.get("dest") or "src/DATA/EARLIER_BUILD") / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(f"#if {guard}\n/* Older build's address table. */\n" + "\n".join(body) + "\n#endif\n")
+        name = f"EARLIER_ADDRTABLE_{vram & KEY:06X}.CPP"  # one source per address: bodies that differ are guarded apart
+        written.append(name)
+        if not params.get("check"):
+            arms = []
+            for i, (body, vs) in enumerate(bodies.items()):
+                guard = " || ".join("defined(VERSION_" + v.upper().replace("-", "_") + ")" for v in vs)
+                arms.append(("#if " if i == 0 else "#elif ") + guard + "\n" + "\n".join(body) + "\n")
+            target = cfg.project.root / (params.get("dest") or "src/DATA/EARLIER_BUILD") / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("/* Older build's address table. */\n" + "".join(arms) + "#endif\n")
     if not params.get("check"):
         for v, syms in symbols_of.items():
             path = cfg.project.root / windows.symbols_path(v)

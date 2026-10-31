@@ -82,7 +82,7 @@ def test_one_rule_closes_both_versions_with_one_guarded_source(tmp_path, monkeyp
     assert out["unfit"] == [] and out["bytes"] == 24
     assert out["written"] == ["EARLIER_ADDRTABLE_307010.CPP", "EARLIER_ADDRTABLE_312020.CPP"]
     text = (tmp_path / "src/DATA/EARLIER_BUILD/EARLIER_ADDRTABLE_307010.CPP").read_text()
-    assert text.startswith("#if defined(VERSION_EU)\n") and "void *g_earlierAddrTable_307010[3]" in text
+    assert "#if defined(VERSION_EU)\n" in text and "void *g_earlierAddrTable_307010[3]" in text
     rows = (tmp_path / "versions/eu/earlier_build_symbols.txt").read_text().splitlines()
     assert rows[-1] == "g_earlierAddrTable_307010 = 0x00307010; // rom:0x10 size:0xC"
 
@@ -96,6 +96,17 @@ def test_same_vram_in_two_versions_shares_one_source_and_a_refused_span_writes_n
     assert (
         (tmp_path / "src/DATA/EARLIER_BUILD/EARLIER_ADDRTABLE_307004.CPP")
         .read_text()
-        .startswith("#if defined(VERSION_EU) || defined(VERSION_EU_X)\n")
+        .count("#if defined(VERSION_EU) || defined(VERSION_EU_X)\n")
+        == 1
     )
     assert len(out["unfit"]) == 1 and out["unfit"][0]["word_rom"] == 20 and out["unfit"][0]["word"] == "0x801547B0"
+
+
+def test_bodies_that_differ_by_version_share_one_source_guarded_apart(tmp_path, monkeypatch):
+    eu, eux = words(0x80158C08, 0x800E2AC8), words(0x80158C08, 0x800E2ACC)
+    cfg = _project(tmp_path, monkeypatch, {"eu": b"\0" * 4 + eu, "eu-x": b"\0" * 4 + eux})
+    out = pt.command(cfg, {"spec": ["eu:4:12:0x307000", "eu-x:4:12:0x307000"]})
+    assert out["unfit"] == [] and out["written"] == ["EARLIER_ADDRTABLE_307004.CPP"]
+    text = (tmp_path / "src/DATA/EARLIER_BUILD/EARLIER_ADDRTABLE_307004.CPP").read_text()
+    assert text.count("#if defined(VERSION_EU)\n") == 1 and text.count("#elif defined(VERSION_EU_X)\n") == 1
+    assert text.count("#endif") == 1 and text.count("g_earlierAddrTable_307004[2]") == 2

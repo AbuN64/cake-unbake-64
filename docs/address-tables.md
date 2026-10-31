@@ -20,7 +20,8 @@ word is never guessed to a nearby symbol, and no raw word is emitted.
 
 The rule has no version in it. The same command closes every version: a version is a ROM and its own
 `earlier_build_symbols.txt`. A table that two versions hold at the same older address has the same body and gets one
-source guarded `#if defined(VERSION_A) || defined(VERSION_B)`.
+source guarded `#if defined(VERSION_A) || defined(VERSION_B)`; bodies that differ by version are guarded apart in the same source
+(`#if defined(VERSION_A) ... #elif defined(VERSION_B) ... #endif`), never in per-version files.
 
 ## Output
 
