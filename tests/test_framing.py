@@ -5,7 +5,7 @@ import random
 import pytest
 from test_rnc2enc import text
 
-from unbake import blob_formats, blob_stale, framed_copy, framing, rnc_whole, rnc2enc
+from unbake import blob_formats, blob_stale, framed_copy, framing, rnc2enc, rnc_whole
 
 HEADER = b"\x02\x00\x40"
 BLOCK = 0x1000
@@ -149,8 +149,14 @@ def test_framed_copy_dispatch_reads_the_source_rom_of_the_named_version(monkeypa
     rom[point + 3 : point + 103] = source[200:300]
     config = SimpleNamespace(project=SimpleNamespace(version={"a": 1, "b": 2}))
     monkeypatch.setattr(blob_formats, "_baserom", lambda _config, version: source if version == "b" else b"")
-    row = {"version": "a", "reader": "framed-copy", "region": [point, point + 3], "source": 200, "source_version": "b",
-           "frame": frame().row()}
+    row = {
+        "version": "a",
+        "reader": "framed-copy",
+        "region": [point, point + 3],
+        "source": 200,
+        "source_version": "b",
+        "frame": frame().row(),
+    }
     assert blob_formats.prove(config, row, bytes(rom), {})["source_version"] == "b"
     with pytest.raises(ValueError, match="framed-copy"):
         blob_formats.prove(config, {**row, "source_version": "zz"}, bytes(rom), {})

@@ -8,10 +8,10 @@ link put there. Such a sector (`SECTOR` bytes, sector aligned) holds, in this or
   record, after at most 3 bytes of a word cut at the front. Every word is a canonical instruction (`mipsstream`), at
   least MIN_WORDS words and MIN_WORDS // 2 distinct ones;
 - records: at least MIN_RECORDS whole records of the object dialect (`snsym.object_record`), chained from the first
-  one to the byte where the sector ends or the last record is cut. At least two thirds of them are line records. The code offsets they carry (a patch's offset, a
-  line record's address) never fall inside a run of records, which a stream written in order guarantees and bytes
-  read as records by chance do not. The first record is the lowest start with code before it from which the chain
-  lands there;
+  one to the byte where the sector ends or the last record is cut. At least two thirds of them are line records. The
+  code offsets they carry (a patch's offset, a line record's address) never fall inside a run of records, which a
+  stream written in order guarantees and bytes read as records by chance do not. The first record is the lowest start
+  with code before it from which the chain lands there;
 - cut: a code record (tag 0x02, a u16 length that is a whole number of words) whose payload the sector end cut: the
   header lies inside the sector, the length runs past it, and the payload words that are in it are canonical
   instructions on the grid that starts at the payload.
@@ -161,7 +161,9 @@ def compare(front: Json, others: Mapping[str, bytes]) -> list[Json]:
             if at % 4 == 0:
                 same = [i for i, w in enumerate(words) if rom[at + 4 * i : at + 4 * i + 4] == w]
                 differ = next((i for i in range(len(words)) if i not in same), None)
-                out.append({"version": version, "rom": at, "equal": len(same), "of": len(words), "first_difference": differ})
+                out.append(
+                    {"version": version, "rom": at, "equal": len(same), "of": len(words), "first_difference": differ}
+                )
             at = rom.find(seed, at + 1)
     return out
 
@@ -174,7 +176,9 @@ def prove(rom: bytes, start: int, end: int, page: list[int], others: Mapping[str
     if not low <= start < end <= high:
         raise PageError("the region is not inside its page")
     first, records, cut, front = _split(rom, low, high)
-    rebuilt = bytes.fromhex(front["lead"]) + b"".join(bytes.fromhex(w["word"]) for w in front["words"]) if front else b""
+    rebuilt = b""
+    if front:
+        rebuilt = bytes.fromhex(front["lead"]) + b"".join(bytes.fromhex(w["word"]) for w in front["words"])
     if rebuilt != rom[low:first]:
         raise PageError("front: the typed words do not rebuild the page bytes")
     receipt: Json = {

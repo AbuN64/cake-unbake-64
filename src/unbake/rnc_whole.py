@@ -61,10 +61,7 @@ def _extent(
     if at < 0 or at + rnc.HEADER > len(rom):
         raise StreamError("stream outside the ROM")
     try:
-        if frame is None:
-            look = bytes(rom[at : at + rnc.HEADER])
-        else:
-            look = _look(rom, at, frame, count)
+        look = bytes(rom[at : at + rnc.HEADER]) if frame is None else _look(rom, at, frame, count)
         head = _header(look)
     except (rnc.RncError, framing.FrameError) as error:
         raise StreamError(str(error)) from error

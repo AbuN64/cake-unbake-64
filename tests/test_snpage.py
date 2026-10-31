@@ -8,7 +8,7 @@ import pytest
 from unbake import blob_formats, blob_stale, snpage
 
 CODE = [0x46012801, 0x3C010000, 0x28820003, 0x27BDFFC0, 0x24020001, 0xAFBF003C, 0x00A21023, 0x00021080, 0x00A02021]
-LATER = CODE[:4] + [0x24030001] + CODE[5:]
+LATER = [*CODE[:4], 0x24030001, *CODE[5:]]
 LEAD = b"\x03\x18\x23"
 
 
@@ -74,7 +74,7 @@ def test_the_region_credits_part_of_the_page_and_the_page_is_one_aligned_sector(
 def test_the_front_must_be_enough_canonical_code():
     with pytest.raises(snpage.PageError, match="fewer than"):
         snpage.prove(rom(sector(front=CODE[:5], count=snpage.MIN_RECORDS)), 0x400, 0x600, [0x400, 0x600])
-    data = sector(front=CODE[:4] + [0x7FFFFFFF] + CODE[5:], count=snpage.MIN_RECORDS)
+    data = sector(front=[*CODE[:4], 0x7FFFFFFF, *CODE[5:]], count=snpage.MIN_RECORDS)
     with pytest.raises(snpage.PageError, match="not a canonical instruction"):
         snpage.prove(rom(data), 0x400, 0x600, [0x400, 0x600])
     with pytest.raises(snpage.PageError, match="repeat"):
@@ -100,7 +100,8 @@ def test_the_code_offsets_of_the_records_must_not_go_back():
     restart = b"\x06\x01\x00" + b"\x02" + struct.pack("<H", 8) + pack(CODE[:2]) + patch
     page = LEAD + pack(CODE) + records(10) + restart
     page += b"\x02" + struct.pack("<H", 600) + (pack(CODE) * 40)[: snpage.SECTOR - len(page) - 3]
-    assert snpage.prove(rom(page), 0x400, 0x600, [0x400, 0x600])["records"]["count"] == 10 + 3  # the offsets restart after the section switch
+    # the offsets restart after the section switch
+    assert snpage.prove(rom(page), 0x400, 0x600, [0x400, 0x600])["records"]["count"] == 10 + 3
 
 
 def test_most_records_must_be_line_records():
