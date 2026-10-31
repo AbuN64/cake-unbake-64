@@ -381,3 +381,21 @@ def test_functions_limit_the_records_to_those_a_listed_function_touches(tmp_path
     assert out["records"] and all(r["listed_functions"] == ["func_80200000"] for r in out["records"])
     everything = layouts.types_command({"project": root, "all": True})
     assert len(everything["records"]) > len(out["records"])
+
+
+def test_order_of_a_module_linked_in_two_orders_by_two_link_layouts_names_the_moved_unit() -> None:
+    from unbake import mergecheck
+
+    names = [f"u{i}" for i in range(6)]
+    moved_in_us_rev1 = [names[1], names[0], *names[2:]]
+
+    def seq(order: list[str]) -> list[dict]:
+        return [{"o": ".game_data", "k": "entry", "u": u, "cls": "rodata", "n": 4} for u in order]
+
+    found = mergecheck.verdicts(
+        [(u, "M") for u in names], {"de": seq(names), "us-rev1": seq(moved_in_us_rev1)}, {}, lambda unit: "cc"
+    )
+    assert found[0]["hard"] == []
+    assert [r for r in found[0]["soft"] if r.startswith("order")] == [
+        "order: us-rev1 rodata links u1 elsewhere than the other versions"
+    ]

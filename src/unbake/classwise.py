@@ -7,13 +7,15 @@ of B and the data of B before the data of A. `arrange` cuts every unit body into
 whole outermost `#if` block it sits in), tells each chunk's class from the symbols the built object of its unit
 defines, and emits the chunks without storage (typedefs, prototypes, externs) first, then the storage chunks in an
 order that keeps every class in its own unit order and defines a data name before a chunk uses it. A function used
-before its definition gets a prototype. What cannot be ordered is reported, never guessed."""
+before its definition gets a prototype. A class is linked in one base order (the versions' orders merged); a unit that
+a version links elsewhere is emitted a second time, under the guard of the versions that move it, at the place those
+versions link it, and the original sits under the negated guard. What cannot be ordered is reported, never guessed."""
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,6 +35,8 @@ class Chunk:
     classes: list[str] = field(default_factory=list)
     defines: list[str] = field(default_factory=list)
     heads: dict[str, str] = field(default_factory=dict)  # function name -> its prototype text
+    when: str = ""  # a copy for the versions that move its unit: the condition it is emitted under
+    unless: str = ""  # the original of a moved unit: the condition it is left out under
 
     @property
     def cls(self) -> str:
@@ -110,13 +114,71 @@ def _classify(chunk: Chunk, decl: Any, masked: str, classes: Mapping[str, str]) 
                 chunk.defines.append(word)
 
 
+def base_order(orders: Iterable[Sequence[str]]) -> list[str]:
+    """One order that holds every unit and keeps the first order whole: a unit only a later order holds goes after the
+    unit that precedes it there (the front when it has no earlier neighbour)."""
+    base: list[str] = []
+    for order in orders:
+        anchor = -1
+        for unit in order:
+            if unit not in base:
+                anchor += 1
+                base.insert(anchor, unit)
+            else:
+                anchor = base.index(unit)
+    return base
+
+
+def moved(base: Sequence[str], order: Sequence[str]) -> list[str]:
+    """The units of `order` that sit elsewhere than in `base`: those left out of the longest run both keep."""
+    held = set(order)
+    other = [u for u in base if u in held]
+    n, m = len(order), len(other)
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            best[i][j] = best[i + 1][j + 1] + 1 if order[i] == other[j] else max(best[i + 1][j], best[i][j + 1])
+    out: list[str] = []
+    i = j = 0
+    while i < n and j < m:
+        if order[i] == other[j]:
+            i, j = i + 1, j + 1
+        elif best[i + 1][j] >= best[i][j + 1]:
+            out.append(order[i])
+            i += 1
+        else:
+            j += 1
+    return out + list(order[i:])
+
+
+def _moves(
+    bases: Mapping[str, Sequence[str]], orders: Mapping[str, Mapping[str, Sequence[str]]]
+) -> dict[tuple[str, str], dict[str | None, tuple[int, list[str]]]]:
+    """(class, unit) -> anchor (the unit before it in those versions, None at the front) -> (its place, versions)."""
+    out: dict[tuple[str, str], dict[str | None, tuple[int, list[str]]]] = defaultdict(dict)
+    for cls, per in orders.items():
+        for version, order in per.items():
+            gone = set(moved(bases[cls], order))
+            for at, unit in enumerate(order):
+                if unit in gone:
+                    anchor = next((order[k] for k in range(at - 1, -1, -1) if order[k] not in gone), None)
+                    out[cls, unit].setdefault(anchor, (at, []))[1].append(version)
+    return out
+
+
+def _condition(versions: Iterable[str], guards: Mapping[str, str]) -> str:
+    return " || ".join(f"defined({guards[v]})" for v in sorted(versions))
+
+
 def arrange(
     parts: Sequence[tuple[str, str, str, Sequence[Any]]],
-    orders: Mapping[str, Sequence[str]],
+    orders: Mapping[str, Mapping[str, Sequence[str]]],
     classes: Mapping[str, Mapping[str, str]],
+    guards: Mapping[str, str] | None = None,
 ) -> tuple[str, list[Row]]:
-    """The merged body of `parts` ((unit, body, masked body, declarations) in code order) with every class in its
-    `orders` unit order (class -> units), and the conflicts left."""
+    """The merged body of `parts` ((unit, body, masked body, declarations) in code order) with every class in the base
+    order of its `orders` (class -> version -> units in that version's linked order) and each unit a version links
+    elsewhere also emitted under `guards` (version -> macro) where that version links it, and the conflicts left."""
     conflicts: list[Row] = []
     every = [c for unit, body, masked, decls in parts for c in chunks(unit, body, masked, decls, classes.get(unit, {}))]
     for chunk in every:
@@ -130,13 +192,24 @@ def arrange(
             )
     plain = [c for c in every if not c.cls]
     storage = [c for c in every if c.cls]
-    rank = {cls: {u: i for i, u in enumerate(order)} for cls, order in orders.items()}
+    bases = {cls: base_order(per.values()) for cls, per in orders.items()}
+    rank = {cls: {u: i for i, u in enumerate(base)} for cls, base in bases.items()}
     for cls in {c.cls for c in storage}:
         unplaced = {c.unit for c in storage if c.cls == cls} - rank.get(cls, {}).keys()
         if unplaced:
             rank.setdefault(cls, {}).update({u: len(rank.get(cls, {})) + i for i, u in enumerate(sorted(unplaced))})
+    place: dict[Chunk, tuple[int, int, int, int]] = {c: (rank[c.cls][c.unit], 0, 0, c.at) for c in storage}
+    for (cls, unit), anchors in _moves(bases, orders).items():
+        every_version = [v for _, versions in anchors.values() for v in versions]
+        for chunk in [c for c in storage if c.unit == unit and c.cls == cls]:
+            chunk.unless = _condition(every_version, guards or {})
+            for anchor, (at, versions) in anchors.items():
+                copy = Chunk(unit, chunk.at, chunk.text, chunk.masked, list(chunk.classes), list(chunk.defines))
+                copy.when = _condition(versions, guards or {})
+                storage.append(copy)
+                place[copy] = (rank[cls][anchor] if anchor else -1, 1, at, chunk.at)
     chain: dict[str, list[Chunk]] = defaultdict(list)
-    for chunk in sorted(storage, key=lambda c: (rank[c.cls][c.unit], c.at)):
+    for chunk in sorted(storage, key=lambda c: place[c]):
         chain[chunk.cls].append(chunk)
     ordered, forward = _sequence(chain, storage)
     functions = {n: c.heads[n] for c in storage for n in c.heads}
@@ -158,7 +231,12 @@ def arrange(
     for chunk in ordered:
         label = f"/* {chunk.unit.rsplit('/', 1)[-1]} */\n" if chunk.unit != last else ""
         last = chunk.unit
-        out.append(label + chunk.text.strip("\n"))
+        body = chunk.text.strip("\n")
+        if chunk.when:
+            body = f"#if {chunk.when}\n{body}\n#endif"
+        elif chunk.unless:
+            body = f"#if !({chunk.unless})\n{body}\n#endif"
+        out.append(label + body)
     return "\n\n".join(p for p in out if p.strip()), conflicts
 
 
@@ -169,12 +247,15 @@ def _sequence(
     the default order (the order of the text chain, then the rest) and whose data names are all defined; when none
     is ready, the first head goes anyway and its early uses are returned."""
     home = {c: i for i, c in enumerate(c for cls in ("text", *CLASSES) for c in chain.get(cls, ()))}
-    owner = {n: c for c in storage for n in c.defines if n not in c.heads}
+    owner = {n: c for c in storage if not c.when for n in c.defines if n not in c.heads}
     heads = {cls: list(chunks) for cls, chunks in chain.items()}
     done: set[int] = set()
     out: list[Chunk] = []
     forward: list[tuple[Chunk, list[str]]] = []
-    uses = {c: {w for w in _WORD.findall(c.masked) if w in owner and owner[w] is not c} for c in storage}
+    uses = {
+        c: {w for w in _WORD.findall(c.masked) if w in owner and owner[w] is not c and w not in c.defines}
+        for c in storage
+    }
     while any(heads.values()):
         ready = [h[0] for h in heads.values() if h and all(id(owner[w]) in done for w in uses[h[0]])]
         pick = min(ready or [h[0] for h in heads.values() if h], key=lambda c: home[c])

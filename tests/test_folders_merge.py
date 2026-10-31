@@ -149,7 +149,7 @@ def test_verdict_uses_same_emitted_order_as_merge_on_real_barrel_rows(cfg, monke
     assert original == rows
     assert mergecheck.code_order([one, two], seqs) == [two, one]
     assert verdicts[0]["hard"] == []
-    # Another version that requires the contrary order still refuses; TSV order cannot hide it.
+    # Another version that links the contrary order is reported as a moved unit; TSV order cannot hide it.
     seqs["de"] = list(reversed(seq))
     verdicts, _, _ = folders._verdicts(cfg, {})
-    assert any(reason.startswith("order: de text") for reason in verdicts[0]["hard"])
+    assert any(reason.startswith("order: de text") for reason in verdicts[0]["soft"])

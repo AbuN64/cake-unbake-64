@@ -179,3 +179,42 @@ def test_a_guarded_declaration_of_another_type_than_a_header_declaration_is_a_co
     out = merge.merge([("one.c", '#include "h.h"\n'), ("two.c", two)], never, headers.get)
     assert [(c["kind"], c["name"]) for c in out["conflicts"]] == [("extern", "D_1")]
     assert "extern char D_1[];" in out["text"]
+
+
+ORDER_A = "int a_text(void) { return 1; }\nint a_data = 1;\n"
+ORDER_B = "int b_text(void) { return 2; }\nint b_data = 2;\n"
+ORDER_C = "int c_text(void) { return 3; }\nint c_data = 3;\n"
+ORDER_CLASSES = {u: {f"{u}_text": "text", f"{u}_data": "data"} for u in "abc"}
+
+
+def merge_orders(data: dict[str, list[str]]) -> str:
+    out = merge.merge(
+        [("a", ORDER_A), ("b", ORDER_B), ("c", ORDER_C)],
+        never,
+        orders={"text": {v: ["a", "b", "c"] for v in data}, "data": data},
+        classes=ORDER_CLASSES,
+        guards={v: f"VERSION_{v.upper()}" for v in data},
+    )
+    assert out["conflicts"] == []
+    return out["text"]
+
+
+def test_order_a_unit_one_version_links_elsewhere_is_emitted_again_under_that_versions_guard() -> None:
+    # the real rows: one unit sits two places away in one version (eu), the other versions link the base order
+    text = merge_orders({"de": ["a", "b", "c"], "eu": ["c", "a", "b"], "us": ["a", "b", "c"]})
+    assert "#if defined(VERSION_EU)\nint c_data = 3;\n#endif" in text
+    assert "#if !(defined(VERSION_EU))\nint c_data = 3;\n#endif" in text
+    assert text.index("#if defined(VERSION_EU)") < text.index("a_data")
+    assert text.index("#if !(defined(VERSION_EU))") > text.index("b_data")
+    assert text.count("c_text") == 1
+
+
+def test_order_versions_that_agree_emit_no_guard() -> None:
+    text = merge_orders({"de": ["c", "b", "a"], "eu": ["c", "b", "a"]})
+    assert "#if" not in text
+    assert text.index("c_data") < text.index("b_data") < text.index("a_data")
+
+
+def test_order_versions_that_move_a_unit_to_the_same_place_share_one_guard() -> None:
+    text = merge_orders({"de": ["a", "b", "c"], "eu": ["c", "a", "b"], "us": ["c", "a", "b"]})
+    assert "#if defined(VERSION_EU) || defined(VERSION_US)\nint c_data = 3;\n#endif" in text

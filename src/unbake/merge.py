@@ -418,9 +418,13 @@ def reconcile(
     return {unit: [d for d in group if d.drop and not d.joint] for unit, group in parts}, conflicts, retyped
 
 
-def _differs(orders: Mapping[str, Sequence[str]], units: Sequence[str]) -> bool:
-    """Whether some class is linked in another order than `units`."""
-    return any([u for u in order if u in units] != [u for u in units if u in order] for order in orders.values())
+def _differs(orders: Mapping[str, Mapping[str, Sequence[str]]], units: Sequence[str]) -> bool:
+    """Whether some class is linked in another order than `units` in some version."""
+    return any(
+        [u for u in order if u in units] != [u for u in units if u in order]
+        for per in orders.values()
+        for order in per.values()
+    )
 
 
 def _span(names: Sequence[str]) -> str:
@@ -440,14 +444,16 @@ def merge(
     units: Sequence[tuple[str, str]],
     droppable: Droppable,
     header: Header = lambda name: None,
-    orders: Mapping[str, Sequence[str]] | None = None,
+    orders: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
     classes: Mapping[str, Mapping[str, str]] | None = None,
+    guards: Mapping[str, str] | None = None,
 ) -> Row:
     """The merged text of `units` ((name, text) in link order) and the report:
     {"text", "includes", "pads": [names], "dropped": n, "conflicts": [{kind, name, detail}], "retyped": [text]}:
     `retyped` lists the prototypes dropped for a differing earlier definition, whose callers may need a cast.
-    `orders` (class -> units in that class's linked order) with `classes` (unit -> symbol -> class, read from the
-    built objects) emits each class in its own order when the classes are not linked in the order of `units`."""
+    `orders` (class -> version -> units in that version's linked order) with `classes` (unit -> symbol -> class, read
+    from the built objects) emits each class in its base order when the classes are not linked in the order of `units`,
+    and a unit some version links elsewhere again under `guards` (version -> macro) of the versions that move it."""
     seen: list[str] = []
     bodies: list[tuple[str, str]] = []
     pads: list[str] = []
@@ -480,7 +486,7 @@ def merge(
         cut.append((name, _cut(body, spans).strip("\n")))
     if orders and _differs(orders, [name for name, _ in cut]):
         arranged, more = classwise.arrange(
-            [(name, body, mask(body), decls(body, name)) for name, body in cut], orders, classes or {}
+            [(name, body, mask(body), decls(body, name)) for name, body in cut], orders, classes or {}, guards
         )
         out, conflicts = [arranged], [*conflicts, *more]
     else:

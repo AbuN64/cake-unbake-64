@@ -104,7 +104,7 @@ def test_classes_linked_in_their_own_unit_order_are_emitted_in_that_order() -> N
         "a": {"first_text": "text", "first_data": "data", "shared": "bss"},
         "b": {"second_text": "text", "second_data": "data"},
     }
-    orders = {"text": ["a", "b"], "data": ["b", "a"], "bss": ["a"]}
+    orders = {"text": {"us": ["a", "b"]}, "data": {"us": ["b", "a"]}, "bss": {"us": ["a"]}}
     text, conflicts = classwise.arrange(
         [("a", A, unitmerge.mask(A), unitmerge.decls(A, "a")), ("b", B, unitmerge.mask(B), unitmerge.decls(B, "b"))],
         orders,
@@ -116,12 +116,14 @@ def test_classes_linked_in_their_own_unit_order_are_emitted_in_that_order() -> N
 
 
 def test_merge_keeps_plain_concatenation_when_every_class_follows_the_unit_order() -> None:
-    kept = merge.merge([("a", A), ("b", B)], lambda *_: False, orders={"text": ["a", "b"], "data": ["a", "b"]})
+    kept = merge.merge(
+        [("a", A), ("b", B)], lambda *_: False, orders={"text": {"us": ["a", "b"]}, "data": {"us": ["a", "b"]}}
+    )
     assert kept["text"].index("first_data") < kept["text"].index("second_text")
     swapped = merge.merge(
         [("a", A), ("b", B)],
         lambda *_: False,
-        orders={"text": ["a", "b"], "data": ["b", "a"]},
+        orders={"text": {"us": ["a", "b"]}, "data": {"us": ["b", "a"]}},
         classes={
             "a": {"first_text": "text", "first_data": "data", "shared": "bss"},
             "b": {"second_text": "text", "second_data": "data"},

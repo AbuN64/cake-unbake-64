@@ -6,11 +6,11 @@ objects of each version. The hard findings (the module must stay separate files)
   flags       the units do not share one toolchain and flag set (a translation-unit boundary)
   sections    one class of the module sits in several output sections
   gap         two entries of one class are not adjacent in the link order (another module's bytes sit between)
-  order       a section class is linked in another unit order in one version than in the first (each class is merged
-              in its own linked order)
   lma         one merged object would be larger than the span the units fill in an output section (their pieces, each
               aligned as linked, packed again): it would overlap the next piece
 The soft findings (the merge can go ahead, and the source must reproduce them):
+  order       a version links some units of a section class elsewhere than the base order (the versions' orders
+              merged): merge emits each moved unit's chunks again under the guard of the versions that move it
   fill        one merged object is smaller than that span: merge regenerates the linker fill record for the difference
   align       an ALIGN directive pads between two entries of the module
   statics     two units define a local symbol of the same name (the merged file needs one renamed)
@@ -29,9 +29,12 @@ from typing import Any
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import SymbolTableSection
 
+from unbake import classwise
+
 Row = dict[str, Any]
 CLASS_OF = {".text": "text", ".data": "data", ".rodata": "rodata", ".rdata": "rodata", ".bss": "bss", ".sbss": "bss"}
 RODATA = "rodata"
+CLASSES = ("text", "data", "rodata", "bss")
 _ENTRY = re.compile(r"^\s*(\S+?)\.o\(([^)]*)\);")
 _ALIGN = re.compile(r"^\s*\.\s*=\s*ALIGN\((0x[0-9A-Fa-f]+|\d+)\)")
 _MINIMUM = re.compile(r"^\s*\.\s*=\s*MAX\(\s*\.\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*\)")
@@ -285,29 +288,32 @@ def facts_of(
     return seqs, statics
 
 
-def code_order(units: Sequence[str], seqs: Mapping[str, Sequence[Row]], cls: str = "text") -> list[str]:
-    """The units in the order a class is linked (the first version to place a unit decides); a unit without that class
-    follows the others, each group in the order given."""
-    first: dict[str, int] = {}
-    for seq in seqs.values():
-        for at, row in enumerate(seq):
-            if row["k"] == "entry" and row.get("n", 0) > 0 and cls in row["cls"].split("+"):
-                first.setdefault(row["u"], at)
-    return sorted(units, key=lambda u: (u not in first, first.get(u, 0), units.index(u)))
-
-
-def class_orders(units: Sequence[str], seqs: Mapping[str, Sequence[Row]]) -> dict[str, list[str]]:
-    """Per section class the units that hold bytes of it, in the order that class is linked."""
-    out: dict[str, list[str]] = {}
-    for cls in ("text", "data", "rodata", "bss"):
-        held = {
+def _linked(units: Sequence[str], seq: Sequence[Row], cls: str) -> list[str]:
+    """The units of `units` that hold bytes of `cls` in one version, in the order that version links them."""
+    wanted = set(units)
+    return list(
+        dict.fromkeys(
             row["u"]
-            for seq in seqs.values()
             for row in seq
-            if row["k"] == "entry" and row.get("n", 0) > 0 and cls in row["cls"].split("+")
-        }
-        if held:
-            out[cls] = [u for u in code_order(units, seqs, cls) if u in held]
+            if row["k"] == "entry" and row["u"] in wanted and row.get("n", 0) > 0 and cls in row["cls"].split("+")
+        )
+    )
+
+
+def code_order(units: Sequence[str], seqs: Mapping[str, Sequence[Row]], cls: str = "text") -> list[str]:
+    """The units in the base order of a class: the versions' orders merged (a unit only a later version places goes
+    after its neighbour there); a unit without that class follows the others, in the order given."""
+    base = classwise.base_order(_linked(units, seq, cls) for seq in seqs.values())
+    return base + [u for u in units if u not in set(base)]
+
+
+def class_orders(units: Sequence[str], seqs: Mapping[str, Sequence[Row]]) -> dict[str, dict[str, list[str]]]:
+    """Per section class, per version, the units that hold bytes of it in the order that version links them."""
+    out: dict[str, dict[str, list[str]]] = {}
+    for cls in CLASSES:
+        per = {version: order for version, seq in seqs.items() if (order := _linked(units, seq, cls))}
+        if per:
+            out[cls] = per
     return out
 
 
@@ -352,7 +358,7 @@ def verdicts(
                 if name in names and names[name] != unit:
                     soft[module].append(f"statics: {name} is local to {names[name]} and {unit}")
                 names.setdefault(name, unit)
-    firsts: dict[tuple[str, str], tuple[str, list[str]]] = {}
+    layout: dict[tuple[str, str], dict[str, list[str]]] = defaultdict(dict)
     for version, seq in seqs.items():
         for row in seq:
             if row.get("missing") and (missing_owner := owner.get(row["u"])):
@@ -368,11 +374,7 @@ def verdicts(
         for (module, cls), hits in where.items():
             if len({o for _, o, _ in hits}) > 1:
                 hard[module].append(f"sections: {version} {cls} sits in several output sections")
-                continue
-            seen = list(dict.fromkeys(u for _, _, u in hits))
-            base = firsts.setdefault((module, cls), (version, seen))
-            if [u for u in base[1] if u in seen] != [u for u in seen if u in base[1]]:
-                hard[module].append(f"order: {version} {cls} is linked in another order than {base[0]}")
+            layout[module, cls][version] = list(dict.fromkeys(u for _, _, u in hits))
             for (i, _, one), (j, _, two) in pairwise(hits):
                 if following.get(i) != j:
                     between = [seq[k]["u"] for k in live if i < k < j and owner.get(seq[k]["u"]) != module]
@@ -391,6 +393,11 @@ def verdicts(
             held = [u for u in units if u in rodata]
             if len(held) > 1:
                 soft[module].append(f"literals: {version} rodata in {len(held)} units")
+    for (module, cls), per in layout.items():
+        base = classwise.base_order(per.values())
+        for version, seen in per.items():
+            if gone := classwise.moved(base, seen):
+                soft[module].append(f"order: {version} {cls} links {', '.join(gone)} elsewhere than the other versions")
     return [
         {
             "module": m,

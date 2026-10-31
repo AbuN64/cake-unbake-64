@@ -61,7 +61,7 @@ from unbake import pads as padding
 from unbake import split as splitting
 from unbake import tree as parsing
 from unbake import versions as rommap
-from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts
+from unbake.contracts import Config, FileFacts, Finding, Json, Refusal, digest, file_facts, macro
 
 Row = dict[str, Any]
 STATE = Path(".unbake") / "layout"
@@ -1251,6 +1251,7 @@ def merge(config: Config, params: Json) -> Row:
                 header,
                 merging.class_orders(units, seqs),
                 classes,
+                {v: macro(v) for v in config.project.versions},
             )
             report = [f"{c['kind']} {c['name']}: {c['detail']}" for c in merged["conflicts"]]
             if params.get("prove"):

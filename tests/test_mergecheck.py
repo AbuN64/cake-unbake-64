@@ -133,18 +133,60 @@ def test_pieces_that_pack_longer_in_one_object_are_a_hard_lma_finding() -> None:
     assert out["hard"] == ["lma: us .rodata merged 9 B against linked 8 B: overlaps the next section"]
 
 
-def test_a_class_linked_in_another_unit_order_in_another_version_stays_separate() -> None:
+def verdict_of(rows, seqs, module="M"):
+    return {v["module"]: v for v in mergecheck.verdicts(rows, seqs, {}, lambda unit: "cc")}[module]
+
+
+def test_a_class_linked_in_another_unit_order_in_another_version_is_a_soft_order_finding() -> None:
     rows = [("a", "M"), ("b", "M")]
     seqs = {"us": [entry("a", "text", 8), entry("b", "text", 8)], "eu": [entry("b", "text", 8), entry("a", "text", 8)]}
-    out = {v["module"]: v for v in mergecheck.verdicts(rows, seqs, {}, lambda unit: "cc")}["M"]
-    assert out["hard"] == ["order: eu text is linked in another order than us"]
+    out = verdict_of(rows, seqs)
+    assert out["verdict"] == "merge"
+    assert out["hard"] == []
+    assert out["soft"] == ["order: eu text links b elsewhere than the other versions"]
 
 
 def test_each_class_may_be_linked_in_its_own_unit_order() -> None:
     rows = [("a", "M"), ("b", "M")]
     seq = [entry("a", "text", 8), entry("b", "text", 8), entry("b", "data", 4, ".data"), entry("a", "data", 4, ".data")]
     assert run(rows, seq)["M"]["hard"] == []
-    assert mergecheck.class_orders(["a", "b"], {"us": seq}) == {"text": ["a", "b"], "data": ["b", "a"]}
+    assert mergecheck.class_orders(["a", "b"], {"us": seq}) == {"text": {"us": ["a", "b"]}, "data": {"us": ["b", "a"]}}
+
+
+def test_a_version_that_splits_a_class_over_sections_still_reports_its_order() -> None:
+    rows = [("a", "M"), ("b", "M")]
+    seqs = {
+        "us": [entry("a", "text", 8), entry("b", "text", 8)],
+        "eu": [entry("b", "text", 8), entry("a", "text", 8, ".other")],
+    }
+    out = verdict_of(rows, seqs)
+    assert out["hard"] == ["sections: eu text sits in several output sections"]
+    assert out["soft"] == ["order: eu text links b elsewhere than the other versions"]
+
+
+def test_a_unit_only_a_later_version_places_is_ordered_in_its_own_sequence_not_by_an_index_of_another() -> None:
+    others = [entry(f"k{i}", "text", 8) for i in range(3)]
+    seqs = {
+        "us": [entry("a", "text", 8), *others, entry("b", "text", 8)],
+        "eu": [entry("a", "text", 8), entry("b", "text", 8), entry("n", "text", 8)],
+    }
+    assert mergecheck.code_order(["a", "b", "n"], seqs) == ["a", "b", "n"]
+    assert verdict_of([("a", "M"), ("b", "M"), ("n", "M")], seqs)["soft"] == []  # no order finding either
+
+
+def test_a_unit_that_one_version_links_two_places_earlier_is_the_only_moved_unit() -> None:
+    # the real rows: ACHIEVE_CREATERESULTSSCREEN.CPP is unit 10 in one version and 8 in another
+    names = [f"u{i:02d}" for i in range(12)]
+    shifted = [*names[:8], names[10], *names[8:10], names[11]]
+    seqs = {
+        "de": [entry(u, "rodata", 4, ".rodata") for u in names],
+        "eu": [entry(u, "rodata", 4, ".rodata") for u in shifted],
+    }
+    out = verdict_of([(u, "M") for u in names], seqs)
+    assert out["hard"] == []
+    assert [r for r in out["soft"] if r.startswith("order")] == [
+        "order: eu rodata links u10 elsewhere than the other versions"
+    ]
 
 
 def test_an_align_directive_the_merged_object_lacks_is_a_soft_fill() -> None:
@@ -318,3 +360,56 @@ def test_missing_selected_object_is_not_an_empty_safe_member(tmp_path):
     result = mergecheck.verdicts([("a", "M"), ("b", "M")], seqs, statics, lambda _: "cc")[0]
     assert result["verdict"] == "separate"
     assert result["hard"] == ["object: us a has no built object", "object: us b has no built object"]
+
+
+def _linked(order: list[str], cls: str) -> list[dict[str, Any]]:
+    return [{"o": ".game_data", "k": "entry", "u": u, "cls": cls, "n": 4} for u in order]
+
+
+def _filled(size: int, unit: str, at: int) -> list[str]:
+    names = [f"u{i}" for i in range(size - 1)]
+    names.insert(at, unit)
+    return names
+
+
+@pytest.mark.parametrize(
+    ("cls", "unit", "base_at", "moved_at", "size"),
+    [
+        ("rodata", "ACHIEVE_CREATERESULTSSCREEN.CPP", 10, 8, 40),  # PAKINTERFACESCREEN eu and eu-x
+        ("text", "NODEPAIR.CPP", 63, 54, 151),  # PAKINTERFACESCREEN eu-x
+        ("text", "FRONTEND_SELECTNEXTJOINMODEL.CPP", 0, 3, 30),  # src/MENU.CPP us
+    ],
+)
+def test_order_real_rows_one_unit_sits_elsewhere_in_one_version(
+    cls: str, unit: str, base_at: int, moved_at: int, size: int
+) -> None:
+    base = _filled(size, unit, base_at)
+    other = [u for u in base if u != unit]
+    other.insert(moved_at, unit)
+    found = mergecheck.verdicts(
+        [(u, "M") for u in base], {"de": _linked(base, cls), "eu": _linked(other, cls)}, {}, lambda u: "cc"
+    )
+    assert found[0]["hard"] == []
+    assert [r for r in found[0]["soft"] if r.startswith("order")] == [
+        f"order: eu {cls} links {unit} elsewhere than the other versions"
+    ]
+
+
+def test_order_real_rows_us_rev1_swaps_the_two_common_units_of_volume() -> None:
+    # src/ENGINE/VOLUME.CPP us-rev1 rodata: .game_data_E1720 links the two common units the other way round
+    base = ["VOLUME_A.CPP", "VOLUME_B.CPP"]
+    found = mergecheck.verdicts(
+        [(u, "M") for u in base],
+        {"de": _linked(base, "rodata"), "us-rev1": _linked(base[::-1], "rodata")},
+        {},
+        lambda u: "cc",
+    )
+    assert found[0]["hard"] == []
+    assert len([r for r in found[0]["soft"] if r.startswith("order")]) == 1
+
+
+def test_order_real_rows_a_unit_only_the_later_version_places_follows_its_neighbour_in_that_version() -> None:
+    # PAKINTERFACESCREEN us-rev1 rodata holds 55 units, de 43: the units only us-rev1 places are not ordered by de
+    de = [f"u{i}" for i in range(43)]
+    us = [*de[:27], "extra1", "extra2", *de[27:]]
+    assert mergecheck.code_order([*us], {"de": _linked(de, "rodata"), "us-rev1": _linked(us, "rodata")}, "rodata") == us
