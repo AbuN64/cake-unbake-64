@@ -18,6 +18,7 @@ from typing import Any
 from unbake import (
     blobs,
     earlier_build,
+    extent_words,
     framed_copy,
     framing,
     mipsstream,
@@ -311,6 +312,8 @@ def scan(config: Config) -> Json:
         left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in whole]))
         framed = framed_copies(roms, v, held, left_mips)
         left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in framed]))
+        words = [{**r, "version": v, "reader": "extent-words"} for r in extent_words.find(roms[v], spans[v], left_mips)]
+        left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in words]))
         packed = [{**r, "version": v} for r in rnc_streams(roms[v], left_mips)]
         rest = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in packed]))
         copies = find(roms, spans, windows, v, rest, list(parts))
@@ -334,6 +337,7 @@ def scan(config: Config) -> Json:
             "rnc_streams": packed,
             "rnc_whole": whole,
             "framed_copies": framed,
+            "extent_words": words,
             "copies": copies,
             "heads": cuts,
             "left": blobs.length(left),

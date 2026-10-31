@@ -14,6 +14,7 @@ from unbake import (
     blob_stale,
     blobs,
     earlier_build,
+    extent_words,
     framed_copy,
     mipsstream,
     objcode,
@@ -45,6 +46,7 @@ READERS = frozenset(
         "rnc-copy",
         "rnc-whole",
         "framed-copy",
+        "extent-words",
     }
 )
 _CORPUS: dict[object, objcode.Corpus] = {}  # the known bodies of a project, once per Config digest
@@ -364,6 +366,18 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             return {**framed_copy.prove(rom, other, start, end, row["source"], row["frame"]), "source_version": version}
         except (framed_copy.CopyError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"framed-copy: {error}") from error
+    if reader == "extent-words":
+        try:
+            return extent_words.prove(
+                rom,
+                _accounted(config, row["version"]),
+                start,
+                end,
+                container=row.get("container"),
+                wrapper_at=row.get("wrapper"),
+            )
+        except (extent_words.ExtentError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"extent-words: {error}") from error
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":

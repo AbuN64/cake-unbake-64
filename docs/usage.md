@@ -254,6 +254,20 @@ sha256. `framed-copy` rows name a header span on a held lattice point, the `sour
 the copy goes on: the ROM must equal the source for at least `MIN_RUN` (32) bytes before the header and after it, so the
 header is the only insertion; the receipt lists both runs.
 
+## Extent words (`extent-words`)
+
+A builder that packed sections into one image wrote the sizes of what it packed next to it. A wrapper is `1, 0x10, size,
+0` before an RNC stream; `size` is the stream's stored length (`rnc.header`) plus the wrapper header, rounded up to 8. A
+container is `n, offset[0..n-1], size` before n sections; `offset[0]` is the header's own length, every later offset is
+the previous one plus the previous section's extent, and `size` ends the last section. A section is self-sized when it
+is a wrapper whose size word matches its stream or a nested container whose size word is its extent; the builder left
+up to 7 bytes of slack before a section (zeros, or the end of a longer repacked stream that is accounted already).
+`extent-words` rows name a `wrapper` (the header offset) or a `container` (the offset of its count word) and a region
+inside its header words. The proof recomputes the words from the ROM: a wrapper must match its stream; a container
+word must follow from the chain of sections before it, and a section that is not self-sized must lie in bytes
+accounted already, otherwise the row is refused. `blobs scan stale` finds the rows for the unknown spans of at most 256
+bytes.
+
 ## Stale RNC2 streams (`rnc-repack`)
 
 An older link left RNC method 2 streams in a ROM that later writes damaged, so their packed CRC fails and `rnc` cannot
