@@ -548,15 +548,21 @@ def test_a_worker_span_at_the_log_floor_stays_alone_so_a_pools_tail_is_seen(tmp_
 
 def test_a_command_running_past_the_beat_says_its_stage_and_cpu(monkeypatch):
     """No silent hold: a long command prints its wall, process-tree CPU and the innermost open stage every beat."""
-    import time
+    import threading
 
     said = []
+    beat = threading.Event()
+
+    def listen(event, body):
+        if event == "say":
+            said.append(body["text"])
+            if body["text"].startswith("hold:"):
+                beat.set()
+
     monkeypatch.setattr(effort, "HOLD_BEAT", 0.05)
-    monkeypatch.setattr(
-        effort, "_listeners", [lambda event, body: said.append(body["text"]) if event == "say" else None]
-    )
+    monkeypatch.setattr(effort, "_listeners", [listen])
     with effort.command("submit", ["submit"]), effort.stage("publish.build"):
-        time.sleep(0.2)
+        assert beat.wait(60)  # the first beat's say is the signal; 60 s only bounds a beat that never comes
     assert any("hold: submit runs" in line and "CPU-s, now in submit > publish.build" in line for line in said)
 
 

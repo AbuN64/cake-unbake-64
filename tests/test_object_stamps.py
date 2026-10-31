@@ -93,8 +93,9 @@ class Tree:
             if "build" in path.relative_to(self.root).parts:
                 age = 10**10 + (10**9 if path.suffix == ".i" else 0)
                 os.utime(path, ns=(now - age, now - age))
-        for path in (self.root / "asm/us/.extracted", self.root / "src/a.c"):
-            os.utime(path, ns=(now - 2 * 10**10, now - 2 * 10**10))
+        for path in (self.root / "asm/us/.extracted", self.root / "src/a.c", self.root / "src/h.h"):
+            if path.exists():  # the header the stamp's .d names is an input too: older than the stamp it made
+                os.utime(path, ns=(now - 2 * 10**10, now - 2 * 10**10))
 
     def write(self, text: str) -> None:
         (self.root / "src/a.c").write_text(text)
