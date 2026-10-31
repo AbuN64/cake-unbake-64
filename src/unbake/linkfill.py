@@ -157,6 +157,27 @@ def build(
     return sorted(rows, key=lambda f: f.rom)
 
 
+def refill(
+    held: Sequence[Fill], runs: Iterable[tuple[str, str, int, int, int, int]], rom: bytes
+) -> tuple[list[Fill], int, int]:
+    """The rows of one version after merged objects took the place of the pieces of several units. A run is (merged
+    object, section, ROM offset where the pieces began, where the merged object ends, where the pieces ended, address
+    of the first byte): the bytes between the two ends are the gap the pieces filled and the one merged object does
+    not, so they become a row of their own (none when they are all zero), and the rows held inside the run go: the
+    merged object owns that span. Returns the rows, how many were dropped and how many were written."""
+    rows = list(held)
+    dropped = written = 0
+    for name, section, start, merged_end, linked_end, address in runs:
+        inside = [f for f in rows if start <= f.rom < linked_end]
+        rows = [f for f in rows if f not in inside]
+        dropped += len(inside)
+        data = rom[merged_end:linked_end]
+        if any(data):
+            rows.append(Fill(name, section, merged_end, address + merged_end - start, data, UNATTRIBUTED))
+            written += 1
+    return sorted(rows, key=lambda f: f.rom), dropped, written
+
+
 def generate(config: Config, params: Json) -> dict[str, Any]:
     """`unbake layout fill --plan FILES.tsv`: write `versions/<v>/linker_fill.toml` of every version from its ROM and
     the plan's pad atoms (OBJECTS.tsv and ASSIGN.tsv beside FILES.tsv). A version with no nonzero pad atom has no

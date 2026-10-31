@@ -40,10 +40,10 @@ def test_an_empty_entry_between_does_not_break_adjacency() -> None:
     assert run(rows, seq)["M"]["verdict"] == "merge"
 
 
-def test_units_linked_against_the_map_order_or_with_other_flags_stay_separate() -> None:
+def test_units_linked_in_another_order_than_the_map_merge_class_wise_but_other_flags_stay_separate() -> None:
     rows = [("a", "M"), ("b", "M")]
     seq = [entry("b", "text", 8), entry("a", "text", 8)]
-    assert run(rows, seq)["M"]["hard"] == ["order: us text b is linked before a"]
+    assert run(rows, seq)["M"]["hard"] == []
     out = run(rows, [entry("a", "text", 8), entry("b", "text", 8)], identity=lambda unit: unit)["M"]
     assert out["verdict"] == "separate" and out["hard"][0].startswith("flags:")
 
@@ -133,15 +133,38 @@ def test_pieces_that_pack_longer_in_one_object_are_a_hard_lma_finding() -> None:
     assert out["hard"] == ["lma: us .rodata merged 9 B against linked 8 B: overlaps the next section"]
 
 
-def test_an_align_directive_the_merged_object_lacks_is_a_hard_lma_gap() -> None:
+def test_a_class_linked_in_another_unit_order_in_another_version_stays_separate() -> None:
+    rows = [("a", "M"), ("b", "M")]
+    seqs = {
+        "us": [entry("a", "text", 8), entry("b", "text", 8)],
+        "eu": [entry("b", "text", 8), entry("a", "text", 8)],
+    }
+    out = {v["module"]: v for v in mergecheck.verdicts(rows, seqs, {}, lambda unit: "cc")}["M"]
+    assert out["hard"] == ["order: eu text is linked in another order than us"]
+
+
+def test_each_class_may_be_linked_in_its_own_unit_order() -> None:
+    rows = [("a", "M"), ("b", "M")]
+    seq = [
+        entry("a", "text", 8),
+        entry("b", "text", 8),
+        entry("b", "data", 4, ".data"),
+        entry("a", "data", 4, ".data"),
+    ]
+    assert run(rows, seq)["M"]["hard"] == []
+    assert mergecheck.class_orders(["a", "b"], {"us": seq}) == {"text": ["a", "b"], "data": ["b", "a"]}
+
+
+def test_an_align_directive_the_merged_object_lacks_is_a_soft_fill() -> None:
     rows = [("a", "M"), ("b", "M")]
     seq = [
         with_parts(entry("a", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
         align(8),
         with_parts(entry("b", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
     ]
-    gap = "lma: us .rodata merged 8 B against linked 12 B: leaves a gap before the next section"
-    assert run(rows, seq)["M"]["hard"] == [gap]
+    out = run(rows, seq)["M"]
+    assert out["hard"] == []
+    assert "fill: us .rodata merged 8 B against linked 12 B: the link fill of the 4 B is regenerated" in out["soft"]
 
 
 def test_pieces_that_pack_the_same_merge() -> None:
@@ -153,14 +176,14 @@ def test_pieces_that_pack_the_same_merge() -> None:
     assert run(rows, seq)["M"]["verdict"] == "merge"
 
 
-def test_spans_count_align_directives_and_other_modules_between_the_first_and_last_unit() -> None:
+def test_spans_count_align_directives_but_not_the_bytes_of_other_modules_between_units() -> None:
     seq = [
         with_parts(entry("a", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
         align(8),
         with_parts(entry("x", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
         with_parts(entry("b", "rodata", 4, ".rodata"), rodata=piece(4, 4)),
     ]
-    assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 16, 8)]
+    assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 12, 8, 0)]
 
 
 def test_units_are_ordered_by_where_their_code_is_linked_not_their_first_data() -> None:
@@ -249,10 +272,10 @@ def test_original_linker_minimum_offsets_keep_internal_holes_in_real_data_slice(
             size = sizes[int(row["u"][1:])]
             row.update(n=size, cls="data", parts={"data": [(size, 4)]})
     rows = [(f"u{i}", "tables") for i in range(6)]
-    assert mergecheck.spans(seq, {u for u, _ in rows}) == [(".data_800C", 120, 88)]
-    assert run(rows, seq)["tables"]["hard"] == [
-        "lma: us .data_800C merged 88 B against linked 120 B: leaves a gap before the next section"
-    ]
+    assert mergecheck.spans(seq, {u for u, _ in rows}) == [(".data_800C", 120, 88, 0x923C)]
+    out = run(rows, seq)["tables"]
+    assert out["hard"] == []
+    assert "fill: us .data_800C merged 88 B against linked 120 B: the link fill of the 32 B is regenerated" in out["soft"]
 
 
 def test_minimum_does_not_move_back_or_count_prefix_space_as_module_bytes():
@@ -262,7 +285,7 @@ def test_minimum_does_not_move_back_or_count_prefix_space_as_module_bytes():
         {"o": ".data", "k": "minimum", "offset": 104},
         with_parts(entry("b", "data", 8, ".data"), data=piece(8, 1)),
     ]
-    assert mergecheck.spans(seq, {"a", "b"}) == [(".data", 16, 16)]
+    assert mergecheck.spans(seq, {"a", "b"}) == [(".data", 16, 16, 100)]
 
 
 def test_named_sections_are_counted_once_and_conditional_align_uses_actual_definitions(tmp_path, monkeypatch):
@@ -291,7 +314,7 @@ def test_named_sections_are_counted_once_and_conditional_align_uses_actual_defin
     seq = seqs["us"]
     assert [r["n"] for r in seq if r["k"] == "entry"] == [3, 4, 4]
     assert [r["symbol"] for r in seq if "symbol" in r] == ["yes"]
-    assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 16, 12)]
+    assert mergecheck.spans(seq, {"a", "b"}) == [(".rodata", 16, 11, 0)]
     assert read.call_count == 2
 
 

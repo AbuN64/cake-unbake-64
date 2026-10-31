@@ -6,11 +6,12 @@ objects of each version. The hard findings (the module must stay separate files)
   flags       the units do not share one toolchain and flag set (a translation-unit boundary)
   sections    one class of the module sits in several output sections
   gap         two entries of one class are not adjacent in the link order (another module's bytes sit between)
-  order       the units are not linked in the map's order
-  lma         one merged object would not fill the span the units fill in an output section (their data and read-only
-              pieces, each aligned as linked, packed again): the next section's load address would overlap or leave a
-              gap
+  order       a section class is linked in another unit order in one version than in the first (each class is merged
+              in its own linked order)
+  lma         one merged object would be larger than the span the units fill in an output section (their pieces, each
+              aligned as linked, packed again): it would overlap the next piece
 The soft findings (the merge can go ahead, and the source must reproduce them):
+  fill        one merged object is smaller than that span: merge regenerates the linker fill record for the difference
   align       an ALIGN directive pads between two entries of the module
   statics     two units define a local symbol of the same name (the merged file needs one renamed)
   literals    two or more units each hold read-only data (a merged file lets the compiler pool and reorder it)"""
@@ -182,13 +183,13 @@ def _up(position: int, align: int) -> int:
     return -(-position // align) * align
 
 
-def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int]]:
+def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int, int]]:
     """Per output section holding entries of `units`: (section, bytes the linked entries span, bytes one merged object
-    spans). The linked span walks the section from the module's first entry to its last (the module's pieces aligned as
+    spans, offset in the section where the module starts). The linked span walks the section from the module's first entry to its last (the module's pieces aligned as
     linked, ALIGN directives and `MAX(., offset)` pins between them); the bytes of other modules between two entries
     are the `gap` finding's, so they are not walked and the pins after them are not read. The merged span packs the
     module's pieces of each class again, class after class, each as aligned in the link."""
-    out: list[tuple[str, int, int]] = []
+    out: list[tuple[str, int, int, int]] = []
     for section in dict.fromkeys(e["o"] for e in seq if e["k"] == "entry" and e["u"] in units):
         rows = [(i, e) for i, e in enumerate(seq) if e["o"] == section]
         mine = [i for i, e in rows if e["k"] == "entry" and e["u"] in units]
@@ -221,7 +222,7 @@ def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int]]:
             merged = _up(merged, max(a for _, a in pieces))
             for size, align in pieces:
                 merged = _up(merged, align) + size
-        out.append((section, position - start, merged))
+        out.append((section, position - start, merged, start))
     return out
 
 
@@ -360,11 +361,12 @@ def verdicts(
                     if seq[k]["k"] == "align":
                         soft[module].append(f"align: {version} {cls} ALIGN({seq[k]['a']}) before {two}")
         for module, units in multi.items():
-            for section, linked, merged in spans(seq, set(units)):
-                if merged != linked:
-                    effect = "overlaps the next section" if merged > linked else "leaves a gap before the next section"
-                    shape = f"{version} {section} merged {merged} B against linked {linked} B"
-                    hard[module].append(f"lma: {shape}: {effect}")
+            for section, linked, merged, _ in spans(seq, set(units)):
+                shape = f"{version} {section} merged {merged} B against linked {linked} B"
+                if merged > linked:
+                    hard[module].append(f"lma: {shape}: overlaps the next section")
+                elif merged < linked:
+                    soft[module].append(f"fill: {shape}: the link fill of the {linked - merged} B is regenerated")
             held = [u for u in units if u in rodata]
             if len(held) > 1:
                 soft[module].append(f"literals: {version} rodata in {len(held)} units")
