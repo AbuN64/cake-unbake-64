@@ -363,6 +363,15 @@ def test_a_yaml_that_sync_rewrote_is_extracted_again(world):
     assert "versions/a/splat.yaml" in result["files"]
 
 
+def _place(world):
+    """What sync wrote as stand-ins before it refused them: the placement `repo.stand_ins` still decides."""
+    writes = repo.stand_ins(world.cfg, world.tree)
+    for path, data in writes.items():
+        (world.root / path).parent.mkdir(parents=True, exist_ok=True)
+        (world.root / path).write_bytes(data)
+    return {"written": sorted(writes)}
+
+
 def _sync_world(world, unowned):
     world.tree = _tree(
         {"src/main/a.c": {"a": ("f_main",), "b": ("f_main",)}, "src/main/z.c": {"a": ("f_late",)}},
@@ -470,19 +479,43 @@ def test_sync_writes_the_generated_files_and_the_header_only_when_missing(world)
     assert (world.root / "include/include_asm.h").read_text() == "mine\n"
 
 
-def test_sync_appends_a_stand_in_for_an_unowned_name_to_the_file_owning_the_previous_address(world):
+def test_sync_refuses_a_stand_in_for_an_unowned_name_and_writes_nothing(world):
+    _sync_world(world, ["f_mid", "d_blob"])
+    before = (world.root / "src/main/a.c").read_text()
+    with pytest.raises(Refusal) as refused:
+        repo.sync(world.cfg, {"check": False})
+    found = {f.path: f for f in refused.value.findings}
+    assert {f.key for f in found.values()} == {"sync.stand-in"}
+    assert found["src/main/a.c"].missing == ("f_mid",) and found["src/data/80100000.c"].missing == ("d_blob",)
+    assert (world.root / "src/main/a.c").read_text() == before
+    assert not (world.root / "src/main/z.c").read_text().count("f_mid")
+
+
+def test_sync_check_refuses_a_stand_in_too(world):
     _sync_world(world, ["f_mid"])
-    result = repo.sync(world.cfg, {"check": False})
+    with pytest.raises(Refusal) as refused:
+        repo.sync(world.cfg, {"check": True})
+    assert refused.value.findings[0].key == "sync.stand-in"
+
+
+def test_sync_allows_a_stand_in_the_file_already_holds(world):
+    _sync_world(world, ["f_mid"])
+    _place(world)
+    repo.sync(world.cfg, {"check": False})  # f_mid already stands in a.c: nothing is added, so nothing is refused
+
+
+def test_stand_ins_appends_a_stand_in_for_an_unowned_name_to_the_file_owning_the_previous_address(world):
+    _sync_world(world, ["f_mid"])
+    result = _place(world)
     assert (world.root / "src/main/a.c").read_text().endswith('\nINCLUDE_ASM("main", f_mid);\n')
     assert (world.root / "src/main/z.c").read_text().count("INCLUDE_ASM") == 1  # the later file is untouched
     assert "src/main/a.c" in result["written"]
-    assert world.captures[-1]["src/main/a.c"].decode().count("f_mid") == 1  # the link script sees the stand-in
 
 
-def test_sync_puts_names_nothing_precedes_before_the_next_owner_and_makes_no_new_file(world):
+def test_stand_ins_puts_names_nothing_precedes_before_the_next_owner_and_makes_no_new_file(world):
     world.tree = _tree({"src/main/z.c": {"a": ("f_late",)}}, {"a": ["f_main", "f_mid"], "b": ["f_main", "f_mid"]})
     _write(world.root, "src/main/z.c", "int f_late(void) { return 3; }\n")
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert not (world.root / "src/main/80000400.c").exists()
     assert (world.root / "src/main/z.c").read_text() == (
         '#include "include_asm.h"\n\nINCLUDE_ASM("main", f_main);\nINCLUDE_ASM("main", f_mid);\n'
@@ -490,45 +523,45 @@ def test_sync_puts_names_nothing_precedes_before_the_next_owner_and_makes_no_new
     )
 
 
-def test_sync_puts_a_name_nothing_precedes_before_the_next_owners_guarded_stand_in(world):
+def test_stand_ins_puts_a_name_nothing_precedes_before_the_next_owners_guarded_stand_in(world):
     world.tree = _tree({"src/main/z.c": {"a": ("f_late",)}}, {"a": ["f_main"], "b": ["f_main"]})
     _write(
         world.root, "src/main/z.c", '#include "include_asm.h"\n\n#if VERSION_A\nINCLUDE_ASM("main", f_late);\n#endif\n'
     )
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     lines = (world.root / "src/main/z.c").read_text().splitlines()
     assert lines[2:] == ['INCLUDE_ASM("main", f_main);', "#if VERSION_A", 'INCLUDE_ASM("main", f_late);', "#endif"]
 
 
-def test_sync_makes_a_new_file_only_for_a_segment_without_owners(world):
+def test_stand_ins_makes_a_new_file_only_for_a_segment_without_owners(world):
     world.tree = _tree({}, {"a": ["f_main", "f_mid"], "b": ()})
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     text = (world.root / "src/main/80000400.c").read_text()
     assert text.startswith('#include "include_asm.h"') and text.count("INCLUDE_ASM") == 2
     assert text.index("f_main") < text.index("f_mid")
 
 
-def test_sync_stands_in_data_with_include_data(world):
+def test_stand_ins_stands_in_data_with_include_data(world):
     world.tree = _tree({"src/main/a.c": {"a": ("f_main",)}}, {"a": ["d_blob"], "b": ()})
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert 'INCLUDE_DATA("data", d_blob);' in (world.root / "src/data/80100000.c").read_text()
 
 
-def test_sync_guards_a_name_another_version_defines(world):
+def test_stand_ins_guards_a_name_another_version_defines(world):
     world.tree = _tree({"src/main/a.c": {"a": ("f_mid",)}}, {"a": (), "b": ["f_mid"]})
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert (world.root / "src/main/a.c").read_text().endswith('#if VERSION_B\nINCLUDE_ASM("main", f_mid);\n#endif\n')
 
 
-def test_sync_guards_a_new_stand_in_by_the_versions_that_lack_a_file_of_it(world):
+def test_stand_ins_guards_a_new_stand_in_by_the_versions_that_lack_a_file_of_it(world):
     """A version that knows the name only as a second name of owned bytes, or not at all, extracts no file of it."""
     _sync_world(world, ["f_mid"])
     world.tree = _tree({"src/main/z.c": {"a": ("f_late",)}}, {"a": ["f_mid"], "b": ()})
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert '\n#if VERSION_A\nINCLUDE_ASM("main", f_mid);\n#endif\n' in (world.root / "src/main/z.c").read_text()
 
 
-def test_sync_puts_a_stand_in_right_after_the_previous_name_and_gives_data_the_section_before_it(world):
+def test_stand_ins_puts_a_stand_in_right_after_the_previous_name_and_gives_data_the_section_before_it(world):
     world.tree = _tree(
         {"src/main/a.c": {"a": ("f_main", "f_late"), "b": ("f_main", "f_late")}}, {"a": ["f_mid"], "b": ["f_mid"]}
     )
@@ -537,7 +570,7 @@ def test_sync_puts_a_stand_in_right_after_the_previous_name_and_gives_data_the_s
         "src/main/a.c",
         '#include "include_asm.h"\nINCLUDE_ASM("main", f_main);\nINCLUDE_ASM("main", f_late);\n',
     )
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert (world.root / "src/main/a.c").read_text().splitlines()[1:] == [
         'INCLUDE_ASM("main", f_main);', 'INCLUDE_ASM("main", f_mid);', 'INCLUDE_ASM("main", f_late);'
     ]  # fmt: skip
@@ -549,11 +582,11 @@ def test_sync_puts_a_stand_in_right_after_the_previous_name_and_gives_data_the_s
     _write(
         world.root, "src/data/d.c", '#include "include_asm.h"\n#if VERSION_A\nINCLUDE_RODATA("data", d_one);\n#endif\n'
     )
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert (world.root / "src/data/d.c").read_text().endswith('#endif\nINCLUDE_RODATA("data", d_two);\n')
 
 
-def test_sync_puts_a_stand_in_after_the_c_body_of_the_previous_name_not_after_its_other_versions_stand_in(world):
+def test_stand_ins_puts_a_stand_in_after_the_c_body_of_the_previous_name_not_after_its_other_versions_stand_in(world):
     world.tree = _tree(
         {"src/main/a.c": {"a": ("f_main", "f_late"), "b": ("f_main", "f_late")}}, {"a": ["f_mid"], "b": ["f_mid"]}
     )
@@ -566,7 +599,7 @@ def test_sync_puts_a_stand_in_after_the_c_body_of_the_previous_name_not_after_it
         "s32 f_main(void) {\n    return 1;\n}\n"
         'INCLUDE_ASM("main", f_late);\n',
     )
-    repo.sync(world.cfg, {"check": False})
+    _place(world)
     assert (world.root / "src/main/a.c").read_text().splitlines()[-3:] == [
         "}", 'INCLUDE_ASM("main", f_mid);', 'INCLUDE_ASM("main", f_late);'
     ]  # fmt: skip

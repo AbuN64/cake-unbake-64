@@ -593,6 +593,22 @@ def stand_ins(config: Config, current: Any) -> dict[str, bytes | None]:
     return writes
 
 
+_STAND_IN_LINE = re.compile(r'^[ \t]*INCLUDE_(?:ASM|DATA|RODATA)\(\s*"[^"]*"\s*,\s*(\w+)\s*\)\s*;', re.M)
+
+
+def _added_stand_ins(root: Path, writes: Mapping[str, bytes | None]) -> dict[str, list[str]]:
+    """The stand-in names each file of `writes` gains over the file on disk (a stand-in stands for unwritten source)."""
+    added: dict[str, list[str]] = {}
+    for path, value in sorted(writes.items()):
+        if value is None:
+            continue
+        file = root / path
+        old = set(_STAND_IN_LINE.findall(file.read_text(errors="replace"))) if file.is_file() else set()
+        if new := [n for n in dict.fromkeys(_STAND_IN_LINE.findall(value.decode(errors="replace"))) if n not in old]:
+            added[path] = new
+    return added
+
+
 def _lines(rows: Iterable[str]) -> bytes:
     return ("\n".join(rows) + "\n").encode()
 
@@ -956,7 +972,21 @@ def _sync(config: Config, params: Json) -> tuple[Json, Any]:
         if assembly:
             current = tree.capture(config, assembly)
         with effort.stage("repo.stand_ins"):
-            appended = {**assembly, **stand_ins(config, current)}
+            written = stand_ins(config, current)
+            if added := _added_stand_ins(root, written):
+                raise Refusal(
+                    *(
+                        Finding(
+                            "sync.stand-in",
+                            f"{len(names)} names have no typed source and would get a stand-in: {', '.join(names)}",
+                            path=path,
+                            missing=tuple(names),
+                            action="write the typed definition of each name in C or C++; sync writes no stand-in",
+                        )
+                        for path, names in added.items()
+                    )
+                )
+            appended = {**assembly, **written}
             if appended:
                 # This capture sees the proposed stand-ins, a different input from the on-disk tree above.
                 current = tree.capture(config, appended)

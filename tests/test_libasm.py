@@ -264,12 +264,14 @@ def test_lost_library_routine_is_rendered_again_and_never_placed_in_a_game_file(
     assert '("main", f)' not in (root / "src/game.c").read_text()
 
 
-def test_lost_library_routine_that_cannot_render_keeps_its_stand_in_in_the_library(lost):
+def test_lost_library_routine_that_cannot_render_is_refused_not_stood_in_the_library(lost):
     _patch(lost, "b", 0x1014, [0x08000000])  # b jumps below every symbol: nothing names the target
-    repo.sync(lost, {})
     root = lost.project.root
-    assert '("main", f)' not in (root / "src/game.c").read_text()
-    assert 'INCLUDE_ASM("main", f);' in (root / "src/sdk/keep.c").read_text()
+    before = (root / "src/sdk/keep.c").read_text()
+    with pytest.raises(Refusal) as refused:
+        repo.sync(lost, {})
+    assert refused.value.findings[0].key == "sync.stand-in" and refused.value.findings[0].path == "src/sdk/keep.c"
+    assert (root / "src/sdk/keep.c").read_text() == before
 
 
 def _without_roms(cfg):
