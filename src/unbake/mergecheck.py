@@ -61,9 +61,10 @@ def read_targets(text: str) -> dict[str, str]:
     module, target = rows[0].index("module"), rows[0].index("target")
     found: dict[str, str] = {}
     for r in rows[1:]:
-        if r and not r[0].startswith("#") and len(r) > max(module, target) and r[target]:
-            if found.setdefault(r[module], r[target]) != r[target]:
-                raise ValueError(f"module {r[module]} names two targets: {found[r[module]]} and {r[target]}")
+        if not r or r[0].startswith("#") or len(r) <= max(module, target) or not r[target]:
+            continue
+        if found.setdefault(r[module], r[target]) != r[target]:
+            raise ValueError(f"module {r[module]} names two targets: {found[r[module]]} and {r[target]}")
     return found
 
 
@@ -92,6 +93,27 @@ def merged_modules(text: str, mapping: Mapping[str, str]) -> str:
                 done.add(merged)
             continue
         out.append(line)
+    return "".join(out)
+
+
+def split_modules(text: str, unit: str, pieces: Mapping[str, str]) -> str:
+    """A module map with the row of `unit` replaced by one row per piece (target -> path): the unit column holds the
+    piece's path and the module column its target; every other cell and row stays."""
+    lines = text.splitlines(keepends=True)
+    head = lines[0].rstrip("\r\n").split("\t")
+    col, module = head.index("unit"), head.index("module") if "module" in head else -1
+    out = [lines[0]]
+    for line in lines[1:]:
+        cells = line.rstrip("\r\n").split("\t")
+        if line.startswith("#") or len(cells) <= col or cells[col] != unit:
+            out.append(line)
+            continue
+        for target, path in pieces.items():
+            row = list(cells)
+            row[col] = path
+            if 0 <= module < len(row):
+                row[module] = target
+            out.append("\t".join(row) + "\n")
     return "".join(out)
 
 
@@ -185,10 +207,11 @@ def _up(position: int, align: int) -> int:
 
 def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int, int]]:
     """Per output section holding entries of `units`: (section, bytes the linked entries span, bytes one merged object
-    spans, offset in the section where the module starts). The linked span walks the section from the module's first entry to its last (the module's pieces aligned as
-    linked, ALIGN directives and `MAX(., offset)` pins between them); the bytes of other modules between two entries
-    are the `gap` finding's, so they are not walked and the pins after them are not read. The merged span packs the
-    module's pieces of each class again, class after class, each as aligned in the link."""
+    spans, offset in the section where the module starts). The linked span walks the section from the module's first
+    entry to its last (the module's pieces aligned as linked, ALIGN directives and `MAX(., offset)` pins between
+    them); the bytes of other modules between two entries are the `gap` finding's, so they are not walked and the
+    pins after them are not read. The merged span packs the module's pieces of each class again, class after class,
+    each as aligned in the link."""
     out: list[tuple[str, int, int, int]] = []
     for section in dict.fromkeys(e["o"] for e in seq if e["k"] == "entry" and e["u"] in units):
         rows = [(i, e) for i, e in enumerate(seq) if e["o"] == section]
@@ -200,7 +223,7 @@ def spans(seq: Sequence[Row], units: set[str]) -> list[tuple[str, int, int, int]
             if i == mine[0]:
                 start = position
             if row["k"] == "entry" and row["u"] not in units:
-                foreign = foreign or i > mine[0] and any(row.get("parts", {}).values())
+                foreign = foreign or (i > mine[0] and any(row.get("parts", {}).values()))
                 if i < mine[0]:
                     for cls in row.get("parts", {}):
                         for size, align in row["parts"][cls]:
@@ -310,10 +333,8 @@ def verdicts(
 ) -> list[Row]:
     """One verdict per module of two or more units: {"module", "units", "verdict": merge|separate, "hard", "soft"}."""
     modules: dict[str, list[str]] = defaultdict(list)
-    order: dict[str, int] = {}
     for unit, module in rows:
         modules[module].append(unit)
-        order[unit] = len(order)
     multi = {m: us for m, us in modules.items() if len(us) > 1}
     owner = {u: m for m, us in multi.items() for u in us}
     hard: dict[str, list[str]] = defaultdict(list)
@@ -341,17 +362,17 @@ def verdicts(
         following = dict(pairwise(live))
         where: dict[tuple[str, str], list[tuple[int, str, str]]] = defaultdict(list)
         for i in live:
-            home = owner.get(seq[i]["u"])
-            for part in seq[i]["cls"].split("+") if home else ():
-                where[(home, part)].append((i, seq[i]["o"], seq[i]["u"]))
+            if home := owner.get(seq[i]["u"]):
+                for part in seq[i]["cls"].split("+"):
+                    where[(home, part)].append((i, seq[i]["o"], seq[i]["u"]))
         for (module, cls), hits in where.items():
             if len({o for _, o, _ in hits}) > 1:
                 hard[module].append(f"sections: {version} {cls} sits in several output sections")
                 continue
-            linked = list(dict.fromkeys(u for _, _, u in hits))
-            first = firsts.setdefault((module, cls), (version, linked))
-            if [u for u in first[1] if u in linked] != [u for u in linked if u in first[1]]:
-                hard[module].append(f"order: {version} {cls} is linked in another order than {first[0]}")
+            seen = list(dict.fromkeys(u for _, _, u in hits))
+            base = firsts.setdefault((module, cls), (version, seen))
+            if [u for u in base[1] if u in seen] != [u for u in seen if u in base[1]]:
+                hard[module].append(f"order: {version} {cls} is linked in another order than {base[0]}")
             for (i, _, one), (j, _, two) in pairwise(hits):
                 if following.get(i) != j:
                     between = [seq[k]["u"] for k in live if i < k < j and owner.get(seq[k]["u"]) != module]

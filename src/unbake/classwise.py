@@ -35,8 +35,9 @@ class Chunk:
     heads: dict[str, str] = field(default_factory=dict)  # function name -> its prototype text
 
     @property
-    def cls(self) -> str | None:
-        return self.classes[0] if self.classes else None
+    def cls(self) -> str:
+        """The class of the chunk's storage; empty when it holds none."""
+        return self.classes[0] if self.classes else ""
 
 
 def _blocks(masked: str) -> list[tuple[int, int]]:
@@ -101,7 +102,7 @@ def _classify(chunk: Chunk, decl: Any, masked: str, classes: Mapping[str, str]) 
     elif decl.kind == "var":
         chunk.classes.append(classes.get(decl.name) or _fallback(decl, masked))
         chunk.defines.append(decl.name)
-    elif decl.kind == "proto" and _WORD.match(statement.lstrip()) and _WORD.match(statement.lstrip()).group(0) == decl.name:
+    elif decl.kind == "proto" and (call := _WORD.match(statement.lstrip())) and call.group(0) == decl.name:
         # a macro call that places a symbol (an included data or code block): the symbols named in its arguments
         for word in _WORD.findall(statement[statement.find("(") :]):
             if word in classes:
@@ -124,11 +125,11 @@ def arrange(
                 {
                     "kind": "mixed",
                     "name": chunk.defines[0],
-                    "detail": f"{chunk.unit}: one block holds {'+'.join(sorted(set(chunk.classes)))} and cannot be ordered",
+                    "detail": f"{chunk.unit}: one block holds {'+'.join(sorted(set(chunk.classes)))}",
                 }
             )
-    plain = [c for c in every if c.cls is None]
-    storage = [c for c in every if c.cls is not None]
+    plain = [c for c in every if not c.cls]
+    storage = [c for c in every if c.cls]
     rank = {cls: {u: i for i, u in enumerate(order)} for cls, order in orders.items()}
     for cls in {c.cls for c in storage}:
         unplaced = {c.unit for c in storage if c.cls == cls} - rank.get(cls, {}).keys()
@@ -161,7 +162,9 @@ def arrange(
     return "\n\n".join(p for p in out if p.strip()), conflicts
 
 
-def _sequence(chain: Mapping[str, list[Chunk]], storage: Sequence[Chunk]) -> tuple[list[Chunk], list[tuple[Chunk, list[str]]]]:
+def _sequence(
+    chain: Mapping[str, list[Chunk]], storage: Sequence[Chunk]
+) -> tuple[list[Chunk], list[tuple[Chunk, list[str]]]]:
     """The storage chunks in one order that keeps each class chain: the next chunk of the class whose head is first in
     the default order (the order of the text chain, then the rest) and whose data names are all defined; when none
     is ready, the first head goes anyway and its early uses are returned."""

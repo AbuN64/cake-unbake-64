@@ -348,7 +348,12 @@ Real build proofs run against a project checkout (`unbake setup`, `make check`),
 
 `unbake layout mergecheck --modules reviewed.tsv` audits every module in the explicit TSV (`unit` and `module` columns).
 The TSV selects membership; merge and mergecheck both use code link order, then verify that every version and section
-can preserve that order. Contradictory orders, intervening bytes, section boundaries and compiler changes still refuse.
+can preserve that order. A class (text, data, rodata) may be linked in another unit order than the code: merge emits each
+class in its own linked order inside the one file (functions before their users get a prototype, data before its users
+keeps its place). A class linked in another unit order in one version than in another, intervening bytes, section
+boundaries and compiler changes still refuse. When one merged object is smaller than the span its pieces filled (the
+alignment between them), mergecheck reports `fill` and merge regenerates the linker fill rows of
+`versions/<v>/linker_fill.toml` for the difference; `lma` refuses only a merged object larger than that span.
 The scan reads each ELF once, counts named function/data sections individually, and respects linker minimum offsets,
 input alignment overrides and defined alignment markers. Missing selected objects and units absent from every version's
 linker inputs refuse: merging an unplaced unit could activate its data. An internal linker hole
@@ -367,7 +372,17 @@ then stages the selected files, rewrites the map, syncs once and proves every RO
 same operation to one module. The response lists each changed module under `modules`; `kept` counts already merged
 modules. Repeating a completed map makes no writes. Duplicate unit ownership, missing units, occupied destinations,
 compiler/library changes and hard merge findings refuse the whole request. With `--prove`, text conflicts also refuse
-before writing; without it they remain explicit in each module result for review. Singleton moves use `layout reorg`.
+before writing; without it they remain explicit in each module result for review. The optional `target` column of the
+map names the path of a module's merged file (`SOURCE/X.CPP`); without it the file sits at `SOURCE/X/X.CPP`. A module of
+one unit is a rename to its target. `fills` in the response counts, per version, the fill rows dropped and written.
+
+`unbake layout split --file U --assign ASSIGN.tsv [--modules MAP] [--prove]` splits one unit that spans several targets.
+ASSIGN.tsv is any TSV with `symbol` and `target` columns (a `current_src` column limits the rows to U). Each target gets
+the functions and variables it owns, the macro calls that place a symbol of its own, and the includes, typedefs and
+prototypes every piece needs, in a file under the folder of the target's merged file. A symbol the table does not name
+goes to the target holding most of U (`unassigned`); a `static` symbol another piece uses loses `static` and is
+declared there (`unstatic`, `declared`). The rows of U in MAP and in the configured `module_map` become one row per
+piece, then sync runs; `--prove` compares every ROM once.
 
 Layout apply, reorg and merge carry the configured `module_map` TSV's active `unit`, `module` and `header` paths
 through the exact mapping. Other columns, including historical `evidence`, retain their values. Moving the map itself

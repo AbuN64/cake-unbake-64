@@ -135,22 +135,14 @@ def test_pieces_that_pack_longer_in_one_object_are_a_hard_lma_finding() -> None:
 
 def test_a_class_linked_in_another_unit_order_in_another_version_stays_separate() -> None:
     rows = [("a", "M"), ("b", "M")]
-    seqs = {
-        "us": [entry("a", "text", 8), entry("b", "text", 8)],
-        "eu": [entry("b", "text", 8), entry("a", "text", 8)],
-    }
+    seqs = {"us": [entry("a", "text", 8), entry("b", "text", 8)], "eu": [entry("b", "text", 8), entry("a", "text", 8)]}
     out = {v["module"]: v for v in mergecheck.verdicts(rows, seqs, {}, lambda unit: "cc")}["M"]
     assert out["hard"] == ["order: eu text is linked in another order than us"]
 
 
 def test_each_class_may_be_linked_in_its_own_unit_order() -> None:
     rows = [("a", "M"), ("b", "M")]
-    seq = [
-        entry("a", "text", 8),
-        entry("b", "text", 8),
-        entry("b", "data", 4, ".data"),
-        entry("a", "data", 4, ".data"),
-    ]
+    seq = [entry("a", "text", 8), entry("b", "text", 8), entry("b", "data", 4, ".data"), entry("a", "data", 4, ".data")]
     assert run(rows, seq)["M"]["hard"] == []
     assert mergecheck.class_orders(["a", "b"], {"us": seq}) == {"text": ["a", "b"], "data": ["b", "a"]}
 
@@ -275,7 +267,9 @@ def test_original_linker_minimum_offsets_keep_internal_holes_in_real_data_slice(
     assert mergecheck.spans(seq, {u for u, _ in rows}) == [(".data_800C", 120, 88, 0x923C)]
     out = run(rows, seq)["tables"]
     assert out["hard"] == []
-    assert "fill: us .data_800C merged 88 B against linked 120 B: the link fill of the 32 B is regenerated" in out["soft"]
+    assert (
+        "fill: us .data_800C merged 88 B against linked 120 B: the link fill of the 32 B is regenerated" in out["soft"]
+    )
 
 
 def test_minimum_does_not_move_back_or_count_prefix_space_as_module_bytes():
