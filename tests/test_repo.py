@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from contextlib import contextmanager, nullcontext
@@ -802,6 +803,41 @@ def test_sync_without_a_verdict_keeps_the_progress_files_and_says_to_check(world
         False,
         "run make check, then unbake sync",
     )
+
+
+def _counting_sync(world, monkeypatch):
+    """The sync passes the tree's generators are asked for (each pass links once)."""
+    linked = []
+    monkeypatch.setattr(repo.build, "linker", lambda config, current: linked.append(1) or b"generated\n")
+    return linked
+
+
+def test_a_sync_after_a_settled_setup_makes_no_second_pass(world, monkeypatch):
+    """One regenerate links once: `unbake sync` after `unbake setup` finds the tree synced (the build between writes
+    only ignored files) and only publishes, because the linker pass is the slow one (~600 s on the real tree)."""
+    linked = _counting_sync(world, monkeypatch)
+    repo.setup(world.cfg, {"no_make": True})
+    assert len(linked) == 1 and json.loads((world.root / ".unbake/setup.json").read_bytes())["settled"] is True
+    assert repo.sync_command(world.cfg, {}) == {"written": [], "stand_ins": {}}
+    assert len(linked) == 1 and world.makes == []  # no second link, and no make behind the caller's own check
+
+
+def test_a_sync_runs_its_pass_when_the_tree_moved_or_it_checks_or_setup_deleted_a_file(world, monkeypatch):
+    linked = _counting_sync(world, monkeypatch)
+    repo.setup(world.cfg, {"no_make": True})
+    repo.sync_command(world.cfg, {"check": True})
+    repo.sync_command(world.cfg, {"settle": True})
+    assert len(linked) == 3  # check and settle never take setup's word
+    monkeypatch.setattr(repo.process, "git", lambda config, *a: SimpleNamespace(stdout=b"moved\n"))
+    repo.sync_command(world.cfg, {})
+    assert len(linked) == 4  # the tree changed since setup
+    path = world.root / ".unbake/setup.json"
+    document = json.loads(path.read_bytes())
+    path.write_bytes(json.dumps({**document, "settled": False, "state": repo._state(world.cfg)}).encode())
+    repo.sync_command(world.cfg, {})
+    assert len(linked) == 5  # a pass that deleted a file is not a fixed point
+    repo.sync(world.cfg, {})
+    assert len(linked) == 6  # a caller inside another transaction (no refresh) never skips
 
 
 def _stale_then_current(world, monkeypatch):

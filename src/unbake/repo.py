@@ -717,6 +717,20 @@ def sync_command(config: Config, params: Json) -> Json:
     return sync(config, params, refresh=True)
 
 
+def _settled_by_setup(config: Config, params: Json) -> bool:
+    """Whether the setup that ran last left this exact tree synced: its state (tool, commit, working tree, extraction
+    stamps) still holds and the pass it made deleted no file, the one case in which `sync` makes another pass. The
+    build and `unbake verify` between them write only ignored files, so `unbake sync` after `unbake setup` need not
+    generate (and link) the same files a second time. A `--check`, `--settle` or `--makefile` sync always runs."""
+    if params.get("check") or params.get("settle") or params.get("makefile"):
+        return False
+    try:
+        kept = json.loads((config.project.root / ".unbake/setup.json").read_bytes())
+    except (OSError, ValueError):
+        return False
+    return bool(kept.get("settled")) and kept.get("state") == _state(config)
+
+
 def sync(config: Config, params: Json, refresh: bool = False) -> Json:
     """Write every generated file and the stand-ins for unowned names; with check, write nothing and refuse naming the
     files that would change. The README block, its image, progress.json and the docs maps follow the check verdict:
@@ -733,7 +747,12 @@ def sync(config: Config, params: Json, refresh: bool = False) -> Json:
         # the Makefile and local.mk are one contract (the recipe names the variables local.mk sets): regenerate both,
         # local.mk first so a tree whose content refuses the sync still has the machine half of the current tool
         store.write(config.project.root / "local.mk", build.local_mk(config))
-    result, current = _sync(config, params)
+    result: Json
+    current: Any
+    if refresh and _settled_by_setup(config, params):
+        result, current = {"written": [], "stand_ins": {}}, tree.capture(config)
+    else:
+        result, current = _sync(config, params)
     root = config.project.root
     for _ in range(0 if params.get("check") else _PASSES):
         # a pass that deleted a file (an owned unit dropped one version at a time) moves what the next pass
@@ -1678,5 +1697,6 @@ def _setup(config: Config, params: Json) -> Json:
             "message": "setup",
             "make": make,
         }
-        store.write(done, json.dumps({"state": _state(config), "result": result}).encode())
+        settled = all((project.root / w).exists() for w in written)  # a deleted file moves what a next pass reads
+        store.write(done, json.dumps({"state": _state(config), "settled": settled, "result": result}).encode())
         return result
