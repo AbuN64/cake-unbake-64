@@ -124,7 +124,7 @@ def skeleton(words: Sequence[int]) -> Json:
 
 def calls(words: Sequence[int]) -> list[Json]:
     """Every `jal`: the word, the target and whether it lies in the RAM window."""
-    out = []
+    out: list[Json] = []
     for i, w in enumerate(words):
         if w >> 26 == 3:
             target = 0x80000000 | (w & 0x3FFFFFF) << 2
@@ -300,7 +300,7 @@ class Index:
         return found
 
 
-def _order(index: Index, version: str, c: Compiled, at: int) -> tuple:
+def _order(index: Index, version: str, c: Compiled, at: int) -> tuple[bool, int, int, str, int]:
     return (
         c.version != version,
         index.order.get(c.version, len(index.order)),
@@ -316,7 +316,7 @@ def stretch(index: Index, words: Sequence[int], first: int, version: str, rom: i
     want = tuple(words[first : first + WINDOW])
     if len(want) < WINDOW or not any(want):
         return None
-    best: tuple | None = None
+    best: tuple[tuple[int, bool, int, int, str, int], Compiled, int, int] | None = None
     for i, at in index._exact.get(_window(words, first), ()):
         c = index.compiled[i]
         if c.words[at : at + WINDOW] != want:

@@ -27,6 +27,7 @@ import struct
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from importlib import import_module
+from typing import Any
 
 from unbake import config, windows
 from unbake.contracts import Config, Finding, Json, Refusal
@@ -45,12 +46,22 @@ ESCAPES = {9: "\\t", 10: "\\n", 13: "\\r", 34: '\\"', 92: "\\\\"}
 KINDS = {"str": "Str", "float": "Floats", "double": "Doubles", "int": "Ints", "uint": "Words", "ptr": "Pointers"}
 
 
+Row = dict[str, Any]  # a mutable row of the result
+
+
 @dataclass(frozen=True)
 class Item:
     kind: str  # str, float, double, int (signed words), uint (unsigned words), ptr (older-image addresses)
     at: int  # ROM offset
     size: int
     value: str | tuple[int, ...]  # a string's text, else the raw words (a double is one value of two words)
+
+    @property
+    def words(self) -> tuple[int, ...]:
+        """The raw words of an item that is not a string."""
+        if isinstance(self.value, str):
+            raise TypeError(f"{self.kind} item at 0x{self.at:X} holds text, not words")
+        return self.value
 
 
 def _float_word(w: int) -> bool:
@@ -97,10 +108,10 @@ def _double(hi: int, lo: int) -> bool:
     )
 
 
-def itemize(data: bytes, low: int, high: int, shift: int = 0) -> tuple[list[Item], list[Json]]:
+def itemize(data: bytes, low: int, high: int, shift: int = 0) -> tuple[list[Item], list[Row]]:
     """(items, refused) of the pool in data[low:high]; `shift` is added to a ROM offset to get its 8-byte phase."""
     items: list[Item] = []
-    refused: list[Json] = []
+    refused: list[Row] = []
     at = low + (-low) % 4
     if at > low:
         refused.append({"rom": low, "end": at, "why": "unaligned head"})
@@ -202,7 +213,7 @@ def _join(items: Sequence[Item], refuse: Callable[[int, int, str], None]) -> lis
         near = (items[i - 1].kind in {"int", "uint", "zero"} if i else False) or (
             items[j].kind in {"int", "uint", "zero"} if j < len(items) else False
         )
-        if j - i <= JOIN and touch and near and not any(_texty(w.value[0]) for w in items[i:j]):  # type: ignore[index]
+        if j - i <= JOIN and touch and near and not any(_texty(w.words[0]) for w in items[i:j]):
             kept.extend(Item("uint", w.at, 4, w.value) for w in items[i:j])
         else:
             for w in items[i:j]:
@@ -283,7 +294,7 @@ def objects(items: Sequence[Item]) -> list[Item]:
     for item in items:
         last = out[-1] if out else None
         if last and item.kind == last.kind and item.kind != "str" and last.at + last.size == item.at:
-            out[-1] = Item(last.kind, last.at, last.size + item.size, (*last.value, *item.value))  # type: ignore[misc]
+            out[-1] = Item(last.kind, last.at, last.size + item.size, (*last.words, *item.words))
         else:
             out.append(item)
     return out
@@ -298,17 +309,17 @@ def render(obj: Item, name: str) -> list[str]:
     if obj.kind == "str":
         return [f"char {name}[{obj.size}] = {_literal(str(obj.value))};"]
     count = obj.size // (8 if obj.kind == "double" else 4)
-    values = obj.value
+    values = obj.words
     if obj.kind == "ptr":
-        cells = [f"(void *)0x{w:08X}" if w else "0" for w in values]  # type: ignore[union-attr]
+        cells = [f"(void *)0x{w:08X}" if w else "0" for w in values]
         return [f"void *{name}[{count}] = {{ {', '.join(cells)} }};"]
     if obj.kind == "float":
-        cells = [_float(w) for w in values]  # type: ignore[union-attr]
+        cells = [_float(w) for w in values]
         kind = "float"
     elif obj.kind == "double":
-        cells, kind = [_double_text(*values[i : i + 2]) for i in range(0, len(values), 2)], "double"  # type: ignore[index]
+        cells, kind = [_double_text(*values[i : i + 2]) for i in range(0, len(values), 2)], "double"
     else:
-        cells, kind = [_int(w, obj.kind == "int") for w in values], "int" if obj.kind == "int" else "unsigned int"  # type: ignore[union-attr]
+        cells, kind = [_int(w, obj.kind == "int") for w in values], "int" if obj.kind == "int" else "unsigned int"
     return [f"{kind} {name}[{count}] = {{ {', '.join(cells)} }};"]
 
 
@@ -341,11 +352,11 @@ def units(items: Sequence[Item]) -> list[Unit]:
     return out
 
 
-def body(unit: Unit, delta: int) -> tuple[list[str], list[Json]]:
+def body(unit: Unit, delta: int) -> tuple[list[str], list[Row]]:
     """(C lines, symbol rows) of one unit; names carry the older build's address, so both versions agree."""
     label = stem(unit.path)
     lines: list[str] = []
-    symbols: list[Json] = []
+    symbols: list[Row] = []
     for obj in objects(unit.items):
         vram = (obj.at + delta) & windows.MASK
         name = f"g_earlier{label}{KINDS[obj.kind]}_{vram:06X}"
@@ -364,7 +375,7 @@ def unknown_ranges(cfg: Config) -> dict[str, tuple[list[tuple[int, int]], list[t
     return {
         v: (
             [(a, b) for a, b, *_ in row["spans"]],
-            [tuple(s) for k in ("platform", "code", "data") for s in held[v]["spans"].get(k, ())],  # type: ignore[misc]
+            [tuple(s) for k in ("platform", "code", "data") for s in held[v]["spans"].get(k, ())],
         )
         for v, row in found.items()
     }
@@ -401,9 +412,9 @@ def command(cfg: Config, params: Json) -> Json:
     if not specs:
         raise Refusal(Finding("type-pool.spec", "give --spec VERSION:LOW:HIGH:DELTA (hex ok) at least once"))
     found: dict[tuple[str, int], dict[tuple[str, ...], list[str]]] = {}  # (path, older vram) -> body -> versions
-    rows: list[Json] = []
-    refused: list[Json] = []
-    symbols: dict[str, list[Json]] = {}
+    rows: list[Row] = []
+    refused: list[Row] = []
+    symbols: dict[str, list[Row]] = {}
     held = unknown_ranges(cfg) if params.get("unknown") else None
     for v, low, high, delta in specs:
         data = config.rom(cfg.project, v).read_bytes()
@@ -428,7 +439,7 @@ def command(cfg: Config, params: Json) -> Json:
             symbols.setdefault(v, []).extend(syms)
     written = []
     for (path, vram), bodies in sorted(found.items()):
-        for lines, vs in bodies.items():
+        for text, vs in bodies.items():
             guard = " || ".join("defined(VERSION_" + v.upper().replace("-", "_") + ")" for v in vs)
             note = f"Older build's rodata of {path}." if path else "Older build's rodata pool."
             name = Unit(path, vram, []).file + ("" if len(bodies) == 1 else "." + "_".join(vs))
@@ -436,11 +447,11 @@ def command(cfg: Config, params: Json) -> Json:
             if not params.get("check"):
                 target = cfg.project.root / (params.get("dest") or "src/DATA/EARLIER_BUILD") / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(f"#if {guard}\n/* {note} */\n" + "\n".join(lines) + "\n#endif\n")
+                target.write_text(f"#if {guard}\n/* {note} */\n" + "\n".join(text) + "\n#endif\n")
     if not params.get("check"):
         for v, syms in symbols.items():
-            path = cfg.project.root / windows.symbols_path(v)
-            have = path.read_text().splitlines() if path.exists() else []
+            table = cfg.project.root / windows.symbols_path(v)
+            have = table.read_text().splitlines() if table.exists() else []
             known = {line.split(" =")[0] for line in have}
             add = []
             for s in syms:
@@ -448,6 +459,6 @@ def command(cfg: Config, params: Json) -> Json:
                     continue
                 known.add(s["name"])
                 add.append(f"{s['name']} = 0x{s['vram']:08X}; // rom:0x{s['rom']:X} size:0x{s['size']:X}")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("\n".join([*have, *add]) + "\n")
+            table.parent.mkdir(parents=True, exist_ok=True)
+            table.write_text("\n".join([*have, *add]) + "\n")
     return {"windows": rows, "unfit": refused, "written": written, "bytes": sum(r["end"] - r["rom"] for r in rows)}

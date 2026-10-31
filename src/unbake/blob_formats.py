@@ -361,7 +361,7 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             raise ValueError(f"rnc-whole: {error}") from error
     if reader == "framed-copy":
         version = row.get("source_version")
-        if version not in config.project.version:
+        if not isinstance(version, str) or version not in config.project.version:
             raise ValueError(f"framed-copy: source version {version} is unknown")
         try:
             other = rom if version == row["version"] else _baserom(config, version)
@@ -391,12 +391,12 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
     if reader == "copy":
         return _copy(config, row, rom, document, start, end)
     if reader == "obj-code":
-        key = getattr(config, "digest", id(config))
-        if key not in _CORPUS:
+        digest = getattr(config, "digest", id(config))
+        if digest not in _CORPUS:
             _CORPUS.clear()
-            _CORPUS[key] = objcode.corpus(config)
+            _CORPUS[digest] = objcode.corpus(config)
         try:
-            return _CORPUS[key].prove(rom, row["version"], start, end)
+            return _CORPUS[digest].prove(rom, row["version"], start, end)
         except objcode.ObjError as error:
             raise ValueError(str(error)) from error
     raise ValueError(f"unknown container reader {reader}")
