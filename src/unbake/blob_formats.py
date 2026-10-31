@@ -14,6 +14,7 @@ from unbake import (
     blob_stale,
     blobs,
     earlier_build,
+    extent_directory,
     extent_words,
     framed_copy,
     mipsstream,
@@ -47,6 +48,7 @@ READERS = frozenset(
         "rnc-whole",
         "framed-copy",
         "extent-words",
+        "extent-directory",
     }
 )
 _CORPUS: dict[object, objcode.Corpus] = {}  # the known bodies of a project, once per Config digest
@@ -378,6 +380,12 @@ def prove(config: Config, row: Json, rom: bytes, document: Json) -> Json:
             )
         except (extent_words.ExtentError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"extent-words: {error}") from error
+    if reader == "extent-directory":
+        try:
+            bounds = extent_directory.boundaries(document["blob"], row["version"])
+            return extent_directory.prove(rom, bounds, start, end, row["shape"])
+        except (extent_directory.DirectoryError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"extent-directory: {error}") from error
     if reader == "rnc-copy":
         return _rnc_copy(config, row, rom, document, start, end)
     if reader == "copy":

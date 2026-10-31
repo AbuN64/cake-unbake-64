@@ -268,6 +268,23 @@ word must follow from the chain of sections before it, and a section that is not
 accounted already, otherwise the row is refused. `blobs scan stale` finds the rows for the unknown spans of at most 256
 bytes.
 
+The container reader also takes the shapes the builder wrote around the words: an odd count pads the header to 8 (the
+pad is zero and is determined with the header), an empty container is `0, 8`, and a section may be a bare RNC stream
+(its extent is the stored length rounded up to 8) or 8 zero bytes before a wrapper or container. Each section's bytes
+after its own end, up to its extent, must be zero; those pads, the header and the content of an empty section are the
+bytes a row may claim, and `blobs scan stale` looks for them from up to `LOOKBACK` bytes before an unknown span, since
+the span may begin inside a header.
+
+## Extent directories (`extent-directory`)
+
+A bank that holds several decoded blobs keeps a table of their boundaries as big-endian words. `pairs` is `start, end`
+ROM offsets per blob, tiling the bank, the first start being the end of the table; `ends` is `n, length, end[0..n-1]`
+where `length` is `4 * (n + 2)` (the first child starts where the table ends) and every end is relative to the table's
+own offset. A word is proven only when it is the start or end of a decoded or identified blob that no other blob
+contains, so the extents of the audio and resource blobs fix the words; one word that names no boundary, a pair that
+does not tile or a wrong length word refuses the row. `blobs scan stale` reads the unknown spans of at most 256 bytes as
+either shape and lists them as `extent_directories`.
+
 ## Stale RNC2 streams (`rnc-repack`)
 
 An older link left RNC method 2 streams in a ROM that later writes damaged, so their packed CRC fails and `rnc` cannot

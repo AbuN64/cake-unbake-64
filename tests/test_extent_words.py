@@ -113,3 +113,52 @@ def test_find_closes_the_short_unknown_spans_and_leaves_the_rest():
 
 def test_the_reader_is_a_blob_format_with_its_own_dispatch():
     assert "extent-words" in blob_formats.READERS
+
+
+def padded(sections):
+    """A container as the builder wrote it: an odd count pads the header to 8, the sections stand 8-aligned."""
+    n = len(sections)
+    first = -(-4 * (n + 2) // 8) * 8
+    offsets = [first]
+    for part in sections:
+        offsets.append(offsets[-1] + len(part))
+    head = b"".join(w.to_bytes(4, "big") for w in [n, *offsets])
+    return head + bytes(first - len(head)) + b"".join(sections)
+
+
+def bare(seed):
+    """A bare RNC stream section, zero padded to the 8 the next offset needs."""
+    stream = rnc2enc.stream(text(300 + seed), 2)
+    return stream + bytes(-len(stream) % 8)
+
+
+def test_an_odd_count_pads_its_header_and_the_pad_is_determined():
+    parts = [wrapped(8), wrapped(9), wrapped(10)]
+    rom = padded(parts)
+    head = 8 * 3
+    got = extent_words.prove(rom, [], 0, head, container=0)
+    assert got["size"] == len(rom) and got["words"] == list(range(5))
+    assert (0, head) in extent_words.determined(rom, 0, extent_words.sections(rom, 0, []))
+
+
+def test_an_empty_container_is_its_two_words():
+    rom = (0).to_bytes(4, "big") + (8).to_bytes(4, "big")
+    assert extent_words.shape(rom, 0) == (0, [], 8)
+    with pytest.raises(extent_words.ExtentError):
+        extent_words.prove(rom, [], 0, 8, container=0)  # nothing follows from no sections
+
+
+def test_bare_streams_and_zero_sections_are_self_sized_sections():
+    parts = [bare(11), bytes(8), wrapped(13), bare(14)]
+    rom = padded(parts)
+    assert [s["kind"] for s in extent_words.sections(rom, 0, [])] == ["stream", "zero", "wrapper", "stream"]
+    assert extent_words.prove(rom, [], 0, 4 * 6, container=0)["words"] == list(range(6))
+    # the stream's zero pad and the zero section after it are one determined range
+    assert (243, 256) in extent_words.determined(rom, 0, extent_words.sections(rom, 0, []))
+
+
+def test_a_zero_section_is_taken_only_before_a_section_that_begins():
+    rom = padded([bytes(8), wrapped(16)])
+    assert [s["kind"] for s in extent_words.sections(rom, 0, [])] == ["zero", "wrapper"]
+    lone = padded([bytes(8), bytes(range(1, 9))])
+    assert extent_words.sections(lone, 0, [])[0]["kind"] == "opaque"

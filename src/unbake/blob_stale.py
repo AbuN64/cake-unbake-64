@@ -18,6 +18,7 @@ from typing import Any
 from unbake import (
     blobs,
     earlier_build,
+    extent_directory,
     extent_words,
     framed_copy,
     framing,
@@ -211,11 +212,7 @@ def pages(rom: bytes, targets: Spans) -> list[Json]:
     for low, high in targets:
         for page in snpage.find(rom, low, high):
             rows.append(
-                {
-                    "version": "",
-                    "reader": "sn-page",
-                    "region": [max(low, page), min(high, page + snpage.SECTOR)],
-                }
+                {"version": "", "reader": "sn-page", "region": [max(low, page), min(high, page + snpage.SECTOR)]}
             )
     return rows
 
@@ -266,8 +263,14 @@ def framed_copies(roms: dict[str, bytes], v: str, held: list[framing.Frame], tar
                 at = framed_copy.find(rom, data, a, b) if other != v else None
                 if at is not None:
                     rows.append(
-                        {"version": v, "reader": "framed-copy", "region": [a, b], "source_version": other,
-                         "source": at, "frame": frame.row()}
+                        {
+                            "version": v,
+                            "reader": "framed-copy",
+                            "region": [a, b],
+                            "source_version": other,
+                            "source": at,
+                            "frame": frame.row(),
+                        }
                     )
                     break
     return rows
@@ -314,6 +317,11 @@ def scan(config: Config) -> Json:
         left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in framed]))
         words = [{**r, "version": v, "reader": "extent-words"} for r in extent_words.find(roms[v], spans[v], left_mips)]
         left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in words]))
+        tables = [
+            {**r, "version": v, "reader": "extent-directory"}
+            for r in extent_directory.find(roms[v], extent_directory.boundaries(document, v), left_mips)
+        ]
+        left_mips = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in tables]))
         packed = [{**r, "version": v} for r in rnc_streams(roms[v], left_mips)]
         rest = blobs.subtract(left_mips, blobs.merge([tuple(r["region"]) for r in packed]))
         copies = find(roms, spans, windows, v, rest, list(parts))
@@ -338,6 +346,7 @@ def scan(config: Config) -> Json:
             "rnc_whole": whole,
             "framed_copies": framed,
             "extent_words": words,
+            "extent_directories": tables,
             "copies": copies,
             "heads": cuts,
             "left": blobs.length(left),
