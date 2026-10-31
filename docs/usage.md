@@ -354,7 +354,12 @@ class in its own linked order inside the one file (functions before their users 
 keeps its place). The versions' orders of a class are merged into one base order; a unit some version links elsewhere
 is a soft `order` finding naming the moved units, and merge emits its chunks again under `#if defined(VERSION_<v>)` of
 the versions that move it, at the place they link it, with the original under the negated guard. Intervening bytes,
-section boundaries and compiler changes still refuse. When one merged object is smaller than the span its pieces filled (the
+section boundaries and compiler changes still refuse. A module whose class sits in several output sections is a hard
+`sections` finding that also prints the parts: units that share their output section in every version where both are
+placed form one part (`sections: text parts: 2: .ovl_frontendMenu [a, b]; .game_data [c]`; a part linked in another
+section by some version is labelled `us .game_data, us-rev1 .game_data_E1720`). The verdict row carries the same parts as
+`parts: {class: [{sections: {version: section}, units: [...]}]}`, units in base order, so a reshape part writes the
+module-map row of each part (one module per part) without reading the link scripts. When one merged object is smaller than the span its pieces filled (the
 alignment between them), mergecheck reports `fill` and merge regenerates the linker fill rows of
 `versions/<v>/linker_fill.toml` for the difference; `lma` refuses only a merged object larger than that span.
 The scan reads each ELF once, counts named function/data sections individually, and respects linker minimum offsets,
